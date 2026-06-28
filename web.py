@@ -14,7 +14,7 @@ from src.codebuddy_auth_router import router as codebuddy_auth_router
 from src.settings_router import router as settings_router
 from src.frontend_router import router as frontend_router
 
-from config import get_server_host, get_server_port, get_log_level
+from config import get_server_host, get_server_port, get_log_level, get_server_password
 
 # 配置日志
 logging.basicConfig(
@@ -92,7 +92,11 @@ app.include_router(
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "healthy", "service": "codebuddy2api"}
+    return {
+        "status": "healthy",
+        "service": "codebuddy2api",
+        "auth_required": bool(get_server_password())
+    }
 
 
 @app.get("/")
@@ -136,8 +140,12 @@ if __name__ == "__main__":
     logger.info(f"   Credentials: GET http://{host}:{port}/codebuddy/v1/credentials")
     logger.info("=" * 60)
     logger.info("Authentication:")
-    logger.info("   Set CODEBUDDY_PASSWORD environment variable")
-    logger.info("   Use Bearer token in Authorization header")
+    if get_server_password():
+        logger.info("   CODEBUDDY_PASSWORD is set")
+        logger.info("   Use Bearer token in Authorization header")
+    else:
+        logger.info("   CODEBUDDY_PASSWORD is not set")
+        logger.info("   Admin panel and API are available without a service password")
     logger.info("=" * 60)
 
     config = Config()

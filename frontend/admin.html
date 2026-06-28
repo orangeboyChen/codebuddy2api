@@ -1603,10 +1603,11 @@
         let currentAuthData = null;
         let authPollingInterval = null;
         let isAuthenticated = false;
+        let authRequired = true;
         let credentialsCache = []; // 用于缓存凭证和其状态
 
         // 初始化
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
             initializeTheme();
             showTab('dashboard');
             
@@ -1614,11 +1615,18 @@
             if (!sessionStorage.getItem('serviceStartTime')) {
                 sessionStorage.setItem('serviceStartTime', Date.now().toString());
             }
+
+            await detectAuthRequirement();
             
             // 检查是否已经登录
             const savedPassword = sessionStorage.getItem('servicePassword');
-            if (savedPassword) {
+            if (savedPassword && authRequired) {
                 servicePassword = savedPassword;
+                isAuthenticated = true;
+                showDashboardPage();
+                loadDashboard();
+            } else if (!authRequired) {
+                servicePassword = '';
                 isAuthenticated = true;
                 showDashboardPage();
                 loadDashboard();
@@ -1636,6 +1644,19 @@
                 }
             }, 30000); // 每30秒刷新一次
         });
+
+        async function detectAuthRequirement() {
+            try {
+                const response = await fetch('/health', { cache: 'no-store' });
+                if (!response.ok) {
+                    return;
+                }
+                const data = await response.json();
+                authRequired = data.auth_required !== false;
+            } catch (error) {
+                console.warn('无法检测认证要求，默认启用登录页:', error);
+            }
+        }
 
         // 键盘快捷键处理
         function handleKeyboardShortcuts(e) {
@@ -1782,11 +1803,11 @@
             event.target.classList.add('active');
             
             // 加载对应数据
-            if (tabId === 'dashboard') {
+            if (tabId === 'dashboard' && isAuthenticated) {
                 loadDashboard();
-            } else if (tabId === 'credentials') {
+            } else if (tabId === 'credentials' && isAuthenticated) {
                 loadCredentials();
-            } else if (tabId === 'settings') {
+            } else if (tabId === 'settings' && isAuthenticated) {
                 loadSettings();
             }
         }
@@ -1830,6 +1851,15 @@
 
         async function handleLogin(event) {
             event.preventDefault();
+            if (!authRequired) {
+                servicePassword = '';
+                isAuthenticated = true;
+                sessionStorage.removeItem('servicePassword');
+                showDashboardPage();
+                loadDashboard();
+                showNotification('当前未启用管理密码，已直接进入控制面板', 'success');
+                return;
+            }
             const password = document.getElementById('loginPassword').value;
             const loginButton = document.getElementById('loginButton');
             const loginError = document.getElementById('loginError');
@@ -1875,18 +1905,28 @@
         
         function logout() {
             servicePassword = '';
-            isAuthenticated = false;
             sessionStorage.removeItem('servicePassword');
-            showLoginPage();
-            showNotification('已退出登录', 'info');
+            if (authRequired) {
+                isAuthenticated = false;
+                showLoginPage();
+                showNotification('已退出登录', 'info');
+            } else {
+                isAuthenticated = true;
+                showDashboardPage();
+                loadDashboard();
+                showNotification('当前无需管理密码，已保持访问', 'info');
+            }
         }
 
         // 获取认证头
         function getAuthHeaders() {
-            return {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${servicePassword}`
+            const headers = {
+                'Content-Type': 'application/json'
             };
+            if (servicePassword) {
+                headers['Authorization'] = `Bearer ${servicePassword}`;
+            }
+            return headers;
         }
 
         // 仪表板相关功能

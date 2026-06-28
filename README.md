@@ -10,7 +10,7 @@
 - 🔄 **智能响应处理**：即使 CodeBuddy 原生仅支持流式响应，本服务也能为客户端智能处理**非流式**请求，并在后端自动完成“流式转非流式”的响应包装。
 - ⚡ **高性能**：完全基于 FastAPI 和 `asyncio` 构建，支持高并发异步请求。
 - 🔐 **双重认证机制**：
-    - **服务访问认证**：通过环境变量设置密码，保护整个代理服务。
+    - **服务访问认证**：可通过环境变量设置密码保护整个代理服务，不配置时可免密访问。
     - **CodeBuddy 官方认证**：在后端安全地管理和使用 CodeBuddy 的 `Bearer Token`。
 - 🔄 **凭证自动轮换**：支持在 `.codebuddy_creds` 目录中配置多个 CodeBuddy 认证凭证，服务会自动轮换使用，有效提高可用性和分担请求压力。
 - 🌐 **Web 管理界面**：内置一个美观、易用的 Web UI，方便用户管理凭证、测试 API 和查看服务状态。
@@ -53,10 +53,10 @@ python web.py
 cp .env.example .env
 ```
 
-然后，用你的文本编辑器打开 `.env` 文件，**至少需要设置以下必需的变量**：
+然后，用你的文本编辑器打开 `.env` 文件，**至少需要设置以下基础变量**：
 
 ```dotenv
-# (必需) API服务的访问密码，客户端连接时需要提供此密码
+# (可选) API服务的访问密码；留空时管理面板可免密访问
 CODEBUDDY_PASSWORD=your_secret_password_for_this_service
 
 # (推荐) 直接使用 CodeBuddy API Key（中国版请配 internal）
@@ -74,7 +74,7 @@ CODEBUDDY_INTERNET_ENVIRONMENT=internal
 **推荐方式：使用 Web 管理界面自动获取**
 
 1.  启动服务后，使用浏览器访问 `http://127.0.0.1:8001` (或你自定义的地址)。
-2.  输入你在 `.env` 文件中设置的 `CODEBUDDY_PASSWORD` 登录管理面板。
+2.  如果你配置了 `CODEBUDDY_PASSWORD`，请输入它登录管理面板；如果没配置，会自动免密进入。
 3.  进入 “**凭证管理**” 标签页。
 4.  点击 **自动获取认证** 卡片中的 “**开始认证**” 按钮。
 5.  系统会自动生成一个 CodeBuddy 的官方登录链接。请点击 “**打开链接**” 按钮。
@@ -103,7 +103,7 @@ python web.py
 
 ### 认证
 
-所有对本服务的 API 请求，都需要在 HTTP 请求头中包含你在 `.env` 文件里设置的 `CODEBUDDY_PASSWORD` 作为 Bearer Token。
+如果你配置了 `CODEBUDDY_PASSWORD`，所有对本服务的 API 请求都需要在 HTTP 请求头中包含它作为 Bearer Token；如果未配置，则可直接访问。
 
 `Authorization: Bearer your_secret_password_for_this_service`
 
@@ -210,7 +210,7 @@ codebuddy2api/
 
 | 环境变量 | 默认值 | 说明 |
 | ---------------------- | --------------------- | ---------------------------------------------------------- |
-| `CODEBUDDY_PASSWORD` | - | **(必需)** 访问此API服务的密码。 |
+| `CODEBUDDY_PASSWORD` | - | 访问此API服务的密码。留空时可免密访问管理面板。 |
 | `CODEBUDDY_AUTH_MODE` | `auto` | 认证模式：`auto` / `api_key` / `token`。`auto` 下优先用 `CODEBUDDY_API_KEY`，否则使用 `.codebuddy_creds`。 |
 | `CODEBUDDY_API_KEY` | - | API Key（推荐）。 |
 | `CODEBUDDY_INTERNET_ENVIRONMENT` | `""` | 网络环境，`internal`/`ioa`/`public`。 |

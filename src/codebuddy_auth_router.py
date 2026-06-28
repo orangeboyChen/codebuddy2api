@@ -27,7 +27,7 @@ _last_auth_state: Optional[str] = None
 
 # --- Router Setup ---
 router = APIRouter()
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 # --- JWT Authentication ---
 import jwt
@@ -46,7 +46,10 @@ def authenticate(credentials = Depends(security)) -> str:
     """基于服务密码的认证"""
     password = get_server_password()
     if not password:
-        raise HTTPException(status_code=500, detail="CODEBUDDY_PASSWORD is not configured on the server.")
+        return "anonymous"
+    
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Authorization header is required")
     
     token = credentials.credentials
     if token != password:
