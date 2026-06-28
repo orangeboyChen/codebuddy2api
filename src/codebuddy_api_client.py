@@ -205,10 +205,13 @@ class CodeBuddyAPIClient:
             'X-IDE-Type': 'CLI',
             'X-IDE-Name': 'CLI',
             'X-IDE-Version': '1.0.7',
-            'X-Domain': domain,
+            # 'X-Domain': domain,
             'User-Agent': 'CLI/1.0.7 CodeBuddy/1.0.7',
             'X-Product': 'SaaS',
-            'X-User-Id': resolved_user_id or ('anonymous' if auth_type == 'api_key' else 'b5be3a67-237e-4ee6-9b9a-0b9ecd7b454b')
+            'X-User-Id': resolved_user_id or ('anonymous' if auth_type == 'api_key' else 'b5be3a67-237e-4ee6-9b9a-0b9ecd7b454b'),
+            'X-Domain': 'tencent.sso.codebuddy.cn',
+            'X-Enterprise-Id': 'etahzsqej0n4',
+            'X-Tenant-Id': 'etahzsqej0n4',
         }
 
         if auth_type == 'api_key':
