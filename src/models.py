@@ -11,7 +11,7 @@ class Message(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    model: str = "auto-chat"
+    model: str = "glm-5.1"
     messages: List[Message]
     stream: bool = False
     temperature: Optional[float] = 0.7

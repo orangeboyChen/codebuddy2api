@@ -122,7 +122,7 @@ client = openai.OpenAI(
 
 # 非流式请求
 response = client.chat.completions.create(
-    model="auto-chat",
+    model="glm-5.1",
     messages=[
         {"role": "user", "content": "你好，2+2等于几？"}
     ]
@@ -131,7 +131,7 @@ print(response.choices[0].message.content)
 
 # 流式请求
 stream = client.chat.completions.create(
-    model="auto-chat",
+    model="glm-5.1",
     messages=[
         {"role": "user", "content": "写一个Python的Hello World脚本"}
     ],
@@ -149,7 +149,7 @@ curl -X POST "http://127.0.0.1:8001/codebuddy/v1/chat/completions" \
   -H "Authorization: Bearer your_secret_password_for_this_service" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "auto-chat",
+    "model": "glm-5.1",
     "messages": [
       {"role": "user", "content": "Hello, what is 2+2?"}
     ]
@@ -160,7 +160,7 @@ curl -X POST "http://127.0.0.1:8001/codebuddy/v1/chat/completions" \
   -H "Authorization: Bearer your_secret_password_for_this_service" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "auto-chat",
+    "model": "glm-5.1",
     "messages": [
       {"role": "user", "content": "Write a Python hello world script"}
     ],

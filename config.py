@@ -23,13 +23,13 @@ _DEFAULT_CONFIG = {
     "CODEBUDDY_HOST": "127.0.0.1",
     "CODEBUDDY_PORT": 8001,
     "CODEBUDDY_PASSWORD": None,
-    "CODEBUDDY_API_ENDPOINT": "",
+    "CODEBUDDY_API_ENDPOINT": "https://copilot.tencent.com",
     "CODEBUDDY_AUTH_MODE": "auto",
     "CODEBUDDY_API_KEY": None,
-    "CODEBUDDY_INTERNET_ENVIRONMENT": "",
+    "CODEBUDDY_INTERNET_ENVIRONMENT": "internal",
     "CODEBUDDY_CREDS_DIR": ".codebuddy_creds",
     "CODEBUDDY_LOG_LEVEL": "INFO",
-    "CODEBUDDY_MODELS": "claude-4.0,claude-3.7,gpt-5,gpt-5-mini,gpt-5-nano,o4-mini,gemini-2.5-flash,gemini-2.5-pro,auto-chat",
+    "CODEBUDDY_MODELS": "glm-5.1,glm-5.0,glm-5.0-turbo,glm-5v-turbo,glm-4.7,minimax-m3-play,minimax-m2.7,minimax-m2.5,kimi-k2.6,kimi-k2.5,hy3-preview-agent,deepseek-v4-pro,deepseek-v4-flash,deepseek-v3-2-volc,glm-5.1-ioa,glm-5.0-ioa,glm-5.0-turbo-ioa,glm-5v-turbo-ioa,glm-4.7-ioa,minimax-m3-ioa,minimax-m2.7-ioa,minimax-m2.5-ioa,kimi-k2.6-ioa,kimi-k2.5-ioa,hy3-preview-agent-ioa,deepseek-v4-pro-ioa,deepseek-v4-flash-ioa,deepseek-v3-2-volc-ioa",
     "CODEBUDDY_ROTATION_COUNT": 1
 }
 

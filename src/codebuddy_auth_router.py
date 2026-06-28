@@ -20,7 +20,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # --- Constants ---
-CODEBUDDY_BASE_URL = 'https://www.codebuddy.ai'
+CODEBUDDY_BASE_URL = 'https://copilot.tencent.com'
 CODEBUDDY_AUTH_TOKEN_ENDPOINT = f'{CODEBUDDY_BASE_URL}/v2/plugin/auth/token'
 CODEBUDDY_AUTH_STATE_ENDPOINT = f'{CODEBUDDY_BASE_URL}/v2/plugin/auth/state'
 _last_auth_state: Optional[str] = None
@@ -64,14 +64,14 @@ def get_auth_start_headers() -> Dict[str, str]:
     """生成启动认证(/state)所需的请求头"""
     request_id = str(uuid.uuid4()).replace('-', '')
     return {
-        'Host': 'www.codebuddy.ai',
+        'Host': 'copilot.tencent.com',
         'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/json',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
         'Connection': 'close',
         'X-Requested-With': 'XMLHttpRequest',
-        'X-Domain': 'www.codebuddy.ai',
+        'X-Domain': 'copilot.tencent.com',
         'X-No-Authorization': 'true',
         'X-No-User-Id': 'true',
         'X-No-Enterprise-Id': 'true',
@@ -86,7 +86,7 @@ def get_auth_poll_headers() -> Dict[str, str]:
     request_id = str(uuid.uuid4()).replace('-', '')
     span_id = secrets.token_hex(8)
     return {
-        'Host': 'www.codebuddy.ai',
+        'Host': 'copilot.tencent.com',
         'Accept': 'application/json, text/plain, */*',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
@@ -102,7 +102,7 @@ def get_auth_poll_headers() -> Dict[str, str]:
         'X-No-User-Id': 'true',
         'X-No-Enterprise-Id': 'true',
         'X-No-Department-Info': 'true',
-        'X-Domain': 'www.codebuddy.ai',
+        'X-Domain': 'copilot.tencent.com',
         'User-Agent': 'CLI/1.0.8 CodeBuddy/1.0.8',
         'X-Product': 'SaaS',
     }
