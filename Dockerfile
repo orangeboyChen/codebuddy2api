@@ -20,13 +20,15 @@ RUN apt-get update && \
     apt-get install -y gosu && \
     rm -rf /var/lib/apt/lists/*
 
+# 创建一个非root用户来运行应用，并预创建 Kubernetes volumeMount 目标目录
+RUN useradd -m -u 1001 appuser && \
+    mkdir -p /app/config /app/.codebuddy_creds && \
+    chown -R appuser:appuser /app/config /app/.codebuddy_creds
+
 # 复制并设置入口脚本
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["entrypoint.sh"]
-
-# 创建一个非root用户来运行应用
-RUN useradd -m -u 1001 appuser
 
 # 声明容器将要监听的端口
 # 这个端口应该与您在配置中设置的 CODEBUDDY_PORT 一致
