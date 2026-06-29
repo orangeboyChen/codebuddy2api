@@ -174,11 +174,17 @@ class CodeBuddyAPIClient:
         conversation_id: Optional[str] = None,
         conversation_request_id: Optional[str] = None,
         conversation_message_id: Optional[str] = None,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        passthrough_headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, str]:
         """
         生成 CodeBuddy API 所需的完整请求头。
         优先使用传入的会话ID，如果未提供则随机生成。
+
+        passthrough_headers：来自下游客户端（如 codex 内核）的原始头，
+        会在最后合并覆盖。用于把 codex 的 session_id / originator / traceparent
+        等会话标识透传给上游，从而让上游 trace 能把同一会话的多个请求归并到一起
+        （否则每个请求都会被当成独立会话）。
         """
         parsed_base_url = urlparse(self.base_url)
         domain = parsed_base_url.netloc or "www.codebuddy.ai"
@@ -227,6 +233,13 @@ class CodeBuddyAPIClient:
             headers['Authorization'] = f'Bearer {bearer_token}'
         else:
             raise ValueError(f"Unsupported auth type: {auth_type}")
+
+        # 透传下游客户端的会话/trace 标识（codex 等），覆盖在自动生成的头之上。
+        # 这样上游网关可按 session_id 把同一会话的多次请求归并到同一条 trace。
+        if passthrough_headers:
+            for k, v in passthrough_headers.items():
+                if v:
+                    headers[k] = v
 
         return headers
 
