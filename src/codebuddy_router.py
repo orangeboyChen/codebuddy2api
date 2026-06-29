@@ -1025,6 +1025,23 @@ async def responses(
         # 获取认证信息（API Key 或 Token）
         auth_context = CredentialManager.get_auth_context()
 
+        # 透传 codex 内核的会话/trace 标识：上游按 session_id 归并同一会话的多次请求。
+        # 不透传会导致每个请求在上游 trace 里都是独立会话（呈现为"大量单独请求"）。
+        _PASSTHROUGH_KEYS = (
+            "session_id", "originator", "conversation_id",
+            "traceparent", "tracestate",
+        )
+        incoming = request.headers
+        passthrough_headers = {}
+        for key in _PASSTHROUGH_KEYS:
+            val = incoming.get(key)
+            if val:
+                passthrough_headers[key] = val
+        # 若 codex 带了 session_id，则用它作为会话分组 ID，保持整段会话一致
+        codex_session_id = incoming.get("session_id")
+        if codex_session_id and not x_conversation_id:
+            x_conversation_id = codex_session_id
+
         # 生成请求头
         headers = codebuddy_api_client.generate_codebuddy_headers(
             auth=auth_context,
@@ -1032,7 +1049,8 @@ async def responses(
             conversation_id=x_conversation_id,
             conversation_request_id=x_conversation_request_id,
             conversation_message_id=x_conversation_message_id,
-            request_id=x_request_id
+            request_id=x_request_id,
+            passthrough_headers=passthrough_headers
         )
 
         # 预处理请求（上游强制流式）
