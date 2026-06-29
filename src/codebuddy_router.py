@@ -3,6 +3,7 @@ CodeBuddy API Router - 兼容CodeBuddy官方API格式
 重构版本 - 优化了代码结构、错误处理和资源管理
 """
 import json
+import re
 import time
 import uuid
 import logging
@@ -775,8 +776,39 @@ class CodeBuddyResponsesService:
         else:
             raise HTTPException(status_code=status_code, detail=f"CodeBuddy API error: {error_msg}")
 
+    # SSE 事件分隔符：兼容 \n\n 与 \r\n\r\n
+    _FRAME_SEP = re.compile(r"\r?\n\r?\n")
+    # Responses 协议的终止事件类型
+    _TERMINAL_EVENTS = ("response.completed", "response.failed", "response.incomplete")
+
+    @classmethod
+    def _is_terminal_frame(cls, frame: str) -> bool:
+        """判断一个完整 SSE 事件帧是否为流结束标志。
+
+        Responses 协议以 `response.completed`/`failed`/`incomplete` 事件结束，
+        原生不发送 `[DONE]`；这里同时兼容 `[DONE]` 以适配可能的网关变体。
+        """
+        for line in frame.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                return True
+            try:
+                obj = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(obj, dict) and obj.get("type") in cls._TERMINAL_EVENTS:
+                return True
+        return False
+
     async def handle_stream_response(self, payload: Dict[str, Any], headers: Dict[str, str]) -> StreamingResponse:
-        """处理流式响应 - 直接透传上游 Responses API 的 SSE 事件流"""
+        """处理流式响应 - 透传上游 Responses API 的 SSE 事件流。
+
+        关键：按 SSE 事件帧解析，命中终止事件（response.completed/failed/incomplete）后
+        主动结束生成器，使代理优雅关闭与上游的连接，避免依赖客户端断开收尾而触发上游 client_gone。
+        """
         async def stream_core():
             client = await get_http_client()
             async with client.stream("POST", get_codebuddy_responses_url(), json=payload, headers=headers) as response:
@@ -789,10 +821,28 @@ class CodeBuddyResponsesService:
                     )
                     return
 
-                # Responses API 的事件包含 event: 与 data: 行，需保留原始帧结构，直接透传字节
-                async for chunk in response.aiter_bytes():
-                    if chunk:
-                        yield chunk
+                # 按事件帧切分：保留原始 event:/data: 帧结构原样透传，并探测结束事件主动收尾
+                buf = ""
+                terminated = False
+                async for chunk in response.aiter_text():
+                    if not chunk:
+                        continue
+                    buf += chunk
+                    while True:
+                        m = self._FRAME_SEP.search(buf)
+                        if not m:
+                            break
+                        frame = buf[:m.end()]
+                        buf = buf[m.end():]
+                        yield frame.encode("utf-8")
+                        if self._is_terminal_frame(frame):
+                            terminated = True
+                            break
+                    if terminated:
+                        break
+                # 透传未以分隔符结尾的残留数据（仅在未命中终止事件时）
+                if not terminated and buf:
+                    yield buf.encode("utf-8")
 
         async def stream_with_retry():
             async for chunk in self.connection_manager.stream_with_retry(stream_core):
@@ -804,42 +854,52 @@ class CodeBuddyResponsesService:
         """处理非流式响应 - 读取上游事件流并聚合为单个 Response 对象"""
         try:
             client = await get_http_client()
-            response = await client.post(get_codebuddy_responses_url(), json=payload, headers=headers)
-
-            if response.status_code != 200:
-                self._handle_api_error(response.status_code, response.text)
 
             final_response: Optional[Dict[str, Any]] = None
             accumulated_text = ""
             buffer = ""
+            terminated = False
 
-            def _consume(obj: Dict[str, Any]):
+            def _consume(obj: Dict[str, Any]) -> bool:
+                """处理单个事件对象，返回 True 表示已收到终止事件。"""
                 nonlocal final_response, accumulated_text
                 if not isinstance(obj, dict):
-                    return
+                    return False
                 ev_type = obj.get("type")
                 # response.completed / failed / incomplete 事件直接包含完整 response 对象
                 if ev_type in ("response.completed", "response.failed", "response.incomplete"):
                     resp_obj = obj.get("response")
                     if isinstance(resp_obj, dict):
                         final_response = resp_obj
+                    return True
                 # 累积文本增量，作为兜底（当无 completed 事件时）
-                elif ev_type == "response.output_text.delta":
+                if ev_type == "response.output_text.delta":
                     delta = obj.get("delta")
                     if isinstance(delta, str):
                         accumulated_text += delta
+                return False
 
-            async for chunk in response.aiter_text():
-                if not chunk:
-                    continue
-                buffer += chunk
-                while '\n' in buffer:
-                    line, buffer = buffer.split('\n', 1)
-                    obj = parse_sse_line(line)
-                    if obj:
-                        _consume(obj)
+            # 使用流式上下文读取上游 SSE：命中终止事件即主动退出并关闭连接，
+            # 避免用 client.post() 阻塞读取整条长流，从而减少上游 client_gone。
+            async with client.stream("POST", get_codebuddy_responses_url(), json=payload, headers=headers) as response:
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    self._handle_api_error(response.status_code, error_text.decode('utf-8', errors='ignore'))
 
-            if buffer.strip():
+                async for chunk in response.aiter_text():
+                    if not chunk:
+                        continue
+                    buffer += chunk
+                    while '\n' in buffer:
+                        line, buffer = buffer.split('\n', 1)
+                        obj = parse_sse_line(line)
+                        if obj and _consume(obj):
+                            terminated = True
+                            break
+                    if terminated:
+                        break
+
+            if not terminated and buffer.strip():
                 obj = parse_sse_line(buffer.strip())
                 if obj:
                     _consume(obj)
