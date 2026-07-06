@@ -9,12 +9,14 @@
 - 🔌 **OpenAI 兼容接口**：同时提供 `/codebuddy/v1/*` 与标准 `/v1/*` 两套路径，无缝对接 `openai` SDK 及各类第三方客户端。
 - 💬 **双接口支持**：支持 `Chat Completions`（`/v1/chat/completions`）与 `Responses`（`/v1/responses`，OpenAI Responses API）。
 - 🔄 **智能响应处理**：即使 CodeBuddy 上游仅支持流式响应，本服务也能为非流式请求在后端完成“流式转非流式”聚合。
-- 🔐 **iOA 内部登录认证**：通过腾讯内部 iOA OAuth 流程获取 Bearer Token，Web 管理界面一键扫码/登录授权，无需手动复制 Token。
+- 🔐 **iOA 内部登录认证**：通过腾讯内部 iOA OAuth 流程获取 Bearer Token，Web 管理界面一键登录授权，无需手动复制 Token，也无需配置任何 API Key。
 - 🔄 **凭证自动轮换**：支持在 `.codebuddy_creds` 目录配置多个凭证，按 `CODEBUDDY_ROTATION_COUNT` 自动轮换，也可在 Web UI 手动指定或关闭轮换。
 - 🌐 **Web 管理界面**：内置管理面板，用于凭证管理、API 测试、服务状态查看与配置热更新。
 - ⚡ **高性能**：基于 FastAPI + asyncio + Hypercorn 构建，支持高并发异步请求。
 
 ## 🚀 快速开始
+
+iOA 网络环境下，所有配置均已内置合理默认值，**无需设置任何环境变量**，启动后完成一次 iOA 登录即可使用。
 
 ### 1. 前置要求
 
@@ -37,56 +39,32 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. 配置环境变量
-
-项目支持通过 `.env` 文件配置。可创建 `.env` 文件并填写以下内容（均为可选项，默认值已适配 iOA 内网）：
-
-```dotenv
-# (可选) 代理服务的访问密码；留空时管理面板与 API 可免密访问
-CODEBUDDY_PASSWORD=your_secret_password_for_this_service
-
-# 网络环境：固定为 ioa（腾讯内部 iOA，自动走 https://copilot.tencent.com）
-CODEBUDDY_INTERNET_ENVIRONMENT=ioa
-
-# 服务监听地址与端口（本机调试可用 127.0.0.1，Docker/容器建议 0.0.0.0）
-CODEBUDDY_HOST=127.0.0.1
-CODEBUDDY_PORT=8001
-```
-
-> 说明：iOA 环境下 `CODEBUDDY_API_ENDPOINT` 留空即可，服务会自动使用 `https://copilot.tencent.com`。无需手动配置 API Key，认证通过下方 iOA 登录流程获取。
-
-### 4. 通过 iOA 登录获取凭证
-
-本服务通过腾讯内部 iOA OAuth 流程获取 CodeBuddy 的 Bearer Token，推荐使用 Web 管理界面自动完成：
-
-1. 启动服务后，使用浏览器访问 `http://127.0.0.1:8001`（或你自定义的地址）。
-2. 若配置了 `CODEBUDDY_PASSWORD`，请输入密码登录管理面板；未配置则免密进入。
-3. 进入 **凭证管理** 标签页。
-4. 在 **自动获取认证** 卡片中点击 **开始认证**。
-5. 系统会调用 CodeBuddy 的 `/v2/plugin/auth/state` 生成一个 iOA 登录链接（`authUrl`）。点击 **打开链接**。
-6. 在打开的腾讯内部登录页面中完成 iOA 授权登录。
-7. 登录成功后关闭登录页面，本服务会自动轮询 `/v2/plugin/auth/token` 检测登录状态，并在成功后自动获取、解析并保存新的 Bearer Token 凭证。点击 **刷新列表** 即可看到新添加的凭证。
-
-> 默认轮询间隔 5 秒，state 有效期 1800 秒（30 分钟）。凭证文件以 JSON 形式保存在 `.codebuddy_creds/` 目录下。
-
-### 5. 启动服务
+### 3. 启动服务
 
 ```bash
 # 确保已激活虚拟环境
 python web.py
 ```
 
-Windows 也可直接运行 `start.bat`。服务启动后即可开始使用。
+Windows 也可直接运行 `start.bat`。默认监听 `http://127.0.0.1:8001`。
+
+> 默认配置已适配 iOA：网络环境 `ioa`、端点 `https://copilot.tencent.com`、认证模式 `auto`（无 API Key 时自动使用 iOA 登录获取的凭证）、凭证目录 `.codebuddy_creds`。开箱即用，无需修改任何环境变量。
+
+### 4. 通过 iOA 登录获取凭证
+
+本服务通过腾讯内部 iOA OAuth 流程获取 CodeBuddy 的 Bearer Token，推荐使用 Web 管理界面自动完成：
+
+1. 启动服务后，使用浏览器访问 `http://127.0.0.1:8001`。
+2. 打开即为管理面板，开箱即用。
+3. 进入 **凭证管理** 标签页。
+4. 在 **自动获取认证** 卡片中点击 **开始认证**。
+5. 系统会调用 CodeBuddy 的 `/v2/plugin/auth/state` 生成一个 iOA 登录链接（`authUrl`）。点击 **打开链接**。
+6. 在打开的腾讯内部登录页面中完成 iOA 授权登录。
+7. 登录成功后关闭登录页面，本服务会自动轮询 `/v2/plugin/auth/token` 检测登录状态，并在成功后自动获取、解析并保存新的 Bearer Token 凭证。点击 **刷新列表** 即可看到新添加的凭证。
+
+> 默认轮询间隔 5 秒，state 有效期 1800 秒（30 分钟）。凭证文件以 JSON 形式保存在 `.codebuddy_creds/` 目录下。完成此步后即可开始调用 API。
 
 ## ⚙️ API 使用
-
-### 认证
-
-若配置了 `CODEBUDDY_PASSWORD`，所有 API 请求需在请求头中携带它作为 Bearer Token；未配置则可直接访问。
-
-```http
-Authorization: Bearer your_secret_password_for_this_service
-```
 
 ### 客户端集成示例
 
@@ -98,7 +76,7 @@ Authorization: Bearer your_secret_password_for_this_service
 import openai
 
 client = openai.OpenAI(
-    api_key="your_secret_password_for_this_service",  # 未设密码时随意填写
+    api_key="any",
     base_url="http://127.0.0.1:8001/v1"
 )
 
@@ -123,7 +101,6 @@ for chunk in stream:
 
 ```bash
 curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \
-  -H "Authorization: Bearer your_secret_password_for_this_service" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-5.1",
@@ -136,7 +113,6 @@ curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \
 
 ```bash
 curl -X POST "http://127.0.0.1:8001/v1/responses" \
-  -H "Authorization: Bearer your_secret_password_for_this_service" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-5.5",
@@ -149,7 +125,7 @@ curl -X POST "http://127.0.0.1:8001/v1/responses" \
 import openai
 
 client = openai.OpenAI(
-    api_key="your_secret_password_for_this_service",
+    api_key="any",
     base_url="http://127.0.0.1:8001/v1"
 )
 
@@ -214,30 +190,30 @@ CodeBuddy2api/
 
 ## ⚙️ 配置选项
 
-配置优先级（由高到低）：内存热更新配置 > `config/config.json` 持久化文件 > 环境变量 / `.env` > 内置默认值。通过 Web UI 修改的设置会自动写入 `config/config.json` 并即时生效。
+iOA 场景下所有配置均有内置默认值，开箱即用，**无需手动设置任何环境变量**。如需调整，推荐通过 Web 管理界面的「设置」页面修改，改动会即时生效并持久化到 `config/config.json`。
+
+配置优先级（由高到低）：Web UI 内存热更新 > `config/config.json` > 环境变量 / `.env` > 内置默认值。
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CODEBUDDY_PASSWORD` | - | 代理服务的访问密码，留空时免密访问。 |
-| `CODEBUDDY_HOST` | `127.0.0.1` | 服务监听地址，Docker 建议设为 `0.0.0.0`。 |
+| `CODEBUDDY_HOST` | `127.0.0.1` | 服务监听地址，Docker 部署需设为 `0.0.0.0`。 |
 | `CODEBUDDY_PORT` | `8001` | 服务监听端口。 |
-| `CODEBUDDY_API_ENDPOINT` | `https://copilot.tencent.com` | CodeBuddy 官方端点。iOA 环境下留空即自动选择 `https://copilot.tencent.com`。 |
-| `CODEBUDDY_INTERNET_ENVIRONMENT` | `ioa` | 网络环境。本项目固定使用 `ioa`（腾讯内部）。 |
+| `CODEBUDDY_API_ENDPOINT` | `https://copilot.tencent.com` | CodeBuddy 官方端点，iOA 环境无需修改。 |
+| `CODEBUDDY_INTERNET_ENVIRONMENT` | `ioa` | 网络环境，iOA 场景固定为 `ioa`，无需修改。 |
+| `CODEBUDDY_AUTH_MODE` | `auto` | 认证模式：`auto` 优先用 API Key，否则使用 iOA 登录的 token 凭证。iOA 场景保持默认即可。 |
+| `CODEBUDDY_API_KEY` | 空 | API Key 直连模式用。iOA 登录场景留空即可。 |
 | `CODEBUDDY_CREDS_DIR` | `.codebuddy_creds` | 存放凭证 JSON 文件的目录。 |
 | `CODEBUDDY_LOG_LEVEL` | `INFO` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR`。 |
-| `CODEBUDDY_MODELS` | (内置模型列表) | 向客户端报告的可用模型，逗号分隔，含普通模型与 `-ioa` 后缀模型。 |
-| `CODEBUDDY_SSL_VERIFY` | `false` | SSL 验证开关，设为 `true` 启用。iOA 内网环境下默认关闭。 |
+| `CODEBUDDY_MODELS` | 内置模型列表 | 向客户端报告的可用模型，逗号分隔，含普通模型与 `-ioa` 后缀模型。 |
+| `CODEBUDDY_SSL_VERIFY` | `false` | SSL 验证开关，设为 `true` 启用。iOA 内网默认关闭。 |
 | `CODEBUDDY_ROTATION_COUNT` | `1` | 凭证轮换计数，每 N 次请求切换下一个凭证。设为 `0` 则不自动轮换。 |
-
-> 注：`CODEBUDDY_AUTH_MODE` / `CODEBUDDY_API_KEY` 主要用于 API Key 直连模式；iOA 登录场景下使用默认 `token` 凭证轮换即可，无需配置 API Key。
 
 ## 🐛 故障排除
 
 - **"No valid CodeBuddy credentials found"**：尚未通过 iOA 登录获取凭证，或 `.codebuddy_creds/` 下没有有效的凭证 JSON。请在 Web UI 的凭证管理中点击“开始认证”完成 iOA 登录。
 - **"API error: 401" / "API error: 403"（来自 CodeBuddy）**：Bearer Token 无效或已过期。请重新通过 iOA 登录获取新凭证，或删除过期凭证后重新认证。
-- **"Invalid password"**：请求头中的 Bearer Token 与 `.env` 中 `CODEBUDDY_PASSWORD` 不一致。
 - **认证链接无法打开 / 登录超时**：确认当前处于腾讯内部 iOA 网络环境，能访问 `https://copilot.tencent.com`；state 有效期 30 分钟，超时后需重新点击“开始认证”。
-- **需要查看详细日志**：将 `CODEBUDDY_LOG_LEVEL` 设为 `DEBUG` 后重启服务。
+- **需要查看详细日志**：在 Web UI 设置中将 `CODEBUDDY_LOG_LEVEL` 改为 `DEBUG`，或设置环境变量后重启服务。
 
 ## 📄 许可证
 
