@@ -6,7 +6,7 @@
 
 ## 🌟 功能特性
 
-- 🔌 **OpenAI 兼容接口**：同时提供 `/codebuddy/v1/*` 与标准 `/v1/*` 两套路径，无缝对接 `openai` SDK 及各类第三方客户端。
+- 🔌 **OpenAI 兼容接口**：提供标准 `/v1/*` 路径，无缝对接 `openai` SDK 及各类第三方客户端。
 - 💬 **双接口支持**：支持 `Chat Completions`（`/v1/chat/completions`）与 `Responses`（`/v1/responses`，OpenAI Responses API）。
 - 🔄 **智能响应处理**：即使 CodeBuddy 上游仅支持流式响应，本服务也能为非流式请求在后端完成“流式转非流式”聚合。
 - 🔐 **iOA 内部登录认证**：通过腾讯内部 iOA OAuth 流程获取 Bearer Token，Web 管理界面一键登录授权，无需手动复制 Token，也无需配置任何 API Key。
@@ -142,7 +142,7 @@ print(resp.output_text)
 
 ## 📝 API 端点
 
-为兼容标准 OpenAI 客户端，以下端点同时支持 `/v1/*` 与 `/codebuddy/v1/*` 两种路径前缀：
+为兼容标准 OpenAI 客户端，以下端点统一使用 `/v1/*` 路径前缀：
 
 - `POST /v1/chat/completions`：聊天接口（Chat Completions）。
 - `POST /v1/responses`：Responses 接口（OpenAI Responses API）。

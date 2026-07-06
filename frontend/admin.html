@@ -1170,44 +1170,14 @@
     </style>
 </head>
 <body>
-    <!-- 登录页面 -->
-    <div id="loginPage" class="login-page">
-        <div class="login-card">
-            <div class="login-title">
-                <i class="fas fa-robot"></i>
-                CodeBuddy2API
-            </div>
-            <div class="login-subtitle">
-                请输入管理密码以访问控制面板
-            </div>
-            <form class="login-form" onsubmit="handleLogin(event)">
-                <input
-                    type="password"
-                    id="loginPassword"
-                    class="login-input"
-                    placeholder="请输入密码"
-                    required
-                    autocomplete="current-password"
-                >
-                <button type="submit" id="loginButton" class="login-button">
-                    <i class="fas fa-sign-in-alt"></i> 登录
-                </button>
-                <div id="loginError" class="login-error hidden"></div>
-            </form>
-        </div>
-    </div>
-
     <!-- 主仪表盘页面 -->
-    <div id="dashboardPage" class="hidden">
+    <div id="dashboardPage">
         <!-- 顶部导航 -->
         <header class="header">
             <h1><i class="fas fa-robot"></i> CodeBuddy2API 管理面板</h1>
             <div class="header-controls">
                 <button class="theme-toggle" onclick="toggleTheme()">
                     <i class="fas fa-moon" id="themeIcon"></i>
-                </button>
-                <button class="btn btn-secondary" onclick="logout()" style="margin-left: 0.5rem;">
-                    <i class="fas fa-sign-out-alt"></i> 退出
                 </button>
             </div>
         </header>
@@ -1216,16 +1186,16 @@
         <main class="main-content">
             <!-- 导航标签 -->
             <div class="nav-tabs">
-                <button class="nav-tab active" onclick="showTab('dashboard')">
+                <button class="nav-tab active" onclick="showTab('dashboard', this)">
                     <i class="fas fa-tachometer-alt"></i> 仪表板
                 </button>
-                <button class="nav-tab" onclick="showTab('credentials')">
+                <button class="nav-tab" onclick="showTab('credentials', this)">
                     <i class="fas fa-key"></i> 凭证管理
                 </button>
-                <button class="nav-tab" onclick="showTab('api-test')">
+                <button class="nav-tab" onclick="showTab('api-test', this)">
                     <i class="fas fa-flask"></i> API 测试
                 </button>
-                <button class="nav-tab" onclick="showTab('settings')">
+                <button class="nav-tab" onclick="showTab('settings', this)">
                     <i class="fas fa-cog"></i> 设置
                 </button>
             </div>
@@ -1538,7 +1508,7 @@
                         <h3 class="card-title">API 使用示例</h3>
                     </div>
                     <h4 style="margin-bottom: 1rem; color: var(--primary-color);">curl 示例:</h4>
-                    <div class="code-block">curl -X POST "http://127.0.0.1:8001/codebuddy/v1/chat/completions" \
+                    <div class="code-block">curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \
       -H "Authorization: Bearer YOUR_PASSWORD" \
       -H "Content-Type: application/json" \
       -d '{
@@ -1553,7 +1523,7 @@
 
     client = openai.OpenAI(
         api_key="YOUR_PASSWORD",
-        base_url="http://127.0.0.1:8001/codebuddy/v1"
+        base_url="http://127.0.0.1:8001/v1"
     )
 
     response = client.chat.completions.create(
@@ -1599,11 +1569,8 @@
     <script>
         // 全局变量
         let currentTheme = 'light';
-        let servicePassword = '';
         let currentAuthData = null;
         let authPollingInterval = null;
-        let isAuthenticated = false;
-        let authRequired = true;
         let credentialsCache = []; // 用于缓存凭证和其状态
 
         // 初始化
@@ -1615,53 +1582,21 @@
             if (!sessionStorage.getItem('serviceStartTime')) {
                 sessionStorage.setItem('serviceStartTime', Date.now().toString());
             }
-
-            await detectAuthRequirement();
-            
-            // 检查是否已经登录
-            const savedPassword = sessionStorage.getItem('servicePassword');
-            if (savedPassword && authRequired) {
-                servicePassword = savedPassword;
-                isAuthenticated = true;
-                showDashboardPage();
-                loadDashboard();
-            } else if (!authRequired) {
-                servicePassword = '';
-                isAuthenticated = true;
-                showDashboardPage();
-                loadDashboard();
-            } else {
-                showLoginPage();
-            }
+            loadDashboard();
 
             // 添加键盘快捷键支持
             document.addEventListener('keydown', handleKeyboardShortcuts);
             
             // 定期刷新仪表盘数据
             setInterval(() => {
-                if (isAuthenticated && document.getElementById('dashboard').classList.contains('active')) {
+                if (document.getElementById('dashboard').classList.contains('active')) {
                     loadDashboard();
                 }
             }, 30000); // 每30秒刷新一次
         });
 
-        async function detectAuthRequirement() {
-            try {
-                const response = await fetch('/health', { cache: 'no-store' });
-                if (!response.ok) {
-                    return;
-                }
-                const data = await response.json();
-                authRequired = data.auth_required !== false;
-            } catch (error) {
-                console.warn('无法检测认证要求，默认启用登录页:', error);
-            }
-        }
-
         // 键盘快捷键处理
         function handleKeyboardShortcuts(e) {
-            if (!isAuthenticated) return;
-            
             // Ctrl/Cmd + 数字键切换标签
             if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '4') {
                 e.preventDefault();
@@ -1669,7 +1604,7 @@
                 const index = parseInt(e.key) - 1;
                 if (tabs[index]) {
                     // 模拟点击标签
-                    const tabElement = document.querySelector(`[onclick="showTab('${tabs[index]}')"]`);
+                    const tabElement = document.querySelector(`[onclick="showTab('${tabs[index]}', this)"]`);
                     if (tabElement) {
                         tabElement.click();
                     }
@@ -1748,17 +1683,8 @@
             } catch (e) {
                 errorMessage = `${context}失败 (状态码: ${response.status})`;
             }
-            
-            if (response.status === 403 || response.status === 401) {
-                showNotificationWithAction(
-                    '认证已过期，需要重新登录', 
-                    'error', 
-                    10000,
-                    { text: '重新登录', callback: 'logout()' }
-                );
-            } else {
-                showNotification(errorMessage, 'error');
-            }
+
+            showNotification(errorMessage, 'error');
         }
 
         // 主题切换
@@ -1785,7 +1711,7 @@
         }
 
         // 标签页切换
-        function showTab(tabId) {
+        function showTab(tabId, tabElement = null) {
             // 隐藏所有面板
             document.querySelectorAll('.tab-panel').forEach(panel => {
                 panel.classList.remove('active');
@@ -1800,14 +1726,17 @@
             document.getElementById(tabId).classList.add('active');
             
             // 激活对应标签
-            event.target.classList.add('active');
+            const activeTab = tabElement || document.querySelector(`.nav-tab[onclick="showTab('${tabId}', this)"]`);
+            if (activeTab) {
+                activeTab.classList.add('active');
+            }
             
             // 加载对应数据
-            if (tabId === 'dashboard' && isAuthenticated) {
+            if (tabId === 'dashboard') {
                 loadDashboard();
-            } else if (tabId === 'credentials' && isAuthenticated) {
+            } else if (tabId === 'credentials') {
                 loadCredentials();
-            } else if (tabId === 'settings' && isAuthenticated) {
+            } else if (tabId === 'settings') {
                 loadSettings();
             }
         }
@@ -1837,96 +1766,11 @@
             notification.classList.remove('show');
         }
 
-        // 登录与页面切换
-        function showLoginPage() {
-            document.getElementById('loginPage').classList.remove('hidden');
-            document.getElementById('dashboardPage').classList.add('hidden');
-            document.getElementById('loginPassword').focus();
-        }
-
-        function showDashboardPage() {
-            document.getElementById('loginPage').classList.add('hidden');
-            document.getElementById('dashboardPage').classList.remove('hidden');
-        }
-
-        async function handleLogin(event) {
-            event.preventDefault();
-            if (!authRequired) {
-                servicePassword = '';
-                isAuthenticated = true;
-                sessionStorage.removeItem('servicePassword');
-                showDashboardPage();
-                loadDashboard();
-                showNotification('当前未启用管理密码，已直接进入控制面板', 'success');
-                return;
-            }
-            const password = document.getElementById('loginPassword').value;
-            const loginButton = document.getElementById('loginButton');
-            const loginError = document.getElementById('loginError');
-
-            if (!password) {
-                showLoginError('请输入密码');
-                return;
-            }
-
-            loginButton.disabled = true;
-            loginButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 验证中...';
-            loginError.classList.add('hidden');
-
-            try {
-                const testResponse = await fetch('/codebuddy/v1/credentials', {
-                    headers: { 'Authorization': `Bearer ${password}` }
-                });
-
-                if (testResponse.status !== 403) {
-                    servicePassword = password;
-                    isAuthenticated = true;
-                    sessionStorage.setItem('servicePassword', password);
-                    
-                    showDashboardPage();
-                    loadDashboard();
-                    showNotification('登录成功！', 'success');
-                } else {
-                    throw new Error('密码错误');
-                }
-            } catch (error) {
-                showLoginError('密码错误，请重试');
-            } finally {
-                loginButton.disabled = false;
-                loginButton.innerHTML = '<i class="fas fa-sign-in-alt"></i> 登录';
-            }
-        }
-        
-        function showLoginError(message) {
-            const loginError = document.getElementById('loginError');
-            loginError.textContent = message;
-            loginError.classList.remove('hidden');
-        }
-        
-        function logout() {
-            servicePassword = '';
-            sessionStorage.removeItem('servicePassword');
-            if (authRequired) {
-                isAuthenticated = false;
-                showLoginPage();
-                showNotification('已退出登录', 'info');
-            } else {
-                isAuthenticated = true;
-                showDashboardPage();
-                loadDashboard();
-                showNotification('当前无需管理密码，已保持访问', 'info');
-            }
-        }
-
         // 获取认证头
         function getAuthHeaders() {
-            const headers = {
+            return {
                 'Content-Type': 'application/json'
             };
-            if (servicePassword) {
-                headers['Authorization'] = `Bearer ${servicePassword}`;
-            }
-            return headers;
         }
 
         // 仪表板相关功能
@@ -1950,7 +1794,7 @@
 
             // 加载凭证统计
             try {
-                const credResponse = await fetch('/codebuddy/v1/credentials', { 
+                const credResponse = await fetch('/admin-api/credentials', { 
                     headers: getAuthHeaders() 
                 });
                 if (credResponse.ok) {
@@ -1989,12 +1833,12 @@
             }
 
             // 设置API端点
-            const apiEndpoint = window.location.origin + '/codebuddy/v1';
+            const apiEndpoint = window.location.origin + '/v1';
             document.getElementById('apiEndpoint').textContent = apiEndpoint;
 
             // 加载使用统计
             try {
-                const statsResponse = await fetch('/api/stats', { headers: getAuthHeaders() });
+                const statsResponse = await fetch('/admin-api/stats', { headers: getAuthHeaders() });
                 if (statsResponse.ok) {
                     const statsData = await statsResponse.json();
                     updateUsageTables(statsData);
@@ -2101,7 +1945,7 @@
             credentialsList.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><div>加载中...</div></div>';
             
             try {
-                const response = await fetch('/codebuddy/v1/credentials', { 
+                const response = await fetch('/admin-api/credentials', { 
                     headers: getAuthHeaders() 
                 });
                 
@@ -2111,9 +1955,6 @@
                     credentialsCache = (data.credentials || []).map(cred => ({...cred, status: 'unknown'}));
                     displayCredentials();
                     loadCurrentCredentialStatus(); // 加载当前状态
-                } else if (response.status === 403) {
-                    credentialsList.innerHTML = '<div class="status status-error">认证失败，请重新登录</div>';
-                    logout();
                 } else {
                     credentialsList.innerHTML = `<div class="status status-error">加载失败: ${response.status}</div>`;
                 }
@@ -2126,7 +1967,7 @@
             const statusDiv = document.getElementById('currentCredentialStatus');
             
             try {
-                const response = await fetch('/codebuddy/v1/credentials/current', { 
+                const response = await fetch('/admin-api/credentials/current', { 
                     headers: getAuthHeaders() 
                 });
                 
@@ -2400,7 +2241,7 @@
         async function deleteCredential(index) {
             if (!confirm(`确定要删除凭证 #${index + 1} 吗？此操作不可恢复。`)) return;
             try {
-                const response = await fetch('/codebuddy/v1/credentials/delete', {
+                const response = await fetch('/admin-api/credentials/delete', {
                     method: 'POST',
                     headers: getAuthHeaders(),
                     body: JSON.stringify({ index })
@@ -2429,7 +2270,7 @@
             }
 
             try {
-                const response = await fetch('/codebuddy/v1/credentials', {
+                const response = await fetch('/admin-api/credentials', {
                     method: 'POST',
                     headers: getAuthHeaders(),
                     body: JSON.stringify({
@@ -2457,7 +2298,7 @@
             showNotification(`正在选择凭证 #${index + 1}...`, 'info');
             
             try {
-                const response = await fetch('/codebuddy/v1/credentials/select', {
+                const response = await fetch('/admin-api/credentials/select', {
                     method: 'POST',
                     headers: getAuthHeaders(),
                     body: JSON.stringify({ index: index })
@@ -2510,7 +2351,7 @@
             
             try {
                 // 先获取当前状态
-                const statusResponse = await fetch('/codebuddy/v1/credentials/current', {
+                const statusResponse = await fetch('/admin-api/credentials/current', {
                     headers: getAuthHeaders()
                 });
                 
@@ -2522,7 +2363,7 @@
                 
                 if (statusData.status === 'manual_selected') {
                     // 如果是手动选择状态，先清除手动选择
-                    const response = await fetch('/codebuddy/v1/credentials/auto', {
+                    const response = await fetch('/admin-api/credentials/auto', {
                         method: 'POST',
                         headers: getAuthHeaders()
                     });
@@ -2535,7 +2376,7 @@
                     }
                 } else {
                     // 否则切换自动轮换开关
-                    const response = await fetch('/codebuddy/v1/credentials/toggle-rotation', {
+                    const response = await fetch('/admin-api/credentials/toggle-rotation', {
                         method: 'POST',
                         headers: getAuthHeaders()
                     });
@@ -2564,7 +2405,7 @@
             showNotification('正在恢复自动轮换...', 'info');
             
             try {
-                const response = await fetch('/codebuddy/v1/credentials/auto', {
+                const response = await fetch('/admin-api/credentials/auto', {
                     method: 'POST',
                     headers: getAuthHeaders()
                 });
@@ -2590,7 +2431,7 @@
             if (!originalCred) return;
 
             try {
-                const response = await fetch('/codebuddy/v1/chat/completions', {
+                const response = await fetch('/admin-api/chat/completions', {
                     method: 'POST',
                     headers: getAuthHeaders(),
                     body: JSON.stringify({
@@ -2635,7 +2476,7 @@
             resultDiv.innerHTML = '正在发送请求...\n';
 
             try {
-                const response = await fetch('/codebuddy/v1/chat/completions', {
+                const response = await fetch('/admin-api/chat/completions', {
                     method: 'POST',
                     headers: getAuthHeaders(),
                     body: JSON.stringify({
@@ -3035,7 +2876,7 @@
             settingsForm.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><div>加载配置中...</div></div>';
 
             try {
-                const response = await fetch('/api/settings', { headers: getAuthHeaders() });
+                const response = await fetch('/admin-api/settings', { headers: getAuthHeaders() });
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
@@ -3049,6 +2890,9 @@
                 // 根据从后端获取的设置动态创建表单
                 for (const key in settings) {
                     if (settings.hasOwnProperty(key)) {
+                        if (key === 'CODEBUDDY_PASSWORD') {
+                            continue;
+                        }
                         const formGroup = document.createElement('div');
                         formGroup.className = 'form-group';
                         
@@ -3088,7 +2932,7 @@
             showNotification('正在保存设置...', 'info');
 
             try {
-                const response = await fetch('/api/settings', {
+                const response = await fetch('/admin-api/settings', {
                     method: 'POST',
                     headers: getAuthHeaders(),
                     body: JSON.stringify({ settings: newSettings })
