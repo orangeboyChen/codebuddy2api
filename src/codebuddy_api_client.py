@@ -167,6 +167,25 @@ class CodeBuddyAPIClient:
         
         return codebuddy_messages
 
+    @staticmethod
+    def _find_nested_value(data: Any, candidate_keys: List[str]) -> Optional[Any]:
+        """在嵌套结构中递归查找第一个命中的键。"""
+        if isinstance(data, dict):
+            for key in candidate_keys:
+                value = data.get(key)
+                if value not in (None, ""):
+                    return value
+            for value in data.values():
+                nested = CodeBuddyAPIClient._find_nested_value(value, candidate_keys)
+                if nested not in (None, ""):
+                    return nested
+        elif isinstance(data, list):
+            for item in data:
+                nested = CodeBuddyAPIClient._find_nested_value(item, candidate_keys)
+                if nested not in (None, ""):
+                    return nested
+        return None
+
     def generate_codebuddy_headers(
         self,
         auth: Dict[str, Any],
@@ -190,6 +209,13 @@ class CodeBuddyAPIClient:
         domain = parsed_base_url.netloc or "www.codebuddy.ai"
         auth_type = (auth or {}).get("type")
         resolved_user_id = user_id or (auth or {}).get("user_id")
+        credential_data = (auth or {}).get("credential_data") or auth or {}
+        cred_domain = self._find_nested_value(credential_data, ["domain"])
+        enterprise_id = self._find_nested_value(credential_data, ["enterprise_id", "enterpriseId"])
+        tenant_id = self._find_nested_value(credential_data, ["tenant_id", "tenantId"])
+        if tenant_id in (None, "") and enterprise_id not in (None, ""):
+            # 某些凭证仅持久化 enterpriseId，这里复用为 tenant 头。
+            tenant_id = enterprise_id
 
         headers = {
             'Host': domain,
@@ -211,14 +237,17 @@ class CodeBuddyAPIClient:
             'X-IDE-Type': 'CLI',
             'X-IDE-Name': 'CLI',
             'X-IDE-Version': '1.0.7',
-            # 'X-Domain': domain,
             'User-Agent': 'CLI/1.0.7 CodeBuddy/1.0.7',
             'X-Product': 'SaaS',
             'X-User-Id': resolved_user_id or ('anonymous' if auth_type == 'api_key' else 'b5be3a67-237e-4ee6-9b9a-0b9ecd7b454b'),
-            'X-Domain': 'tencent.sso.codebuddy.cn',
-            'X-Enterprise-Id': 'etahzsqej0n4',
-            'X-Tenant-Id': 'etahzsqej0n4',
         }
+
+        if cred_domain:
+            headers['X-Domain'] = str(cred_domain)
+        if enterprise_id:
+            headers['X-Enterprise-Id'] = str(enterprise_id)
+        if tenant_id:
+            headers['X-Tenant-Id'] = str(tenant_id)
 
         if auth_type == 'api_key':
             api_key = (auth or {}).get('api_key')

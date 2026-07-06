@@ -706,7 +706,8 @@ class CredentialManager:
             return {
                 "type": "bearer",
                 "bearer_token": bearer_token,
-                "user_id": credential.get('user_id')
+                "user_id": credential.get('user_id'),
+                "credential_data": credential,
             }
         except HTTPException:
             raise
