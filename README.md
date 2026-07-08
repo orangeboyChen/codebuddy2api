@@ -1,37 +1,37 @@
 # CodeBuddy2API
 
-将腾讯 CodeBuddy（Copilot）官方接口包装成与 OpenAI API 格式兼容的代理服务，直接调用 CodeBuddy 官方接口，为所有标准 OpenAI 客户端提供统一接口。
+Wrap Tencent CodeBuddy (Copilot) official APIs with an OpenAI-compatible proxy so any standard OpenAI client can talk to CodeBuddy through a unified interface.
 
-> Docker Compose 一键部署请查看 [USAGE.md](./USAGE.md)。
+> For one-command Docker Compose deployment, see [USAGE.md](./USAGE.md).
 
-## 🌟 功能特性
+## 🌟 Features
 
-- 🔌 **OpenAI 兼容接口**：提供标准 `/v1/*` 路径，无缝对接 `openai` SDK 及各类第三方客户端。
-- 💬 **双接口支持**：支持 `Chat Completions`（`/v1/chat/completions`）与 `Responses`（`/v1/responses`，OpenAI Responses API）。
-- 🔄 **智能响应处理**：即使 CodeBuddy 上游仅支持流式响应，本服务也能为非流式请求在后端完成“流式转非流式”聚合。
-- 🔐 **网页登录认证**：支持通过 OAuth 流程获取 Bearer Token，Web 管理界面可一键发起授权，无需手动复制 Token。
-- 🔄 **凭证自动轮换**：支持在 `.codebuddy_creds` 目录配置多个凭证，按 `CODEBUDDY_ROTATION_COUNT` 自动轮换，也可在 Web UI 手动指定或关闭轮换。
-- 🌐 **Web 管理界面**：内置管理面板，用于凭证管理、API 测试、服务状态查看与配置热更新。
-- ⚡ **高性能**：基于 FastAPI + asyncio + Hypercorn 构建，支持高并发异步请求。
+- 🔌 **OpenAI-compatible API**: Exposes standard `/v1/*` endpoints and works with the `openai` SDK plus many third-party clients.
+- 💬 **Dual API support**: Supports both `Chat Completions` (`/v1/chat/completions`) and `Responses` (`/v1/responses`, OpenAI Responses API).
+- 🔄 **Smart response handling**: Even if the upstream CodeBuddy API only supports streaming, this service can aggregate the stream on the backend for non-streaming requests.
+- 🔐 **Web-based authentication**: Supports obtaining a Bearer Token through an OAuth flow, with one-click authorization from the Web admin UI and no need to manually copy tokens.
+- 🔄 **Automatic credential rotation**: Supports multiple credentials in the `.codebuddy_creds` directory, rotates them automatically based on `CODEBUDDY_ROTATION_COUNT`, and also allows manual selection or disabling rotation in the Web UI.
+- 🌐 **Web admin UI**: Built-in admin panel for credential management, API testing, service status, and hot-reloadable settings.
+- ⚡ **High performance**: Built with FastAPI + asyncio + Hypercorn for high-concurrency asynchronous requests.
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-默认配置已提供常用值，启动后完成一次网页登录认证即可使用。
+The default configuration already includes sensible values. In most cases, you only need to complete one web login flow after startup.
 
-### 1. 前置要求
+### 1. Prerequisites
 
-- Python 3.8 或更高版本
+- Python 3.8 or later
 - Git
-- 能够访问 CodeBuddy 官方接口
+- Access to the official CodeBuddy API endpoint
 
-### 2. 下载和安装
+### 2. Clone and Install
 
 ```bash
 git clone https://github.com/orangeboyChen/CodeBuddy2api.git
 cd CodeBuddy2api
 ```
 
-创建虚拟环境并安装依赖：
+Create a virtual environment and install dependencies:
 
 ```bash
 python3 -m venv venv
@@ -39,38 +39,38 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. 启动服务
+### 3. Start the Service
 
 ```bash
-# 确保已激活虚拟环境
+# Make sure the virtual environment is activated
 python web.py
 ```
 
-Windows 也可直接运行 `start.bat`。默认监听 `http://127.0.0.1:8001`。
+On Windows, you can also run `start.bat` directly. By default, the service listens on `http://127.0.0.1:8001`.
 
-> 默认配置已内置端点、认证模式与凭证目录。多数场景下开箱即用，无需修改任何环境变量。
+> The default configuration already includes the endpoint, authentication mode, and credential directory. Most setups work out of the box without changing environment variables.
 
-### 4. 通过网页登录获取凭证
+### 4. Obtain Credentials Through Web Login
 
-本服务可通过 OAuth 流程获取 CodeBuddy 的 Bearer Token，推荐使用 Web 管理界面自动完成：
+This service can obtain a CodeBuddy Bearer Token through an OAuth flow. The recommended way is to complete it from the Web admin UI:
 
-1. 启动服务后，使用浏览器访问 `http://127.0.0.1:8001`。
-2. 打开即为管理面板，开箱即用。
-3. 进入 **凭证管理** 标签页。
-4. 在 **自动获取认证** 卡片中点击 **开始认证**。
-5. 系统会调用 CodeBuddy 的 `/v2/plugin/auth/state` 生成一个登录链接（`authUrl`）。点击 **打开链接**。
-6. 在打开的登录页面中完成授权登录。
-7. 登录成功后关闭登录页面，本服务会自动轮询 `/v2/plugin/auth/token` 检测登录状态，并在成功后自动获取、解析并保存新的 Bearer Token 凭证。点击 **刷新列表** 即可看到新添加的凭证。
+1. Start the service, then open `http://127.0.0.1:8001` in your browser.
+2. The admin panel opens immediately and is ready to use.
+3. Go to the **Credential Management** tab.
+4. In the **Automatic Authentication** card, click **Start Authentication**.
+5. The service calls CodeBuddy's `/v2/plugin/auth/state` endpoint to generate a login URL (`authUrl`). Click **Open Link**.
+6. Complete the authorization flow on the login page that opens.
+7. After login succeeds, close the login page. The service automatically polls `/v2/plugin/auth/token`, detects the login result, then retrieves, parses, and saves the new Bearer Token credential. Click **Refresh List** to see the newly added credential.
 
-> 默认轮询间隔 5 秒，state 有效期 1800 秒（30 分钟）。凭证文件以 JSON 形式保存在 `.codebuddy_creds/` 目录下。完成此步后即可开始调用 API。
+> The default polling interval is 5 seconds. The auth state remains valid for 1800 seconds (30 minutes). Credential files are stored as JSON under `.codebuddy_creds/`. Once this step is complete, you can start calling the API.
 
-## ⚙️ API 使用
+## ⚙️ API Usage
 
-### 客户端集成示例
+### Client Integration Examples
 
-任何支持 OpenAI API 的客户端均可指向本服务。以下示例使用默认模型 `glm-5.1`。
+Any client that supports the OpenAI API can be pointed at this service. The examples below use the default model `glm-5.1`.
 
-**Python（openai SDK）：**
+**Python (`openai` SDK):**
 
 ```python
 import openai
@@ -80,43 +80,43 @@ client = openai.OpenAI(
     base_url="http://127.0.0.1:8001/v1"
 )
 
-# 非流式
+# Non-streaming
 response = client.chat.completions.create(
     model="glm-5.1",
-    messages=[{"role": "user", "content": "你好，2+2 等于几？"}]
+    messages=[{"role": "user", "content": "Hello, what is 2+2?"}]
 )
 print(response.choices[0].message.content)
 
-# 流式
+# Streaming
 stream = client.chat.completions.create(
     model="glm-5.1",
-    messages=[{"role": "user", "content": "写一个 Python Hello World 脚本"}],
+    messages=[{"role": "user", "content": "Write a Python Hello World script"}],
     stream=True
 )
 for chunk in stream:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-**curl 示例：**
+**`curl` example:**
 
 ```bash
 curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-5.1",
-    "messages": [{"role": "user", "content": "你是什么模型"}],
+    "messages": [{"role": "user", "content": "What model are you?"}],
     "stream": false
   }'
 ```
 
-**Responses API：**
+**Responses API:**
 
 ```bash
 curl -X POST "http://127.0.0.1:8001/v1/responses" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-5.5",
-    "input": "写一个 Python Hello World 脚本",
+    "input": "Write a Python Hello World script",
     "stream": false
   }'
 ```
@@ -131,88 +131,89 @@ client = openai.OpenAI(
 
 resp = client.responses.create(
     model="gpt-5.5",
-    input="你好，2+2 等于几？"
+    input="Hello, what is 2+2?"
 )
 print(resp.output_text)
 ```
 
-> 说明：
-> - `stream=true` 时直接透传上游 SSE 事件流（`response.created` / `response.output_text.delta` / `response.completed` 等）。
-> - `stream=false` 时在后端以流式请求上游并聚合为单个 Response 对象返回。
+> Notes:
+> - When `stream=true`, the upstream SSE event stream is passed through directly (`response.created`, `response.output_text.delta`, `response.completed`, and so on).
+> - When `stream=false`, the backend still sends a streaming request upstream and aggregates the result into a single Response object before returning it.
 
-## 📝 API 端点
+## 📝 API Endpoints
 
-为兼容标准 OpenAI 客户端，以下端点统一使用 `/v1/*` 路径前缀：
+To stay compatible with standard OpenAI clients, all of the following endpoints use the `/v1/*` path prefix:
 
-- `POST /v1/chat/completions`：聊天接口（Chat Completions）。
-- `POST /v1/responses`：Responses 接口（OpenAI Responses API）。
-- `GET /v1/models`：获取当前配置的可用模型列表。
-- `GET /v1/credentials`：（需认证）列出所有凭证。
-- `POST /v1/credentials`：（需认证）添加新凭证。
-- `POST /v1/credentials/select`：（需认证）手动指定使用某个凭证。
-- `POST /v1/credentials/auto`：（需认证）恢复自动轮换。
-- `POST /v1/credentials/toggle-rotation`：（需认证）切换自动轮换开关。
-- `GET /v1/credentials/current`：（需认证）获取当前使用中的凭证信息。
-- `POST /v1/credentials/delete`：（需认证）按索引删除凭证。
-- `GET /codebuddy/auth/start`：启动网页登录认证流程。
-- `POST /codebuddy/auth/poll`：轮询登录状态并获取 Token。
-- `GET /codebuddy/auth/callback`：OAuth2 回调端点。
-- `GET /health`：健康检查端点。
-- `GET /api/settings` / `POST /api/settings`：读取与保存服务配置（热更新）。
+- `POST /v1/chat/completions`: Chat Completions endpoint.
+- `POST /v1/responses`: Responses endpoint (OpenAI Responses API).
+- `GET /v1/models`: Returns the list of currently available models.
+- `GET /v1/credentials`: (Auth required) List all credentials.
+- `POST /v1/credentials`: (Auth required) Add a new credential.
+- `POST /v1/credentials/select`: (Auth required) Manually select which credential to use.
+- `POST /v1/credentials/auto`: (Auth required) Re-enable automatic rotation.
+- `POST /v1/credentials/toggle-rotation`: (Auth required) Toggle automatic credential rotation.
+- `GET /v1/credentials/current`: (Auth required) Get information about the currently active credential.
+- `POST /v1/credentials/delete`: (Auth required) Delete a credential by index.
+- `GET /codebuddy/auth/start`: Start the web authentication flow.
+- `POST /codebuddy/auth/poll`: Poll authentication status and obtain the token.
+- `GET /codebuddy/auth/callback`: OAuth2 callback endpoint.
+- `GET /health`: Health check endpoint.
+- `GET /api/settings` / `POST /api/settings`: Read and save service settings with hot reload.
 
-## 🔧 项目结构
+## 🔧 Project Structure
 
-```
+```text
 CodeBuddy2api/
-├── src/                           # 源代码目录
-│   ├── auth.py                    # 服务访问认证模块
-│   ├── codebuddy_api_client.py    # 封装与 CodeBuddy 官方 API 的通信
-│   ├── codebuddy_auth_router.py   # OAuth2 认证路由
-│   ├── codebuddy_token_manager.py # 凭证加载与轮换管理器
-│   ├── codebuddy_router.py        # 核心 API 路由 (v1)
-│   ├── frontend_router.py         # Web 管理界面路由
-│   ├── settings_router.py         # 设置管理路由（热更新）
-│   ├── usage_stats_manager.py     # 使用统计管理器
-│   └── keyword_replacer.py        # 关键词替换模块
+├── src/                           # Source code
+│   ├── auth.py                    # Service access authentication
+│   ├── codebuddy_api_client.py    # Wrapper for CodeBuddy official API communication
+│   ├── codebuddy_auth_router.py   # OAuth2 authentication routes
+│   ├── codebuddy_token_manager.py # Credential loading and rotation manager
+│   ├── codebuddy_router.py        # Core API routes (v1)
+│   ├── frontend_router.py         # Web admin UI routes
+│   ├── settings_router.py         # Settings management routes (hot reload)
+│   ├── usage_stats_manager.py     # Usage statistics manager
+│   └── keyword_replacer.py        # Keyword replacement module
 ├── frontend/
-│   └── admin.html                 # Web 管理界面前端页面
-├── config/                        # 持久化配置目录（config/config.json）
-├── .codebuddy_creds/              # 存放 CodeBuddy 凭证的目录（Git 忽略其内容）
-├── web.py                         # FastAPI 服务主入口
-├── config.py                      # 多层配置管理（热重载）
-├── requirements.txt               # Python 依赖列表
-├── docker-compose.yml             # Docker Compose 配置
-├── Dockerfile                     # Docker 镜像构建文件
-├── entrypoint.sh                  # Docker 容器入口脚本
-├── start.bat                      # Windows 启动脚本
-└── README.md                      # 本文档
+│   └── admin.html                 # Web admin UI frontend
+├── config/                        # Persistent configuration directory (config/config.json)
+├── .codebuddy_creds/              # Directory for CodeBuddy credentials (contents ignored by Git)
+├── web.py                         # FastAPI service entry point
+├── config.py                      # Multi-layer configuration management (hot reload)
+├── requirements.txt               # Python dependencies
+├── docker-compose.yml             # Docker Compose configuration
+├── Dockerfile                     # Docker image build file
+├── entrypoint.sh                  # Docker container entrypoint
+├── start.bat                      # Windows startup script
+└── README.md                      # This document
 ```
 
-## ⚙️ 配置选项
+## ⚙️ Configuration
 
-配置均可通过环境变量或 Web 管理界面的「设置」页面调整，改动会即时生效并持久化到 `config/config.json`。
+All settings can be adjusted through environment variables or from the **Settings** page in the Web admin UI. Changes take effect immediately and are persisted to `config/config.json`.
 
-配置优先级（由高到低）：Web UI 内存热更新 > `config/config.json` > 环境变量 / `.env` > 内置默认值。
+Configuration priority, from highest to lowest:
+Web UI in-memory hot updates > `config/config.json` > environment variables / `.env` > built-in defaults
 
-| 环境变量 | 默认值 | 说明 |
+| Environment Variable | Default | Description |
 | --- | --- | --- |
-| `CODEBUDDY_HOST` | `127.0.0.1` | 服务监听地址，Docker 部署需设为 `0.0.0.0`。 |
-| `CODEBUDDY_PORT` | `8001` | 服务监听端口。 |
-| `CODEBUDDY_API_ENDPOINT` | `https://copilot.tencent.com` | CodeBuddy 官方端点。 |
-| `CODEBUDDY_AUTH_MODE` | `auto` | 认证模式：`auto` 优先用 API Key，否则使用已保存的 token 凭证。 |
-| `CODEBUDDY_API_KEY` | 空 | API Key 直连模式使用；如走网页登录，可留空。 |
-| `CODEBUDDY_CREDS_DIR` | `.codebuddy_creds` | 存放凭证 JSON 文件的目录。 |
-| `CODEBUDDY_LOG_LEVEL` | `INFO` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR`。 |
-| `CODEBUDDY_MODELS` | 内置模型列表 | 向客户端报告的可用模型，使用逗号分隔。 |
-| `CODEBUDDY_ROTATION_COUNT` | `1` | 凭证轮换计数，每 N 次请求切换下一个凭证。设为 `0` 则不自动轮换。 |
+| `CODEBUDDY_HOST` | `127.0.0.1` | Host address the service listens on. For Docker deployments, set it to `0.0.0.0`. |
+| `CODEBUDDY_PORT` | `8001` | Service listening port. |
+| `CODEBUDDY_API_ENDPOINT` | `https://copilot.tencent.com` | Official CodeBuddy endpoint. |
+| `CODEBUDDY_AUTH_MODE` | `auto` | Authentication mode: `auto` prefers API Key, otherwise it uses a saved token credential. |
+| `CODEBUDDY_API_KEY` | empty | Used for direct API Key mode. Leave empty when using web login. |
+| `CODEBUDDY_CREDS_DIR` | `.codebuddy_creds` | Directory where credential JSON files are stored. |
+| `CODEBUDDY_LOG_LEVEL` | `INFO` | Log level: `DEBUG` / `INFO` / `WARNING` / `ERROR`. |
+| `CODEBUDDY_MODELS` | built-in model list | Comma-separated list of models reported to clients. |
+| `CODEBUDDY_ROTATION_COUNT` | `1` | Rotate to the next credential every N requests. Set to `0` to disable automatic rotation. |
 
-## 🐛 故障排除
+## 🐛 Troubleshooting
 
-- **"No valid CodeBuddy credentials found"**：尚未完成网页登录认证，或 `.codebuddy_creds/` 下没有有效的凭证 JSON。请在 Web UI 的凭证管理中点击“开始认证”完成登录。
-- **"API error: 401" / "API error: 403"（来自 CodeBuddy）**：Bearer Token 无效或已过期。请重新登录获取新凭证，或删除过期凭证后重新认证。
-- **认证链接无法打开 / 登录超时**：确认当前环境可以访问 `https://copilot.tencent.com`；state 有效期 30 分钟，超时后需重新点击“开始认证”。
-- **需要查看详细日志**：在 Web UI 设置中将 `CODEBUDDY_LOG_LEVEL` 改为 `DEBUG`，或设置环境变量后重启服务。
+- **"No valid CodeBuddy credentials found"**: Web authentication has not been completed yet, or there is no valid credential JSON file under `.codebuddy_creds/`. In the Web UI credential management page, click **Start Authentication** and finish the login flow.
+- **"API error: 401" / "API error: 403" (from CodeBuddy)**: The Bearer Token is invalid or expired. Log in again to obtain a new credential, or delete the expired credential and re-authenticate.
+- **Authentication link cannot be opened / login timed out**: Make sure your environment can reach `https://copilot.tencent.com`. The auth state is valid for 30 minutes; after it expires, click **Start Authentication** again.
+- **Need detailed logs**: Change `CODEBUDDY_LOG_LEVEL` to `DEBUG` in the Web UI settings page, or set the environment variable and restart the service.
 
-## 📄 许可证
+## 📄 License
 
-详见 [LICENSE](./LICENSE)。
+See [LICENSE](./LICENSE) for details.
