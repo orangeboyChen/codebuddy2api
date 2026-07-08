@@ -2,6 +2,8 @@
 
 Wrap CodeBuddy APIs with an OpenAI-compatible proxy so any standard OpenAI client can talk to CodeBuddy through a unified interface.
 
+This repository is based on the upstream project [Sliverkiss/CodeBuddy2api](https://github.com/Sliverkiss/CodeBuddy2api).
+
 ## Features
 
 - **OpenAI-compatible API**: Exposes standard `/v1/*` endpoints and works with the `openai` SDK plus many third-party clients.
