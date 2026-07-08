@@ -1,0 +1,13 @@
+.git
+.idea
+.venv
+.ruff_cache
+__pycache__/
+*/__pycache__/
+*.pyc
+.next
+coverage
+node_modules
+dist
+build
+tsconfig.tsbuildinfo

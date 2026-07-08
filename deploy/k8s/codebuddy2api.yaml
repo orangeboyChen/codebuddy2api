@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: codebuddy2api-env
+data:
+  HOSTNAME: '0.0.0.0'
+  PORT: '8001'
+  NODE_ENV: 'production'
+  NEXT_TELEMETRY_DISABLED: '1'
+  CODEBUDDY_HOST: '0.0.0.0'
+  CODEBUDDY_PORT: '8001'
+  CODEBUDDY_API_ENDPOINT: 'https://copilot.tencent.com'
+  CODEBUDDY_AUTH_MODE: 'auto'
+  CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa'
+  CODEBUDDY_CREDS_DIR: '.codebuddy_creds'
+  CODEBUDDY_LOG_LEVEL: 'INFO'
+  CODEBUDDY_ROTATION_COUNT: '1'
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: codebuddy2api-config
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: codebuddy2api-creds
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codebuddy2api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codebuddy2api
+  template:
+    metadata:
+      labels:
+        app: codebuddy2api
+    spec:
+      containers:
+        - name: codebuddy2api
+          image: ghcr.io/orangeboychen/codebuddy2api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: codebuddy2api-env
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+            - name: creds
+              mountPath: /app/.codebuddy_creds
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: codebuddy2api-config
+        - name: creds
+          persistentVolumeClaim:
+            claimName: codebuddy2api-creds
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codebuddy2api
+spec:
+  selector:
+    app: codebuddy2api
+  ports:
+    - port: 8001
+      targetPort: 8001

@@ -1,0 +1,97 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      next-react:
+        patterns:
+          - next
+          - react
+          - react-dom
+      lint-format:
+        patterns:
+          - eslint
+          - eslint-*
+          - '@eslint/*'
+          - prettier
+          - prettier-*
+          - '@typescript-eslint/*'
+          - typescript-eslint
+          - typescript-eslint-*
+      testing:
+        patterns:
+          - vitest
+          - vitest-*
+          - '@vitest/*'
+          - '@testing-library/*'
+          - playwright
+          - '@playwright/*'
+      typescript-tooling:
+        patterns:
+          - typescript
+          - '@types/*'
+          - bun-types
+          - tsx
+      misc-runtime:
+        patterns:
+          - '*'
+        exclude-patterns:
+          - next
+          - react
+          - react-dom
+          - eslint
+          - eslint-*
+          - '@eslint/*'
+          - prettier
+          - prettier-*
+          - '@typescript-eslint/*'
+          - typescript-eslint
+          - typescript-eslint-*
+          - vitest
+          - vitest-*
+          - '@vitest/*'
+          - '@testing-library/*'
+          - playwright
+          - '@playwright/*'
+          - typescript
+          - '@types/*'
+          - bun-types
+          - tsx
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore(ci)
+    groups:
+      core-actions:
+        patterns:
+          - actions/*
+          - github/*
+      docker-publish:
+        patterns:
+          - docker/*
+      bun-tooling:
+        patterns:
+          - oven-sh/*
+      misc-actions:
+        patterns:
+          - '*'
+        exclude-patterns:
+          - actions/*
+          - github/*
+          - docker/*
+          - oven-sh/*

@@ -1,0 +1,16 @@
+services:
+  codebuddy2api:
+    image: ghcr.io/orangeboychen/codebuddy2api:latest
+    restart: unless-stopped
+    ports:
+      - '8001:8001'
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: '8001'
+      NEXT_TELEMETRY_DISABLED: '1'
+    volumes:
+      - ../config:/app/config
+      - ../.codebuddy_creds:/app/.codebuddy_creds
+    env_file:
+      - path: ../.env
+        required: false
