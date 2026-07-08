@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 
 const vitestConfig = defineConfig({
+  esbuild: {
+    jsx: 'automatic',
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname),

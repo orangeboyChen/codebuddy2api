@@ -25,15 +25,21 @@ type ResponsesRequestBody = {
   reasoning?: Record<string, unknown>;
   thinking?: Record<string, unknown>;
   tools?: Array<{ type?: string; name?: string } & Record<string, unknown>>;
+  tool_choice?: unknown;
   max_output_tokens?: number;
   previous_response_id?: string;
 };
+
+type ResponseSessionDefaults = Pick<
+  ResponsesRequestBody,
+  'instructions' | 'metadata' | 'tools' | 'tool_choice'
+>;
 
 type ResponseSession = {
   id: string;
   model: string;
   transcript: Array<{ role: string; content: string }>;
-  defaults: Pick<ResponsesRequestBody, 'instructions' | 'metadata' | 'tools'>;
+  defaults: ResponseSessionDefaults;
 };
 
 const globalResponsesState = globalThis as typeof globalThis & {
@@ -134,9 +140,9 @@ const createResponseId = (): string => {
 const prepareTranscript = (
   body: ResponsesRequestBody,
 ): {
+  defaults: ResponseSessionDefaults;
   model: string;
   transcript: Array<{ role: string; content: string }>;
-  instructions?: string;
   previousResponseId: string | null;
 } => {
   const previousResponseId = body.previous_response_id ?? null;
@@ -154,8 +160,14 @@ const prepareTranscript = (
     previousSession?.model ??
     getAvailableModels()[0] ??
     'glm-5.1';
-  const instructions =
-    body.instructions ?? previousSession?.defaults.instructions ?? undefined;
+  const defaults = {
+    instructions:
+      body.instructions ?? previousSession?.defaults.instructions ?? undefined,
+    metadata: body.metadata ?? previousSession?.defaults.metadata ?? undefined,
+    tools: body.tools ?? previousSession?.defaults.tools ?? undefined,
+    tool_choice:
+      body.tool_choice ?? previousSession?.defaults.tool_choice ?? undefined,
+  };
 
   if (body.messages?.length) {
     body.messages.forEach((item) => {
@@ -173,15 +185,15 @@ const prepareTranscript = (
   }
 
   return {
+    defaults,
     model,
     transcript,
-    instructions,
     previousResponseId,
   };
 };
 
 const mapChatResponseToResponsesPayload = (
-  body: ResponsesRequestBody,
+  defaults: ResponseSessionDefaults,
   transcript: Array<{ role: string; content: string }>,
   model: string,
   previousResponseId: string | null,
@@ -201,11 +213,7 @@ const mapChatResponseToResponsesPayload = (
     id: responseId,
     model,
     transcript: [...transcript, { role: 'assistant', content: outputText }],
-    defaults: {
-      instructions: body.instructions,
-      metadata: body.metadata,
-      tools: body.tools,
-    },
+    defaults,
   });
 
   return {
@@ -231,28 +239,31 @@ const mapChatResponseToResponsesPayload = (
     ],
     output_text: outputText,
     usage: upstreamPayload.usage ?? null,
-    metadata: body.metadata ?? {},
+    metadata: defaults.metadata ?? {},
     previous_response_id: previousResponseId,
   };
 };
 
 const createResponsesEventStream = async (
   request: NextRequest,
-  body: ResponsesRequestBody,
+  defaults: ResponseSessionDefaults,
   transcript: Array<{ role: string; content: string }>,
   model: string,
   previousResponseId: string | null,
+  maxOutputTokens?: number,
 ): Promise<Response> => {
   const upstreamResponse = await proxyChatCompletions(request, {
     model,
     messages: [
-      ...(body.instructions
-        ? [{ role: 'system', content: body.instructions }]
+      ...(defaults.instructions
+        ? [{ role: 'system', content: defaults.instructions }]
         : []),
       ...transcript,
     ],
-    max_tokens: body.max_output_tokens,
+    max_tokens: maxOutputTokens,
     stream: true,
+    tools: defaults.tools,
+    tool_choice: defaults.tool_choice,
   });
 
   if (!upstreamResponse.ok || !upstreamResponse.body) {
@@ -303,11 +314,7 @@ const createResponsesEventStream = async (
               ...transcript,
               { role: 'assistant', content: outputText },
             ],
-            defaults: {
-              instructions: body.instructions,
-              metadata: body.metadata,
-              tools: body.tools,
-            },
+            defaults,
           });
           enqueueEvent({
             type: 'response.completed',
@@ -397,35 +404,37 @@ export const handleResponsesRequest = async (
   request: NextRequest,
   body: ResponsesRequestBody,
 ): Promise<Response> => {
-  const toolError = validateTools(body.tools);
-
-  if (toolError) {
-    return toolError;
-  }
-
   try {
     const prepared = prepareTranscript(body);
+    const toolError = validateTools(prepared.defaults.tools);
+
+    if (toolError) {
+      return toolError;
+    }
 
     if (body.stream) {
       return await createResponsesEventStream(
         request,
-        body,
+        prepared.defaults,
         prepared.transcript,
         prepared.model,
         prepared.previousResponseId,
+        body.max_output_tokens,
       );
     }
 
     const upstreamResponse = await proxyChatCompletions(request, {
       model: prepared.model,
       messages: [
-        ...(prepared.instructions
-          ? [{ role: 'system', content: prepared.instructions }]
+        ...(prepared.defaults.instructions
+          ? [{ role: 'system', content: prepared.defaults.instructions }]
           : []),
         ...prepared.transcript,
       ],
       max_tokens: body.max_output_tokens,
       stream: false,
+      tools: prepared.defaults.tools,
+      tool_choice: prepared.defaults.tool_choice,
     });
 
     if (!upstreamResponse.ok) {
@@ -439,7 +448,7 @@ export const handleResponsesRequest = async (
 
     return Response.json(
       mapChatResponseToResponsesPayload(
-        body,
+        prepared.defaults,
         prepared.transcript,
         prepared.model,
         prepared.previousResponseId,

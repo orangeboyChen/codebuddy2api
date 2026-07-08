@@ -52,6 +52,29 @@ const decodeJwtPayload = (token: string): Record<string, unknown> => {
   }
 };
 
+const getMetadataValue = (
+  sources: Record<string, unknown>[],
+  candidateKeys: string[],
+): string | undefined => {
+  for (const source of sources) {
+    for (const key of candidateKeys) {
+      const value = source[key];
+
+      if (value === undefined || value === null) {
+        continue;
+      }
+
+      const normalized = String(value).trim();
+
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return undefined;
+};
+
 export const startCodeBuddyAuth = async (): Promise<Response> => {
   try {
     const nonce = crypto.randomUUID().replaceAll('-', '');
@@ -120,6 +143,13 @@ const buildCredentialDataFromToken = (
     tokenPayload.access_token ?? tokenPayload.bearer_token ?? '',
   ).trim();
   const jwtPayload = decodeJwtPayload(bearerToken);
+  const enterpriseId = getMetadataValue(
+    [tokenPayload, jwtPayload],
+    ['enterprise_id', 'enterpriseId'],
+  );
+  const tenantId =
+    getMetadataValue([tokenPayload, jwtPayload], ['tenant_id', 'tenantId']) ??
+    enterpriseId;
   const userId =
     String(
       jwtPayload.email ??
@@ -144,11 +174,13 @@ const buildCredentialDataFromToken = (
     created_at: Math.floor(Date.now() / 1000),
     domain: tokenPayload.domain as string | undefined,
     expires_in: Number(tokenPayload.expires_in ?? 0) || undefined,
+    enterprise_id: enterpriseId,
     refresh_token: tokenPayload.refresh_token as string | undefined,
     scope: tokenPayload.scope as string | undefined,
     session_state:
       (tokenPayload.session_state as string | undefined) ??
       (jwtPayload.sid as string | undefined),
+    tenant_id: tenantId,
     token_type: (tokenPayload.token_type as string | undefined) ?? 'Bearer',
     user_id: userId,
     user_info: Object.fromEntries(
@@ -187,6 +219,10 @@ export const pollCodeBuddyAuth = async (
         sessionState?: string;
         tokenType?: string;
         domain?: string;
+        enterpriseId?: string;
+        enterprise_id?: string;
+        tenantId?: string;
+        tenant_id?: string;
       };
     };
 
@@ -216,10 +252,12 @@ export const pollCodeBuddyAuth = async (
       access_token: payload.data.accessToken,
       bearer_token: payload.data.accessToken,
       domain: payload.data.domain,
+      enterpriseId: payload.data.enterpriseId ?? payload.data.enterprise_id,
       expires_in: payload.data.expiresIn,
       refresh_token: payload.data.refreshToken,
       scope: payload.data.scope,
       session_state: payload.data.sessionState,
+      tenantId: payload.data.tenantId ?? payload.data.tenant_id,
       token_type: payload.data.tokenType ?? 'Bearer',
     };
     const credential = buildCredentialDataFromToken(tokenPayload);

@@ -28,6 +28,33 @@ type ChatRequestBody = {
   tool_choice?: unknown;
 };
 
+type ChatStreamDelta = {
+  content?: string;
+  role?: string;
+  tool_calls?: Array<{
+    index?: number;
+    id?: string;
+    type?: string;
+    function?: {
+      arguments?: string;
+      name?: string;
+    };
+  }>;
+};
+
+type ChatStreamChunk = {
+  id?: string;
+  object?: string;
+  created?: number;
+  model?: string;
+  usage?: unknown;
+  choices?: Array<{
+    delta?: ChatStreamDelta;
+    finish_reason?: string | null;
+    index?: number;
+  }>;
+};
+
 type ResolvedAuth =
   | {
       type: 'api_key';
@@ -225,7 +252,7 @@ const buildUpstreamBody = (body: ChatRequestBody): ChatRequestBody => {
   return {
     model: body.model ?? getAvailableModels()[0] ?? 'glm-5.1',
     messages: normalizedMessages,
-    stream: Boolean(body.stream),
+    stream: true,
     temperature: body.temperature,
     max_tokens: body.max_tokens,
     top_p: body.top_p,
@@ -235,6 +262,166 @@ const buildUpstreamBody = (body: ChatRequestBody): ChatRequestBody => {
     tools: body.tools,
     tool_choice: body.tool_choice,
   };
+};
+
+const aggregateToolCalls = (
+  toolCalls: NonNullable<ChatStreamDelta['tool_calls']>,
+): Array<{
+  id?: string;
+  type?: string;
+  function: {
+    arguments: string;
+    name: string;
+  };
+}> => {
+  const aggregated = new Map<
+    number,
+    {
+      id?: string;
+      type?: string;
+      function: {
+        arguments: string;
+        name: string;
+      };
+    }
+  >();
+
+  toolCalls.forEach((toolCall, position) => {
+    const index = toolCall.index ?? position;
+    const current = aggregated.get(index) ?? {
+      function: {
+        arguments: '',
+        name: '',
+      },
+    };
+
+    if (toolCall.id) {
+      current.id = toolCall.id;
+    }
+
+    if (toolCall.type) {
+      current.type = toolCall.type;
+    }
+
+    if (toolCall.function?.name) {
+      current.function.name += toolCall.function.name;
+    }
+
+    if (toolCall.function?.arguments) {
+      current.function.arguments += toolCall.function.arguments;
+    }
+
+    aggregated.set(index, current);
+  });
+
+  return [...aggregated.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, value]) => value);
+};
+
+const aggregateUpstreamStream = async (
+  upstreamResponse: Response,
+  fallbackModel: string,
+): Promise<Response> => {
+  const payloadText = await upstreamResponse.text();
+  const toolCalls: NonNullable<ChatStreamDelta['tool_calls']> = [];
+  let responseId = '';
+  let responseObject = 'chat.completion';
+  let created = Math.floor(Date.now() / 1000);
+  let model = fallbackModel;
+  let content = '';
+  let finishReason: string | null = 'stop';
+  let role = 'assistant';
+  let usage: unknown = null;
+
+  for (const frame of payloadText.split('\n\n')) {
+    const line = frame
+      .split('\n')
+      .find((segment) => segment.startsWith('data: '));
+
+    if (!line) {
+      continue;
+    }
+
+    const raw = line.slice(6).trim();
+
+    if (!raw || raw === '[DONE]') {
+      continue;
+    }
+
+    let chunk: ChatStreamChunk;
+
+    try {
+      chunk = JSON.parse(raw) as ChatStreamChunk;
+    } catch {
+      return createErrorResponse(502, 'Failed to parse upstream SSE frame');
+    }
+
+    if (chunk.id) {
+      responseId = chunk.id;
+    }
+
+    if (chunk.object) {
+      responseObject = chunk.object.replace(/\.chunk$/, '');
+    }
+
+    if (typeof chunk.created === 'number') {
+      created = chunk.created;
+    }
+
+    if (chunk.model) {
+      model = chunk.model;
+    }
+
+    if (chunk.usage !== undefined) {
+      usage = chunk.usage;
+    }
+
+    const choice = chunk.choices?.[0];
+    const delta = choice?.delta;
+
+    if (delta?.role) {
+      role = delta.role;
+    }
+
+    if (delta?.content) {
+      content += delta.content;
+    }
+
+    if (delta?.tool_calls?.length) {
+      toolCalls.push(...delta.tool_calls);
+    }
+
+    if (choice?.finish_reason !== undefined) {
+      finishReason = choice.finish_reason ?? finishReason;
+    }
+  }
+
+  const aggregatedToolCalls = aggregateToolCalls(toolCalls);
+  const message: Record<string, unknown> = {
+    role,
+    content: content || null,
+  };
+
+  if (aggregatedToolCalls.length) {
+    message.tool_calls = aggregatedToolCalls;
+  }
+
+  return Response.json({
+    id: responseId || `chatcmpl_${crypto.randomUUID().replaceAll('-', '')}`,
+    object: responseObject,
+    created,
+    model,
+    choices: [
+      {
+        index: 0,
+        message,
+        finish_reason:
+          finishReason ?? (aggregatedToolCalls.length ? 'tool_calls' : 'stop'),
+      },
+    ],
+    usage,
+  });
 };
 
 export const getModelsResponse = (): Response => {
@@ -293,12 +480,21 @@ export const proxyChatCompletions = async (
       });
     }
 
-    return new Response(await upstreamResponse.text(), {
-      status: upstreamResponse.status,
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-      },
-    });
+    const contentType = upstreamResponse.headers.get('content-type') ?? '';
+
+    if (contentType.toLowerCase().includes('application/json')) {
+      return new Response(await upstreamResponse.text(), {
+        status: upstreamResponse.status,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+      });
+    }
+
+    return aggregateUpstreamStream(
+      upstreamResponse,
+      String(upstreamBody.model ?? 'unknown'),
+    );
   } catch (error) {
     return createErrorResponse(
       500,

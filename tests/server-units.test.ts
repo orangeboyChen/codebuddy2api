@@ -226,15 +226,96 @@ describe('server units', () => {
     ).toBe('tenant-a');
   });
 
-  it('covers responses message mapping and malformed sse handling', async () => {
+  it('aggregates forced upstream streaming responses for non-stream clients', async () => {
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';
 
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
         makeJsonResponse({
-          choices: [{ message: { content: 'message answer' } }],
+          choices: [{ message: { content: 'json fallback' } }],
         }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":123,"model":"glm-5.1","choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"look","arguments":"{\\"city\\":\\""}}]}}]}\n\ndata: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"up","arguments":"Shanghai\\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":1,"prompt_tokens":2,"total_tokens":3}}\n\ndata: [DONE]\n\n',
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+            },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response('data: not-json\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+          },
+        }),
+      );
+
+    const jsonFallback = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+    );
+    expect((await jsonFallback.json()).choices[0].message.content).toBe(
+      'json fallback',
+    );
+
+    const aggregated = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'use tools' }],
+      },
+    );
+    const aggregatedPayload = await aggregated.json();
+    expect(aggregatedPayload.object).toBe('chat.completion');
+    expect(aggregatedPayload.choices[0].finish_reason).toBe('tool_calls');
+    expect(aggregatedPayload.choices[0].message.content).toBeNull();
+    expect(aggregatedPayload.choices[0].message.tool_calls[0].id).toBe(
+      'call_1',
+    );
+    expect(
+      aggregatedPayload.choices[0].message.tool_calls[0].function.name,
+    ).toBe('lookup');
+    expect(
+      aggregatedPayload.choices[0].message.tool_calls[0].function.arguments,
+    ).toBe('{"city":"Shanghai"}');
+
+    const malformed = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'bad stream' }],
+      },
+    );
+    expect(malformed.status).toBe(502);
+  });
+
+  it('covers responses message mapping and malformed sse handling', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"id":"chatcmpl_unit_1","object":"chat.completion.chunk","choices":[{"delta":{"content":"message "}}]}\n\ndata: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+            },
+          },
+        ),
       )
       .mockResolvedValueOnce(
         new Response('data: not-json\n\ndata: [DONE]\n\n', {

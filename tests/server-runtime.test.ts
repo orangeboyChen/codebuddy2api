@@ -95,7 +95,9 @@ describe('server runtime', () => {
 
   it('serves health and model metadata', async () => {
     const healthPayload = await (await HealthRoute.GET()).json();
-    const modelsPayload = await (await V1ModelsRoute.GET()).json();
+    const modelsPayload = await (
+      await V1ModelsRoute.GET(makeNextRequest('http://localhost/v1/models'))
+    ).json();
 
     expect(healthPayload.status).toBe('healthy');
     expect(modelsPayload.object).toBe('list');
@@ -169,6 +171,11 @@ describe('server runtime', () => {
   it('enforces auth on protected v1 routes and mirrors successful actions', async () => {
     process.env.CODEBUDDY_PASSWORD = 'secret';
 
+    const unauthorizedModels = await V1ModelsRoute.GET(
+      makeNextRequest('http://localhost/v1/models'),
+    );
+    expect(unauthorizedModels.status).toBe(401);
+
     const unauthorized = await V1CredentialsRoute.GET(
       makeNextRequest('http://localhost/v1/credentials'),
     );
@@ -192,6 +199,15 @@ describe('server runtime', () => {
       )
     ).json();
     expect(listPayload.credentials).toHaveLength(1);
+
+    const authorizedModels = await (
+      await V1ModelsRoute.GET(
+        makeNextRequest('http://localhost/v1/models', {
+          headers: authHeaders,
+        }),
+      )
+    ).json();
+    expect(authorizedModels.object).toBe('list');
 
     const currentPayload = await (
       await V1CredentialsCurrentRoute.GET(
@@ -236,6 +252,18 @@ describe('server runtime', () => {
     ).json();
     expect(autoPayload.success).toBe(true);
 
+    const invalidDeleteResponse = await V1CredentialsDeleteRoute.POST(
+      makeNextRequest('http://localhost/v1/credentials/delete', {
+        method: 'POST',
+        headers: {
+          ...authHeaders,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ index: null }),
+      }),
+    );
+    expect(invalidDeleteResponse.status).toBe(400);
+
     const deletePayload = await (
       await V1CredentialsDeleteRoute.POST(
         makeNextRequest('http://localhost/v1/credentials/delete', {
@@ -259,10 +287,11 @@ describe('server runtime', () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockImplementation(async () =>
-        makeUpstreamJsonResponse({
-          choices: [{ message: { content: 'hello from upstream' } }],
-          usage: { completion_tokens: 2, prompt_tokens: 3, total_tokens: 5 },
-        }),
+        makeSseResponse([
+          'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"glm-5.1","choices":[{"delta":{"content":"hello "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"from upstream"},"finish_reason":"stop"}],"usage":{"completion_tokens":2,"prompt_tokens":3,"total_tokens":5}}\n\n',
+          'data: [DONE]\n\n',
+        ]),
       );
 
     const adminResponse = await AdminChatRoute.POST(
@@ -298,6 +327,10 @@ describe('server runtime', () => {
     );
     expect(v1Response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
+        .stream,
+    ).toBe(true);
   });
 
   it('supports responses api for non-stream, stream, unsupported tools, and previous response state', async () => {
@@ -305,18 +338,28 @@ describe('server runtime', () => {
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';
 
-    vi.spyOn(globalThis, 'fetch')
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
-        makeUpstreamJsonResponse({
-          choices: [{ message: { content: 'first answer' } }],
-          usage: { completion_tokens: 2, prompt_tokens: 2, total_tokens: 4 },
-        }),
+        makeSseResponse([
+          'data: {"id":"chatcmpl_resp_1","object":"chat.completion.chunk","model":"gpt-5.5","choices":[{"delta":{"content":"first "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}],"usage":{"completion_tokens":2,"prompt_tokens":2,"total_tokens":4}}\n\n',
+          'data: [DONE]\n\n',
+        ]),
       )
       .mockResolvedValueOnce(
-        makeUpstreamJsonResponse({
-          choices: [{ message: { content: 'second answer' } }],
-          usage: { completion_tokens: 1, prompt_tokens: 3, total_tokens: 4 },
-        }),
+        makeSseResponse([
+          'data: {"id":"chatcmpl_resp_2","object":"chat.completion.chunk","model":"gpt-5.5","choices":[{"delta":{"content":"second "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}],"usage":{"completion_tokens":1,"prompt_tokens":3,"total_tokens":4}}\n\n',
+          'data: [DONE]\n\n',
+        ]),
+      )
+      .mockResolvedValueOnce(
+        makeSseResponse([
+          'data: {"id":"chatcmpl_resp_3","object":"chat.completion.chunk","model":"gpt-5.5","choices":[{"delta":{"content":"third "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}],"usage":{"completion_tokens":1,"prompt_tokens":4,"total_tokens":5}}\n\n',
+          'data: [DONE]\n\n',
+        ]),
       )
       .mockResolvedValueOnce(
         makeSseResponse([
@@ -336,6 +379,20 @@ describe('server runtime', () => {
         body: JSON.stringify({
           model: 'gpt-5.5',
           input: 'hello',
+          instructions: 'Keep replies brief',
+          tool_choice: 'auto',
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'lookup_weather',
+                parameters: {
+                  type: 'object',
+                  properties: {},
+                },
+              },
+            },
+          ],
           stream: false,
         }),
       }),
@@ -360,6 +417,23 @@ describe('server runtime', () => {
     const secondPayload = await secondResponse.json();
     expect(secondPayload.output_text).toBe('second answer');
 
+    const thirdResponse = await V1ResponsesRoute.POST(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer secret',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          previous_response_id: secondPayload.id,
+          input: 'continue again',
+          stream: false,
+        }),
+      }),
+    );
+    const thirdPayload = await thirdResponse.json();
+    expect(thirdPayload.output_text).toBe('third answer');
+
     const streamResponse = await V1ResponsesRoute.POST(
       makeNextRequest('http://localhost/v1/responses', {
         method: 'POST',
@@ -377,6 +451,22 @@ describe('server runtime', () => {
     const streamText = await streamResponse.text();
     expect(streamText).toContain('response.output_text.delta');
     expect(streamText).toContain('stream answer');
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
+        .tools,
+    ).toHaveLength(1);
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
+        .tool_choice,
+    ).toBe('auto');
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))
+        .messages[0].content,
+    ).toBe('Keep replies brief');
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body))
+        .messages[0].content,
+    ).toBe('Keep replies brief');
 
     const badToolResponse = await V1ResponsesRoute.POST(
       makeNextRequest('http://localhost/v1/responses', {
@@ -446,9 +536,11 @@ describe('server runtime', () => {
           data: {
             accessToken,
             domain: 'copilot.tencent.com',
+            enterpriseId: 'enterprise-1',
             expiresIn: 3600,
             refreshToken: 'refresh-1',
             sessionState: 'session-1',
+            tenantId: 'tenant-1',
             tokenType: 'Bearer',
           },
         }),
@@ -475,6 +567,11 @@ describe('server runtime', () => {
     ).json();
     expect(successPoll.saved).toBe(true);
     expect(successPoll.user_info.email).toBe('coder@example.com');
+
+    const credentialListPayload = await (
+      await AdminCredentialsRoute.GET()
+    ).json();
+    expect(credentialListPayload.credentials[0].tenant_id).toBe('tenant-1');
 
     const callbackPayload = await (
       await CallbackRoute.GET(

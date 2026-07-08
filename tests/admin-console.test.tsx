@@ -83,7 +83,7 @@ describe('AdminConsole', () => {
   });
 
   it('keeps delegated clicks working for auth start', async () => {
-    render(<AdminConsole />);
+    render(React.createElement(AdminConsole));
 
     await waitFor(() => {
       expect(document.getElementById('totalCredentials')?.textContent).toBe(

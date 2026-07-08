@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useAtom } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
 
@@ -206,7 +206,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     }
   };
 
-  const loadDashboard = async () => {
+  const loadDashboard = useCallback(async () => {
     setDashboard((current) => ({
       ...current,
       apiEndpoint: buildApiEndpoint(),
@@ -247,9 +247,9 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         : '状态已刷新',
       validCredentials,
     });
-  };
+  }, [setDashboard]);
 
-  const loadCredentials = async () => {
+  const loadCredentials = useCallback(async () => {
     setCredentials((current) => ({
       ...current,
       currentLoading: true,
@@ -280,9 +280,9 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       items: listResult.data?.credentials ?? [],
       loading: false,
     }));
-  };
+  }, [setCredentials]);
 
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     setSettings((current) => ({
       ...current,
       loading: true,
@@ -296,11 +296,11 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       loading: false,
       values: result.data?.settings ?? {},
     }));
-  };
+  }, [setSettings]);
 
-  const refreshAdminData = async () => {
+  const refreshAdminData = useCallback(async () => {
     await Promise.all([loadDashboard(), loadCredentials()]);
-  };
+  }, [loadCredentials, loadDashboard]);
 
   const pollAuth = async (overrideState?: string) => {
     const authState = overrideState ?? auth.authState;
@@ -715,7 +715,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     return () => {
       clearAuthTimer();
     };
-  }, [initialData]);
+  }, [initialData, loadCredentials, loadDashboard, loadSettings]);
 
   useEffect(() => {
     const storedTheme = window.localStorage.getItem(
