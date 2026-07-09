@@ -79,13 +79,6 @@ const normalizeValue = <K extends keyof RuntimeConfig>(
 
   const nullableStringKeys: Array<keyof RuntimeConfig> = ['CODEBUDDY_API_KEY'];
 
-  if (typeof fallback === 'number') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed)
-      ? (parsed as unknown as RuntimeConfig[K])
-      : fallback;
-  }
-
   if (typeof fallback === 'string') {
     return String(value) as RuntimeConfig[K];
   }

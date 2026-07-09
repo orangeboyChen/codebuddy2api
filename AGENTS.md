@@ -21,5 +21,6 @@
 - Run `bun run lint`.
 - Run `bun run format:check`.
 - Run `bun run typecheck`.
+- Treat unit test coverage below 90% as a blocking failure.
 - Run `bun run test:coverage` and confirm the reported coverage stays at or above 90%.
 - Run `bun run build`.
