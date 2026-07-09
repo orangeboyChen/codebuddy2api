@@ -27,6 +27,7 @@ import {
 import {
   handleResponsesRequest,
   resetResponseSessions,
+  translateResponsesToolsToChat,
 } from '@/lib/server/responses';
 import { updateSettings, getActiveConfig } from '@/lib/server/config';
 import { getRequestHeaderMap } from '@/lib/server/http';
@@ -553,14 +554,28 @@ describe('server units', () => {
     const followUpBody = JSON.parse(
       String((fetchMock.mock.calls[2]?.[1] as RequestInit).body),
     ) as {
-      messages: Array<{ role: string; content: string }>;
+      messages: Array<{
+        role: string;
+        content: string | null;
+        tool_call_id?: string;
+        tool_calls?: Array<{
+          function: {
+            name: string;
+            arguments: string;
+          };
+        }>;
+      }>;
     };
-    expect(followUpBody.messages.map((message) => message.content)).toContain(
-      'lookup_weather({"city":"Shanghai"})',
+    expect(followUpBody.messages[1]?.role).toBe('assistant');
+    expect(followUpBody.messages[1]?.tool_calls?.[0]?.function.name).toBe(
+      'lookup_weather',
     );
-    expect(followUpBody.messages.map((message) => message.content)).toContain(
-      '{"temperature":30}',
+    expect(followUpBody.messages[1]?.tool_calls?.[0]?.function.arguments).toBe(
+      '{"city":"Shanghai"}',
     );
+    expect(followUpBody.messages[2]?.role).toBe('tool');
+    expect(followUpBody.messages[2]?.tool_call_id).toBe('call_weather');
+    expect(followUpBody.messages[2]?.content).toBe('{"temperature":30}');
 
     const streamToolCallResponse = await handleResponsesRequest(
       makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
@@ -616,6 +631,207 @@ describe('server units', () => {
       },
     );
     expect(await streamResponse.text()).toContain('response.error');
+  });
+
+  it('maps mcp tool calls back to responses mcp items', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: 'tooluse_mcp_docs',
+                    type: 'function',
+                    function: {
+                      name: 'mcp_tool',
+                      arguments: '{"query":"docs"}',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'mcp tool result received' } }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tooluse_mcp_docs","type":"function","function":{"name":"mcp_tool","arguments":"{\\"query\\":\\"docs\\"}"}}]}}]}\n\ndata: {"choices":[{"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n',
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+            },
+          },
+        ),
+      );
+
+    const tools = [
+      {
+        type: 'mcp',
+        server_label: 'docs-svc',
+        name: 'mcp_tool',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+    ];
+
+    const toolCallResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'call mcp tool',
+        model: 'gpt-5.5',
+        tools,
+      },
+    );
+    const toolCallPayload = await toolCallResponse.json();
+    expect(toolCallPayload.output).toHaveLength(1);
+    expect(toolCallPayload.output[0]).toMatchObject({
+      type: 'mcp_call',
+      call_id: 'call_mcp_docs',
+      name: 'mcp_tool',
+      arguments: '{"query":"docs"}',
+      server_label: 'docs-svc',
+    });
+
+    const followUpResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        previous_response_id: toolCallPayload.id,
+        input: [
+          {
+            type: 'mcp_call_output',
+            call_id: 'call_mcp_docs',
+            output: { ok: true },
+          },
+        ],
+        model: 'gpt-5.5',
+      },
+    );
+    expect((await followUpResponse.json()).output_text).toBe(
+      'mcp tool result received',
+    );
+
+    const followUpBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string | null;
+        tool_call_id?: string;
+        tool_calls?: Array<{
+          function: {
+            name: string;
+            arguments: string;
+          };
+        }>;
+      }>;
+    };
+    const assistantToolCallMessage = followUpBody.messages.find(
+      (message) => message.role === 'assistant',
+    );
+    expect(assistantToolCallMessage?.tool_calls?.[0]?.function.name).toBe(
+      'mcp_tool',
+    );
+    expect(
+      followUpBody.messages.find((message) => message.role === 'tool'),
+    ).toMatchObject({
+      role: 'tool',
+      tool_call_id: 'call_mcp_docs',
+      content: '{"ok":true}',
+    });
+
+    const streamResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'stream mcp tool call',
+        model: 'gpt-5.5',
+        stream: true,
+        tools,
+      },
+    );
+    const streamText = await streamResponse.text();
+    expect(streamText).toContain('"type":"mcp_call"');
+    expect(streamText).toContain('"server_label":"docs-svc"');
+    expect(streamText).toContain('response.output_item.done');
+  });
+
+  it('maps direct mcp_call input items into upstream assistant tool calls', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () =>
+        makeJsonResponse({ choices: [{ message: { content: 'done' } }] }),
+      );
+
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: [
+          {
+            type: 'mcp_call',
+            call_id: 'mcp_direct_1',
+            name: 'mcp_tool',
+            arguments: '{"query":"docs"}',
+          },
+          {
+            type: 'mcp_call_output',
+            call_id: 'mcp_direct_1',
+            output: { ok: true },
+          },
+        ],
+        model: 'gpt-5.5',
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string | null;
+        tool_call_id?: string;
+        tool_calls?: Array<{
+          id: string;
+          function: {
+            name: string;
+            arguments: string;
+          };
+        }>;
+      }>;
+    };
+
+    expect(upstreamBody.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: null,
+    });
+    expect(upstreamBody.messages[0]?.tool_calls?.[0]).toMatchObject({
+      id: 'mcp_direct_1',
+      function: {
+        name: 'mcp_tool',
+        arguments: '{"query":"docs"}',
+      },
+    });
+    expect(upstreamBody.messages[1]).toMatchObject({
+      role: 'tool',
+      tool_call_id: 'mcp_direct_1',
+      content: '{"ok":true}',
+    });
   });
 
   it('covers auth api fallback branches', async () => {
@@ -781,6 +997,314 @@ describe('server units', () => {
       name: 'lookup_weather',
       description: 'Look up weather',
       parameters: { type: 'object', properties: {} },
+    });
+  });
+
+  it('flattens tools with function semantics into chat function tools', () => {
+    const result = translateResponsesToolsToChat([
+      { type: 'file_search' },
+      { type: 'web_search_preview' },
+      {
+        type: 'function',
+        name: 'lookup_weather',
+        parameters: { type: 'object', properties: {} },
+      },
+      {
+        type: 'file_search',
+        function: {
+          name: 'search_files',
+          parameters: {
+            type: 'object',
+            properties: { query: { type: 'string' } },
+          },
+        },
+      },
+      {
+        type: 'web_search_preview',
+        name: 'search_web',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+      {
+        type: 'mcp',
+        server_label: 'svc',
+        name: 'mcp_tool',
+        description: 'Call MCP tool',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+    ]);
+
+    expect(result).toHaveLength(4);
+    expect(result?.[0]).toEqual({
+      type: 'function',
+      function: {
+        name: 'lookup_weather',
+        parameters: { type: 'object', properties: {} },
+      },
+    });
+    expect(result?.[1]).toEqual({
+      type: 'function',
+      function: {
+        name: 'search_files',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+    });
+    expect(result?.[2]).toEqual({
+      type: 'function',
+      function: {
+        name: 'search_web',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+    });
+    expect(result?.[3]).toEqual({
+      type: 'function',
+      function: {
+        name: 'mcp_tool',
+        description: 'Call MCP tool',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+    });
+  });
+
+  it('returns undefined when only unsupported tool types are provided', () => {
+    expect(
+      translateResponsesToolsToChat([
+        { type: 'file_search' },
+        { type: 'image_generation' },
+      ]),
+    ).toBeUndefined();
+  });
+
+  it('maps responses tool_choice object variants to chat-completions shapes', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeJsonResponse({
+        choices: [{ message: { content: 'done' } }],
+      }),
+    );
+
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'use built-in choice',
+        model: 'gpt-5.5',
+        tools: [
+          {
+            type: 'file_search',
+            function: {
+              name: 'search_files',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        ],
+        tool_choice: { type: 'file_search', name: 'search_files' },
+      },
+    );
+
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'use mcp choice',
+        model: 'gpt-5.5',
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'svc',
+            name: 'mcp_tool',
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+        tool_choice: { type: 'mcp', server_label: 'svc', name: 'mcp_tool' },
+      },
+    );
+
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'use auto choice',
+        model: 'gpt-5.5',
+        tool_choice: { type: 'auto' },
+      },
+    );
+
+    const firstUpstream = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { tool_choice: unknown };
+    const secondUpstream = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    ) as { tool_choice: unknown; tools: Array<Record<string, unknown>> };
+    const thirdUpstream = JSON.parse(
+      String((fetchMock.mock.calls[2]?.[1] as RequestInit).body),
+    ) as { tool_choice: unknown };
+
+    expect(firstUpstream.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'search_files' },
+    });
+    expect(secondUpstream.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'mcp_tool' },
+    });
+    expect(secondUpstream.tools[0]).toEqual({
+      type: 'function',
+      function: {
+        name: 'mcp_tool',
+        parameters: { type: 'object', properties: {} },
+      },
+    });
+    expect(thirdUpstream.tool_choice).toBe('auto');
+  });
+
+  it('accepts mcp tools, while still rejecting invalid tool_choice before proxying', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () =>
+        makeJsonResponse({ choices: [{ message: { content: 'done' } }] }),
+      );
+
+    const mcpToolsResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'use mcp tool',
+        model: 'gpt-5.5',
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'svc',
+            name: 'mcp_tool',
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+      },
+    );
+    const mcpChoiceResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'use mcp tool choice',
+        model: 'gpt-5.5',
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'svc',
+            name: 'mcp_tool',
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+        tool_choice: { type: 'mcp', server_label: 'svc', name: 'mcp_tool' },
+      },
+    );
+    const invalidChoiceResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'use invalid tool choice',
+        model: 'gpt-5.5',
+        tool_choice: { type: 'file_search' },
+      },
+    );
+    const missingToolChoiceResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'use missing named tool choice',
+        model: 'gpt-5.5',
+        tool_choice: { type: 'file_search', name: 'search_files' },
+      },
+    );
+
+    expect(mcpToolsResponse.status).toBe(200);
+    expect(mcpChoiceResponse.status).toBe(200);
+    expect(invalidChoiceResponse.status).toBe(400);
+    expect(missingToolChoiceResponse.status).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts mcp input items and rewrites them into follow-up chat messages', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () =>
+        makeJsonResponse({ choices: [{ message: { content: 'done' } }] }),
+      );
+
+    const mcpOutputResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: [
+          {
+            type: 'mcp_call_output',
+            call_id: 'mcp_1',
+            output: { ok: true },
+          },
+        ],
+        model: 'gpt-5.5',
+      },
+    );
+    const mcpApprovalResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: [
+          {
+            type: 'mcp_approval_response',
+            output: { approved: true },
+          },
+        ],
+        model: 'gpt-5.5',
+      },
+    );
+
+    expect(mcpOutputResponse.status).toBe(200);
+    expect(mcpApprovalResponse.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const mcpOutputBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string;
+        tool_call_id?: string;
+      }>;
+    };
+    const mcpApprovalBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string;
+      }>;
+    };
+    const mcpApprovalUserMessage = mcpApprovalBody.messages.find(
+      (message) => message.role === 'user',
+    );
+
+    expect(mcpOutputBody.messages[0]).toEqual({
+      role: 'tool',
+      content: '{"ok":true}',
+      tool_call_id: 'mcp_1',
+    });
+    expect(mcpApprovalUserMessage).toEqual({
+      role: 'user',
+      content: '{"type":"mcp_approval_response","output":{"approved":true}}',
     });
   });
 

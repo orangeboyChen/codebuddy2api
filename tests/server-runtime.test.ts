@@ -353,7 +353,7 @@ describe('server runtime', () => {
     ).toBe(true);
   });
 
-  it('supports responses api for non-stream, stream, unsupported tools, and previous response state', async () => {
+  it('supports responses api for non-stream, stream, tool flattening, and previous response state', async () => {
     process.env.CODEBUDDY_PASSWORD = 'secret';
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';
@@ -385,6 +385,13 @@ describe('server runtime', () => {
         makeSseResponse([
           'data: {"choices":[{"delta":{"content":"stream "}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"answer"}}]}\n\n',
+          'data: [DONE]\n\n',
+        ]),
+      )
+      .mockResolvedValueOnce(
+        makeSseResponse([
+          'data: {"id":"chatcmpl_resp_bad_tool","object":"chat.completion.chunk","model":"gpt-5.5","choices":[{"delta":{"content":"filtered "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}],"usage":{"completion_tokens":1,"prompt_tokens":2,"total_tokens":3}}\n\n',
           'data: [DONE]\n\n',
         ]),
       );
@@ -491,6 +498,9 @@ describe('server runtime', () => {
         .messages[0].content,
     ).toBe('Keep replies brief');
 
+    // Built-in tool types are flattened into chat-completions function tools
+    // when they carry callable function metadata. Pure placeholders without
+    // callable metadata are still dropped.
     const badToolResponse = await V1ResponsesRoute.POST(
       makeNextRequest('http://localhost/v1/responses', {
         method: 'POST',
@@ -501,11 +511,50 @@ describe('server runtime', () => {
         body: JSON.stringify({
           model: 'gpt-5.5',
           input: 'hello',
-          tools: [{ type: 'file_search' }],
+          tools: [
+            { type: 'file_search' },
+            {
+              type: 'file_search',
+              function: {
+                name: 'search_files',
+                parameters: {
+                  type: 'object',
+                  properties: { query: { type: 'string' } },
+                },
+              },
+            },
+            {
+              type: 'function',
+              name: 'lookup_weather',
+              description: 'Look up weather for a city',
+              parameters: { type: 'object', properties: {} },
+            },
+            {
+              type: 'mcp',
+              server_label: 'svc',
+              name: 'lookup_docs',
+              description: 'Look up docs through MCP',
+              parameters: { type: 'object', properties: {} },
+            },
+          ],
+          stream: false,
         }),
       }),
     );
-    expect(badToolResponse.status).toBe(400);
+    expect(badToolResponse.status).toBe(200);
+    const upstreamBadTool = JSON.parse(
+      String(
+        (
+          fetchMock.mock.calls[
+            fetchMock.mock.calls.length - 1
+          ]?.[1] as RequestInit
+        ).body,
+      ),
+    );
+    expect(upstreamBadTool.tools).toHaveLength(3);
+    expect(upstreamBadTool.tools[0].function.name).toBe('search_files');
+    expect(upstreamBadTool.tools[1].function.name).toBe('lookup_weather');
+    expect(upstreamBadTool.tools[2].function.name).toBe('lookup_docs');
 
     const missingStateResponse = await V1ResponsesRoute.POST(
       makeNextRequest('http://localhost/v1/responses', {
