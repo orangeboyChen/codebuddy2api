@@ -37,6 +37,8 @@ interface ChatRequestBody {
 interface ChatStreamDelta {
   content?: string;
   role?: string;
+  reasoning_content?: string;
+  reasoning?: string;
   tool_calls?: Array<{
     index?: number;
     id?: string;
@@ -554,6 +556,7 @@ const aggregateUpstreamStream = async (
   let created = Math.floor(Date.now() / 1000);
   let model = fallbackModel;
   let content = '';
+  let reasoningContent = '';
   let finishReason: string | null = 'stop';
   let role = 'assistant';
   let usage: unknown = null;
@@ -612,6 +615,10 @@ const aggregateUpstreamStream = async (
       content += delta.content;
     }
 
+    if (delta?.reasoning_content ?? delta?.reasoning) {
+      reasoningContent += delta.reasoning_content ?? delta.reasoning;
+    }
+
     if (delta?.tool_calls?.length) {
       toolCalls.push(...delta.tool_calls);
     }
@@ -626,6 +633,10 @@ const aggregateUpstreamStream = async (
     role,
     content: content || null,
   };
+
+  if (reasoningContent) {
+    message.reasoning_content = reasoningContent;
+  }
 
   if (aggregatedToolCalls.length) {
     message.tool_calls = aggregatedToolCalls;

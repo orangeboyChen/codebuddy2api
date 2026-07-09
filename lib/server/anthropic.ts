@@ -239,6 +239,14 @@ const mapAnthropicContentToChat = (
   const textContent = parts.filter(Boolean).join('\n');
   const messages: ChatMessage[] = [];
 
+  // Emit tool results before any free-form text so the tool result stays
+  // adjacent to the preceding assistant tool_calls in the OpenAI message
+  // history. Upstream APIs that validate tool-call adjacency can reject
+  // or ignore a tool result separated from its call by a user message.
+  if (role === 'user') {
+    messages.push(...toolResults);
+  }
+
   // For an assistant message with tool calls, content can be null per the
   // OpenAI spec. For user messages, keep text if present.
   if (role === 'assistant') {
@@ -251,7 +259,11 @@ const mapAnthropicContentToChat = (
     messages.push({ role: 'user', content: textContent });
   }
 
-  messages.push(...toolResults);
+  // For assistant messages, tool results are not expected, but push any
+  // that slipped through after the assistant message.
+  if (role === 'assistant') {
+    messages.push(...toolResults);
+  }
 
   return messages;
 };

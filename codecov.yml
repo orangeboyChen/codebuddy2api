@@ -2,15 +2,10 @@ coverage:
   status:
     project:
       default:
-        # Compare against base branch instead of an absolute target so
-        # coverage regressions are caught without blocking PRs that improve
-        # an already-below-90% base. The hard 90% gate is enforced by
-        # vitest coverage thresholds in CI.
-        target: auto
-        threshold: 0%
+        target: 90%
+        threshold: 1%
     patch:
       default:
-        # New/changed lines in this PR must be at least 90% covered.
         target: 90%
         threshold: 1%
 
@@ -18,11 +13,12 @@ comment:
   layout: 'condensed_header, diff, flags, components'
   show_critical_paths: true
 
-# Only track server library code for coverage.
-# Test files, config, and build artifacts are excluded.
+# app/ routes are thin wrappers over lib/server and are exercised via
+# integration tests, not unit tests. Exclude them from the coverage
+# denominator so the project status reflects unit-tested code only.
 ignore:
-  - 'tests/**'
   - 'app/**'
+  - 'tests/**'
   - '.next/**'
   - 'coverage/**'
   - 'node_modules/**'
@@ -39,8 +35,8 @@ flag_management:
     carryforward: false
     statuses:
       - type: project
-        target: auto
-        threshold: 0%
+        target: 90%
+        threshold: 1%
       - type: patch
         target: 90%
         threshold: 1%
