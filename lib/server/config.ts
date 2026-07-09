@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export interface RuntimeConfig {
-  CODEBUDDY_PASSWORD: string | null;
   CODEBUDDY_API_ENDPOINT: string;
   CODEBUDDY_AUTH_MODE: 'auto' | 'api_key' | 'token';
   CODEBUDDY_API_KEY: string | null;
@@ -10,10 +9,9 @@ export interface RuntimeConfig {
   CODEBUDDY_CREDS_DIR: string;
   CODEBUDDY_LOG_LEVEL: string;
   CODEBUDDY_MODELS: string;
-  CODEBUDDY_ROTATION_COUNT: number;
 }
 
-const getConfigPath = (): string => {
+export const getConfigPath = (): string => {
   return process.env.CODEBUDDY_CONFIG_PATH
     ? path.resolve(
         /* turbopackIgnore: true */ process.cwd(),
@@ -26,8 +24,11 @@ const getConfigPath = (): string => {
       );
 };
 
+export const getConfigDir = (): string => {
+  return path.dirname(getConfigPath());
+};
+
 const DEFAULT_CONFIG: RuntimeConfig = {
-  CODEBUDDY_PASSWORD: null,
   CODEBUDDY_API_ENDPOINT: 'https://copilot.tencent.com',
   CODEBUDDY_AUTH_MODE: 'auto',
   CODEBUDDY_API_KEY: null,
@@ -36,11 +37,9 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_LOG_LEVEL: 'INFO',
   CODEBUDDY_MODELS:
     'glm-5.1,glm-5.0,glm-5.0-turbo,glm-5v-turbo,glm-4.7,minimax-m3-play,minimax-m2.7,minimax-m2.5,kimi-k2.6,kimi-k2.5,hy3-preview-agent,deepseek-v4-pro,deepseek-v4-flash,deepseek-v3-2-volc,claude-sonnet-4.6,claude-opus-4.8,claude-opus-4.8-1m,claude-opus-4.7,claude-opus-4.7-1m,claude-opus-4.6,claude-opus-4.6-1m,claude-haiku-4.5,gemini-3.1-pro,gemini-3.5-flash,gemini-2.5-pro,gpt-5.5,gpt-5.4,gpt-5.3-codex,gpt-5.1-codex,gpt-5.1-codex-mini,glm-5.2-ioa,glm-5v-turbo-ioa,glm-5.0-ioa,glm-4.7-ioa,minimax-m3-ioa,minimax-m2.7-ioa,minimax-m2.5-ioa,kimi-k2.6-ioa,hy3-preview-agent-ioa,deepseek-v4-pro-ioa,deepseek-v4-flash-ioa,deepseek-v3-2-volc-ioa',
-  CODEBUDDY_ROTATION_COUNT: 1,
 };
 
 export const SETTING_LABELS: Record<keyof RuntimeConfig, string> = {
-  CODEBUDDY_PASSWORD: 'API 服务访问密码',
   CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方API端点',
   CODEBUDDY_AUTH_MODE: '认证模式 (auto/api_key/token)',
   CODEBUDDY_API_KEY: 'CodeBuddy API Key',
@@ -48,7 +47,6 @@ export const SETTING_LABELS: Record<keyof RuntimeConfig, string> = {
   CODEBUDDY_CREDS_DIR: '凭证文件目录',
   CODEBUDDY_LOG_LEVEL: '日志级别',
   CODEBUDDY_MODELS: '可用模型列表 (逗号分隔)',
-  CODEBUDDY_ROTATION_COUNT: '凭证轮换频率 (N次请求/凭证，设为0关闭轮换)',
 };
 
 const loadPersistedConfig = (): Partial<RuntimeConfig> => {
@@ -79,14 +77,13 @@ const normalizeValue = <K extends keyof RuntimeConfig>(
     return fallback;
   }
 
-  const nullableStringKeys: Array<keyof RuntimeConfig> = [
-    'CODEBUDDY_PASSWORD',
-    'CODEBUDDY_API_KEY',
-  ];
+  const nullableStringKeys: Array<keyof RuntimeConfig> = ['CODEBUDDY_API_KEY'];
 
   if (typeof fallback === 'number') {
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? (parsed as RuntimeConfig[K]) : fallback;
+    return Number.isFinite(parsed)
+      ? (parsed as unknown as RuntimeConfig[K])
+      : fallback;
   }
 
   if (typeof fallback === 'string') {
@@ -104,10 +101,6 @@ export const getActiveConfig = (): RuntimeConfig => {
   const persisted = loadPersistedConfig();
 
   return {
-    CODEBUDDY_PASSWORD: normalizeValue(
-      'CODEBUDDY_PASSWORD',
-      persisted.CODEBUDDY_PASSWORD ?? process.env.CODEBUDDY_PASSWORD ?? null,
-    ),
     CODEBUDDY_API_ENDPOINT: normalizeValue(
       'CODEBUDDY_API_ENDPOINT',
       persisted.CODEBUDDY_API_ENDPOINT ?? process.env.CODEBUDDY_API_ENDPOINT,
@@ -136,11 +129,6 @@ export const getActiveConfig = (): RuntimeConfig => {
     CODEBUDDY_MODELS: normalizeValue(
       'CODEBUDDY_MODELS',
       persisted.CODEBUDDY_MODELS ?? process.env.CODEBUDDY_MODELS,
-    ),
-    CODEBUDDY_ROTATION_COUNT: normalizeValue(
-      'CODEBUDDY_ROTATION_COUNT',
-      persisted.CODEBUDDY_ROTATION_COUNT ??
-        process.env.CODEBUDDY_ROTATION_COUNT,
     ),
   };
 };
@@ -190,15 +178,6 @@ export const getAvailableModels = (): string[] => {
     .CODEBUDDY_MODELS.split(',')
     .map((item) => item.trim())
     .filter(Boolean);
-};
-
-export const getRotationCount = (): number => {
-  return getActiveConfig().CODEBUDDY_ROTATION_COUNT;
-};
-
-export const getServerPassword = (): string | null => {
-  const password = getActiveConfig().CODEBUDDY_PASSWORD?.trim();
-  return password ? password : null;
 };
 
 export const getCredsDir = (): string => {

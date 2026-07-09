@@ -1,4 +1,5 @@
 import type {
+  AccessKeySummary,
   ApiTestState,
   AuthState,
   CredentialSummary,
@@ -36,14 +37,18 @@ interface CredentialsSectionProps {
   onCredentialTokenChange: (value: string) => void;
   onCredentialUserIdChange: (value: string) => void;
   onDeleteCredential: (index: number) => void;
+  onDeleteAccessKey: (id: string) => void;
+  onEditAccessKey: (accessKey: AccessKeySummary) => void;
   onOpenAuthUrl: () => void;
   onPollAuth: () => void;
   onRefreshCredentials: () => void;
-  onResumeAutoRotation: () => void;
-  onSelectCredential: (index: number) => void;
+  onResetAccessKeyForm: () => void;
+  onRevealAccessKeySecret: (id: string) => void;
+  onSaveAccessKey: () => void;
   onSubmitCallbackUrl: () => void;
   onToggleCallbackMode: (showManual: boolean) => void;
-  onToggleRotation: () => void;
+  onToggleCredentialSelection: (filename: string) => void;
+  onUpdateAccessKeyName: (value: string) => void;
 }
 
 interface ApiTestSectionProps {
@@ -81,17 +86,13 @@ const getCredentialBadge = (
   credential: CredentialSummary,
   current: CurrentCredentialInfo | null,
 ) => {
-  if (current?.index === credential.index) {
-    if (current.status === 'manual_selected') {
-      return {
-        className: 'px-3 py-1 text-xs font-medium bg-warning/10 text-warning',
-        label: '手动选中',
-      };
-    }
-
+  if (
+    current?.status === 'round_robin' &&
+    current.next_filename === credential.filename
+  ) {
     return {
       className: 'px-3 py-1 text-xs font-medium bg-success/10 text-success',
-      label: '当前使用中',
+      label: '下一次轮询',
     };
   }
 
@@ -140,11 +141,11 @@ const formatCurrentStatus = (current: CurrentCredentialInfo | null) => {
     return '当前没有可用凭证';
   }
 
-  if (current.status === 'manual_selected') {
-    return '当前处于手动选中模式';
+  if (current.status === 'access_keys_enabled') {
+    return '已启用访问 Keys，业务请求会在各自绑定的凭证子集里轮询。';
   }
 
-  return '当前处于自动轮换模式';
+  return '当前未配置访问 Keys，请求会在全局可用凭证之间轮询。';
 };
 
 const SettingsInput = ({
@@ -245,14 +246,7 @@ const SettingsInput = ({
       <input
         id={settingKey}
         className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-        type={
-          settingKey === 'CODEBUDDY_PASSWORD' ||
-          settingKey === 'CODEBUDDY_API_KEY'
-            ? 'password'
-            : settingKey === 'CODEBUDDY_ROTATION_COUNT'
-              ? 'number'
-              : 'text'
-        }
+        type={settingKey === 'CODEBUDDY_API_KEY' ? 'password' : 'text'}
         value={value}
         onChange={(event) => {
           onChange(event.target.value);
@@ -266,12 +260,10 @@ const CredentialCard = ({
   credential,
   current,
   onDelete,
-  onSelect,
 }: {
   credential: CredentialSummary;
   current: CurrentCredentialInfo | null;
   onDelete: () => void;
-  onSelect: () => void;
 }) => {
   const badge = getCredentialBadge(credential, current);
   const avatarText = (credential.name ?? credential.email ?? credential.user_id)
@@ -311,13 +303,6 @@ const CredentialCard = ({
       </div>
       <div className="flex gap-2 shrink-0">
         <button
-          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-          onClick={onSelect}
-        >
-          <i className="fas fa-bullseye"></i>
-          设为当前
-        </button>
-        <button
           className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
           onClick={onDelete}
         >
@@ -334,12 +319,10 @@ const CredentialGroup = ({
   items,
   title,
   onDelete,
-  onSelect,
 }: {
   current: CurrentCredentialInfo | null;
   items: CredentialSummary[];
   onDelete: (index: number) => void;
-  onSelect: (index: number) => void;
   title: string;
 }) => {
   if (!items.length) {
@@ -366,9 +349,6 @@ const CredentialGroup = ({
               current={current}
               onDelete={() => {
                 onDelete(credential.index);
-              }}
-              onSelect={() => {
-                onSelect(credential.index);
               }}
             />
           ))}
@@ -668,6 +648,81 @@ export const DashboardSection = ({
   );
 };
 
+const AccessKeyCard = ({
+  accessKey,
+  onDelete,
+  onEdit,
+  onRevealSecret,
+}: {
+  accessKey: AccessKeySummary;
+  onDelete: () => void;
+  onEdit: () => void;
+  onRevealSecret: () => void;
+}) => {
+  return (
+    <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-5 transition-all relative hover:-translate-y-px hover:shadow-md hover:border-primary">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="font-semibold text-text-light dark:text-text-dark">
+              {accessKey.name}
+            </div>
+            <span className="px-3 py-1 text-xs font-medium bg-primary/10 text-primary">
+              {accessKey.credentialFilenames.length} 个凭证
+            </span>
+          </div>
+          <div className="font-mono text-sm text-secondary break-all">
+            {accessKey.maskedSecret}
+          </div>
+          <div className="flex flex-wrap gap-4 text-sm text-secondary mt-3">
+            <span className="flex items-center gap-1">
+              <i className="fas fa-calendar"></i>
+              创建于 {new Date(accessKey.createdAt).toLocaleString('zh-CN')}
+            </span>
+            <span className="flex items-center gap-1">
+              <i className="fas fa-pen"></i>
+              更新于 {new Date(accessKey.updatedAt).toLocaleString('zh-CN')}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {accessKey.credentialFilenames.map((filename) => (
+              <span
+                key={filename}
+                className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark font-mono"
+              >
+                {filename}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          <button
+            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+            onClick={onRevealSecret}
+          >
+            <i className="fas fa-eye"></i>
+            查看 Key
+          </button>
+          <button
+            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+            onClick={onEdit}
+          >
+            <i className="fas fa-pen"></i>
+            编辑
+          </button>
+          <button
+            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
+            onClick={onDelete}
+          >
+            <i className="fas fa-trash"></i>
+            删除
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const CredentialsSection = ({
   auth,
   credentials,
@@ -678,24 +733,23 @@ export const CredentialsSection = ({
   onCredentialTokenChange,
   onCredentialUserIdChange,
   onDeleteCredential,
+  onDeleteAccessKey,
+  onEditAccessKey,
   onOpenAuthUrl,
   onPollAuth,
   onRefreshCredentials,
-  onResumeAutoRotation,
-  onSelectCredential,
+  onResetAccessKeyForm,
+  onRevealAccessKeySecret,
+  onSaveAccessKey,
   onSubmitCallbackUrl,
   onToggleCallbackMode,
-  onToggleRotation,
+  onToggleCredentialSelection,
+  onUpdateAccessKeyName,
 }: CredentialsSectionProps) => {
   const validCredentials = credentials.items.filter((item) => !item.is_expired);
   const expiredCredentials = credentials.items.filter(
     (item) => item.is_expired,
   );
-  const rotationEnabled =
-    credentials.current?.auto_rotation_enabled ??
-    (credentials.current
-      ? credentials.current.status !== 'no_credentials'
-      : false);
 
   return (
     <div id="credentials" className="block">
@@ -886,20 +940,15 @@ export const CredentialsSection = ({
       <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
         <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
           <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            已保存的凭证
+            访问 Keys
           </h3>
           <div>
             <button
-              id="rotationToggleBtn"
               className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary mr-2"
-              onClick={
-                rotationEnabled ? onToggleRotation : onResumeAutoRotation
-              }
+              onClick={onResetAccessKeyForm}
             >
-              <i
-                className={rotationEnabled ? 'fas fa-pause' : 'fas fa-play'}
-              ></i>
-              {rotationEnabled ? '暂停自动轮换' : '恢复自动轮换'}
+              <i className="fas fa-undo"></i>
+              重置表单
             </button>
             <button
               className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
@@ -911,8 +960,171 @@ export const CredentialsSection = ({
           </div>
         </div>
         <div
-          id="currentCredentialStatus"
+          id="accessKeyBuilder"
           className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark"
+        >
+          <div className="w-full grid grid-cols-[minmax(0,1fr)_minmax(320px,420px)] gap-6 items-start">
+            <div>
+              <div className="font-semibold text-text-light dark:text-text-dark">
+                {credentials.accessKeyForm.editingId
+                  ? '编辑访问 Key'
+                  : '生成新的访问 Key'}
+              </div>
+              <div className="text-sm text-secondary mt-2">
+                secret
+                由服务端自动生成，用户只需要填写备注并绑定一个或多个凭证。
+              </div>
+              <div className="mt-4">
+                <label
+                  className="block mb-2 font-medium text-text-light dark:text-text-dark"
+                  htmlFor="accessKeyName"
+                >
+                  备注名
+                </label>
+                <input
+                  id="accessKeyName"
+                  className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+                  placeholder="例如：Claude Team / CI Runner"
+                  type="text"
+                  value={credentials.accessKeyForm.name}
+                  onChange={(event) => {
+                    onUpdateAccessKeyName(event.target.value);
+                  }}
+                />
+              </div>
+              <div className="mt-4">
+                <div className="block mb-2 font-medium text-text-light dark:text-text-dark">
+                  绑定凭证
+                </div>
+                <div className="grid gap-2 max-h-72 overflow-y-auto pr-1">
+                  {validCredentials.length ? (
+                    validCredentials.map((credential) => {
+                      const selected =
+                        credentials.accessKeyForm.credentialFilenames.includes(
+                          credential.filename,
+                        );
+
+                      return (
+                        <label
+                          key={credential.filename}
+                          className="flex items-center justify-between gap-4 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-medium text-text-light dark:text-text-dark">
+                              {credential.filename}
+                            </div>
+                            <div className="text-sm text-secondary">
+                              {credential.email || credential.user_id}
+                            </div>
+                          </div>
+                          <input
+                            checked={selected}
+                            type="checkbox"
+                            onChange={() => {
+                              onToggleCredentialSelection(credential.filename);
+                            }}
+                          />
+                        </label>
+                      );
+                    })
+                  ) : (
+                    <div className="text-sm text-secondary">
+                      还没有可绑定的有效凭证。
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="mt-4 flex gap-2">
+                <button
+                  className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
+                  onClick={onSaveAccessKey}
+                >
+                  <i className="fas fa-key"></i>
+                  {credentials.accessKeyForm.editingId
+                    ? '保存访问 Key'
+                    : '生成访问 Key'}
+                </button>
+                <button
+                  className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+                  onClick={onResetAccessKeyForm}
+                >
+                  <i className="fas fa-times"></i>
+                  取消
+                </button>
+              </div>
+            </div>
+            <div className="p-4 bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark">
+              <div className="font-semibold text-text-light dark:text-text-dark">
+                最近查看的完整 Key
+              </div>
+              <div className="text-sm text-secondary mt-2">
+                列表中默认只展示掩码；点击“查看 Key”后，完整内容会显示在这里。
+              </div>
+              <div className="mt-4 p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark font-mono text-sm break-all min-h-[120px]">
+                {credentials.revealedSecret ? (
+                  <>
+                    <div className="mb-2 text-text-light dark:text-text-dark">
+                      {credentials.revealedSecret.name}
+                    </div>
+                    <div>{credentials.revealedSecret.secret}</div>
+                  </>
+                ) : (
+                  <div className="text-secondary">
+                    还没有查看过完整访问 key。
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="accessKeysList">
+          {credentials.accessKeysLoading ? (
+            <div className="text-center py-8 text-secondary">
+              <i className="fas fa-spinner fa-spin"></i>
+              <div>加载中...</div>
+            </div>
+          ) : credentials.accessKeys.length ? (
+            <div className="grid gap-3">
+              {credentials.accessKeys.map((accessKey) => (
+                <AccessKeyCard
+                  key={accessKey.id}
+                  accessKey={accessKey}
+                  onDelete={() => {
+                    onDeleteAccessKey(accessKey.id);
+                  }}
+                  onEdit={() => {
+                    onEditAccessKey(accessKey);
+                  }}
+                  onRevealSecret={() => {
+                    onRevealAccessKeySecret(accessKey.id);
+                  }}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-secondary">
+              <i className="fas fa-key"></i>
+              <div>还没有访问 key，生成后即可按 key 绑定凭证。</div>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
+            已保存的凭证
+          </h3>
+          <button
+            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+            onClick={onRefreshCredentials}
+          >
+            <i className="fas fa-sync-alt"></i>
+            刷新列表
+          </button>
+        </div>
+        <div
+          id="currentCredentialStatus"
+          className="mb-4 pb-4 border-b border-border-light dark:border-border-dark"
         >
           {credentials.currentLoading ? (
             <div className="text-center py-8 text-secondary">
@@ -926,18 +1138,19 @@ export const CredentialsSection = ({
               </div>
               {credentials.current?.status !== 'no_credentials' ? (
                 <div className="flex flex-wrap gap-4 text-sm text-secondary mt-2">
-                  <span className="flex items-center gap-1">
-                    <i className="fas fa-file"></i>
-                    {credentials.current?.filename ?? 'Unknown'}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <i className="fas fa-user"></i>
-                    {credentials.current?.user_id ?? 'Unknown'}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <i className="fas fa-repeat"></i>
-                    轮换频率 {credentials.current?.rotation_count ?? 0}
-                  </span>
+                  {credentials.current?.next_filename ? (
+                    <span className="flex items-center gap-1">
+                      <i className="fas fa-file"></i>
+                      下一凭证 {credentials.current.next_filename}
+                    </span>
+                  ) : null}
+                  {credentials.current?.available_credential_count !==
+                  undefined ? (
+                    <span className="flex items-center gap-1">
+                      <i className="fas fa-layer-group"></i>
+                      可用凭证 {credentials.current.available_credential_count}
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -955,14 +1168,12 @@ export const CredentialsSection = ({
                 current={credentials.current}
                 items={validCredentials}
                 onDelete={onDeleteCredential}
-                onSelect={onSelectCredential}
                 title="可用凭证"
               />
               <CredentialGroup
                 current={credentials.current}
                 items={expiredCredentials}
                 onDelete={onDeleteCredential}
-                onSelect={onSelectCredential}
                 title="已过期凭证"
               />
             </>

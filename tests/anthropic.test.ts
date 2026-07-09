@@ -48,10 +48,8 @@ describe('anthropic messages api', () => {
     process.env.CODEBUDDY_CONFIG_PATH =
       '.tmp-test-config-anthropic/config.json';
     process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds-anthropic';
-    process.env.CODEBUDDY_PASSWORD = '';
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';
-    process.env.CODEBUDDY_ROTATION_COUNT = '1';
   });
 
   afterEach(() => {

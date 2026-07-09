@@ -1,6 +1,10 @@
 import type { NextRequest } from 'next/server';
 
-import { getServerPassword } from './config';
+import {
+  findAccessKeyBySecret,
+  hasAccessKeys,
+  type AccessKeyRecord,
+} from './access-keys';
 
 const extractBearerToken = (request: NextRequest): string | null => {
   const header = request.headers.get('authorization')?.trim();
@@ -18,30 +22,47 @@ const extractBearerToken = (request: NextRequest): string | null => {
   return token;
 };
 
-// Anthropic SDK and Claude Code send the API key via the x-api-key header.
 const extractApiKeyToken = (request: NextRequest): string | null => {
   return request.headers.get('x-api-key')?.trim() || null;
 };
 
-export const getAuthErrorResponse = (request: NextRequest): Response | null => {
-  const password = getServerPassword();
+const extractAccessKeyToken = (request: NextRequest): string | null => {
+  return extractBearerToken(request) ?? extractApiKeyToken(request);
+};
 
-  if (!password) {
+export const resolveRequestAccessKey = (
+  request: NextRequest,
+): AccessKeyRecord | null => {
+  if (!hasAccessKeys()) {
     return null;
   }
 
-  const token = extractBearerToken(request);
+  const token = extractAccessKeyToken(request);
+
+  if (!token) {
+    return null;
+  }
+
+  return findAccessKeyBySecret(token);
+};
+
+export const getAuthErrorResponse = (request: NextRequest): Response | null => {
+  if (!hasAccessKeys()) {
+    return null;
+  }
+
+  const token = extractAccessKeyToken(request);
 
   if (!token) {
     return Response.json(
-      { error: { message: 'Authorization header is required' } },
+      { error: { message: 'x-api-key or Authorization header is required' } },
       { status: 401 },
     );
   }
 
-  if (token !== password) {
+  if (!findAccessKeyBySecret(token)) {
     return Response.json(
-      { error: { message: 'Invalid password' } },
+      { error: { message: 'Invalid access key' } },
       { status: 403 },
     );
   }
@@ -49,19 +70,14 @@ export const getAuthErrorResponse = (request: NextRequest): Response | null => {
   return null;
 };
 
-// Anthropic SDK and Claude Code send the API key via the x-api-key header
-// instead of Authorization: Bearer. This function accepts both schemes so
-// /v1/messages works when CODEBUDDY_PASSWORD is configured.
 export const getAnthropicAuthErrorResponse = (
   request: NextRequest,
 ): Response | null => {
-  const password = getServerPassword();
-
-  if (!password) {
+  if (!hasAccessKeys()) {
     return null;
   }
 
-  const token = extractBearerToken(request) ?? extractApiKeyToken(request);
+  const token = extractAccessKeyToken(request);
 
   if (!token) {
     return Response.json(
@@ -76,7 +92,7 @@ export const getAnthropicAuthErrorResponse = (
     );
   }
 
-  if (token !== password) {
+  if (!findAccessKeyBySecret(token)) {
     return Response.json(
       {
         type: 'error',

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { NextRequest } from 'next/server';
 
+import { createAccessKey } from '@/lib/server/access-keys';
 import {
   getAnthropicAuthErrorResponse,
   getAuthErrorResponse,
@@ -74,10 +75,8 @@ describe('server units', () => {
     vi.restoreAllMocks();
     process.env.CODEBUDDY_CONFIG_PATH = '.tmp-test-config/config.json';
     process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds';
-    process.env.CODEBUDDY_PASSWORD = '';
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
     process.env.CODEBUDDY_API_KEY = '';
-    process.env.CODEBUDDY_ROTATION_COUNT = '1';
   });
 
   afterEach(() => {
@@ -89,7 +88,14 @@ describe('server units', () => {
       getAuthErrorResponse(makeNextRequest('http://localhost/test')),
     ).toBeNull();
 
-    process.env.CODEBUDDY_PASSWORD = 'secret';
+    const credential = addCredential({
+      bearer_token: 'token-auth',
+      user_id: 'guard@example.com',
+    });
+    const { secret } = createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Guard Key',
+    });
 
     expect(
       getAuthErrorResponse(makeNextRequest('http://localhost/test'))?.status,
@@ -104,7 +110,7 @@ describe('server units', () => {
     expect(
       getAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
-          headers: { authorization: 'Bearer secret' },
+          headers: { authorization: `Bearer ${secret}` },
         }),
       ),
     ).toBeNull();
@@ -118,7 +124,14 @@ describe('server units', () => {
       ),
     ).toBeNull();
 
-    process.env.CODEBUDDY_PASSWORD = 'anthropic-secret';
+    const credential = addCredential({
+      bearer_token: 'token-anthropic',
+      user_id: 'anthropic@example.com',
+    });
+    const { secret } = createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Anthropic Key',
+    });
 
     // Missing key entirely.
     const noKey = getAnthropicAuthErrorResponse(
@@ -140,7 +153,7 @@ describe('server units', () => {
     expect(
       getAnthropicAuthErrorResponse(
         makeNextRequest('http://localhost/v1/messages', {
-          headers: { 'x-api-key': 'anthropic-secret' },
+          headers: { 'x-api-key': secret },
         }),
       ),
     ).toBeNull();
@@ -149,13 +162,13 @@ describe('server units', () => {
     expect(
       getAnthropicAuthErrorResponse(
         makeNextRequest('http://localhost/v1/messages', {
-          headers: { authorization: 'Bearer anthropic-secret' },
+          headers: { authorization: `Bearer ${secret}` },
         }),
       ),
     ).toBeNull();
   });
 
-  it('covers credential rotation, invalid operations, and usage stats', () => {
+  it('covers credential round-robin, invalid operations, and usage stats', () => {
     expect(getCurrentCredentialInfo().status).toBe('no_credentials');
     expect(selectCredential(0).success).toBe(false);
     expect(deleteCredentialByIndex(0).success).toBe(false);
@@ -194,8 +207,25 @@ describe('server units', () => {
     expect(resolveCredentialForRequest()?.data.user_id).toBe('one@example.com');
 
     const toggle = toggleAutoRotation();
-    expect(toggle.auto_rotation_enabled).toBe(false);
+    expect(toggle.auto_rotation_enabled).toBe(true);
     expect(resumeAutoRotation().success).toBe(true);
+
+    const keyedCredential = addCredential({
+      bearer_token: 'token-3',
+      created_at: Math.floor(Date.now() / 1000),
+      expires_in: 3600,
+      user_id: 'keyed@example.com',
+    });
+    const keyedAccess = createAccessKey({
+      credentialFilenames: [keyedCredential.filename],
+      name: 'Subset Key',
+    });
+    expect(
+      resolveCredentialForRequest({
+        accessKeyId: keyedAccess.access_key.id,
+        allowedCredentialFilenames: keyedAccess.access_key.credentialFilenames,
+      })?.filename,
+    ).toBe(keyedCredential.filename);
 
     recordModelUsage('glm-5.1');
     recordCredentialUsage('cred-a');
@@ -1223,7 +1253,7 @@ describe('server units', () => {
 
     // The credential should have been saved with enterprise/tenant info.
     const credInfo = getCurrentCredentialInfo();
-    expect(credInfo.status).toBe('auto_rotation');
+    expect(credInfo.status).toBe('round_robin');
     expect(credInfo.tenant_id).toBe('tenant-456');
   });
 
@@ -1662,11 +1692,10 @@ describe('server units', () => {
   });
 
   it('coerces nullable string settings to strings', () => {
-    updateSettings({ CODEBUDDY_PASSWORD: 12345, CODEBUDDY_API_KEY: true });
+    updateSettings({ CODEBUDDY_API_KEY: true });
 
     const config = getActiveConfig();
 
-    expect(config.CODEBUDDY_PASSWORD).toBe('12345');
     expect(config.CODEBUDDY_API_KEY).toBe('true');
   });
 });

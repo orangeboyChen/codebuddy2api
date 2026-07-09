@@ -4,6 +4,9 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 
 import * as AdminChatRoute from '@/app/admin-api/chat/completions/route';
+import * as AdminAccessKeysByIdRoute from '@/app/admin-api/access-keys/[id]/route';
+import * as AdminAccessKeySecretRoute from '@/app/admin-api/access-keys/[id]/secret/route';
+import * as AdminAccessKeysRoute from '@/app/admin-api/access-keys/route';
 import * as AdminCredentialsAutoRoute from '@/app/admin-api/credentials/auto/route';
 import * as AdminCredentialsCurrentRoute from '@/app/admin-api/credentials/current/route';
 import * as AdminCredentialsDeleteRoute from '@/app/admin-api/credentials/delete/route';
@@ -84,7 +87,6 @@ describe('server runtime', () => {
     vi.restoreAllMocks();
     process.env.CODEBUDDY_CONFIG_PATH = '.tmp-test-config/config.json';
     process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds';
-    process.env.CODEBUDDY_PASSWORD = '';
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
     process.env.CODEBUDDY_API_KEY = '';
   });
@@ -108,18 +110,17 @@ describe('server runtime', () => {
 
   it('manages settings and credentials through admin routes', async () => {
     const settingsBefore = await (await AdminSettingsRoute.GET()).json();
-    expect(settingsBefore.settings.CODEBUDDY_ROTATION_COUNT).toBe(1);
+    expect(settingsBefore.settings.CODEBUDDY_AUTH_MODE).toBe('auto');
 
     const saveResponse = await AdminSettingsRoute.POST(
       makeJsonRequest('http://localhost/admin-api/settings', {
         settings: {
-          CODEBUDDY_ROTATION_COUNT: 5,
           CODEBUDDY_AUTH_MODE: 'token',
         },
       }),
     );
     const savedPayload = await saveResponse.json();
-    expect(savedPayload.settings.CODEBUDDY_ROTATION_COUNT).toBe(5);
+    expect(savedPayload.settings.CODEBUDDY_AUTH_MODE).toBe('token');
     expect(fs.existsSync(path.join(tempConfigDir, 'config.json'))).toBe(true);
 
     const addResponse = await AdminCredentialsRoute.POST(
@@ -142,14 +143,47 @@ describe('server runtime', () => {
     ).json();
     expect(currentPayload.filename).toContain('.json');
 
-    const selectPayload = await (
-      await AdminCredentialsSelectRoute.POST(
-        makeJsonRequest('http://localhost/admin-api/credentials/select', {
-          index: 0,
+    const createdAccessKeyPayload = await (
+      await AdminAccessKeysRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/access-keys', {
+          credential_filenames: [listPayload.credentials[0].filename],
+          name: 'Alice Key',
         }),
       )
     ).json();
-    expect(selectPayload.success).toBe(true);
+    expect(createdAccessKeyPayload.secret.startsWith('cb2_')).toBe(true);
+    expect(createdAccessKeyPayload.access_key.name).toBe('Alice Key');
+
+    const listedAccessKeys = await (await AdminAccessKeysRoute.GET()).json();
+    expect(listedAccessKeys.access_keys).toHaveLength(1);
+    expect(listedAccessKeys.access_keys[0].maskedSecret).toContain('...');
+
+    const revealedSecretPayload = await (
+      await AdminAccessKeySecretRoute.GET(new Request('http://localhost'), {
+        params: Promise.resolve({
+          id: createdAccessKeyPayload.access_key.id,
+        }),
+      })
+    ).json();
+    expect(revealedSecretPayload.secret).toBe(createdAccessKeyPayload.secret);
+
+    const updatedAccessKeyPayload = await (
+      await AdminAccessKeysByIdRoute.PATCH(
+        makeJsonRequest(
+          `http://localhost/admin-api/access-keys/${createdAccessKeyPayload.access_key.id}`,
+          {
+            credential_filenames: [listPayload.credentials[0].filename],
+            name: 'Alice Key Updated',
+          },
+        ),
+        {
+          params: Promise.resolve({
+            id: createdAccessKeyPayload.access_key.id,
+          }),
+        },
+      )
+    ).json();
+    expect(updatedAccessKeyPayload.access_key.name).toBe('Alice Key Updated');
 
     const invalidSelectResponse = await AdminCredentialsSelectRoute.POST(
       makeJsonRequest('http://localhost/admin-api/credentials/select', {
@@ -161,10 +195,19 @@ describe('server runtime', () => {
     const togglePayload = await (
       await AdminCredentialsToggleRoute.POST()
     ).json();
-    expect(togglePayload.auto_rotation_enabled).toBe(false);
+    expect(togglePayload.auto_rotation_enabled).toBe(true);
 
     const autoPayload = await (await AdminCredentialsAutoRoute.POST()).json();
     expect(autoPayload.success).toBe(true);
+
+    const deletedAccessKeyPayload = await (
+      await AdminAccessKeysByIdRoute.DELETE(new Request('http://localhost'), {
+        params: Promise.resolve({
+          id: createdAccessKeyPayload.access_key.id,
+        }),
+      })
+    ).json();
+    expect(deletedAccessKeyPayload.success).toBe(true);
 
     const deletePayload = await (
       await AdminCredentialsDeleteRoute.POST(
@@ -177,8 +220,22 @@ describe('server runtime', () => {
   });
 
   it('enforces auth on protected v1 routes and mirrors successful actions', async () => {
-    process.env.CODEBUDDY_PASSWORD = 'secret';
+    await AdminCredentialsRoute.POST(
+      makeJsonRequest('http://localhost/admin-api/credentials', {
+        bearer_token: 'token-b',
+        user_id: 'bob@example.com',
+      }),
+    );
 
+    const credentialList = await (await AdminCredentialsRoute.GET()).json();
+    const createdAccessKeyPayload = await (
+      await AdminAccessKeysRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/access-keys', {
+          credential_filenames: [credentialList.credentials[0].filename],
+          name: 'Protected Key',
+        }),
+      )
+    ).json();
     const unauthorizedModels = await V1ModelsRoute.GET(
       makeNextRequest('http://localhost/v1/models'),
     );
@@ -189,15 +246,8 @@ describe('server runtime', () => {
     );
     expect(unauthorized.status).toBe(401);
 
-    await AdminCredentialsRoute.POST(
-      makeJsonRequest('http://localhost/admin-api/credentials', {
-        bearer_token: 'token-b',
-        user_id: 'bob@example.com',
-      }),
-    );
-
     const authHeaders = {
-      authorization: 'Bearer secret',
+      authorization: `Bearer ${createdAccessKeyPayload.secret}`,
     };
     const listPayload = await (
       await V1CredentialsRoute.GET(
@@ -224,7 +274,8 @@ describe('server runtime', () => {
         }),
       )
     ).json();
-    expect(currentPayload.user_id).toBe('bob@example.com');
+    expect(currentPayload.status).toBe('access_keys_enabled');
+    expect(currentPayload.available_credential_count).toBe(1);
 
     const selectPayload = await (
       await V1CredentialsSelectRoute.POST(
@@ -300,7 +351,6 @@ describe('server runtime', () => {
   });
 
   it('proxies chat completions for admin and v1 endpoints', async () => {
-    process.env.CODEBUDDY_PASSWORD = 'secret';
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';
 
@@ -335,7 +385,7 @@ describe('server runtime', () => {
       makeNextRequest('http://localhost/v1/chat/completions', {
         method: 'POST',
         headers: {
-          authorization: 'Bearer secret',
+          authorization: 'Bearer ignored-without-access-key',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -354,7 +404,6 @@ describe('server runtime', () => {
   });
 
   it('supports responses api for non-stream, stream, tool flattening, and previous response state', async () => {
-    process.env.CODEBUDDY_PASSWORD = 'secret';
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';
 
@@ -581,8 +630,6 @@ describe('server runtime', () => {
   });
 
   it('supports codebuddy auth start, poll, callback, and protected api settings', async () => {
-    process.env.CODEBUDDY_PASSWORD = 'secret';
-
     const jwtPayload = Buffer.from(
       JSON.stringify({
         email: 'coder@example.com',
@@ -662,6 +709,14 @@ describe('server runtime', () => {
     ).json();
     expect(callbackPayload.code).toBe('ok');
 
+    const accessKeyPayload = await (
+      await AdminAccessKeysRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/access-keys', {
+          credential_filenames: [credentialListPayload.credentials[0].filename],
+          name: 'Settings Key',
+        }),
+      )
+    ).json();
     const forbiddenSettings = await ApiSettingsRoute.GET(
       makeNextRequest('http://localhost/api/settings'),
     );
@@ -670,7 +725,7 @@ describe('server runtime', () => {
     const protectedSettings = await ApiSettingsRoute.GET(
       makeNextRequest('http://localhost/api/settings', {
         headers: {
-          authorization: 'Bearer secret',
+          authorization: `Bearer ${accessKeyPayload.secret}`,
         },
       }),
     );
