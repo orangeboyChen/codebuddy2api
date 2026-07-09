@@ -32,6 +32,18 @@ const eslintConfig = [
     },
     rules: {
       'react/prop-types': 'off',
+      'react/forbid-dom-props': [
+        'error',
+        {
+          forbid: ['style'],
+        },
+      ],
+      'react/forbid-component-props': [
+        'error',
+        {
+          forbid: ['style'],
+        },
+      ],
     },
   },
   {

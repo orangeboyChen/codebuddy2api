@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
 import '@fortawesome/fontawesome-free/css/all.min.css';
-import './globals.css';
+import './globals.scss';
 
 export const metadata: Metadata = {
   title: 'CodeBuddy2API Console',
