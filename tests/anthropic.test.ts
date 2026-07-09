@@ -291,11 +291,34 @@ describe('anthropic messages api', () => {
 
     const upstreamBody = JSON.parse(
       String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
-    ) as { messages: Array<{ role: string; content: string }> };
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string | null;
+        tool_calls?: Array<{
+          id: string;
+          type: string;
+          function: { name: string; arguments: string };
+        }>;
+        tool_call_id?: string;
+      }>;
+    };
 
-    const contents = upstreamBody.messages.map((m) => m.content);
-    expect(contents).toContain('get_weather({"city":"Shanghai"})');
-    expect(contents.some((c) => c.includes('{"temperature":30}'))).toBe(true);
+    // assistant tool_use → structured tool_calls (not flattened text)
+    const assistantMsg = upstreamBody.messages.find(
+      (m) => m.role === 'assistant',
+    );
+    expect(assistantMsg?.tool_calls).toHaveLength(1);
+    expect(assistantMsg?.tool_calls?.[0].id).toBe('toolu_1');
+    expect(assistantMsg?.tool_calls?.[0].function.name).toBe('get_weather');
+    expect(assistantMsg?.tool_calls?.[0].function.arguments).toBe(
+      '{"city":"Shanghai"}',
+    );
+
+    // tool_result → tool role with tool_call_id matching the previous call
+    const toolMsg = upstreamBody.messages.find((m) => m.tool_call_id);
+    expect(toolMsg?.content).toBe('{"temperature":30}');
+    expect(toolMsg?.tool_call_id).toBe('toolu_1');
   });
 
   it('translates Anthropic tools to OpenAI function tools', async () => {
@@ -915,7 +938,7 @@ describe('anthropic messages api', () => {
 
     const upstreamBody = JSON.parse(
       String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
-    ) as { messages: Array<{ role: string; content: string }> };
+    ) as { messages: Array<{ role: string; content: string | null }> };
 
     const contents = upstreamBody.messages.map((m) => m.content);
     expect(contents).not.toContain('previous thoughts');
@@ -1197,5 +1220,110 @@ describe('anthropic messages api', () => {
     expect(text).toContain('event: content_block_start');
     expect(text).toContain('event: content_block_stop');
     expect(text).toContain('"stop_reason":"tool_use"');
+  });
+
+  it('closes text block before starting tool_use in streaming', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeSseResponse([
+        'data: {"id":"chatcmpl_txt","model":"claude-sonnet-4.6","choices":[{"delta":{"content":"Let me check that."}}]}',
+        'data: {"id":"chatcmpl_txt","model":"claude-sonnet-4.6","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_txt","type":"function","function":{"name":"search","arguments":"{}"}}]}}]}',
+        'data: {"id":"chatcmpl_txt","model":"claude-sonnet-4.6","choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        'data: [DONE]',
+      ]),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: 'user', content: 'Search for me' }],
+      },
+    );
+
+    const text = await response.text();
+
+    // The text block must be stopped before the tool_use block starts.
+    const textStopIdx = text.indexOf('content_block_stop');
+    const toolStartIdx = text.indexOf('"type":"tool_use"');
+    expect(textStopIdx).toBeGreaterThan(-1);
+    expect(toolStartIdx).toBeGreaterThan(-1);
+    expect(textStopIdx).toBeLessThan(toolStartIdx);
+
+    // Both text and tool_use blocks should have their own stop events.
+    const stopCount = (text.match(/event: content_block_stop/g) || []).length;
+    expect(stopCount).toBe(2);
+  });
+
+  it('preserves assistant tool_use as structured tool_calls in request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        choices: [{ message: { content: 'ok' } }],
+      }),
+    );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'Use tools' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_a',
+                name: 'search',
+                input: { query: 'hello' },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_a',
+                content: 'found it',
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string | null;
+        tool_calls?: Array<{
+          id: string;
+          type: string;
+          function: { name: string; arguments: string };
+        }>;
+        tool_call_id?: string;
+      }>;
+    };
+
+    const assistantMsg = upstreamBody.messages.find(
+      (m) => m.role === 'assistant',
+    );
+    expect(assistantMsg?.tool_calls).toEqual([
+      {
+        id: 'toolu_a',
+        type: 'function',
+        function: { name: 'search', arguments: '{"query":"hello"}' },
+      },
+    ]);
+    expect(assistantMsg?.content).toBeNull();
+
+    const toolMsg = upstreamBody.messages.find((m) => m.tool_call_id);
+    expect(toolMsg?.content).toBe('found it');
+    expect(toolMsg?.tool_call_id).toBe('toolu_a');
   });
 });

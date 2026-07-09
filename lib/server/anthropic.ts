@@ -170,35 +170,64 @@ const extractSystemText = (
 // Request translation: Anthropic → OpenAI
 // ---------------------------------------------------------------------------
 
+interface ChatMessage {
+  role: string;
+  content: string | null;
+  tool_calls?: Array<{
+    id: string;
+    type: string;
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
+  tool_call_id?: string;
+}
+
 const mapAnthropicContentToChat = (
   content: string | AnthropicContentBlock[],
-): { role: string; content: string }[] => {
+  role: 'user' | 'assistant',
+): ChatMessage[] => {
   if (typeof content === 'string') {
-    return [{ role: 'user', content }];
+    return [{ role, content }];
   }
 
-  // Group consecutive blocks into a single message content string.
+  // Collect text, structured tool calls, and tool results separately so
+  // the OpenAI upstream receives proper tool_calls / tool messages instead
+  // of flattened text. This preserves the call↔result relationship that
+  // multi-step tool loops rely on.
   const parts: string[] = [];
-  const toolResults: Array<{
-    role: string;
-    content: string;
+  const toolCalls: Array<{
+    id: string;
+    type: string;
+    function: {
+      name: string;
+      arguments: string;
+    };
   }> = [];
+  const toolResults: ChatMessage[] = [];
 
   for (const block of content) {
     if (block.type === 'text') {
       parts.push(block.text ?? '');
     } else if (block.type === 'tool_use') {
-      parts.push(
-        `${block.name ?? 'tool'}(${JSON.stringify(block.input ?? {})})`,
-      );
+      toolCalls.push({
+        id: block.id ?? createAnthropicId('toolu'),
+        type: 'function',
+        function: {
+          name: block.name ?? 'unknown',
+          arguments: JSON.stringify(block.input ?? {}),
+        },
+      });
     } else if (block.type === 'tool_result') {
       const resultContent =
         typeof block.content === 'string'
           ? block.content
           : stringifyContent(block.content);
       toolResults.push({
-        role: 'user',
-        content: `Tool result for ${block.tool_use_id ?? 'unknown'}:\n${resultContent}`,
+        role: 'tool',
+        content: resultContent,
+        tool_call_id: block.tool_use_id ?? '',
       });
     } else if (block.type === 'thinking') {
       // Skip thinking blocks in conversation history for OpenAI compat.
@@ -208,9 +237,17 @@ const mapAnthropicContentToChat = (
   }
 
   const textContent = parts.filter(Boolean).join('\n');
-  const messages: Array<{ role: string; content: string }> = [];
+  const messages: ChatMessage[] = [];
 
-  if (textContent) {
+  // For an assistant message with tool calls, content can be null per the
+  // OpenAI spec. For user messages, keep text if present.
+  if (role === 'assistant') {
+    messages.push({
+      role: 'assistant',
+      content: textContent || null,
+      ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+    });
+  } else if (textContent) {
     messages.push({ role: 'user', content: textContent });
   }
 
@@ -221,11 +258,11 @@ const mapAnthropicContentToChat = (
 
 const mapAnthropicMessagesToChat = (
   messages: AnthropicMessage[],
-): Array<{ role: string; content: string }> => {
-  const result: Array<{ role: string; content: string }> = [];
+): ChatMessage[] => {
+  const result: ChatMessage[] = [];
 
   for (const msg of messages) {
-    const mapped = mapAnthropicContentToChat(msg.content);
+    const mapped = mapAnthropicContentToChat(msg.content, msg.role);
 
     if (mapped.length === 0) {
       continue;
@@ -233,8 +270,7 @@ const mapAnthropicMessagesToChat = (
 
     for (const item of mapped) {
       result.push({
-        role: msg.role === 'assistant' ? 'assistant' : item.role,
-        content: item.content,
+        ...item,
       });
     }
   }
@@ -294,7 +330,7 @@ const buildChatRequestBody = (
   const systemText = extractSystemText(body.system);
   const chatMessages = mapAnthropicMessagesToChat(body.messages ?? []);
 
-  const messages: Array<{ role: string; content: string }> = [];
+  const messages: ChatMessage[] = [];
 
   if (systemText) {
     messages.push({ role: 'system', content: systemText });
@@ -466,6 +502,10 @@ const mapOpenAIStreamToAnthropicSSE = (
   let started = false;
   let thinkingStarted = false;
   let textStarted = false;
+  // Tracks how many content blocks (thinking + text) have been opened
+  // so tool_use blocks get correct sequential indices even after the
+  // prior blocks are closed mid-stream.
+  let contentBlockCount = 0;
   let finishReason: string | null = null;
   let hasToolCalls = false;
   let usage: OpenAIUsage | undefined;
@@ -479,6 +519,27 @@ const mapOpenAIStreamToAnthropicSSE = (
   };
 
   let controller: ReadableStreamDefaultController<Uint8Array>;
+
+  // Close any open text/thinking block before starting a tool_use block.
+  // Anthropic streaming requires each block to be stopped before the next.
+  const closeOpenTextBlocks = (): void => {
+    if (thinkingStarted) {
+      enqueueEvent({
+        type: 'content_block_stop',
+        index: 0,
+      });
+      thinkingStarted = false;
+    }
+
+    if (textStarted) {
+      const textIndex = 0;
+      enqueueEvent({
+        type: 'content_block_stop',
+        index: textIndex,
+      });
+      textStarted = false;
+    }
+  };
 
   const processChunk = (chunk: OpenAIStreamChunk): void => {
     if (!started) {
@@ -522,12 +583,13 @@ const mapOpenAIStreamToAnthropicSSE = (
         thinkingStarted = true;
         enqueueEvent({
           type: 'content_block_start',
-          index: 0,
+          index: contentBlockCount,
           content_block: {
             type: 'thinking',
             thinking: '',
           },
         });
+        contentBlockCount++;
       }
 
       enqueueEvent({
@@ -543,7 +605,7 @@ const mapOpenAIStreamToAnthropicSSE = (
     // Text content
     if (delta.content) {
       if (!textStarted) {
-        const textIndex = thinkingStarted ? 1 : 0;
+        const textIndex = contentBlockCount;
         textStarted = true;
         enqueueEvent({
           type: 'content_block_start',
@@ -553,9 +615,10 @@ const mapOpenAIStreamToAnthropicSSE = (
             text: '',
           },
         });
+        contentBlockCount++;
       }
 
-      const textIndex = thinkingStarted ? 1 : 0;
+      const textIndex = contentBlockCount - 1;
       enqueueEvent({
         type: 'content_block_delta',
         index: textIndex,
@@ -570,13 +633,17 @@ const mapOpenAIStreamToAnthropicSSE = (
     if (delta.tool_calls?.length) {
       hasToolCalls = true;
 
+      // Anthropic streaming requires each content block to be closed
+      // before the next one starts. If we already opened a text or
+      // thinking block, close it now so the tool_use block is well-formed.
+      closeOpenTextBlocks();
+
       for (const call of delta.tool_calls) {
         const callId = call.id ?? `toolu_${nextToolIndex}`;
         const key = callId;
 
         if (!toolUseStates.has(key)) {
-          const blockIndex =
-            (thinkingStarted ? 1 : 0) + (textStarted ? 1 : 0) + nextToolIndex;
+          const blockIndex = contentBlockCount + nextToolIndex;
 
           toolUseStates.set(key, {
             id: callId,
@@ -634,22 +701,8 @@ const mapOpenAIStreamToAnthropicSSE = (
   };
 
   const finalize = (): void => {
-    // Close thinking block
-    if (thinkingStarted) {
-      enqueueEvent({
-        type: 'content_block_stop',
-        index: 0,
-      });
-    }
-
-    // Close text block
-    if (textStarted) {
-      const textIndex = thinkingStarted ? 1 : 0;
-      enqueueEvent({
-        type: 'content_block_stop',
-        index: textIndex,
-      });
-    }
+    // Close any remaining open text/thinking blocks.
+    closeOpenTextBlocks();
 
     // Close tool use blocks
     for (const [, state] of toolUseStates) {
