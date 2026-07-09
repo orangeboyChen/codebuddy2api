@@ -2,8 +2,11 @@ coverage:
   status:
     project:
       default:
-        target: 90%
-        threshold: 1%
+        # Compare against the base branch instead of an absolute 90%
+        # target so PRs that improve an already-below-90% base are not
+        # blocked. The hard 90% gate is enforced by vitest thresholds in CI.
+        target: auto
+        threshold: 0%
     patch:
       default:
         target: 90%
@@ -35,8 +38,8 @@ flag_management:
     carryforward: false
     statuses:
       - type: project
-        target: 90%
-        threshold: 1%
+        target: auto
+        threshold: 0%
       - type: patch
         target: 90%
         threshold: 1%

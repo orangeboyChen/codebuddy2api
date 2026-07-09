@@ -1385,4 +1385,110 @@ describe('anthropic messages api', () => {
     expect(toolMsg?.content).toBe('found it');
     expect(toolMsg?.tool_call_id).toBe('toolu_a');
   });
+
+  it('emits tool results before text in mixed user messages', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        choices: [{ message: { content: 'ok' } }],
+      }),
+    );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_adj',
+                name: 'search',
+                input: { query: 'test' },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_adj',
+                content: 'result data',
+              },
+              {
+                type: 'text',
+                text: 'Here is some context.',
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string | null;
+        tool_call_id?: string;
+      }>;
+    };
+
+    const toolIdx = upstreamBody.messages.findIndex(
+      (m) => m.tool_call_id === 'toolu_adj',
+    );
+    const userIdx = upstreamBody.messages.findIndex(
+      (m) => m.role === 'user' && typeof m.content === 'string',
+    );
+
+    // Tool result must come before the free-form user text so it stays
+    // adjacent to the preceding assistant tool_calls.
+    expect(toolIdx).toBeGreaterThan(-1);
+    expect(userIdx).toBeGreaterThan(-1);
+    expect(toolIdx).toBeLessThan(userIdx);
+  });
+
+  it('preserves reasoning_content in non-streaming responses', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const sseBody = [
+      'data: {"id":"chatcmpl_r","object":"chat.completion.chunk","created":1,"model":"claude-sonnet-4.6","choices":[{"delta":{"reasoning_content":"Let me think..."}}]}',
+      'data: {"choices":[{"delta":{"content":"The answer is 42."},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}',
+      'data: [DONE]',
+    ].join('\n\n');
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(sseBody, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        },
+      }),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'What is the answer?' }],
+        thinking: { type: 'enabled', budget_tokens: 1024 },
+      },
+    );
+
+    const payload = (await response.json()) as {
+      content: Array<{ type: string; thinking?: string; text?: string }>;
+    };
+
+    const thinkingBlock = payload.content.find((b) => b.type === 'thinking');
+    const textBlock = payload.content.find((b) => b.type === 'text');
+
+    expect(thinkingBlock?.thinking).toBe('Let me think...');
+    expect(textBlock?.text).toBe('The answer is 42.');
+  });
 });
