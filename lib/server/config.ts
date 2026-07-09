@@ -17,8 +17,15 @@ export type RuntimeConfig = {
 
 const getConfigPath = (): string => {
   return process.env.CODEBUDDY_CONFIG_PATH
-    ? path.resolve(process.cwd(), process.env.CODEBUDDY_CONFIG_PATH)
-    : path.join(process.cwd(), 'config', 'config.json');
+    ? path.resolve(
+        /* turbopackIgnore: true */ process.cwd(),
+        process.env.CODEBUDDY_CONFIG_PATH,
+      )
+    : path.join(
+        /* turbopackIgnore: true */ process.cwd(),
+        'config',
+        'config.json',
+      );
 };
 
 const DEFAULT_CONFIG: RuntimeConfig = {
@@ -200,5 +207,8 @@ export const getServerPassword = (): string | null => {
 };
 
 export const getCredsDir = (): string => {
-  return path.resolve(process.cwd(), getActiveConfig().CODEBUDDY_CREDS_DIR);
+  return path.resolve(
+    /* turbopackIgnore: true */ process.cwd(),
+    getActiveConfig().CODEBUDDY_CREDS_DIR,
+  );
 };

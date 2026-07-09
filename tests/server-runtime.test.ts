@@ -100,6 +100,7 @@ describe('server runtime', () => {
     ).json();
 
     expect(healthPayload.status).toBe('healthy');
+    expect(healthPayload.active_credential).toBeUndefined();
     expect(modelsPayload.object).toBe('list');
     expect(Array.isArray(modelsPayload.data)).toBe(true);
     expect(modelsPayload.data[0].id).toBeTruthy();
@@ -149,6 +150,13 @@ describe('server runtime', () => {
       )
     ).json();
     expect(selectPayload.success).toBe(true);
+
+    const invalidSelectResponse = await AdminCredentialsSelectRoute.POST(
+      makeJsonRequest('http://localhost/admin-api/credentials/select', {
+        index: null,
+      }),
+    );
+    expect(invalidSelectResponse.status).toBe(400);
 
     const togglePayload = await (
       await AdminCredentialsToggleRoute.POST()
@@ -231,6 +239,18 @@ describe('server runtime', () => {
       )
     ).json();
     expect(selectPayload.success).toBe(true);
+
+    const invalidSelectResponse = await V1CredentialsSelectRoute.POST(
+      makeNextRequest('http://localhost/v1/credentials/select', {
+        method: 'POST',
+        headers: {
+          ...authHeaders,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ index: null }),
+      }),
+    );
+    expect(invalidSelectResponse.status).toBe(400);
 
     const togglePayload = await (
       await V1CredentialsToggleRoute.POST(

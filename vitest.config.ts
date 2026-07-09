@@ -14,10 +14,14 @@ const vitestConfig = defineConfig({
     environment: 'node',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
+    exclude: ['.next/**', 'coverage/**', 'dist/**', 'node_modules/**'],
     coverage: {
       provider: 'v8',
       include: ['lib/server/**/*.ts'],
       exclude: [
+        '.next/**',
+        'coverage/**',
+        'dist/**',
         'next-env.d.ts',
         'next.config.ts',
         'vitest.config.ts',

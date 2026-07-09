@@ -20,6 +20,7 @@ type ChatRequestBody = {
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
+  max_completion_tokens?: number;
   top_p?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
@@ -53,6 +54,18 @@ type ChatStreamChunk = {
     finish_reason?: string | null;
     index?: number;
   }>;
+};
+
+type ToolCallChunk = NonNullable<ChatStreamDelta['tool_calls']>[number];
+
+type ToolCallMapping = {
+  id: string;
+  index: number;
+};
+
+type ToolCallNormalizationState = {
+  mappings: Map<string, ToolCallMapping>;
+  nextIndex: number;
 };
 
 type ResolvedAuth =
@@ -248,13 +261,15 @@ const buildUpstreamHeaders = (
 
 const buildUpstreamBody = (body: ChatRequestBody): ChatRequestBody => {
   const normalizedMessages = normalizeMessages(body.messages ?? []);
+  const maxTokens = body.max_tokens ?? body.max_completion_tokens;
 
   return {
     model: body.model ?? getAvailableModels()[0] ?? 'glm-5.1',
     messages: normalizedMessages,
     stream: true,
     temperature: body.temperature,
-    max_tokens: body.max_tokens,
+    max_tokens: maxTokens,
+    max_completion_tokens: body.max_completion_tokens ?? maxTokens,
     top_p: body.top_p,
     frequency_penalty: body.frequency_penalty,
     presence_penalty: body.presence_penalty,
@@ -316,7 +331,202 @@ const aggregateToolCalls = (
 
   return [...aggregated.entries()]
     .sort(([left], [right]) => left - right)
-    .map(([, value]) => value);
+    .map(([, value], index) => ({
+      ...value,
+      id:
+        value.id && !value.id.startsWith('tooluse_')
+          ? value.id
+          : `call_${value.id?.replace(/^tooluse_/, '') ?? index + 1}`,
+    }));
+};
+
+const getToolCallStateKey = (
+  toolCall: ToolCallChunk,
+  position: number,
+): string => {
+  if (toolCall.id) {
+    return `id:${toolCall.id}`;
+  }
+
+  if (typeof toolCall.index === 'number') {
+    return `index:${toolCall.index}`;
+  }
+
+  return `position:${position}`;
+};
+
+const createNormalizedToolCallId = (
+  sourceId: string | undefined,
+  normalizedIndex: number,
+): string => {
+  if (sourceId && !sourceId.startsWith('tooluse_')) {
+    return sourceId;
+  }
+
+  const suffix =
+    sourceId?.replace(/^tooluse_/, '') ??
+    `${normalizedIndex}_${crypto.randomUUID().replaceAll('-', '')}`;
+
+  return `call_${suffix}`;
+};
+
+const resolveToolCallMapping = (
+  state: ToolCallNormalizationState,
+  toolCall: ToolCallChunk,
+  position: number,
+): ToolCallMapping => {
+  const keys = toolCall.id
+    ? [`id:${toolCall.id}`]
+    : [
+        typeof toolCall.index === 'number' ? `index:${toolCall.index}` : null,
+        `position:${position}`,
+      ].filter((value): value is string => value !== null);
+  const existing = keys
+    .map((key) => state.mappings.get(key))
+    .find((value) => value !== undefined);
+
+  if (existing) {
+    return existing;
+  }
+
+  return {
+    id: createNormalizedToolCallId(toolCall.id, state.nextIndex),
+    index: state.nextIndex++,
+  };
+};
+
+const normalizeStreamToolCalls = (
+  chunk: ChatStreamChunk,
+  state: ToolCallNormalizationState,
+): ChatStreamChunk => {
+  if (!chunk.choices?.length) {
+    return chunk;
+  }
+
+  return {
+    ...chunk,
+    choices: chunk.choices.map((choice) => {
+      if (!choice.delta?.tool_calls?.length) {
+        return choice;
+      }
+
+      return {
+        ...choice,
+        delta: {
+          ...choice.delta,
+          tool_calls: choice.delta.tool_calls.map((toolCall, position) => {
+            const mapping = resolveToolCallMapping(state, toolCall, position);
+            const sourceKey = getToolCallStateKey(toolCall, position);
+
+            state.mappings.set(sourceKey, mapping);
+
+            if (toolCall.id) {
+              state.mappings.set(`id:${toolCall.id}`, mapping);
+            }
+
+            if (typeof toolCall.index === 'number') {
+              state.mappings.set(`index:${toolCall.index}`, mapping);
+            }
+
+            return {
+              ...toolCall,
+              id: mapping.id,
+              index: mapping.index,
+            };
+          }),
+        },
+      };
+    }),
+  };
+};
+
+const normalizeStreamingResponse = (upstreamResponse: Response): Response => {
+  if (!upstreamResponse.body) {
+    return new Response(null, {
+      status: upstreamResponse.status,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Content-Type': 'text/event-stream; charset=utf-8',
+      },
+    });
+  }
+
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const state: ToolCallNormalizationState = {
+    mappings: new Map<string, ToolCallMapping>(),
+    nextIndex: 0,
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    start: (controller) => {
+      const reader = upstreamResponse.body!.getReader();
+      let buffer = '';
+
+      const processFrame = (frame: string): string => {
+        const lines = frame.split('\n');
+        const lineIndex = lines.findIndex((line) => line.startsWith('data: '));
+
+        if (lineIndex === -1) {
+          return frame;
+        }
+
+        const raw = lines[lineIndex]?.slice(6).trim() ?? '';
+
+        if (!raw || raw === '[DONE]') {
+          return frame;
+        }
+
+        try {
+          const chunk = JSON.parse(raw) as ChatStreamChunk;
+          const normalized = normalizeStreamToolCalls(chunk, state);
+          lines[lineIndex] = `data: ${JSON.stringify(normalized)}`;
+          return lines.join('\n');
+        } catch {
+          return frame;
+        }
+      };
+
+      const flushFrames = (frames: string[]): void => {
+        frames.forEach((frame) => {
+          controller.enqueue(encoder.encode(`${processFrame(frame)}\n\n`));
+        });
+      };
+
+      const pump = async (): Promise<void> => {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          if (buffer.trim()) {
+            flushFrames([buffer]);
+          }
+
+          controller.close();
+          return;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+        flushFrames(frames);
+        await pump();
+      };
+
+      void pump();
+    },
+  });
+
+  return new Response(stream, {
+    status: upstreamResponse.status,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+    },
+  });
 };
 
 const aggregateUpstreamStream = async (
@@ -469,15 +679,7 @@ export const proxyChatCompletions = async (
     }
 
     if (body.stream) {
-      return new Response(upstreamResponse.body, {
-        status: upstreamResponse.status,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-          'Content-Type': 'text/event-stream; charset=utf-8',
-        },
-      });
+      return normalizeStreamingResponse(upstreamResponse);
     }
 
     const contentType = upstreamResponse.headers.get('content-type') ?? '';

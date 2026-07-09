@@ -185,7 +185,7 @@ describe('server units', () => {
       .mockResolvedValueOnce(makeJsonResponse({ message: 'bad gateway' }, 502))
       .mockResolvedValueOnce(
         new Response(
-          'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+          'data: {"choices":[{"delta":{"content":"hi","tool_calls":[{"index":0,"id":"tooluse_weather","type":"function","function":{"name":"look","arguments":"{\\"city\\":\\""}}]}}]}\n\ndata: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tooluse_weather","function":{"name":"up","arguments":"Shanghai\\"}"}},{"index":0,"id":"tooluse_news","type":"function","function":{"name":"search","arguments":"{\\"topic\\":\\"tech\\"}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n',
           {
             status: 200,
             headers: {
@@ -214,16 +214,29 @@ describe('server units', () => {
       }),
       {
         messages: [{ role: 'tool', content: 'tool output' }],
+        max_completion_tokens: 12,
         stream: true,
       },
     );
-    expect(await streaming.text()).toContain('choices');
+    const streamingText = await streaming.text();
+    expect(streamingText).toContain('"id":"call_weather"');
+    expect(streamingText).toContain('"id":"call_news"');
+    expect(streamingText).toContain('"index":0');
+    expect(streamingText).toContain('"index":1');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(
       ((fetchMock.mock.calls[1]?.[1] as RequestInit).headers as Headers).get(
         'X-Tenant-Id',
       ),
     ).toBe('tenant-a');
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))
+        .max_tokens,
+    ).toBe(12);
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))
+        .max_completion_tokens,
+    ).toBe(12);
   });
 
   it('aggregates forced upstream streaming responses for non-stream clients', async () => {
