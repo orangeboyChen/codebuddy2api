@@ -42,6 +42,30 @@ type ResponseSession = {
   defaults: ResponseSessionDefaults;
 };
 
+type ChatResponseToolCall = {
+  index?: number;
+  id?: string;
+  type?: string;
+  function?: {
+    arguments?: string;
+    name?: string;
+  };
+};
+
+type ChatResponseMessage = {
+  content?: unknown;
+  tool_calls?: ChatResponseToolCall[];
+};
+
+type StreamingToolCallState = {
+  arguments: string;
+  canonicalKey: string;
+  callId: string;
+  name: string;
+  outputIndex: number;
+  outputItemId: string;
+};
+
 const globalResponsesState = globalThis as typeof globalThis & {
   __codebuddy2apiResponseSessions__?: Map<string, ResponseSession>;
 };
@@ -137,6 +161,69 @@ const createResponseId = (): string => {
   return `resp_${crypto.randomUUID().replaceAll('-', '')}`;
 };
 
+const createMessageId = (): string => {
+  return `msg_${crypto.randomUUID().replaceAll('-', '')}`;
+};
+
+const createResponseOutputId = (): string => {
+  return `fc_${crypto.randomUUID().replaceAll('-', '')}`;
+};
+
+const normalizeToolCallId = (id: string | undefined, index: number): string => {
+  if (id && !id.startsWith('tooluse_')) {
+    return id;
+  }
+
+  return `call_${id?.replace(/^tooluse_/, '') ?? index + 1}`;
+};
+
+const stringifyToolCallForTranscript = (
+  toolCall: ChatResponseToolCall,
+): string => {
+  return `${toolCall.function?.name ?? 'function'}(${toolCall.function?.arguments ?? ''})`;
+};
+
+const buildAssistantTranscriptContent = (
+  outputText: string,
+  toolCalls: ChatResponseToolCall[],
+): string => {
+  const segments = [
+    outputText,
+    ...toolCalls.map((toolCall) => stringifyToolCallForTranscript(toolCall)),
+  ].filter((segment) => segment.length > 0);
+
+  return segments.join('\n');
+};
+
+const getStreamingToolCallCanonicalKey = (
+  toolCall: ChatResponseToolCall,
+  position: number,
+): string => {
+  if (toolCall.id) {
+    return `id:${toolCall.id}`;
+  }
+
+  if (typeof toolCall.index === 'number') {
+    return `index:${toolCall.index}`;
+  }
+
+  return `position:${position}`;
+};
+
+const getStreamingToolCallLookupKeys = (
+  toolCall: ChatResponseToolCall,
+  position: number,
+): string[] => {
+  if (toolCall.id || typeof toolCall.index === 'number') {
+    return [
+      toolCall.id ? `id:${toolCall.id}` : null,
+      typeof toolCall.index === 'number' ? `index:${toolCall.index}` : null,
+    ].filter((key): key is string => key !== null);
+  }
+
+  return [`position:${position}`];
+};
+
 const prepareTranscript = (
   body: ResponsesRequestBody,
 ): {
@@ -204,15 +291,56 @@ const mapChatResponseToResponsesPayload = (
     ? upstreamPayload.choices
     : [];
   const firstChoice = (choices[0] ?? {}) as {
-    message?: { content?: unknown };
+    message?: ChatResponseMessage;
   };
+  const toolCalls = Array.isArray(firstChoice.message?.tool_calls)
+    ? firstChoice.message.tool_calls
+    : [];
   const outputText = stringifyContent(firstChoice.message?.content);
+  const assistantTranscriptContent = buildAssistantTranscriptContent(
+    outputText,
+    toolCalls,
+  );
   const createdAt = Math.floor(Date.now() / 1000);
+  const output: Array<Record<string, unknown>> = [];
+
+  if (outputText || !toolCalls.length) {
+    output.push({
+      id: createMessageId(),
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text: outputText,
+          annotations: [],
+        },
+      ],
+    });
+  }
+
+  toolCalls.forEach((toolCall, index) => {
+    output.push({
+      id: createResponseOutputId(),
+      type: 'function_call',
+      call_id: normalizeToolCallId(toolCall.id, index),
+      name: toolCall.function?.name ?? 'function',
+      arguments: toolCall.function?.arguments ?? '',
+      status: 'completed',
+    });
+  });
 
   getSessionStore().set(responseId, {
     id: responseId,
     model,
-    transcript: [...transcript, { role: 'assistant', content: outputText }],
+    transcript: [
+      ...transcript,
+      {
+        role: 'assistant',
+        content: assistantTranscriptContent,
+      },
+    ],
     defaults,
   });
 
@@ -222,21 +350,7 @@ const mapChatResponseToResponsesPayload = (
     created_at: createdAt,
     status: 'completed',
     model,
-    output: [
-      {
-        id: `msg_${crypto.randomUUID().replaceAll('-', '')}`,
-        type: 'message',
-        role: 'assistant',
-        status: 'completed',
-        content: [
-          {
-            type: 'output_text',
-            text: outputText,
-            annotations: [],
-          },
-        ],
-      },
-    ],
+    output,
     output_text: outputText,
     usage: upstreamPayload.usage ?? null,
     metadata: defaults.metadata ?? {},
@@ -272,6 +386,9 @@ const createResponsesEventStream = async (
 
   const responseId = createResponseId();
   let outputText = '';
+  const toolCallStates = new Map<string, StreamingToolCallState>();
+  const toolCallStateKeys = new Map<string, string>();
+  let nextToolCallOutputIndex = 0;
 
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
@@ -312,9 +429,36 @@ const createResponsesEventStream = async (
             model,
             transcript: [
               ...transcript,
-              { role: 'assistant', content: outputText },
+              {
+                role: 'assistant',
+                content: buildAssistantTranscriptContent(outputText, [
+                  ...[...toolCallStates.values()].map((toolCallState) => ({
+                    id: toolCallState.callId,
+                    type: 'function',
+                    function: {
+                      arguments: toolCallState.arguments,
+                      name: toolCallState.name,
+                    },
+                  })),
+                ]),
+              },
             ],
             defaults,
+          });
+          [...toolCallStates.values()].forEach((toolCallState) => {
+            enqueueEvent({
+              type: 'response.output_item.done',
+              item: {
+                id: toolCallState.outputItemId,
+                type: 'function_call',
+                call_id: toolCallState.callId,
+                name: toolCallState.name || 'function',
+                arguments: toolCallState.arguments,
+                status: 'completed',
+              },
+              output_index: toolCallState.outputIndex,
+              response_id: responseId,
+            });
           });
           enqueueEvent({
             type: 'response.completed',
@@ -352,7 +496,11 @@ const createResponsesEventStream = async (
           try {
             const payload = JSON.parse(raw) as {
               choices?: Array<{
-                delta?: { content?: string; reasoning_content?: string };
+                delta?: {
+                  content?: string;
+                  reasoning_content?: string;
+                  tool_calls?: ChatResponseToolCall[];
+                };
               }>;
             };
             const delta = payload.choices?.[0]?.delta;
@@ -373,6 +521,66 @@ const createResponsesEventStream = async (
                 response_id: responseId,
               });
             }
+
+            delta?.tool_calls?.forEach((toolCall, position) => {
+              const lookupKeys = getStreamingToolCallLookupKeys(
+                toolCall,
+                position,
+              );
+              const existingCanonicalKey = lookupKeys
+                .map((key) => toolCallStateKeys.get(key) ?? key)
+                .find((key) => toolCallStates.has(key));
+              const canonicalKey =
+                existingCanonicalKey ??
+                getStreamingToolCallCanonicalKey(toolCall, position);
+              const current = toolCallStates.get(canonicalKey) ?? {
+                arguments: '',
+                canonicalKey,
+                callId: normalizeToolCallId(
+                  toolCall.id,
+                  nextToolCallOutputIndex,
+                ),
+                name: '',
+                outputIndex: nextToolCallOutputIndex++,
+                outputItemId: createResponseOutputId(),
+              };
+
+              if (toolCall.function?.name) {
+                current.name += toolCall.function.name;
+              }
+
+              if (!toolCallStates.has(canonicalKey)) {
+                enqueueEvent({
+                  type: 'response.output_item.added',
+                  item: {
+                    id: current.outputItemId,
+                    type: 'function_call',
+                    call_id: current.callId,
+                    name: current.name || 'function',
+                    arguments: '',
+                    status: 'in_progress',
+                  },
+                  output_index: current.outputIndex,
+                  response_id: responseId,
+                });
+              }
+
+              if (toolCall.function?.arguments) {
+                current.arguments += toolCall.function.arguments;
+                enqueueEvent({
+                  type: 'response.function_call_arguments.delta',
+                  delta: toolCall.function.arguments,
+                  item_id: current.outputItemId,
+                  output_index: current.outputIndex,
+                  response_id: responseId,
+                });
+              }
+
+              toolCallStates.set(canonicalKey, current);
+              lookupKeys.forEach((key) => {
+                toolCallStateKeys.set(key, current.canonicalKey);
+              });
+            });
           } catch {
             enqueueEvent({
               type: 'response.error',

@@ -21,6 +21,7 @@ type ChatRequestBody = {
   temperature?: number;
   max_tokens?: number;
   max_completion_tokens?: number;
+  response_format?: unknown;
   top_p?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
@@ -270,6 +271,7 @@ const buildUpstreamBody = (body: ChatRequestBody): ChatRequestBody => {
     temperature: body.temperature,
     max_tokens: maxTokens,
     max_completion_tokens: body.max_completion_tokens ?? maxTokens,
+    response_format: body.response_format,
     top_p: body.top_p,
     frequency_penalty: body.frequency_penalty,
     presence_penalty: body.presence_penalty,
@@ -290,8 +292,9 @@ const aggregateToolCalls = (
   };
 }> => {
   const aggregated = new Map<
-    number,
+    string,
     {
+      order: number;
       id?: string;
       type?: string;
       function: {
@@ -300,10 +303,18 @@ const aggregateToolCalls = (
       };
     }
   >();
+  const latestKeyByIndex = new Map<number, string>();
 
   toolCalls.forEach((toolCall, position) => {
-    const index = toolCall.index ?? position;
-    const current = aggregated.get(index) ?? {
+    const normalizedId = createNormalizedToolCallId(toolCall.id, position);
+    const key =
+      (toolCall.id ? `id:${normalizedId}` : undefined) ??
+      (typeof toolCall.index === 'number'
+        ? latestKeyByIndex.get(toolCall.index)
+        : undefined) ??
+      `position:${position}`;
+    const current = aggregated.get(key) ?? {
+      order: aggregated.size,
       function: {
         arguments: '',
         name: '',
@@ -311,7 +322,7 @@ const aggregateToolCalls = (
     };
 
     if (toolCall.id) {
-      current.id = toolCall.id;
+      current.id = normalizedId;
     }
 
     if (toolCall.type) {
@@ -326,17 +337,18 @@ const aggregateToolCalls = (
       current.function.arguments += toolCall.function.arguments;
     }
 
-    aggregated.set(index, current);
+    aggregated.set(key, current);
+
+    if (typeof toolCall.index === 'number') {
+      latestKeyByIndex.set(toolCall.index, key);
+    }
   });
 
-  return [...aggregated.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([, value], index) => ({
+  return [...aggregated.values()]
+    .sort((left, right) => left.order - right.order)
+    .map(({ order: _order, ...value }, index) => ({
       ...value,
-      id:
-        value.id && !value.id.startsWith('tooluse_')
-          ? value.id
-          : `call_${value.id?.replace(/^tooluse_/, '') ?? index + 1}`,
+      id: value.id ?? createNormalizedToolCallId(undefined, index),
     }));
 };
 
