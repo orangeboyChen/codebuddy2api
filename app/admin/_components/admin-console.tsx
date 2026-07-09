@@ -4,8 +4,6 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useAtom } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
 
-import './admin.css';
-
 import {
   createCredentialsState,
   createDashboardState,
@@ -763,14 +761,14 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   return (
     <>
       <div id="dashboardPage">
-        <header className="header">
-          <h1>
+        <header className="fixed top-0 left-0 right-0 z-100 flex justify-between items-center px-8 py-4 bg-bg-light dark:bg-bg-dark text-text-light dark:text-text-dark border-b border-border-light dark:border-border-dark">
+          <h1 className="text-xl font-semibold font-serif">
             <i className="fas fa-robot"></i>
             CodeBuddy2API 管理面板
           </h1>
-          <div className="header-controls">
+          <div className="flex items-center gap-4">
             <button
-              className="theme-toggle"
+              className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-4 py-2 cursor-pointer transition-all hover:bg-bg-light hover:border-primary hover:text-primary dark:hover:bg-bg-dark"
               onClick={() => {
                 setTheme(theme === 'dark' ? 'light' : 'dark');
               }}
@@ -782,7 +780,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
             </button>
           </div>
         </header>
-        <main className="main-content">
+        <main className="mt-20 px-8 py-8 max-w-[1400px] mx-auto">
           <TabNav activeTab={activeTab} onChange={setActiveTab} />
           {activeTab === 'dashboard' ? (
             <DashboardSection

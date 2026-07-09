@@ -84,40 +84,43 @@ const getCredentialBadge = (
   if (current?.index === credential.index) {
     if (current.status === 'manual_selected') {
       return {
-        className: 'status status-warning',
+        className: 'px-3 py-1 text-xs font-medium bg-warning/10 text-warning',
         label: '手动选中',
       };
     }
 
     return {
-      className: 'status status-success',
+      className: 'px-3 py-1 text-xs font-medium bg-success/10 text-success',
       label: '当前使用中',
     };
   }
 
   if (credential.is_expired) {
     return {
-      className: 'status status-error',
+      className: 'px-3 py-1 text-xs font-medium bg-error/10 text-error',
       label: '已过期',
     };
   }
 
   return {
-    className: 'status status-success',
+    className: 'px-3 py-1 text-xs font-medium bg-success/10 text-success',
     label: '有效',
   };
 };
 
 const getCredentialAvatarClassName = (credential: CredentialSummary) => {
+  const base =
+    'w-12 h-12 flex items-center justify-center text-xl text-white font-semibold shrink-0';
+
   if (credential.is_expired) {
-    return 'credential-avatar expired';
+    return `${base} bg-error`;
   }
 
   if (!credential.email && !credential.user_id) {
-    return 'credential-avatar unknown';
+    return `${base} bg-secondary`;
   }
 
-  return 'credential-avatar valid';
+  return `${base} bg-success`;
 };
 
 const formatDateTime = (timestamp: number | null | undefined) => {
@@ -157,13 +160,16 @@ const SettingsInput = ({
 }) => {
   if (settingKey === 'CODEBUDDY_AUTH_MODE') {
     return (
-      <div className="form-group">
-        <label className="form-label" htmlFor={settingKey}>
+      <div className="mb-4">
+        <label
+          className="block mb-2 font-medium text-text-light dark:text-text-dark"
+          htmlFor={settingKey}
+        >
           {label}
         </label>
         <select
           id={settingKey}
-          className="form-input"
+          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
           value={value}
           onChange={(event) => {
             onChange(event.target.value);
@@ -179,13 +185,16 @@ const SettingsInput = ({
 
   if (settingKey === 'CODEBUDDY_INTERNET_ENVIRONMENT') {
     return (
-      <div className="form-group">
-        <label className="form-label" htmlFor={settingKey}>
+      <div className="mb-4">
+        <label
+          className="block mb-2 font-medium text-text-light dark:text-text-dark"
+          htmlFor={settingKey}
+        >
           {label}
         </label>
         <select
           id={settingKey}
-          className="form-input"
+          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
           value={value}
           onChange={(event) => {
             onChange(event.target.value);
@@ -201,13 +210,16 @@ const SettingsInput = ({
 
   if (settingKey === 'CODEBUDDY_LOG_LEVEL') {
     return (
-      <div className="form-group">
-        <label className="form-label" htmlFor={settingKey}>
+      <div className="mb-4">
+        <label
+          className="block mb-2 font-medium text-text-light dark:text-text-dark"
+          htmlFor={settingKey}
+        >
           {label}
         </label>
         <select
           id={settingKey}
-          className="form-input"
+          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
           value={value}
           onChange={(event) => {
             onChange(event.target.value);
@@ -223,13 +235,16 @@ const SettingsInput = ({
   }
 
   return (
-    <div className="form-group">
-      <label className="form-label" htmlFor={settingKey}>
+    <div className="mb-4">
+      <label
+        className="block mb-2 font-medium text-text-light dark:text-text-dark"
+        htmlFor={settingKey}
+      >
         {label}
       </label>
       <input
         id={settingKey}
-        className="form-input"
+        className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
         type={
           settingKey === 'CODEBUDDY_PASSWORD' ||
           settingKey === 'CODEBUDDY_API_KEY'
@@ -264,40 +279,48 @@ const CredentialCard = ({
     .toUpperCase();
 
   return (
-    <div className="credential-item">
+    <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-5 flex items-center gap-4 transition-all relative hover:-translate-y-px hover:shadow-md hover:border-primary">
       <div className={getCredentialAvatarClassName(credential)}>
         {avatarText || 'C'}
       </div>
-      <div className="credential-info">
-        <div className="credential-header">
-          <div className="credential-title">{credential.filename}</div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="font-semibold text-text-light dark:text-text-dark">
+            {credential.filename}
+          </div>
           <span className={badge.className}>{badge.label}</span>
         </div>
-        <div className="credential-meta">
-          <span className="credential-meta-item">
+        <div className="flex flex-wrap gap-4 text-sm text-secondary">
+          <span className="flex items-center gap-1">
             <i className="fas fa-user"></i>
             {credential.email || credential.user_id}
           </span>
-          <span className="credential-meta-item">
+          <span className="flex items-center gap-1">
             <i className="fas fa-globe"></i>
             {credential.domain}
           </span>
-          <span className="credential-meta-item">
+          <span className="flex items-center gap-1">
             <i className="fas fa-clock"></i>
             {credential.time_remaining_str}
           </span>
-          <span className="credential-meta-item">
+          <span className="flex items-center gap-1">
             <i className="fas fa-calendar"></i>
             {formatDateTime(credential.created_at)}
           </span>
         </div>
       </div>
-      <div className="credential-actions">
-        <button className="btn btn-primary" onClick={onSelect}>
+      <div className="flex gap-2 shrink-0">
+        <button
+          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+          onClick={onSelect}
+        >
           <i className="fas fa-bullseye"></i>
           设为当前
         </button>
-        <button className="btn btn-danger" onClick={onDelete}>
+        <button
+          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
+          onClick={onDelete}
+        >
           <i className="fas fa-trash"></i>
           删除
         </button>
@@ -324,16 +347,18 @@ const CredentialGroup = ({
   }
 
   return (
-    <div className="credential-group">
-      <div className="credential-group-header">
-        <div className="credential-group-title">
+    <div className="mb-6">
+      <div className="flex items-center justify-between px-4 py-3 bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark mb-0">
+        <div className="font-semibold text-text-light dark:text-text-dark flex items-center gap-2">
           <i className="fas fa-layer-group"></i>
           {title}
         </div>
-        <span className="credential-group-badge">{items.length}</span>
+        <span className="bg-primary text-white text-xs px-2 py-1 font-medium">
+          {items.length}
+        </span>
       </div>
-      <div className="credential-group-list">
-        <div className="credential-list">
+      <div className="border border-border-light dark:border-border-dark border-t-0 bg-card-light dark:bg-card-dark p-3">
+        <div className="grid gap-3">
           {items.map((credential) => (
             <CredentialCard
               key={credential.filename}
@@ -355,11 +380,15 @@ const CredentialGroup = ({
 
 export const TabNav = ({ activeTab, onChange }: TabNavProps) => {
   return (
-    <div className="nav-tabs">
+    <div className="flex gap-2 mb-8 border-b-2 border-border-light dark:border-border-dark">
       {TAB_ITEMS.map((tab) => (
         <button
           key={tab.key}
-          className={tab.key === activeTab ? 'nav-tab active' : 'nav-tab'}
+          className={
+            tab.key === activeTab
+              ? 'px-6 py-3 bg-none border-none text-primary cursor-pointer border-b-2 border-primary transition-all font-medium hover:text-primary'
+              : 'px-6 py-3 bg-none border-none text-secondary cursor-pointer border-b-2 border-transparent transition-all font-medium hover:text-primary'
+          }
           onClick={() => {
             onChange(tab.key);
           }}
@@ -378,151 +407,210 @@ export const DashboardSection = ({
   state,
 }: DashboardSectionProps) => {
   return (
-    <div id="dashboard" className="tab-panel active">
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-card-header">
-            <div className="stat-card-icon primary">
+    <div id="dashboard" className="block">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-6 mb-8">
+        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 transition-all relative overflow-hidden hover:-translate-y-1 hover:shadow-lg">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-12 h-12 flex items-center justify-center text-xl text-white bg-primary">
               <i className="fas fa-key"></i>
             </div>
-            <div className="usage-ring" id="credentialUsageRing">
+            <div className="relative w-15 h-15" id="credentialUsageRing">
               <svg width="60" height="60">
-                <circle cx="30" cy="30" r="26" className="usage-ring-bg" />
                 <circle
                   cx="30"
                   cy="30"
                   r="26"
-                  className="usage-ring-progress"
+                  className="fill-none stroke-border-light dark:stroke-border-dark stroke-4"
+                />
+                <circle
+                  cx="30"
+                  cy="30"
+                  r="26"
+                  className="fill-none stroke-primary stroke-4 transition-all"
                   id="credentialRingProgress"
+                  // eslint-disable-next-line react/forbid-dom-props
                   style={getRingStyle(state.credentialUsagePercent)}
                 />
               </svg>
-              <div className="usage-ring-text" id="credentialUsagePercent">
+              <div
+                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-xs font-semibold text-text-light dark:text-text-dark"
+                id="credentialUsagePercent"
+              >
                 {Math.round(state.credentialUsagePercent)}%
               </div>
             </div>
           </div>
-          <div className="stat-value" id="totalCredentials">
+          <div
+            className="text-2xl font-bold mb-1 text-text-light dark:text-text-dark leading-none"
+            id="totalCredentials"
+          >
             {state.totalCredentials}
           </div>
-          <div className="stat-label">总凭证数量</div>
-          <div className="stat-trend positive" id="credentialTrend">
+          <div className="text-sm text-secondary font-medium">总凭证数量</div>
+          <div
+            className="text-xs mt-2 flex items-center gap-1"
+            id="credentialTrend"
+          >
             <i className="fas fa-check"></i>
             <span id="validCredentials">{state.validCredentials}</span>
             个有效
           </div>
         </div>
-        <div className="stat-card">
-          <div className="stat-card-header">
-            <div className="stat-card-icon success" id="serviceStatusIcon">
+        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 transition-all relative overflow-hidden hover:-translate-y-1 hover:shadow-lg">
+          <div className="flex items-center justify-between mb-4">
+            <div
+              className="w-12 h-12 flex items-center justify-center text-xl text-white bg-success"
+              id="serviceStatusIcon"
+            >
               <i className="fas fa-server"></i>
             </div>
-            <div className="status-indicator" id="serviceStatus">
+            <div className="inline-flex items-center gap-2" id="serviceStatus">
               <span
-                className={`status-dot ${state.serviceStatus}`}
+                className={`w-2 h-2 rounded-full animate-pulse ${
+                  state.serviceStatus === 'online'
+                    ? 'bg-success'
+                    : state.serviceStatus === 'offline'
+                      ? 'bg-error'
+                      : 'bg-warning'
+                }`}
                 id="statusDot"
               ></span>
             </div>
           </div>
-          <div className="stat-value" id="statusText">
+          <div
+            className="text-2xl font-bold mb-1 text-text-light dark:text-text-dark leading-none"
+            id="statusText"
+          >
             {state.statusText}
           </div>
-          <div className="stat-label">服务运行状态</div>
-          <div className="stat-trend" id="uptimeTrend">
+          <div className="text-sm text-secondary font-medium">服务运行状态</div>
+          <div
+            className="text-xs mt-2 flex items-center gap-1"
+            id="uptimeTrend"
+          >
             <i className="fas fa-clock"></i>
             <span id="uptime">{state.uptimeText}</span>
           </div>
         </div>
         <button
-          className="stat-card"
+          className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 transition-all relative overflow-hidden hover:-translate-y-1 hover:shadow-lg cursor-pointer text-left"
           onClick={onCopyEndpoint}
-          style={{ cursor: 'pointer', textAlign: 'left' }}
           title="点击复制API端点"
           type="button"
         >
-          <div className="stat-card-header">
-            <div className="stat-card-icon warning">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-12 h-12 flex items-center justify-center text-xl text-white bg-warning">
               <i className="fas fa-link"></i>
             </div>
-            <div style={{ opacity: '0.6' }}>
+            <div className="opacity-60">
               <i className="fas fa-copy"></i>
             </div>
           </div>
           <div
-            className="stat-value"
+            className="text-2xl font-bold mb-1 text-text-light dark:text-text-dark leading-none text-lg break-all"
             id="apiEndpoint"
-            style={{ fontSize: '1.2rem', wordBreak: 'break-all' }}
           >
             {state.apiEndpoint || '-'}
           </div>
-          <div className="stat-label">API 服务端点</div>
-          <div className="stat-trend">
+          <div className="text-sm text-secondary font-medium">API 服务端点</div>
+          <div className="text-xs mt-2 flex items-center gap-1">
             <i className="fas fa-info-circle"></i>
             点击复制链接
           </div>
         </button>
-        <div className="stat-card">
-          <div className="stat-card-header">
-            <div className="stat-card-icon primary">
+        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 transition-all relative overflow-hidden hover:-translate-y-1 hover:shadow-lg">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-12 h-12 flex items-center justify-center text-xl text-white bg-primary">
               <i className="fas fa-chart-line"></i>
             </div>
-            <div className="usage-ring" id="totalUsageRing">
+            <div className="relative w-15 h-15" id="totalUsageRing">
               <svg width="60" height="60">
-                <circle cx="30" cy="30" r="26" className="usage-ring-bg" />
                 <circle
                   cx="30"
                   cy="30"
                   r="26"
-                  className="usage-ring-progress"
+                  className="fill-none stroke-border-light dark:stroke-border-dark stroke-4"
+                />
+                <circle
+                  cx="30"
+                  cy="30"
+                  r="26"
+                  className="fill-none stroke-primary stroke-4 transition-all"
                   id="usageRingProgress"
+                  // eslint-disable-next-line react/forbid-dom-props
                   style={getRingStyle(state.totalApiCalls > 0 ? 100 : 0)}
                 />
               </svg>
-              <div className="usage-ring-text" id="totalUsagePercent">
+              <div
+                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-xs font-semibold text-text-light dark:text-text-dark"
+                id="totalUsagePercent"
+              >
                 {state.totalApiCalls}
               </div>
             </div>
           </div>
-          <div className="stat-value" id="totalApiCalls">
+          <div
+            className="text-2xl font-bold mb-1 text-text-light dark:text-text-dark leading-none"
+            id="totalApiCalls"
+          >
             {state.totalApiCalls}
           </div>
-          <div className="stat-label">总 API 调用次数</div>
-          <div className="stat-trend" id="apiCallsTrend">
+          <div className="text-sm text-secondary font-medium">
+            总 API 调用次数
+          </div>
+          <div
+            className="text-xs mt-2 flex items-center gap-1"
+            id="apiCallsTrend"
+          >
             <i className="fas fa-sync-alt"></i>
             {state.lastCheckedAt || '等待刷新'}
           </div>
         </div>
       </div>
-      <div className="card">
-        <div className="card-header">
-          <h3 className="card-title">
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
             <i className="fas fa-chart-bar"></i>
             模型使用统计
           </h3>
-          <button className="btn btn-primary" onClick={onRefresh}>
+          <button
+            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+            onClick={onRefresh}
+          >
             <i className="fas fa-sync-alt"></i>
             刷新
           </button>
         </div>
-        <div className="usage-table-container">
-          <table className="usage-table">
+        <div className="w-full overflow-x-auto">
+          <table className="w-full border-collapse mt-4">
             <thead>
               <tr>
-                <th>模型名称</th>
-                <th style={{ textAlign: 'right' }}>使用次数</th>
+                <th className="p-3 px-4 text-left font-semibold bg-bg-light dark:bg-bg-dark border-b border-border-light dark:border-border-dark">
+                  模型名称
+                </th>
+                <th className="p-3 px-4 text-left font-semibold bg-bg-light dark:bg-bg-dark border-b border-border-light dark:border-border-dark text-right">
+                  使用次数
+                </th>
               </tr>
             </thead>
             <tbody id="modelUsageTableBody">
               {state.modelUsage.length ? (
                 state.modelUsage.map(([model, count]) => (
                   <tr key={model}>
-                    <td>{model}</td>
-                    <td style={{ textAlign: 'right' }}>{count}</td>
+                    <td className="p-3 px-4 border-b border-border-light dark:border-border-dark">
+                      {model}
+                    </td>
+                    <td className="p-3 px-4 border-b border-border-light dark:border-border-dark text-right">
+                      {count}
+                    </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={2} style={{ textAlign: 'center' }}>
+                  <td
+                    colSpan={2}
+                    className="p-3 px-4 border-b border-border-light dark:border-border-dark text-center"
+                  >
                     暂无模型使用记录
                   </td>
                 </tr>
@@ -531,32 +619,43 @@ export const DashboardSection = ({
           </table>
         </div>
       </div>
-      <div className="card">
-        <div className="card-header">
-          <h3 className="card-title">
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
             <i className="fas fa-key"></i>
             凭证使用统计
           </h3>
         </div>
-        <div className="usage-table-container">
-          <table className="usage-table">
+        <div className="w-full overflow-x-auto">
+          <table className="w-full border-collapse mt-4">
             <thead>
               <tr>
-                <th>凭证文件</th>
-                <th style={{ textAlign: 'right' }}>使用次数</th>
+                <th className="p-3 px-4 text-left font-semibold bg-bg-light dark:bg-bg-dark border-b border-border-light dark:border-border-dark">
+                  凭证文件
+                </th>
+                <th className="p-3 px-4 text-left font-semibold bg-bg-light dark:bg-bg-dark border-b border-border-light dark:border-border-dark text-right">
+                  使用次数
+                </th>
               </tr>
             </thead>
             <tbody id="credentialUsageTableBody">
               {state.credentialUsage.length ? (
                 state.credentialUsage.map(([filename, count]) => (
                   <tr key={filename}>
-                    <td>{filename}</td>
-                    <td style={{ textAlign: 'right' }}>{count}</td>
+                    <td className="p-3 px-4 border-b border-border-light dark:border-border-dark">
+                      {filename}
+                    </td>
+                    <td className="p-3 px-4 border-b border-border-light dark:border-border-dark text-right">
+                      {count}
+                    </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={2} style={{ textAlign: 'center' }}>
+                  <td
+                    colSpan={2}
+                    className="p-3 px-4 border-b border-border-light dark:border-border-dark text-center"
+                  >
                     暂无凭证使用记录
                   </td>
                 </tr>
@@ -599,20 +698,20 @@ export const CredentialsSection = ({
       : false);
 
   return (
-    <div id="credentials" className="tab-panel active">
-      <div className="card auth-section">
-        <div className="card-header">
-          <h3 className="card-title">
+    <div id="credentials" className="block">
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all border-l-4 border-primary pl-4">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
             <i className="fas fa-magic"></i>
             自动获取认证
           </h3>
         </div>
-        <p style={{ color: 'var(--secondary-color)', marginBottom: '1rem' }}>
+        <p className="text-secondary mb-4">
           点击下方按钮自动启动CodeBuddy
           OAuth2认证流程，系统将自动获取并保存您的认证凭证。
         </p>
         <button
-          className="btn btn-primary"
+          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
           id="getAuthBtn"
           disabled={auth.starting}
           onClick={onAuthAction}
@@ -625,33 +724,39 @@ export const CredentialsSection = ({
         <div
           id="authUrlSection"
           className={
-            auth.authUrl ? 'auth-url-section' : 'auth-url-section hidden'
+            auth.authUrl
+              ? 'mt-4 p-4 bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark'
+              : 'mt-4 p-4 bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark hidden'
           }
         >
-          <h4 style={{ color: 'var(--primary-color)', marginBottom: '1rem' }}>
-            认证链接已生成
-          </h4>
-          <p style={{ color: 'var(--secondary-color)', marginBottom: '1rem' }}>
+          <h4 className="text-primary mb-4">认证链接已生成</h4>
+          <p className="text-secondary mb-4">
             请点击下面的链接完成CodeBuddy账号登录：
           </p>
           <input
             id="authUrlInput"
-            className="auth-url-input"
+            className="w-full p-3 border border-border-light dark:border-border-dark bg-white dark:bg-card-dark font-mono text-sm mb-4 text-text-light dark:text-text-dark"
             readOnly
             type="text"
             value={auth.authUrl}
           />
-          <div className="auth-buttons">
-            <button className="btn btn-success" onClick={onOpenAuthUrl}>
+          <div className="flex gap-2 flex-wrap">
+            <button
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
+              onClick={onOpenAuthUrl}
+            >
               <i className="fas fa-external-link-alt"></i>
               打开链接
             </button>
-            <button className="btn btn-secondary" onClick={onCopyAuthUrl}>
+            <button
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+              onClick={onCopyAuthUrl}
+            >
               <i className="fas fa-copy"></i>
               复制链接
             </button>
             <button
-              className="btn btn-warning"
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-warning text-white hover:bg-warning"
               onClick={() => {
                 onToggleCallbackMode(true);
               }}
@@ -660,16 +765,22 @@ export const CredentialsSection = ({
               手动回调
             </button>
           </div>
-          <div id="autoCallbackSection" className="callback-section">
-            <div className="auth-progress">
+          <div
+            id="autoCallbackSection"
+            className="mt-4 p-4 bg-primary/8 border border-primary"
+          >
+            <div className="text-center p-4">
               <i className="fas fa-clock"></i>
               <div>{auth.message || '等待认证完成...'}</div>
-              <small style={{ color: 'var(--secondary-color)' }}>
+              <small className="text-secondary">
                 完成登录后系统将自动获取凭证
               </small>
             </div>
-            <div style={{ marginTop: '1rem', textAlign: 'center' }}>
-              <button className="btn btn-secondary" onClick={onPollAuth}>
+            <div className="mt-4 text-center">
+              <button
+                className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+                onClick={onPollAuth}
+              >
                 <i
                   className={
                     auth.polling ? 'fas fa-spinner fa-spin' : 'fas fa-sync-alt'
@@ -683,23 +794,17 @@ export const CredentialsSection = ({
             id="manualCallbackSection"
             className={
               auth.showManualCallback
-                ? 'callback-section'
-                : 'callback-section hidden'
+                ? 'mt-4 p-4 bg-primary/8 border border-primary'
+                : 'mt-4 p-4 bg-primary/8 border border-primary hidden'
             }
           >
-            <h5 style={{ marginBottom: '1rem' }}>手动输入回调链接</h5>
-            <p
-              style={{
-                color: 'var(--secondary-color)',
-                fontSize: '0.9rem',
-                marginBottom: '1rem',
-              }}
-            >
+            <h5 className="mb-4">手动输入回调链接</h5>
+            <p className="text-secondary text-sm mb-4">
               如果自动检测失败，请在完成登录后，将浏览器地址栏中的完整URL粘贴到下面：
             </p>
             <input
               id="callbackUrl"
-              className="form-input"
+              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
               placeholder="粘贴回调URL..."
               type="text"
               value={auth.callbackUrl}
@@ -707,38 +812,43 @@ export const CredentialsSection = ({
                 onCallbackUrlChange(event.target.value);
               }}
             />
-            <div style={{ marginTop: '1rem', textAlign: 'right' }}>
+            <div className="mt-4 text-right">
               <button
-                className="btn btn-secondary"
+                className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary mr-2"
                 onClick={() => {
                   onToggleCallbackMode(false);
                 }}
-                style={{ marginRight: '0.5rem' }}
               >
                 返回自动模式
               </button>
-              <button className="btn btn-success" onClick={onSubmitCallbackUrl}>
+              <button
+                className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
+                onClick={onSubmitCallbackUrl}
+              >
                 提交
               </button>
             </div>
           </div>
         </div>
       </div>
-      <div className="card">
-        <div className="card-header">
-          <h3 className="card-title">
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
             <i className="fas fa-edit"></i>
             手动添加凭证
           </h3>
         </div>
-        <div className="form-group">
-          <label className="form-label" htmlFor="bearerToken">
+        <div className="mb-4">
+          <label
+            className="block mb-2 font-medium text-text-light dark:text-text-dark"
+            htmlFor="bearerToken"
+          >
             Bearer Token
-            <span style={{ color: 'var(--error-color)' }}>*</span>
+            <span className="text-error">*</span>
           </label>
           <textarea
             id="bearerToken"
-            className="form-input form-textarea"
+            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10 resize-y min-h-[100px]"
             placeholder="输入您的 CodeBuddy Bearer Token..."
             rows={3}
             value={credentials.form.bearerToken}
@@ -747,13 +857,16 @@ export const CredentialsSection = ({
             }}
           ></textarea>
         </div>
-        <div className="form-group">
-          <label className="form-label" htmlFor="userId">
+        <div className="mb-4">
+          <label
+            className="block mb-2 font-medium text-text-light dark:text-text-dark"
+            htmlFor="userId"
+          >
             用户ID (可选)
           </label>
           <input
             id="userId"
-            className="form-input"
+            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
             placeholder="输入用户ID (可选)"
             type="text"
             value={credentials.form.userId}
@@ -762,29 +875,36 @@ export const CredentialsSection = ({
             }}
           />
         </div>
-        <button className="btn btn-success" onClick={onAddCredential}>
+        <button
+          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
+          onClick={onAddCredential}
+        >
           <i className="fas fa-plus"></i>
           添加凭证
         </button>
       </div>
-      <div className="card">
-        <div className="card-header">
-          <h3 className="card-title">已保存的凭证</h3>
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
+            已保存的凭证
+          </h3>
           <div>
             <button
               id="rotationToggleBtn"
-              className="btn btn-secondary"
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary mr-2"
               onClick={
                 rotationEnabled ? onToggleRotation : onResumeAutoRotation
               }
-              style={{ marginRight: '0.5rem' }}
             >
               <i
                 className={rotationEnabled ? 'fas fa-pause' : 'fas fa-play'}
               ></i>
               {rotationEnabled ? '暂停自动轮换' : '恢复自动轮换'}
             </button>
-            <button className="btn btn-primary" onClick={onRefreshCredentials}>
+            <button
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+              onClick={onRefreshCredentials}
+            >
               <i className="fas fa-sync-alt"></i>
               刷新列表
             </button>
@@ -792,36 +912,29 @@ export const CredentialsSection = ({
         </div>
         <div
           id="currentCredentialStatus"
-          className="card-header"
-          style={{
-            borderBottom: '1px solid var(--border-light)',
-            marginBottom: '1rem',
-          }}
+          className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark"
         >
           {credentials.currentLoading ? (
-            <div className="loading">
+            <div className="text-center py-8 text-secondary">
               <i className="fas fa-spinner fa-spin"></i>
               <div>加载当前状态...</div>
             </div>
           ) : (
             <div>
-              <div className="credential-title">
+              <div className="font-semibold text-text-light dark:text-text-dark">
                 {formatCurrentStatus(credentials.current)}
               </div>
               {credentials.current?.status !== 'no_credentials' ? (
-                <div
-                  className="credential-meta"
-                  style={{ marginTop: '0.5rem' }}
-                >
-                  <span className="credential-meta-item">
+                <div className="flex flex-wrap gap-4 text-sm text-secondary mt-2">
+                  <span className="flex items-center gap-1">
                     <i className="fas fa-file"></i>
                     {credentials.current?.filename ?? 'Unknown'}
                   </span>
-                  <span className="credential-meta-item">
+                  <span className="flex items-center gap-1">
                     <i className="fas fa-user"></i>
                     {credentials.current?.user_id ?? 'Unknown'}
                   </span>
-                  <span className="credential-meta-item">
+                  <span className="flex items-center gap-1">
                     <i className="fas fa-repeat"></i>
                     轮换频率 {credentials.current?.rotation_count ?? 0}
                   </span>
@@ -832,7 +945,7 @@ export const CredentialsSection = ({
         </div>
         <div id="credentialsList">
           {credentials.loading ? (
-            <div className="loading">
+            <div className="text-center py-8 text-secondary">
               <i className="fas fa-spinner fa-spin"></i>
               <div>加载中...</div>
             </div>
@@ -854,7 +967,7 @@ export const CredentialsSection = ({
               />
             </>
           ) : (
-            <div className="loading">
+            <div className="text-center py-8 text-secondary">
               <i className="fas fa-folder-open"></i>
               <div>暂无凭证，请先认证或手动添加。</div>
             </div>
@@ -876,18 +989,23 @@ export const ApiTestSection = ({
   const availableModels = models.length ? models : [...DEFAULT_TEST_MODELS];
 
   return (
-    <div id="api-test" className="tab-panel active">
-      <div className="card api-test">
-        <div className="card-header">
-          <h3 className="card-title">聊天完成测试</h3>
+    <div id="api-test" className="block">
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all border-l-4 border-primary pl-4">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
+            聊天完成测试
+          </h3>
         </div>
-        <div className="form-group">
-          <label className="form-label" htmlFor="testModel">
+        <div className="mb-4">
+          <label
+            className="block mb-2 font-medium text-text-light dark:text-text-dark"
+            htmlFor="testModel"
+          >
             模型
           </label>
           <select
             id="testModel"
-            className="form-input"
+            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
             value={state.model}
             onChange={(event) => {
               onModelChange(event.target.value);
@@ -900,13 +1018,16 @@ export const ApiTestSection = ({
             ))}
           </select>
         </div>
-        <div className="form-group">
-          <label className="form-label" htmlFor="testMessage">
+        <div className="mb-4">
+          <label
+            className="block mb-2 font-medium text-text-light dark:text-text-dark"
+            htmlFor="testMessage"
+          >
             测试消息
           </label>
           <textarea
             id="testMessage"
-            className="form-input form-textarea"
+            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10 resize-y min-h-[100px]"
             placeholder="输入测试消息..."
             rows={3}
             value={state.message}
@@ -915,11 +1036,11 @@ export const ApiTestSection = ({
             }}
           ></textarea>
         </div>
-        <div className="form-group">
-          <label className="form-label">
+        <div className="mb-4">
+          <label className="block mb-2 font-medium text-text-light dark:text-text-dark">
             <input
               id="testStream"
-              style={{ marginRight: '0.5rem' }}
+              className="mr-2"
               type="checkbox"
               checked={state.stream}
               onChange={(event) => {
@@ -930,7 +1051,7 @@ export const ApiTestSection = ({
           </label>
         </div>
         <button
-          className="btn btn-primary"
+          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
           disabled={state.submitting}
           onClick={onSubmit}
         >
@@ -941,46 +1062,34 @@ export const ApiTestSection = ({
           ></i>
           发送测试
         </button>
-        <div className="form-group" style={{ marginTop: '1.5rem' }}>
-          <label className="form-label">响应结果</label>
+        <div className="mb-4 mt-6">
+          <label className="block mb-2 font-medium text-text-light dark:text-text-dark">
+            响应结果
+          </label>
           <div
             id="testResult"
-            className="code-block"
-            style={{
-              backgroundColor: '#1e1e1e',
-              color: '#ffffff',
-              minHeight: '200px',
-            }}
+            className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4 bg-bg-dark text-text-dark min-h-[200px]"
           >
-            <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
-              {state.result}
-            </pre>
+            <pre className="m-0 whitespace-pre-wrap">{state.result}</pre>
           </div>
         </div>
       </div>
-      <div className="card">
-        <div className="card-header">
-          <h3 className="card-title">API 使用示例</h3>
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
+            API 使用示例
+          </h3>
         </div>
-        <h4 style={{ color: 'var(--primary-color)', marginBottom: '1rem' }}>
-          curl 示例:
-        </h4>
-        <div className="code-block">{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
+        <h4 className="text-primary mb-4">curl 示例:</h4>
+        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4">{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
 -H "Authorization: Bearer YOUR_PASSWORD" \\
 -H "Content-Type: application/json" \\
 -d '{
   "model": "glm-5.1",
   "messages": [{ "role": "user", "content": "Hello!" }]
 }'`}</div>
-        <h4
-          style={{
-            color: 'var(--primary-color)',
-            margin: '1.5rem 0 1rem',
-          }}
-        >
-          Python 示例:
-        </h4>
-        <div className="code-block">{`import openai
+        <h4 className="text-primary mt-6 mb-4">Python 示例:</h4>
+        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4">{`import openai
 
 client = openai.OpenAI(
     api_key="YOUR_PASSWORD",
@@ -1002,14 +1111,16 @@ export const SettingsSection = ({
   state,
 }: SettingsSectionProps) => {
   return (
-    <div id="settings" className="tab-panel active">
-      <div className="card">
-        <div className="card-header">
-          <h3 className="card-title">服务配置</h3>
+    <div id="settings" className="block">
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
+            服务配置
+          </h3>
         </div>
         <div id="settingsForm">
           {state.loading ? (
-            <div className="loading">
+            <div className="text-center py-8 text-secondary">
               <i className="fas fa-spinner fa-spin"></i>
               <div>加载配置中...</div>
             </div>
@@ -1027,9 +1138,9 @@ export const SettingsSection = ({
             ))
           )}
         </div>
-        <div style={{ marginTop: '1.5rem' }}>
+        <div className="mt-6">
           <button
-            className="btn btn-primary"
+            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
             disabled={state.saving}
             onClick={onSave}
           >
@@ -1040,13 +1151,7 @@ export const SettingsSection = ({
             ></i>
             保存设置
           </button>
-          <small
-            style={{
-              color: 'var(--secondary-color)',
-              display: 'block',
-              marginTop: '1rem',
-            }}
-          >
+          <small className="text-secondary block mt-4">
             注意：部分设置（如端口号）需要重启服务后才能生效。
           </small>
         </div>
@@ -1056,13 +1161,21 @@ export const SettingsSection = ({
 };
 
 export const NotificationBar = ({ notification }: NotificationBarProps) => {
+  const notificationTypeBg: Record<string, string> = {
+    success: 'bg-success',
+    error: 'bg-error',
+    warning: 'bg-warning',
+    info: 'bg-primary',
+  };
+  const base =
+    'fixed top-[100px] right-8 p-4 px-6 text-white font-medium z-1000 max-w-[400px] transition-transform';
+  const positionClass = notification ? 'translate-x-0' : 'translate-x-full';
+  const typeClass = notification
+    ? (notificationTypeBg[notification.type] ?? '')
+    : '';
+
   return (
-    <div
-      id="notification"
-      className={
-        notification ? `notification show ${notification.type}` : 'notification'
-      }
-    >
+    <div id="notification" className={`${base} ${positionClass} ${typeClass}`}>
       {notification?.message ?? ''}
     </div>
   );
