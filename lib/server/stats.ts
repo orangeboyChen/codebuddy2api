@@ -1,11 +1,11 @@
-type UsageStats = {
+interface UsageStats {
   modelUsage: Record<string, number>;
   credentialUsage: Record<string, number>;
-};
+}
 
-type StatsStore = {
+interface StatsStore {
   stats: UsageStats;
-};
+}
 
 const globalStats = globalThis as typeof globalThis & {
   __codebuddy2apiStats__?: StatsStore;

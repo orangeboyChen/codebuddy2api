@@ -4,7 +4,7 @@ import { getAvailableModels } from './config';
 import { createErrorResponse } from './http';
 import { proxyChatCompletions } from './codebuddy';
 
-type ResponsesInputItem = {
+interface ResponsesInputItem {
   type?: string;
   role?: string;
   content?: unknown;
@@ -13,9 +13,9 @@ type ResponsesInputItem = {
   output?: unknown;
   name?: string;
   call_id?: string;
-};
+}
 
-type ResponsesRequestBody = {
+interface ResponsesRequestBody {
   model?: string;
   input?: string | ResponsesInputItem[];
   instructions?: string;
@@ -28,21 +28,21 @@ type ResponsesRequestBody = {
   tool_choice?: unknown;
   max_output_tokens?: number;
   previous_response_id?: string;
-};
+}
 
 type ResponseSessionDefaults = Pick<
   ResponsesRequestBody,
   'instructions' | 'metadata' | 'tools' | 'tool_choice'
 >;
 
-type ResponseSession = {
+interface ResponseSession {
   id: string;
   model: string;
   transcript: Array<{ role: string; content: string }>;
   defaults: ResponseSessionDefaults;
-};
+}
 
-type ChatResponseToolCall = {
+interface ChatResponseToolCall {
   index?: number;
   id?: string;
   type?: string;
@@ -50,21 +50,21 @@ type ChatResponseToolCall = {
     arguments?: string;
     name?: string;
   };
-};
+}
 
-type ChatResponseMessage = {
+interface ChatResponseMessage {
   content?: unknown;
   tool_calls?: ChatResponseToolCall[];
-};
+}
 
-type StreamingToolCallState = {
+interface StreamingToolCallState {
   arguments: string;
   canonicalKey: string;
   callId: string;
   name: string;
   outputIndex: number;
   outputItemId: string;
-};
+}
 
 const globalResponsesState = globalThis as typeof globalThis & {
   __codebuddy2apiResponseSessions__?: Map<string, ResponseSession>;
@@ -177,6 +177,70 @@ const normalizeToolCallId = (id: string | undefined, index: number): string => {
   return `call_${id?.replace(/^tooluse_/, '') ?? index + 1}`;
 };
 
+const translateResponsesToolsToChat = (
+  tools: ResponsesRequestBody['tools'],
+): unknown[] | undefined => {
+  if (!tools?.length) {
+    return undefined;
+  }
+
+  return tools.map((tool) => {
+    if (tool.type === 'mcp') {
+      return tool;
+    }
+
+    // Accept both the Responses schema (name/parameters at the top level)
+    // and the chat-completions schema (function: {name, parameters, ...}).
+    const nested =
+      typeof tool.function === 'object' && tool.function !== null
+        ? (tool.function as Record<string, unknown>)
+        : {};
+
+    const functionDef: Record<string, unknown> = {
+      name: nested.name ?? tool.name,
+    };
+
+    const description = nested.description ?? tool.description;
+    if (description !== undefined) {
+      functionDef.description = description;
+    }
+
+    const parameters = nested.parameters ?? tool.parameters;
+    if (parameters !== undefined) {
+      functionDef.parameters = parameters;
+    }
+
+    const strict = nested.strict ?? tool.strict;
+    if (strict !== undefined) {
+      functionDef.strict = strict;
+    }
+
+    return {
+      type: 'function',
+      function: functionDef,
+    };
+  });
+};
+
+const translateResponsesToolChoiceToChat = (toolChoice: unknown): unknown => {
+  if (typeof toolChoice !== 'object' || toolChoice === null) {
+    return toolChoice;
+  }
+
+  const choice = toolChoice as Record<string, unknown>;
+
+  // Responses API selects a function by name:
+  // {type: 'function', name: 'fn'} -> chat schema {type: 'function', function: {name: 'fn'}}
+  if (choice.type === 'function' && typeof choice.name === 'string') {
+    return {
+      type: 'function',
+      function: { name: choice.name },
+    };
+  }
+
+  return toolChoice;
+};
+
 const stringifyToolCallForTranscript = (
   toolCall: ChatResponseToolCall,
 ): string => {
@@ -252,8 +316,9 @@ const prepareTranscript = (
       body.instructions ?? previousSession?.defaults.instructions ?? undefined,
     metadata: body.metadata ?? previousSession?.defaults.metadata ?? undefined,
     tools: body.tools ?? previousSession?.defaults.tools ?? undefined,
-    tool_choice:
+    tool_choice: translateResponsesToolChoiceToChat(
       body.tool_choice ?? previousSession?.defaults.tool_choice ?? undefined,
+    ),
   };
 
   if (body.messages?.length) {
@@ -376,8 +441,8 @@ const createResponsesEventStream = async (
     ],
     max_tokens: maxOutputTokens,
     stream: true,
-    tools: defaults.tools,
-    tool_choice: defaults.tool_choice,
+    tools: translateResponsesToolsToChat(defaults.tools),
+    tool_choice: translateResponsesToolChoiceToChat(defaults.tool_choice),
   });
 
   if (!upstreamResponse.ok || !upstreamResponse.body) {
@@ -641,8 +706,10 @@ export const handleResponsesRequest = async (
       ],
       max_tokens: body.max_output_tokens,
       stream: false,
-      tools: prepared.defaults.tools,
-      tool_choice: prepared.defaults.tool_choice,
+      tools: translateResponsesToolsToChat(prepared.defaults.tools),
+      tool_choice: translateResponsesToolChoiceToChat(
+        prepared.defaults.tool_choice,
+      ),
     });
 
     if (!upstreamResponse.ok) {

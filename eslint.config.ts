@@ -66,6 +66,7 @@ const eslintConfig = [
           varsIgnorePattern: '^_',
         },
       ],
+      '@typescript-eslint/consistent-type-definitions': ['error', 'interface'],
     },
   },
 ];

@@ -35,30 +35,30 @@ import {
   themeAtom,
 } from '@/app/admin/_components/admin-store';
 
-type HealthResponse = {
+interface HealthResponse {
   status?: string;
   timestamp?: string;
-};
+}
 
-type CredentialsResponse = {
+interface CredentialsResponse {
   credentials?: CredentialSummary[];
-};
+}
 
-type CurrentCredentialResponse = {
+interface CurrentCredentialResponse {
   auto_rotation_enabled?: boolean;
   filename?: string;
   index?: number;
   rotation_count?: number;
   status?: string;
   user_id?: string;
-};
+}
 
-type StatsResponse = {
+interface StatsResponse {
   credential_usage?: Record<string, number>;
   model_usage?: Record<string, number>;
-};
+}
 
-type StartAuthResponse = {
+interface StartAuthResponse {
   auth_state?: string;
   error?: string;
   expires_in?: number;
@@ -66,34 +66,34 @@ type StartAuthResponse = {
   message?: string;
   success?: boolean;
   verification_uri_complete?: string;
-};
+}
 
-type PollAuthResponse = {
+interface PollAuthResponse {
   access_token?: string;
   error?: string;
   error_description?: string;
   filename?: string;
   message?: string;
-};
+}
 
-type SettingsResponse = {
+interface SettingsResponse {
   labels?: Record<string, string>;
   settings?: Record<string, string | number | null>;
-};
+}
 
-type ApiTestSuccess = {
+interface ApiTestSuccess {
   choices?: Array<{
     message?: {
       content?: unknown;
     };
   }>;
-};
+}
 
-type JsonResult<T> = {
+interface JsonResult<T> {
   data: T | null;
   ok: boolean;
   status: number;
-};
+}
 
 const requestJson = async <T,>(
   input: RequestInfo | URL,
@@ -158,9 +158,9 @@ const formatResult = (payload: unknown) => {
   }
 };
 
-type AdminConsoleProps = {
+interface AdminConsoleProps {
   initialData?: AdminConsoleInitialData;
-};
+}
 
 const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   const initialDashboardState = initialData
@@ -907,7 +907,6 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
                   values: {
                     ...current.values,
                     [key]:
-                      key === 'CODEBUDDY_PORT' ||
                       key === 'CODEBUDDY_ROTATION_COUNT'
                         ? Number(value)
                         : value,

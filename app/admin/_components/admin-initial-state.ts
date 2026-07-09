@@ -6,31 +6,31 @@ import type {
   SettingsState,
 } from '@/app/admin/_components/admin-store';
 
-export type AdminHealthState = {
+export interface AdminHealthState {
   checkedAtLabel: string;
   status: string;
   timestamp: string;
   uptimeText: string;
-};
+}
 
-export type AdminStatsState = {
+export interface AdminStatsState {
   credential_usage: Record<string, number>;
   model_usage: Record<string, number>;
-};
+}
 
-export type AdminSettingsSnapshot = {
+export interface AdminSettingsSnapshot {
   labels: Record<string, string>;
   values: Record<string, string | number | null>;
-};
+}
 
-export type AdminConsoleInitialData = {
+export interface AdminConsoleInitialData {
   apiEndpoint: string;
   credentials: CredentialSummary[];
   currentCredential: CurrentCredentialInfo;
   health: AdminHealthState;
   settings: AdminSettingsSnapshot;
   stats: AdminStatsState;
-};
+}
 
 export const createDashboardState = (
   initialData: AdminConsoleInitialData,

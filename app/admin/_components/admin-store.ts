@@ -4,12 +4,12 @@ export type TabKey = 'dashboard' | 'credentials' | 'api-test' | 'settings';
 
 export type NotificationType = 'success' | 'error' | 'warning' | 'info';
 
-export type NotificationState = {
+export interface NotificationState {
   message: string;
   type: NotificationType;
-};
+}
 
-export type CredentialSummary = {
+export interface CredentialSummary {
   index: number;
   filename: string;
   user_id: string;
@@ -28,9 +28,9 @@ export type CredentialSummary = {
   tenant_id: string | number | null;
   has_refresh_token: boolean;
   session_state: string | null;
-};
+}
 
-export type CurrentCredentialInfo = {
+export interface CurrentCredentialInfo {
   status: string;
   index?: number;
   filename?: string;
@@ -41,9 +41,9 @@ export type CurrentCredentialInfo = {
   usage_count?: number;
   rotation_count?: number;
   auto_rotation_enabled?: boolean;
-};
+}
 
-export type DashboardState = {
+export interface DashboardState {
   apiEndpoint: string;
   credentialUsage: Array<[string, number]>;
   credentialUsagePercent: number;
@@ -56,9 +56,9 @@ export type DashboardState = {
   totalCredentials: number;
   uptimeText: string;
   validCredentials: number;
-};
+}
 
-export type AuthState = {
+export interface AuthState {
   authState: string;
   authUrl: string;
   callbackUrl: string;
@@ -68,38 +68,38 @@ export type AuthState = {
   polling: boolean;
   starting: boolean;
   showManualCallback: boolean;
-};
+}
 
-export type CredentialFormState = {
+export interface CredentialFormState {
   bearerToken: string;
   userId: string;
-};
+}
 
-export type CredentialsState = {
+export interface CredentialsState {
   actionIndex: number | null;
   current: CurrentCredentialInfo | null;
   currentLoading: boolean;
   form: CredentialFormState;
   items: CredentialSummary[];
   loading: boolean;
-};
+}
 
-export type ApiTestState = {
+export interface ApiTestState {
   message: string;
   model: string;
   result: string;
   stream: boolean;
   submitting: boolean;
-};
+}
 
 export type SettingsValue = string | number | null;
 
-export type SettingsState = {
+export interface SettingsState {
   labels: Record<string, string>;
   loading: boolean;
   saving: boolean;
   values: Record<string, SettingsValue>;
-};
+}
 
 export const TAB_ITEMS: Array<{ key: TabKey; label: string; icon: string }> = [
   { key: 'dashboard', label: '仪表板', icon: 'fas fa-tachometer-alt' },

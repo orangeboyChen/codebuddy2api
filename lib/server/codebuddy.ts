@@ -9,12 +9,12 @@ import { resolveCredentialForRequest } from './credentials';
 import { createErrorResponse, getRequestHeaderMap } from './http';
 import { recordModelUsage } from './stats';
 
-type OpenAIMessage = {
+interface OpenAIMessage {
   role?: string;
   content?: unknown;
-};
+}
 
-type ChatRequestBody = {
+interface ChatRequestBody {
   model?: string;
   messages?: OpenAIMessage[];
   stream?: boolean;
@@ -28,9 +28,9 @@ type ChatRequestBody = {
   stop?: string | string[];
   tools?: unknown[];
   tool_choice?: unknown;
-};
+}
 
-type ChatStreamDelta = {
+interface ChatStreamDelta {
   content?: string;
   role?: string;
   tool_calls?: Array<{
@@ -42,9 +42,9 @@ type ChatStreamDelta = {
       name?: string;
     };
   }>;
-};
+}
 
-type ChatStreamChunk = {
+interface ChatStreamChunk {
   id?: string;
   object?: string;
   created?: number;
@@ -55,19 +55,19 @@ type ChatStreamChunk = {
     finish_reason?: string | null;
     index?: number;
   }>;
-};
+}
 
 type ToolCallChunk = NonNullable<ChatStreamDelta['tool_calls']>[number];
 
-type ToolCallMapping = {
+interface ToolCallMapping {
   id: string;
   index: number;
-};
+}
 
-type ToolCallNormalizationState = {
+interface ToolCallNormalizationState {
   mappings: Map<string, ToolCallMapping>;
   nextIndex: number;
-};
+}
 
 type ResolvedAuth =
   | {

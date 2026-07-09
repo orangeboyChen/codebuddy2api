@@ -1,10 +1,10 @@
-.git
 .next
 next-env.d.ts
 coverage
 node_modules
 dist
 build
-*.log
-__pycache__
-.venv
+bun.lock
+*.tsbuildinfo
+.turbo
+.codebuddy_creds

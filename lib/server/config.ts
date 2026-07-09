@@ -1,9 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export type RuntimeConfig = {
-  CODEBUDDY_HOST: string;
-  CODEBUDDY_PORT: number;
+export interface RuntimeConfig {
   CODEBUDDY_PASSWORD: string | null;
   CODEBUDDY_API_ENDPOINT: string;
   CODEBUDDY_AUTH_MODE: 'auto' | 'api_key' | 'token';
@@ -13,7 +11,7 @@ export type RuntimeConfig = {
   CODEBUDDY_LOG_LEVEL: string;
   CODEBUDDY_MODELS: string;
   CODEBUDDY_ROTATION_COUNT: number;
-};
+}
 
 const getConfigPath = (): string => {
   return process.env.CODEBUDDY_CONFIG_PATH
@@ -29,8 +27,6 @@ const getConfigPath = (): string => {
 };
 
 const DEFAULT_CONFIG: RuntimeConfig = {
-  CODEBUDDY_HOST: '0.0.0.0',
-  CODEBUDDY_PORT: 8001,
   CODEBUDDY_PASSWORD: null,
   CODEBUDDY_API_ENDPOINT: 'https://copilot.tencent.com',
   CODEBUDDY_AUTH_MODE: 'auto',
@@ -44,8 +40,6 @@ const DEFAULT_CONFIG: RuntimeConfig = {
 };
 
 export const SETTING_LABELS: Record<keyof RuntimeConfig, string> = {
-  CODEBUDDY_HOST: '服务主机地址',
-  CODEBUDDY_PORT: '服务端口',
   CODEBUDDY_PASSWORD: 'API 服务访问密码',
   CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方API端点',
   CODEBUDDY_AUTH_MODE: '认证模式 (auto/api_key/token)',
@@ -85,12 +79,21 @@ const normalizeValue = <K extends keyof RuntimeConfig>(
     return fallback;
   }
 
+  const nullableStringKeys: Array<keyof RuntimeConfig> = [
+    'CODEBUDDY_PASSWORD',
+    'CODEBUDDY_API_KEY',
+  ];
+
   if (typeof fallback === 'number') {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? (parsed as RuntimeConfig[K]) : fallback;
   }
 
   if (typeof fallback === 'string') {
+    return String(value) as RuntimeConfig[K];
+  }
+
+  if (nullableStringKeys.includes(key) && value !== null) {
     return String(value) as RuntimeConfig[K];
   }
 
@@ -101,14 +104,6 @@ export const getActiveConfig = (): RuntimeConfig => {
   const persisted = loadPersistedConfig();
 
   return {
-    CODEBUDDY_HOST: normalizeValue(
-      'CODEBUDDY_HOST',
-      persisted.CODEBUDDY_HOST ?? process.env.CODEBUDDY_HOST,
-    ),
-    CODEBUDDY_PORT: normalizeValue(
-      'CODEBUDDY_PORT',
-      persisted.CODEBUDDY_PORT ?? process.env.CODEBUDDY_PORT,
-    ),
     CODEBUDDY_PASSWORD: normalizeValue(
       'CODEBUDDY_PASSWORD',
       persisted.CODEBUDDY_PASSWORD ?? process.env.CODEBUDDY_PASSWORD ?? null,

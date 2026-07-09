@@ -1,10 +1,14 @@
+import { getCodeBuddyApiEndpoint } from './config';
 import { addCredential, type CredentialData } from './credentials';
 
-const CODEBUDDY_BASE_URL = 'https://copilot.tencent.com';
-const AUTH_STATE_ENDPOINT = `${CODEBUDDY_BASE_URL}/v2/plugin/auth/state`;
-const AUTH_TOKEN_ENDPOINT = `${CODEBUDDY_BASE_URL}/v2/plugin/auth/token`;
+const getAuthStateEndpoint = (): string =>
+  `${getCodeBuddyApiEndpoint()}/v2/plugin/auth/state`;
+
+const getAuthTokenEndpoint = (): string =>
+  `${getCodeBuddyApiEndpoint()}/v2/plugin/auth/token`;
 
 const buildTraceHeaders = (): HeadersInit => {
+  const baseUrl = new URL(getCodeBuddyApiEndpoint());
   const requestId = crypto.randomUUID().replaceAll('-', '');
   const spanId = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
 
@@ -13,10 +17,10 @@ const buildTraceHeaders = (): HeadersInit => {
     'Cache-Control': 'no-cache',
     Connection: 'close',
     'Content-Type': 'application/json',
-    Host: 'copilot.tencent.com',
+    Host: baseUrl.host,
     Pragma: 'no-cache',
     'User-Agent': 'CLI/1.0.8 CodeBuddy/1.0.8',
-    'X-Domain': 'copilot.tencent.com',
+    'X-Domain': baseUrl.host,
     'X-No-Authorization': 'true',
     'X-No-Department-Info': 'true',
     'X-No-Enterprise-Id': 'true',
@@ -79,7 +83,7 @@ export const startCodeBuddyAuth = async (): Promise<Response> => {
   try {
     const nonce = crypto.randomUUID().replaceAll('-', '');
     const response = await fetch(
-      `${AUTH_STATE_ENDPOINT}?platform=CLI&nonce=${nonce}`,
+      `${getAuthStateEndpoint()}?platform=CLI&nonce=${nonce}`,
       {
         method: 'POST',
         headers: buildTraceHeaders(),
@@ -113,9 +117,9 @@ export const startCodeBuddyAuth = async (): Promise<Response> => {
       success: true,
       method: 'codebuddy_real_auth',
       auth_state: payload.data.state,
-      verification_uri: CODEBUDDY_BASE_URL,
+      verification_uri: getCodeBuddyApiEndpoint(),
       verification_uri_complete: payload.data.authUrl,
-      token_endpoint: `${AUTH_TOKEN_ENDPOINT}?state=${payload.data.state}`,
+      token_endpoint: `${getAuthTokenEndpoint()}?state=${payload.data.state}`,
       expires_in: 1800,
       interval: 5,
       status: 'awaiting_login',
@@ -203,11 +207,14 @@ export const pollCodeBuddyAuth = async (
   }
 
   try {
-    const response = await fetch(`${AUTH_TOKEN_ENDPOINT}?state=${authState}`, {
-      method: 'GET',
-      headers: buildTraceHeaders(),
-      cache: 'no-store',
-    });
+    const response = await fetch(
+      `${getAuthTokenEndpoint()}?state=${authState}`,
+      {
+        method: 'GET',
+        headers: buildTraceHeaders(),
+        cache: 'no-store',
+      },
+    );
     const payload = (await response.json()) as {
       code?: number;
       msg?: string;

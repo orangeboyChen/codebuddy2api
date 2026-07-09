@@ -22,18 +22,18 @@ export type CredentialData = Record<string, unknown> & {
   user_info?: Record<string, unknown>;
 };
 
-type CredentialRecord = {
+interface CredentialRecord {
   filename: string;
   filePath: string;
   data: CredentialData;
-};
+}
 
-type ManagerState = {
+interface ManagerState {
   currentIndex: number;
   usageCount: number;
   manualSelectedIndex: number | null;
   autoRotationEnabled: boolean;
-};
+}
 
 const globalCredentialState = globalThis as typeof globalThis & {
   __codebuddy2apiCredentialState__?: ManagerState;

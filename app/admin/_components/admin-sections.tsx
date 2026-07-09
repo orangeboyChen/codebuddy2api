@@ -15,18 +15,18 @@ import {
   USAGE_RING_CIRCUMFERENCE,
 } from '@/app/admin/_components/admin-store';
 
-type TabNavProps = {
+interface TabNavProps {
   activeTab: TabKey;
   onChange: (tab: TabKey) => void;
-};
+}
 
-type DashboardSectionProps = {
+interface DashboardSectionProps {
   onCopyEndpoint: () => void;
   onRefresh: () => void;
   state: DashboardState;
-};
+}
 
-type CredentialsSectionProps = {
+interface CredentialsSectionProps {
   auth: AuthState;
   credentials: CredentialsState;
   onAddCredential: () => void;
@@ -44,26 +44,26 @@ type CredentialsSectionProps = {
   onSubmitCallbackUrl: () => void;
   onToggleCallbackMode: (showManual: boolean) => void;
   onToggleRotation: () => void;
-};
+}
 
-type ApiTestSectionProps = {
+interface ApiTestSectionProps {
   models: string[];
   onMessageChange: (value: string) => void;
   onModelChange: (value: string) => void;
   onStreamChange: (checked: boolean) => void;
   onSubmit: () => void;
   state: ApiTestState;
-};
+}
 
-type SettingsSectionProps = {
+interface SettingsSectionProps {
   onChange: (key: string, value: string) => void;
   onSave: () => void;
   state: SettingsState;
-};
+}
 
-type NotificationBarProps = {
+interface NotificationBarProps {
   notification: NotificationState | null;
-};
+}
 
 const getRingStyle = (percent: number) => {
   const normalizedPercent = Math.min(100, Math.max(0, percent));
@@ -234,8 +234,7 @@ const SettingsInput = ({
           settingKey === 'CODEBUDDY_PASSWORD' ||
           settingKey === 'CODEBUDDY_API_KEY'
             ? 'password'
-            : settingKey === 'CODEBUDDY_PORT' ||
-                settingKey === 'CODEBUDDY_ROTATION_COUNT'
+            : settingKey === 'CODEBUDDY_ROTATION_COUNT'
               ? 'number'
               : 'text'
         }

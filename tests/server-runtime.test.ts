@@ -108,18 +108,18 @@ describe('server runtime', () => {
 
   it('manages settings and credentials through admin routes', async () => {
     const settingsBefore = await (await AdminSettingsRoute.GET()).json();
-    expect(settingsBefore.settings.CODEBUDDY_PORT).toBe(8001);
+    expect(settingsBefore.settings.CODEBUDDY_ROTATION_COUNT).toBe(1);
 
     const saveResponse = await AdminSettingsRoute.POST(
       makeJsonRequest('http://localhost/admin-api/settings', {
         settings: {
-          CODEBUDDY_PORT: 9001,
+          CODEBUDDY_ROTATION_COUNT: 5,
           CODEBUDDY_AUTH_MODE: 'token',
         },
       }),
     );
     const savedPayload = await saveResponse.json();
-    expect(savedPayload.settings.CODEBUDDY_PORT).toBe(9001);
+    expect(savedPayload.settings.CODEBUDDY_ROTATION_COUNT).toBe(5);
     expect(fs.existsSync(path.join(tempConfigDir, 'config.json'))).toBe(true);
 
     const addResponse = await AdminCredentialsRoute.POST(
@@ -400,16 +400,15 @@ describe('server runtime', () => {
           model: 'gpt-5.5',
           input: 'hello',
           instructions: 'Keep replies brief',
-          tool_choice: 'auto',
+          tool_choice: { type: 'function', name: 'lookup_weather' },
           tools: [
             {
               type: 'function',
-              function: {
-                name: 'lookup_weather',
-                parameters: {
-                  type: 'object',
-                  properties: {},
-                },
+              name: 'lookup_weather',
+              description: 'Look up weather for a city',
+              parameters: {
+                type: 'object',
+                properties: {},
               },
             },
           ],
@@ -471,14 +470,18 @@ describe('server runtime', () => {
     const streamText = await streamResponse.text();
     expect(streamText).toContain('response.output_text.delta');
     expect(streamText).toContain('stream answer');
-    expect(
-      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
-        .tools,
-    ).toHaveLength(1);
-    expect(
-      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
-        .tool_choice,
-    ).toBe('auto');
+    const firstUpstream = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    );
+    expect(firstUpstream.tools).toHaveLength(1);
+    expect(firstUpstream.tools[0].function.name).toBe('lookup_weather');
+    expect(firstUpstream.tools[0].function.description).toBe(
+      'Look up weather for a city',
+    );
+    expect(firstUpstream.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'lookup_weather' },
+    });
     expect(
       JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))
         .messages[0].content,

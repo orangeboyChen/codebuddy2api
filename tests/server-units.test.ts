@@ -25,6 +25,8 @@ import {
   handleResponsesRequest,
   resetResponseSessions,
 } from '@/lib/server/responses';
+import { updateSettings, getActiveConfig } from '@/lib/server/config';
+import { getRequestHeaderMap } from '@/lib/server/http';
 import {
   getUsageStats,
   recordCredentialUsage,
@@ -591,5 +593,69 @@ describe('server units', () => {
         ).json()
       ).error,
     ).toBe('denied');
+  });
+
+  it('translates responses tools to chat-completions schema before proxying', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        choices: [{ message: { content: 'done' } }],
+      }),
+    );
+
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'use a tool',
+        model: 'gpt-5.5',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_weather',
+            description: 'Look up weather',
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { tools: Array<Record<string, unknown>> };
+
+    expect(upstreamBody.tools).toHaveLength(1);
+    expect(upstreamBody.tools[0].type).toBe('function');
+    expect(upstreamBody.tools[0].function).toEqual({
+      name: 'lookup_weather',
+      description: 'Look up weather',
+      parameters: { type: 'object', properties: {} },
+    });
+  });
+
+  it('maps bare session_id and originator headers to x- prefixed names', () => {
+    const headers = new Headers({
+      session_id: 'sess-123',
+      originator: 'codex',
+      'x-request-id': 'req-456',
+    });
+
+    const result = getRequestHeaderMap(headers);
+
+    expect(result['x-session-id']).toBe('sess-123');
+    expect(result['x-originator']).toBe('codex');
+    expect(result['x-request-id']).toBe('req-456');
+    expect(result['session_id']).toBeUndefined();
+    expect(result['originator']).toBeUndefined();
+  });
+
+  it('coerces nullable string settings to strings', () => {
+    updateSettings({ CODEBUDDY_PASSWORD: 12345, CODEBUDDY_API_KEY: true });
+
+    const config = getActiveConfig();
+
+    expect(config.CODEBUDDY_PASSWORD).toBe('12345');
+    expect(config.CODEBUDDY_API_KEY).toBe('true');
   });
 });

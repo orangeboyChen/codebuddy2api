@@ -14,12 +14,11 @@ export const dynamic = 'force-dynamic';
 
 const buildApiEndpoint = async () => {
   const headerStore = await headers();
-  const config = getActiveConfig();
   const protocol = headerStore.get('x-forwarded-proto') ?? 'http';
   const host =
     headerStore.get('x-forwarded-host') ??
     headerStore.get('host') ??
-    `127.0.0.1:${config.CODEBUDDY_PORT}`;
+    'localhost';
 
   return `${protocol}://${host}/v1`;
 };
@@ -29,9 +28,10 @@ const getInitialData = async (): Promise<AdminConsoleInitialData> => {
 
   return {
     apiEndpoint: await buildApiEndpoint(),
-    credentials: listCredentials().credentials as CredentialSummary[],
+    credentials: listCredentials()
+      .credentials as unknown as CredentialSummary[],
     currentCredential:
-      getCurrentCredentialInfo() as AdminConsoleInitialData['currentCredential'],
+      getCurrentCredentialInfo() as unknown as AdminConsoleInitialData['currentCredential'],
     health: {
       checkedAtLabel: new Date(timestamp).toLocaleTimeString('zh-CN'),
       status: 'healthy',
@@ -40,7 +40,7 @@ const getInitialData = async (): Promise<AdminConsoleInitialData> => {
     },
     settings: {
       labels: SETTING_LABELS,
-      values: getActiveConfig(),
+      values: { ...getActiveConfig() },
     },
     stats: getUsageStats(),
   };
