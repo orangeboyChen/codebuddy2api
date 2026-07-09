@@ -439,6 +439,7 @@ interface StreamingToolUseState {
   input: string;
   index: number;
   started: boolean;
+  blockEmitted: boolean;
 }
 
 const mapOpenAIStreamToAnthropicSSE = (
@@ -579,34 +580,38 @@ const mapOpenAIStreamToAnthropicSSE = (
 
           toolUseStates.set(key, {
             id: callId,
-            name: call.function?.name ?? '',
+            name: '',
             input: '',
             index: blockIndex,
             started: false,
+            blockEmitted: false,
           });
           nextToolIndex++;
-
-          const state = toolUseStates.get(key)!;
-
-          if (!state.started) {
-            state.started = true;
-            enqueueEvent({
-              type: 'content_block_start',
-              index: state.index,
-              content_block: {
-                type: 'tool_use',
-                id: state.id,
-                name: state.name || 'unknown',
-                input: {},
-              },
-            });
-          }
         }
 
         const state = toolUseStates.get(key)!;
 
-        if (call.function?.name && !state.name) {
-          state.name = call.function.name;
+        // Accumulate name fragments (upstream may stream the function
+        // name across multiple deltas, e.g. "look" + "up").
+        if (call.function?.name) {
+          state.name += call.function.name;
+        }
+
+        // Emit content_block_start lazily — once we have a name and at
+        // least one arguments fragment, so the block header carries the
+        // full tool name instead of a partial fragment.
+        if (!state.blockEmitted && state.name && call.function?.arguments) {
+          state.blockEmitted = true;
+          enqueueEvent({
+            type: 'content_block_start',
+            index: state.index,
+            content_block: {
+              type: 'tool_use',
+              id: state.id,
+              name: state.name,
+              input: {},
+            },
+          });
         }
 
         if (call.function?.arguments) {
@@ -648,6 +653,22 @@ const mapOpenAIStreamToAnthropicSSE = (
 
     // Close tool use blocks
     for (const [, state] of toolUseStates) {
+      // If the block start was never emitted (e.g. name-only deltas
+      // with no arguments), emit it now so the block is well-formed.
+      if (!state.blockEmitted) {
+        state.blockEmitted = true;
+        enqueueEvent({
+          type: 'content_block_start',
+          index: state.index,
+          content_block: {
+            type: 'tool_use',
+            id: state.id,
+            name: state.name || 'unknown',
+            input: {},
+          },
+        });
+      }
+
       enqueueEvent({
         type: 'content_block_stop',
         index: state.index,

@@ -1133,4 +1133,69 @@ describe('anthropic messages api', () => {
 
     expect(upstreamBody.tool_choice).toBe('auto');
   });
+
+  it('concatenates streamed tool name fragments', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeSseResponse([
+        'data: {"id":"chatcmpl_frag","model":"claude-sonnet-4.6","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_frag","type":"function","function":{"name":"look"}}]}}]}',
+        'data: {"id":"chatcmpl_frag","model":"claude-sonnet-4.6","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"up","arguments":"{\\"city\\":"}}]}}]}',
+        'data: {"id":"chatcmpl_frag","model":"claude-sonnet-4.6","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"Shanghai\\"}"}}]}}]}',
+        'data: {"id":"chatcmpl_frag","model":"claude-sonnet-4.6","choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        'data: [DONE]',
+      ]),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: 'user', content: 'Weather?' }],
+        tools: [
+          {
+            name: 'lookup',
+            input_schema: { type: 'object', properties: {} },
+          },
+        ],
+      },
+    );
+
+    const text = await response.text();
+
+    // The full name "lookup" should appear in content_block_start, not
+    // a partial fragment like "look".
+    expect(text).toContain('"name":"lookup"');
+    expect(text).not.toContain('"name":"look"');
+    expect(text).toContain('"id":"call_frag"');
+    expect(text).toContain('"type":"input_json_delta"');
+    expect(text).toContain('"stop_reason":"tool_use"');
+  });
+
+  it('emits content_block_start for tool with name-only deltas', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeSseResponse([
+        'data: {"id":"chatcmpl_noarg","model":"claude-sonnet-4.6","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_noarg","type":"function","function":{"name":"only_name"}}]}}]}',
+        'data: {"id":"chatcmpl_noarg","model":"claude-sonnet-4.6","choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        'data: [DONE]',
+      ]),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: 'user', content: 'Use tool' }],
+      },
+    );
+
+    const text = await response.text();
+
+    expect(text).toContain('"name":"only_name"');
+    expect(text).toContain('event: content_block_start');
+    expect(text).toContain('event: content_block_stop');
+    expect(text).toContain('"stop_reason":"tool_use"');
+  });
 });
