@@ -75,6 +75,31 @@ curl -X POST "http://127.0.0.1:8001/v1/responses" \
   }'
 ```
 
+### Anthropic Messages API (Claude Code)
+
+The Anthropic-compatible Messages API is available at `/v1/messages`, so you can use the proxy directly with **Claude Code** or any Anthropic SDK client. Tools, streaming, extended thinking, and MCP tool calls are all supported. Token usage (including cache creation/read tokens) is returned just like the chat completions API.
+
+```bash
+curl -X POST "http://127.0.0.1:8001/v1/messages" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: any" \
+  -d '{
+    "model": "claude-sonnet-4.6",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+#### Claude Code
+
+Point Claude Code at the proxy by setting the API base URL:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8001
+export ANTHROPIC_API_KEY=any
+claude
+```
+
 ### OpenAI SDK (TypeScript)
 
 ```ts

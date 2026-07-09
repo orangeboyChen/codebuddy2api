@@ -12,6 +12,7 @@ next-env.d.ts
 
 # Test coverage
 coverage/
+test-report.junit.xml
 
 # Local environment and runtime config
 .env

@@ -1,0 +1,45 @@
+coverage:
+  status:
+    project:
+      default:
+        # Compare against the base branch instead of an absolute 90%
+        # target so PRs that improve an already-below-90% base are not
+        # blocked. The hard 90% gate is enforced by vitest thresholds in CI.
+        target: auto
+        threshold: 0%
+    patch:
+      default:
+        target: 90%
+        threshold: 1%
+
+comment:
+  layout: 'condensed_header, diff, flags, components'
+  show_critical_paths: true
+
+# app/ routes are thin wrappers over lib/server and are exercised via
+# integration tests, not unit tests. Exclude them from the coverage
+# denominator so the project status reflects unit-tested code only.
+ignore:
+  - 'app/**'
+  - 'tests/**'
+  - '.next/**'
+  - 'coverage/**'
+  - 'node_modules/**'
+  - 'deploy/**'
+  - 'next-env.d.ts'
+  - 'next.config.ts'
+  - 'vitest.config.ts'
+  - 'vitest.setup.ts'
+  - 'eslint.config.ts'
+  - 'prettier.config.mts'
+
+flag_management:
+  default_rules:
+    carryforward: false
+    statuses:
+      - type: project
+        target: auto
+        threshold: 0%
+      - type: patch
+        target: 90%
+        threshold: 1%

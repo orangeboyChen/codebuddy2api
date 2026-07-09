@@ -12,6 +12,8 @@ import { recordModelUsage } from './stats';
 interface OpenAIMessage {
   role?: string;
   content?: unknown;
+  tool_calls?: unknown[];
+  tool_call_id?: string;
 }
 
 interface ChatRequestBody {
@@ -28,11 +30,15 @@ interface ChatRequestBody {
   stop?: string | string[];
   tools?: unknown[];
   tool_choice?: unknown;
+  thinking?: Record<string, unknown>;
+  reasoning_effort?: string;
 }
 
 interface ChatStreamDelta {
   content?: string;
   role?: string;
+  reasoning_content?: string;
+  reasoning?: string;
   tool_calls?: Array<{
     index?: number;
     id?: string;
@@ -97,13 +103,9 @@ const normalizeMessages = (messages: OpenAIMessage[]): OpenAIMessage[] => {
     ];
   }
 
-  return filtered.map((item) => {
-    if (item.role === 'tool') {
-      return { ...item, role: 'user' };
-    }
-
-    return item;
-  });
+  // Preserve role:'tool' messages so the OpenAI-compatible upstream
+  // receives a valid tool_calls/tool-result pair for multi-step tool loops.
+  return filtered;
 };
 
 const getResolvedAuth = (): ResolvedAuth => {
@@ -278,6 +280,8 @@ const buildUpstreamBody = (body: ChatRequestBody): ChatRequestBody => {
     stop: body.stop,
     tools: body.tools,
     tool_choice: body.tool_choice,
+    thinking: body.thinking,
+    reasoning_effort: body.reasoning_effort,
   };
 };
 
@@ -552,6 +556,7 @@ const aggregateUpstreamStream = async (
   let created = Math.floor(Date.now() / 1000);
   let model = fallbackModel;
   let content = '';
+  let reasoningContent = '';
   let finishReason: string | null = 'stop';
   let role = 'assistant';
   let usage: unknown = null;
@@ -610,6 +615,10 @@ const aggregateUpstreamStream = async (
       content += delta.content;
     }
 
+    if (delta?.reasoning_content ?? delta?.reasoning) {
+      reasoningContent += delta.reasoning_content ?? delta.reasoning;
+    }
+
     if (delta?.tool_calls?.length) {
       toolCalls.push(...delta.tool_calls);
     }
@@ -624,6 +633,10 @@ const aggregateUpstreamStream = async (
     role,
     content: content || null,
   };
+
+  if (reasoningContent) {
+    message.reasoning_content = reasoningContent;
+  }
 
   if (aggregatedToolCalls.length) {
     message.tool_calls = aggregatedToolCalls;

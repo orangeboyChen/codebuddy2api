@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prepare": "husky",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0 --port 8001",
     "lint": "eslint . --ext .ts,.tsx --max-warnings=0",
@@ -11,7 +12,9 @@
     "format:check": "prettier --check .",
     "typecheck": "rm -rf .next/types && next typegen && tsc --noEmit",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "commitlint": "commitlint",
+    "lint-staged": "lint-staged",
+    "test:coverage": "vitest run --coverage --reporter=junit --outputFile=test-report.junit.xml"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.0",
@@ -22,6 +25,8 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.2.1",
+    "@commitlint/config-conventional": "^21.2.0",
     "@next/eslint-plugin-next": "^16.2.10",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
@@ -37,10 +42,21 @@
     "eslint-plugin-prettier": "^5.5.6",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "husky": "^9.1.7",
     "jiti": "^2.7.0",
     "jsdom": "^26.0.0",
+    "lint-staged": "^17.0.8",
     "prettier": "^3.5.3",
     "typescript": "^5.8.2",
     "vitest": "^3.2.4"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --max-warnings=0 --fix",
+      "prettier --check"
+    ],
+    "*.{json,md,yml,yaml,css}": [
+      "prettier --check"
+    ]
   }
 }

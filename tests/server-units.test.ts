@@ -3,7 +3,10 @@ import path from 'node:path';
 
 import { NextRequest } from 'next/server';
 
-import { getAuthErrorResponse } from '@/lib/server/auth';
+import {
+  getAnthropicAuthErrorResponse,
+  getAuthErrorResponse,
+} from '@/lib/server/auth';
 import {
   getAuthCallbackResponse,
   pollCodeBuddyAuth,
@@ -101,6 +104,51 @@ describe('server units', () => {
       getAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
           headers: { authorization: 'Bearer secret' },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('covers anthropic auth with x-api-key and bearer', async () => {
+    // No password configured — both pass.
+    expect(
+      getAnthropicAuthErrorResponse(
+        makeNextRequest('http://localhost/v1/messages'),
+      ),
+    ).toBeNull();
+
+    process.env.CODEBUDDY_PASSWORD = 'anthropic-secret';
+
+    // Missing key entirely.
+    const noKey = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages'),
+    );
+    expect(noKey?.status).toBe(401);
+    expect((await noKey!.json()).type).toBe('error');
+
+    // Wrong key via x-api-key.
+    expect(
+      getAnthropicAuthErrorResponse(
+        makeNextRequest('http://localhost/v1/messages', {
+          headers: { 'x-api-key': 'wrong' },
+        }),
+      )?.status,
+    ).toBe(403);
+
+    // Correct key via x-api-key.
+    expect(
+      getAnthropicAuthErrorResponse(
+        makeNextRequest('http://localhost/v1/messages', {
+          headers: { 'x-api-key': 'anthropic-secret' },
+        }),
+      ),
+    ).toBeNull();
+
+    // Correct key via Authorization: Bearer.
+    expect(
+      getAnthropicAuthErrorResponse(
+        makeNextRequest('http://localhost/v1/messages', {
+          headers: { authorization: 'Bearer anthropic-secret' },
         }),
       ),
     ).toBeNull();
@@ -593,6 +641,108 @@ describe('server units', () => {
         ).json()
       ).error,
     ).toBe('denied');
+  });
+
+  it('covers successful auth flow with JWT token decoding', async () => {
+    // Build a fake JWT payload with enterprise/tenant/user info.
+    const jwtPayload = {
+      email: 'user@example.com',
+      enterprise_id: 'ent-123',
+      tenant_id: 'tenant-456',
+      sid: 'session-789',
+      name: 'Test User',
+      preferred_username: 'testuser',
+    };
+    const encodedPayload = Buffer.from(JSON.stringify(jwtPayload)).toString(
+      'base64url',
+    );
+    const fakeJwt = `header.${encodedPayload}.signature`;
+
+    vi.spyOn(globalThis, 'fetch')
+      // startCodeBuddyAuth success
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          code: 0,
+          data: {
+            state: 'state-abc',
+            authUrl: 'https://example.com/auth',
+          },
+        }),
+      )
+      // pollCodeBuddyAuth success
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          code: 0,
+          data: {
+            accessToken: fakeJwt,
+            expiresIn: 3600,
+            refreshToken: 'refresh-tok',
+            scope: 'read',
+            sessionState: 'sess-1',
+            tokenType: 'Bearer',
+            domain: 'example.com',
+            enterpriseId: 'ent-123',
+            tenantId: 'tenant-456',
+          },
+        }),
+      );
+
+    const startResult = (await (await startCodeBuddyAuth()).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(startResult.success).toBe(true);
+    expect(startResult.auth_state).toBe('state-abc');
+    expect(startResult.verification_uri_complete).toBe(
+      'https://example.com/auth',
+    );
+
+    const pollResult = (await (
+      await pollCodeBuddyAuth('state-abc')
+    ).json()) as Record<string, unknown>;
+    expect(pollResult.access_token).toBe(fakeJwt);
+    expect(pollResult.saved).toBe(true);
+    expect(pollResult.user_info).toMatchObject({
+      email: 'user@example.com',
+      name: 'Test User',
+      preferred_username: 'testuser',
+    });
+
+    // The credential should have been saved with enterprise/tenant info.
+    const credInfo = getCurrentCredentialInfo();
+    expect(credInfo.status).toBe('auto_rotation');
+    expect(credInfo.tenant_id).toBe('tenant-456');
+  });
+
+  it('covers authorization pending and empty token fallbacks', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      // authorization_pending (code 11217)
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          code: 11217,
+          msg: 'waiting for login',
+        }),
+      )
+      // success with empty bearer token (fallback to unknown user)
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          code: 0,
+          data: {
+            accessToken: 'not-a-jwt',
+            expiresIn: 0,
+            tokenType: 'Bearer',
+          },
+        }),
+      );
+
+    const pendingResult = await (
+      await pollCodeBuddyAuth('state-pending')
+    ).json();
+    expect(pendingResult.error).toBe('authorization_pending');
+
+    const emptyResult = await (await pollCodeBuddyAuth('state-empty')).json();
+    expect(emptyResult.access_token).toBe('not-a-jwt');
+    expect(emptyResult.saved).toBe(true);
   });
 
   it('translates responses tools to chat-completions schema before proxying', async () => {
