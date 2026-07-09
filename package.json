@@ -14,7 +14,8 @@
     "test": "vitest run",
     "commitlint": "commitlint",
     "lint-staged": "lint-staged",
-    "test:coverage": "vitest run --coverage --reporter=junit --outputFile=test-report.junit.xml"
+    "test:ci": "vitest run --coverage --reporter=junit --outputFile=test-report.junit.xml",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.0",

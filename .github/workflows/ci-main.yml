@@ -56,7 +56,7 @@ jobs:
         run: bun run typecheck
 
       - name: Run unit tests with coverage gate
-        run: bun run test:coverage
+        run: bun run test:ci
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
