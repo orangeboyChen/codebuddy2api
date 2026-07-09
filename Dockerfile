@@ -24,9 +24,8 @@ ENV NODE_ENV=production \
 
 COPY --from=builder --chown=bun:bun /app/.next/standalone ./
 COPY --from=builder --chown=bun:bun /app/.next/static ./.next/static
-COPY --from=builder --chown=bun:bun /app/config ./config
 
-RUN mkdir -p /app/.codebuddy_creds && \
+RUN mkdir -p /app/config /app/.codebuddy_creds && \
     chown -R bun:bun /app
 
 USER bun
