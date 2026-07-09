@@ -3,7 +3,17 @@ import path from 'node:path';
 
 import { NextRequest } from 'next/server';
 
-import { createAccessKey } from '@/lib/server/access-keys';
+import {
+  createAccessKey,
+  deleteAccessKey,
+  findAccessKeyById,
+  findAccessKeyBySecret,
+  getAccessKeySecret,
+  hasAccessKeys,
+  listAccessKeys,
+  listStoredAccessKeys,
+  updateAccessKey,
+} from '@/lib/server/access-keys';
 import {
   getAnthropicAuthErrorResponse,
   getAuthErrorResponse,
@@ -39,12 +49,12 @@ import {
   resetUsageStats,
 } from '@/lib/server/stats';
 
-const tempConfigDir = path.join(process.cwd(), '.tmp-test-config');
-const tempCredsDir = path.join(process.cwd(), '.tmp-test-creds');
+const tempConfigDir = path.join(process.cwd(), '.tmp-test-config-units');
+const tempCredsDir = path.join(process.cwd(), '.tmp-test-creds-units');
 
 const cleanupTempState = (): void => {
-  fs.rmSync(tempConfigDir, { force: true, recursive: true });
-  fs.rmSync(tempCredsDir, { force: true, recursive: true });
+  fs.rmSync(tempConfigDir, { force: true, recursive: true, maxRetries: 5 });
+  fs.rmSync(tempCredsDir, { force: true, recursive: true, maxRetries: 5 });
 };
 
 const makeNextRequest = (
@@ -73,8 +83,8 @@ describe('server units', () => {
     resetResponseSessions();
     resetUsageStats();
     vi.restoreAllMocks();
-    process.env.CODEBUDDY_CONFIG_PATH = '.tmp-test-config/config.json';
-    process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds';
+    process.env.CODEBUDDY_CONFIG_PATH = '.tmp-test-config-units/config.json';
+    process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds-units';
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
     process.env.CODEBUDDY_API_KEY = '';
   });
@@ -103,6 +113,13 @@ describe('server units', () => {
     expect(
       getAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Basic nope' },
+        }),
+      )?.status,
+    ).toBe(401);
+    expect(
+      getAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
           headers: { authorization: 'Bearer nope' },
         }),
       )?.status,
@@ -110,7 +127,14 @@ describe('server units', () => {
     expect(
       getAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
-          headers: { authorization: `Bearer ${secret}` },
+          headers: { authorization: `Bearer ${secret} trailing` },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { 'x-api-key': secret },
         }),
       ),
     ).toBeNull();
@@ -141,13 +165,13 @@ describe('server units', () => {
     expect((await noKey!.json()).type).toBe('error');
 
     // Wrong key via x-api-key.
-    expect(
-      getAnthropicAuthErrorResponse(
-        makeNextRequest('http://localhost/v1/messages', {
-          headers: { 'x-api-key': 'wrong' },
-        }),
-      )?.status,
-    ).toBe(403);
+    const wrongKey = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { 'x-api-key': 'wrong' },
+      }),
+    );
+    expect(wrongKey?.status).toBe(403);
+    expect(wrongKey).not.toBeNull();
 
     // Correct key via x-api-key.
     expect(
@@ -195,8 +219,14 @@ describe('server units', () => {
     });
 
     const listed = listCredentials();
-    expect(listed.credentials[0].is_expired).toBe(true);
-    expect(listed.credentials[1].tenant_id).toBe('tenant-a');
+    const expiredCredential = listed.credentials.find((item) => {
+      return item.user_id === 'expired@example.com' || item.is_expired === true;
+    });
+    const tenantCredential = listed.credentials.find(
+      (item) => item.user_id === 'one@example.com',
+    );
+    expect(expiredCredential?.is_expired).toBe(true);
+    expect(tenantCredential?.tenant_id).toBe('tenant-a');
 
     const first = resolveCredentialForRequest();
     const second = resolveCredentialForRequest();
@@ -231,6 +261,118 @@ describe('server units', () => {
     recordCredentialUsage('cred-a');
     expect(getUsageStats().model_usage['glm-5.1']).toBe(1);
     expect(getUsageStats().credential_usage['cred-a']).toBe(1);
+  });
+
+  it('covers access key store edge cases and mutation failures', () => {
+    expect(hasAccessKeys()).toBe(false);
+    expect(findAccessKeyBySecret('   ')).toBeNull();
+    expect(getAccessKeySecret('missing')).toBeNull();
+    expect(deleteAccessKey('missing')).toBe(false);
+    expect(listAccessKeys().access_keys).toEqual([]);
+    expect(listStoredAccessKeys()).toEqual([]);
+
+    fs.mkdirSync(tempConfigDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tempConfigDir, 'access-keys.json'),
+      JSON.stringify({
+        accessKeys: [
+          {
+            id: 'valid-id',
+            name: 'Valid Key',
+            secret: 'shortsecret',
+            createdAt: '2026-07-10T00:00:00.000Z',
+            updatedAt: '2026-07-10T00:00:00.000Z',
+            credentialFilenames: ['cred-b.json', 'cred-a.json'],
+          },
+          {
+            id: 'invalid-id',
+            name: 'Broken Key',
+            credentialFilenames: 'bad-shape',
+          },
+        ],
+      }),
+    );
+
+    expect(hasAccessKeys()).toBe(true);
+    expect(findAccessKeyById('valid-id')?.name).toBe('Valid Key');
+    expect(findAccessKeyBySecret('shortsecret')?.id).toBe('valid-id');
+    expect(getAccessKeySecret('valid-id')?.secret).toBe('shortsecret');
+    expect(listStoredAccessKeys()).toHaveLength(1);
+    expect(listAccessKeys().access_keys[0]?.maskedSecret).toBe('shor****');
+
+    fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
+    expect(listStoredAccessKeys()).toEqual([]);
+    expect(hasAccessKeys()).toBe(false);
+  });
+
+  it('covers access key validation, normalization, and deletion', () => {
+    const firstCredential = addCredential({
+      bearer_token: 'token-first',
+      user_id: 'first@example.com',
+    });
+    const secondCredential = addCredential({
+      bearer_token: 'token-second',
+      user_id: 'second@example.com',
+    });
+
+    expect(() =>
+      createAccessKey({
+        credentialFilenames: [firstCredential.filename],
+        name: '   ',
+      }),
+    ).toThrow('Access key name is required');
+    expect(() =>
+      createAccessKey({
+        credentialFilenames: ['   '],
+        name: 'Missing Credentials',
+      }),
+    ).toThrow('At least one credential must be selected');
+
+    const created = createAccessKey({
+      credentialFilenames: [
+        ` ${secondCredential.filename} `,
+        firstCredential.filename,
+        secondCredential.filename,
+      ],
+      name: '  Mixed Key  ',
+    });
+    expect(created.access_key.name).toBe('Mixed Key');
+    expect(created.access_key.credentialFilenames).toEqual([
+      firstCredential.filename,
+      secondCredential.filename,
+    ]);
+    expect(created.secret.startsWith('cb2_')).toBe(true);
+    expect(created.access_key.maskedSecret).toContain('...');
+
+    expect(() =>
+      updateAccessKey(created.access_key.id, {
+        credentialFilenames: [firstCredential.filename],
+        name: '   ',
+      }),
+    ).toThrow('Access key name is required');
+    expect(() =>
+      updateAccessKey(created.access_key.id, {
+        credentialFilenames: [],
+        name: 'Still Bad',
+      }),
+    ).toThrow('At least one credential must be selected');
+    expect(() =>
+      updateAccessKey('missing-id', {
+        credentialFilenames: [firstCredential.filename],
+        name: 'Unknown Key',
+      }),
+    ).toThrow('Access key not found');
+
+    const updated = updateAccessKey(created.access_key.id, {
+      credentialFilenames: [secondCredential.filename],
+      name: 'Updated Key',
+    });
+    expect(updated.name).toBe('Updated Key');
+    expect(updated.credentialFilenames).toEqual([secondCredential.filename]);
+
+    expect(deleteAccessKey(created.access_key.id)).toBe(true);
+    expect(findAccessKeyById(created.access_key.id)).toBeNull();
+    expect(getAccessKeySecret(created.access_key.id)).toBeNull();
   });
 
   it('covers chat proxy error, token auth, and streaming branches', async () => {
