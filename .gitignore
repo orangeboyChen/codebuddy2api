@@ -1,2 +1,37 @@
-.idea/
+# Dependencies
+node_modules/
+
+# Next.js / TypeScript build outputs
+.next/
+out/
+dist/
+build/
+next-env.d.ts
+*.tsbuildinfo
+.turbo/
+
+# Test coverage
+coverage/
+
+# Local environment and runtime config
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+config/config.json
+
+# Local test artifacts
+.tmp-test-config/
+.tmp-test-creds/
+
+# Credentials
 .codebuddy_creds/
+
+# Tooling caches and logs
+.eslintcache
+*.log
+
+# OS / editor files
+.DS_Store
+.idea/

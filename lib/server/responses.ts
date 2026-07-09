@@ -1,0 +1,745 @@
+import type { NextRequest } from 'next/server';
+
+import { getAvailableModels } from './config';
+import { createErrorResponse } from './http';
+import { proxyChatCompletions } from './codebuddy';
+
+interface ResponsesInputItem {
+  type?: string;
+  role?: string;
+  content?: unknown;
+  text?: string;
+  arguments?: string;
+  output?: unknown;
+  name?: string;
+  call_id?: string;
+}
+
+interface ResponsesRequestBody {
+  model?: string;
+  input?: string | ResponsesInputItem[];
+  instructions?: string;
+  messages?: Array<{ role?: string; content?: unknown }>;
+  stream?: boolean;
+  metadata?: Record<string, unknown>;
+  reasoning?: Record<string, unknown>;
+  thinking?: Record<string, unknown>;
+  tools?: Array<{ type?: string; name?: string } & Record<string, unknown>>;
+  tool_choice?: unknown;
+  max_output_tokens?: number;
+  previous_response_id?: string;
+}
+
+type ResponseSessionDefaults = Pick<
+  ResponsesRequestBody,
+  'instructions' | 'metadata' | 'tools' | 'tool_choice'
+>;
+
+interface ResponseSession {
+  id: string;
+  model: string;
+  transcript: Array<{ role: string; content: string }>;
+  defaults: ResponseSessionDefaults;
+}
+
+interface ChatResponseToolCall {
+  index?: number;
+  id?: string;
+  type?: string;
+  function?: {
+    arguments?: string;
+    name?: string;
+  };
+}
+
+interface ChatResponseMessage {
+  content?: unknown;
+  tool_calls?: ChatResponseToolCall[];
+}
+
+interface StreamingToolCallState {
+  arguments: string;
+  canonicalKey: string;
+  callId: string;
+  name: string;
+  outputIndex: number;
+  outputItemId: string;
+}
+
+const globalResponsesState = globalThis as typeof globalThis & {
+  __codebuddy2apiResponseSessions__?: Map<string, ResponseSession>;
+};
+
+const getSessionStore = (): Map<string, ResponseSession> => {
+  if (!globalResponsesState.__codebuddy2apiResponseSessions__) {
+    globalResponsesState.__codebuddy2apiResponseSessions__ = new Map();
+  }
+
+  return globalResponsesState.__codebuddy2apiResponseSessions__;
+};
+
+const validateTools = (
+  tools: ResponsesRequestBody['tools'],
+): Response | null => {
+  if (!tools?.length) {
+    return null;
+  }
+
+  const unsupported = tools.find(
+    (tool) => tool.type !== 'function' && tool.type !== 'mcp',
+  );
+
+  if (!unsupported) {
+    return null;
+  }
+
+  return createErrorResponse(
+    400,
+    'Unsupported Responses tool type. Supported types: function, mcp',
+  );
+};
+
+const stringifyContent = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') {
+          return item;
+        }
+
+        if (item && typeof item === 'object' && 'text' in item) {
+          return String((item as { text?: unknown }).text ?? '');
+        }
+
+        return JSON.stringify(item);
+      })
+      .join('');
+  }
+
+  if (value === undefined || value === null) {
+    return '';
+  }
+
+  return JSON.stringify(value);
+};
+
+const mapInputItemToMessage = (
+  item: ResponsesInputItem,
+): { role: string; content: string } => {
+  if (item.type === 'function_call') {
+    return {
+      role: 'assistant',
+      content: `${item.name ?? 'function'}(${item.arguments ?? ''})`,
+    };
+  }
+
+  if (item.type === 'function_call_output' || item.type === 'mcp_call_output') {
+    return {
+      role: 'user',
+      content: stringifyContent(item.output),
+    };
+  }
+
+  if (item.type === 'mcp_approval_response') {
+    return {
+      role: 'user',
+      content: JSON.stringify(item),
+    };
+  }
+
+  return {
+    role: item.role ?? 'user',
+    content: item.text ?? stringifyContent(item.content),
+  };
+};
+
+const createResponseId = (): string => {
+  return `resp_${crypto.randomUUID().replaceAll('-', '')}`;
+};
+
+const createMessageId = (): string => {
+  return `msg_${crypto.randomUUID().replaceAll('-', '')}`;
+};
+
+const createResponseOutputId = (): string => {
+  return `fc_${crypto.randomUUID().replaceAll('-', '')}`;
+};
+
+const normalizeToolCallId = (id: string | undefined, index: number): string => {
+  if (id && !id.startsWith('tooluse_')) {
+    return id;
+  }
+
+  return `call_${id?.replace(/^tooluse_/, '') ?? index + 1}`;
+};
+
+const translateResponsesToolsToChat = (
+  tools: ResponsesRequestBody['tools'],
+): unknown[] | undefined => {
+  if (!tools?.length) {
+    return undefined;
+  }
+
+  return tools.map((tool) => {
+    if (tool.type === 'mcp') {
+      return tool;
+    }
+
+    // Accept both the Responses schema (name/parameters at the top level)
+    // and the chat-completions schema (function: {name, parameters, ...}).
+    const nested =
+      typeof tool.function === 'object' && tool.function !== null
+        ? (tool.function as Record<string, unknown>)
+        : {};
+
+    const functionDef: Record<string, unknown> = {
+      name: nested.name ?? tool.name,
+    };
+
+    const description = nested.description ?? tool.description;
+    if (description !== undefined) {
+      functionDef.description = description;
+    }
+
+    const parameters = nested.parameters ?? tool.parameters;
+    if (parameters !== undefined) {
+      functionDef.parameters = parameters;
+    }
+
+    const strict = nested.strict ?? tool.strict;
+    if (strict !== undefined) {
+      functionDef.strict = strict;
+    }
+
+    return {
+      type: 'function',
+      function: functionDef,
+    };
+  });
+};
+
+const translateResponsesToolChoiceToChat = (toolChoice: unknown): unknown => {
+  if (typeof toolChoice !== 'object' || toolChoice === null) {
+    return toolChoice;
+  }
+
+  const choice = toolChoice as Record<string, unknown>;
+
+  // Responses API selects a function by name:
+  // {type: 'function', name: 'fn'} -> chat schema {type: 'function', function: {name: 'fn'}}
+  if (choice.type === 'function' && typeof choice.name === 'string') {
+    return {
+      type: 'function',
+      function: { name: choice.name },
+    };
+  }
+
+  return toolChoice;
+};
+
+const stringifyToolCallForTranscript = (
+  toolCall: ChatResponseToolCall,
+): string => {
+  return `${toolCall.function?.name ?? 'function'}(${toolCall.function?.arguments ?? ''})`;
+};
+
+const buildAssistantTranscriptContent = (
+  outputText: string,
+  toolCalls: ChatResponseToolCall[],
+): string => {
+  const segments = [
+    outputText,
+    ...toolCalls.map((toolCall) => stringifyToolCallForTranscript(toolCall)),
+  ].filter((segment) => segment.length > 0);
+
+  return segments.join('\n');
+};
+
+const getStreamingToolCallCanonicalKey = (
+  toolCall: ChatResponseToolCall,
+  position: number,
+): string => {
+  if (toolCall.id) {
+    return `id:${toolCall.id}`;
+  }
+
+  if (typeof toolCall.index === 'number') {
+    return `index:${toolCall.index}`;
+  }
+
+  return `position:${position}`;
+};
+
+const getStreamingToolCallLookupKeys = (
+  toolCall: ChatResponseToolCall,
+  position: number,
+): string[] => {
+  if (toolCall.id || typeof toolCall.index === 'number') {
+    return [
+      toolCall.id ? `id:${toolCall.id}` : null,
+      typeof toolCall.index === 'number' ? `index:${toolCall.index}` : null,
+    ].filter((key): key is string => key !== null);
+  }
+
+  return [`position:${position}`];
+};
+
+const prepareTranscript = (
+  body: ResponsesRequestBody,
+): {
+  defaults: ResponseSessionDefaults;
+  model: string;
+  transcript: Array<{ role: string; content: string }>;
+  previousResponseId: string | null;
+} => {
+  const previousResponseId = body.previous_response_id ?? null;
+  const previousSession = previousResponseId
+    ? getSessionStore().get(previousResponseId)
+    : undefined;
+
+  if (previousResponseId && !previousSession) {
+    throw new Error('Unknown or expired previous_response_id');
+  }
+
+  const transcript = [...(previousSession?.transcript ?? [])];
+  const model =
+    body.model ??
+    previousSession?.model ??
+    getAvailableModels()[0] ??
+    'glm-5.1';
+  const defaults = {
+    instructions:
+      body.instructions ?? previousSession?.defaults.instructions ?? undefined,
+    metadata: body.metadata ?? previousSession?.defaults.metadata ?? undefined,
+    tools: body.tools ?? previousSession?.defaults.tools ?? undefined,
+    tool_choice: translateResponsesToolChoiceToChat(
+      body.tool_choice ?? previousSession?.defaults.tool_choice ?? undefined,
+    ),
+  };
+
+  if (body.messages?.length) {
+    body.messages.forEach((item) => {
+      transcript.push({
+        role: item.role ?? 'user',
+        content: stringifyContent(item.content),
+      });
+    });
+  } else if (typeof body.input === 'string') {
+    transcript.push({ role: 'user', content: body.input });
+  } else if (Array.isArray(body.input)) {
+    body.input.forEach((item) => {
+      transcript.push(mapInputItemToMessage(item));
+    });
+  }
+
+  return {
+    defaults,
+    model,
+    transcript,
+    previousResponseId,
+  };
+};
+
+const mapChatResponseToResponsesPayload = (
+  defaults: ResponseSessionDefaults,
+  transcript: Array<{ role: string; content: string }>,
+  model: string,
+  previousResponseId: string | null,
+  upstreamPayload: Record<string, unknown>,
+): Record<string, unknown> => {
+  const responseId = createResponseId();
+  const choices = Array.isArray(upstreamPayload.choices)
+    ? upstreamPayload.choices
+    : [];
+  const firstChoice = (choices[0] ?? {}) as {
+    message?: ChatResponseMessage;
+  };
+  const toolCalls = Array.isArray(firstChoice.message?.tool_calls)
+    ? firstChoice.message.tool_calls
+    : [];
+  const outputText = stringifyContent(firstChoice.message?.content);
+  const assistantTranscriptContent = buildAssistantTranscriptContent(
+    outputText,
+    toolCalls,
+  );
+  const createdAt = Math.floor(Date.now() / 1000);
+  const output: Array<Record<string, unknown>> = [];
+
+  if (outputText || !toolCalls.length) {
+    output.push({
+      id: createMessageId(),
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text: outputText,
+          annotations: [],
+        },
+      ],
+    });
+  }
+
+  toolCalls.forEach((toolCall, index) => {
+    output.push({
+      id: createResponseOutputId(),
+      type: 'function_call',
+      call_id: normalizeToolCallId(toolCall.id, index),
+      name: toolCall.function?.name ?? 'function',
+      arguments: toolCall.function?.arguments ?? '',
+      status: 'completed',
+    });
+  });
+
+  getSessionStore().set(responseId, {
+    id: responseId,
+    model,
+    transcript: [
+      ...transcript,
+      {
+        role: 'assistant',
+        content: assistantTranscriptContent,
+      },
+    ],
+    defaults,
+  });
+
+  return {
+    id: responseId,
+    object: 'response',
+    created_at: createdAt,
+    status: 'completed',
+    model,
+    output,
+    output_text: outputText,
+    usage: upstreamPayload.usage ?? null,
+    metadata: defaults.metadata ?? {},
+    previous_response_id: previousResponseId,
+  };
+};
+
+const createResponsesEventStream = async (
+  request: NextRequest,
+  defaults: ResponseSessionDefaults,
+  transcript: Array<{ role: string; content: string }>,
+  model: string,
+  previousResponseId: string | null,
+  maxOutputTokens?: number,
+): Promise<Response> => {
+  const upstreamResponse = await proxyChatCompletions(request, {
+    model,
+    messages: [
+      ...(defaults.instructions
+        ? [{ role: 'system', content: defaults.instructions }]
+        : []),
+      ...transcript,
+    ],
+    max_tokens: maxOutputTokens,
+    stream: true,
+    tools: translateResponsesToolsToChat(defaults.tools),
+    tool_choice: translateResponsesToolChoiceToChat(defaults.tool_choice),
+  });
+
+  if (!upstreamResponse.ok || !upstreamResponse.body) {
+    return upstreamResponse;
+  }
+
+  const responseId = createResponseId();
+  let outputText = '';
+  const toolCallStates = new Map<string, StreamingToolCallState>();
+  const toolCallStateKeys = new Map<string, string>();
+  let nextToolCallOutputIndex = 0;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start: (controller) => {
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      const reader = upstreamResponse.body!.getReader();
+      let buffer = '';
+
+      const enqueueEvent = (payload: Record<string, unknown>): void => {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify(payload)}\n\n`),
+        );
+      };
+
+      enqueueEvent({
+        type: 'response.created',
+        response: {
+          id: responseId,
+          object: 'response',
+          created_at: Math.floor(Date.now() / 1000),
+          model,
+        },
+      });
+      enqueueEvent({
+        type: 'response.in_progress',
+        response: {
+          id: responseId,
+          status: 'in_progress',
+        },
+      });
+
+      const pump = async (): Promise<void> => {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          getSessionStore().set(responseId, {
+            id: responseId,
+            model,
+            transcript: [
+              ...transcript,
+              {
+                role: 'assistant',
+                content: buildAssistantTranscriptContent(outputText, [
+                  ...[...toolCallStates.values()].map((toolCallState) => ({
+                    id: toolCallState.callId,
+                    type: 'function',
+                    function: {
+                      arguments: toolCallState.arguments,
+                      name: toolCallState.name,
+                    },
+                  })),
+                ]),
+              },
+            ],
+            defaults,
+          });
+          [...toolCallStates.values()].forEach((toolCallState) => {
+            enqueueEvent({
+              type: 'response.output_item.done',
+              item: {
+                id: toolCallState.outputItemId,
+                type: 'function_call',
+                call_id: toolCallState.callId,
+                name: toolCallState.name || 'function',
+                arguments: toolCallState.arguments,
+                status: 'completed',
+              },
+              output_index: toolCallState.outputIndex,
+              response_id: responseId,
+            });
+          });
+          enqueueEvent({
+            type: 'response.completed',
+            response: {
+              id: responseId,
+              status: 'completed',
+              output_text: outputText,
+              previous_response_id: previousResponseId,
+            },
+          });
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          return;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+
+        frames.forEach((frame) => {
+          const line = frame
+            .split('\n')
+            .find((segment) => segment.startsWith('data: '));
+
+          if (!line) {
+            return;
+          }
+
+          const raw = line.slice(6).trim();
+
+          if (!raw || raw === '[DONE]') {
+            return;
+          }
+
+          try {
+            const payload = JSON.parse(raw) as {
+              choices?: Array<{
+                delta?: {
+                  content?: string;
+                  reasoning_content?: string;
+                  tool_calls?: ChatResponseToolCall[];
+                };
+              }>;
+            };
+            const delta = payload.choices?.[0]?.delta;
+
+            if (delta?.content) {
+              outputText += delta.content;
+              enqueueEvent({
+                type: 'response.output_text.delta',
+                delta: delta.content,
+                response_id: responseId,
+              });
+            }
+
+            if (delta?.reasoning_content) {
+              enqueueEvent({
+                type: 'response.reasoning_text.delta',
+                delta: delta.reasoning_content,
+                response_id: responseId,
+              });
+            }
+
+            delta?.tool_calls?.forEach((toolCall, position) => {
+              const lookupKeys = getStreamingToolCallLookupKeys(
+                toolCall,
+                position,
+              );
+              const existingCanonicalKey = lookupKeys
+                .map((key) => toolCallStateKeys.get(key) ?? key)
+                .find((key) => toolCallStates.has(key));
+              const canonicalKey =
+                existingCanonicalKey ??
+                getStreamingToolCallCanonicalKey(toolCall, position);
+              const current = toolCallStates.get(canonicalKey) ?? {
+                arguments: '',
+                canonicalKey,
+                callId: normalizeToolCallId(
+                  toolCall.id,
+                  nextToolCallOutputIndex,
+                ),
+                name: '',
+                outputIndex: nextToolCallOutputIndex++,
+                outputItemId: createResponseOutputId(),
+              };
+
+              if (toolCall.function?.name) {
+                current.name += toolCall.function.name;
+              }
+
+              if (!toolCallStates.has(canonicalKey)) {
+                enqueueEvent({
+                  type: 'response.output_item.added',
+                  item: {
+                    id: current.outputItemId,
+                    type: 'function_call',
+                    call_id: current.callId,
+                    name: current.name || 'function',
+                    arguments: '',
+                    status: 'in_progress',
+                  },
+                  output_index: current.outputIndex,
+                  response_id: responseId,
+                });
+              }
+
+              if (toolCall.function?.arguments) {
+                current.arguments += toolCall.function.arguments;
+                enqueueEvent({
+                  type: 'response.function_call_arguments.delta',
+                  delta: toolCall.function.arguments,
+                  item_id: current.outputItemId,
+                  output_index: current.outputIndex,
+                  response_id: responseId,
+                });
+              }
+
+              toolCallStates.set(canonicalKey, current);
+              lookupKeys.forEach((key) => {
+                toolCallStateKeys.set(key, current.canonicalKey);
+              });
+            });
+          } catch {
+            enqueueEvent({
+              type: 'response.error',
+              error: {
+                message: 'Failed to parse upstream SSE frame',
+              },
+            });
+          }
+        });
+
+        await pump();
+      };
+
+      void pump();
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+    },
+  });
+};
+
+export const handleResponsesRequest = async (
+  request: NextRequest,
+  body: ResponsesRequestBody,
+): Promise<Response> => {
+  try {
+    const prepared = prepareTranscript(body);
+    const toolError = validateTools(prepared.defaults.tools);
+
+    if (toolError) {
+      return toolError;
+    }
+
+    if (body.stream) {
+      return await createResponsesEventStream(
+        request,
+        prepared.defaults,
+        prepared.transcript,
+        prepared.model,
+        prepared.previousResponseId,
+        body.max_output_tokens,
+      );
+    }
+
+    const upstreamResponse = await proxyChatCompletions(request, {
+      model: prepared.model,
+      messages: [
+        ...(prepared.defaults.instructions
+          ? [{ role: 'system', content: prepared.defaults.instructions }]
+          : []),
+        ...prepared.transcript,
+      ],
+      max_tokens: body.max_output_tokens,
+      stream: false,
+      tools: translateResponsesToolsToChat(prepared.defaults.tools),
+      tool_choice: translateResponsesToolChoiceToChat(
+        prepared.defaults.tool_choice,
+      ),
+    });
+
+    if (!upstreamResponse.ok) {
+      return upstreamResponse;
+    }
+
+    const upstreamPayload = (await upstreamResponse.json()) as Record<
+      string,
+      unknown
+    >;
+
+    return Response.json(
+      mapChatResponseToResponsesPayload(
+        prepared.defaults,
+        prepared.transcript,
+        prepared.model,
+        prepared.previousResponseId,
+        upstreamPayload,
+      ),
+    );
+  } catch (error) {
+    return createErrorResponse(
+      error instanceof Error && error.message.includes('previous_response_id')
+        ? 400
+        : 500,
+      error instanceof Error ? error.message : 'Unexpected responses error',
+    );
+  }
+};
+
+export const resetResponseSessions = (): void => {
+  getSessionStore().clear();
+};
