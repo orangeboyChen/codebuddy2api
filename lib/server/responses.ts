@@ -250,6 +250,13 @@ const buildStreamingAssistantTranscriptToolCalls = (
   }));
 };
 
+const getAssistantTranscriptContent = (
+  outputText: string,
+  toolCalls: TranscriptMessage['tool_calls'] | undefined,
+): string | null => {
+  return toolCalls?.length ? outputText || null : outputText;
+};
+
 const stringifyContent = (value: unknown): string => {
   if (typeof value === 'string') {
     return value;
@@ -631,7 +638,7 @@ const mapChatResponseToResponsesPayload = (
       ...transcript,
       {
         role: 'assistant',
-        content: outputText || null,
+        content: getAssistantTranscriptContent(outputText, transcriptToolCalls),
         ...(transcriptToolCalls ? { tool_calls: transcriptToolCalls } : {}),
       },
     ],
@@ -780,7 +787,10 @@ const createResponsesEventStream = async (
               ...transcript,
               {
                 role: 'assistant',
-                content: outputText || null,
+                content: getAssistantTranscriptContent(
+                  outputText,
+                  transcriptToolCalls,
+                ),
                 ...(transcriptToolCalls
                   ? { tool_calls: transcriptToolCalls }
                   : {}),

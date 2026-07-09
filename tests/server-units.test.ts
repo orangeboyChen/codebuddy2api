@@ -853,7 +853,12 @@ describe('server units', () => {
           502,
         ),
       )
-      .mockResolvedValueOnce(makeJsonResponse({}));
+      .mockResolvedValueOnce(makeJsonResponse({}))
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'after empty response' } }],
+        }),
+      );
 
     const strictToolResult = translateResponsesToolsToChat([
       {
@@ -936,6 +941,90 @@ describe('server units', () => {
     const emptyPayload = await emptyResponse.json();
     expect(emptyPayload.output_text).toBe('');
     expect(emptyPayload.output[0]?.type).toBe('message');
+
+    const emptyFollowUpResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        previous_response_id: emptyPayload.id,
+        input: 'follow empty response',
+        model: 'gpt-5.5',
+      },
+    );
+    expect((await emptyFollowUpResponse.json()).output_text).toBe(
+      'after empty response',
+    );
+
+    const emptyFollowUpBody = JSON.parse(
+      String((fetchMock.mock.calls[3]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string | null;
+        tool_calls?: Array<unknown>;
+      }>;
+    };
+    expect(emptyFollowUpBody.messages[1]).toEqual({
+      role: 'assistant',
+      content: '',
+    });
+  });
+
+  it('keeps empty streamed assistant content for previous_response_id follow-ups', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response('data: [DONE]\n\n', {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'after empty stream' } }],
+        }),
+      );
+
+    const streamResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'empty stream',
+        model: 'gpt-5.5',
+        stream: true,
+      },
+    );
+    const streamText = await streamResponse.text();
+    const previousResponseId = streamText.match(/"id":"(resp_[^"]+)"/)?.[1];
+    expect(previousResponseId).toBeTruthy();
+
+    const followUpResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        previous_response_id: previousResponseId,
+        input: 'follow empty stream',
+        model: 'gpt-5.5',
+      },
+    );
+    expect((await followUpResponse.json()).output_text).toBe(
+      'after empty stream',
+    );
+
+    const followUpBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        role: string;
+        content: string | null;
+      }>;
+    };
+    expect(followUpBody.messages[1]).toEqual({
+      role: 'assistant',
+      content: '',
+    });
   });
 
   it('streams split mcp tool names, pending argument deltas, and reasoning deltas', async () => {
