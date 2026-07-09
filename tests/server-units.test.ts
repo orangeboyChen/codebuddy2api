@@ -834,6 +834,157 @@ describe('server units', () => {
     });
   });
 
+  it('covers responses adapter edge cases for strict tools, generic input items, and passthrough streaming errors', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'done' } }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse(
+          {
+            error: { message: 'upstream failed' },
+          },
+          502,
+        ),
+      )
+      .mockResolvedValueOnce(makeJsonResponse({}));
+
+    const strictToolResult = translateResponsesToolsToChat([
+      {
+        type: 'function',
+        name: 'strict_tool',
+        strict: true,
+        parameters: { type: 'object', properties: {} },
+      },
+    ]);
+    expect(strictToolResult?.[0]).toEqual({
+      type: 'function',
+      function: {
+        name: 'strict_tool',
+        strict: true,
+        parameters: { type: 'object', properties: {} },
+      },
+    });
+
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: [{ role: 'assistant', content: { text: 'hello' } }],
+        model: 'gpt-5.5',
+        tools: [
+          {
+            type: 'function',
+            name: 'strict_tool',
+            strict: true,
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+        tool_choice: {
+          type: 'function',
+          function: { name: 'strict_tool' },
+        },
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{ role: string; content: string }>;
+      tool_choice: unknown;
+      tools: Array<Record<string, unknown>>;
+    };
+    expect(upstreamBody.messages[0]).toEqual({
+      role: 'assistant',
+      content: '{"text":"hello"}',
+    });
+    expect(upstreamBody.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'strict_tool' },
+    });
+    expect(upstreamBody.tools[0]).toEqual({
+      type: 'function',
+      function: {
+        name: 'strict_tool',
+        strict: true,
+        parameters: { type: 'object', properties: {} },
+      },
+    });
+
+    const streamErrorResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'stream failure',
+        model: 'gpt-5.5',
+        stream: true,
+      },
+    );
+    expect(streamErrorResponse.status).toBe(502);
+
+    const emptyResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'empty payload',
+        model: 'gpt-5.5',
+      },
+    );
+    const emptyPayload = await emptyResponse.json();
+    expect(emptyPayload.output_text).toBe('');
+    expect(emptyPayload.output[0]?.type).toBe('message');
+  });
+
+  it('streams split mcp tool names, pending argument deltas, and reasoning deltas', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'event: ping\n\n' +
+          'data: {"choices":[{"delta":{"tool_calls":[{"type":"function","function":{"name":"mcp_","arguments":"{\\"query\\":\\""}}]}}]}\n\n' +
+          'data: {"choices":[{"delta":{"reasoning_content":"thinking","tool_calls":[{"function":{"name":"tool","arguments":"docs\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n' +
+          'data: [DONE]\n\n',
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+          },
+        },
+      ),
+    );
+
+    const streamResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'stream split mcp tool call',
+        model: 'gpt-5.5',
+        stream: true,
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'docs-svc',
+            name: 'mcp_tool',
+            parameters: {
+              type: 'object',
+              properties: { query: { type: 'string' } },
+            },
+          },
+        ],
+      },
+    );
+
+    const streamText = await streamResponse.text();
+    expect(streamText).toContain('response.reasoning_text.delta');
+    expect(streamText).toContain('"type":"mcp_call"');
+    expect(streamText).toContain('"server_label":"docs-svc"');
+    expect(streamText).toContain('response.function_call_arguments.delta');
+    expect(streamText).toContain('"arguments":"{\\"query\\":\\"docs\\"}"');
+  });
+
   it('covers auth api fallback branches', async () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(

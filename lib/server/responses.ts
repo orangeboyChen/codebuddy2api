@@ -307,19 +307,16 @@ export const translateResponsesToolsToChat = (
     return undefined;
   }
 
-  return supported
-    .map((tool) => {
-      const functionDef = extractFunctionDefinition(tool);
-      if (!functionDef) {
-        return null;
-      }
-
-      return {
-        type: 'function',
-        function: functionDef,
-      };
-    })
-    .filter((tool): tool is NonNullable<typeof tool> => tool !== null);
+  return supported.map((tool) => {
+    const functionDef = extractFunctionDefinition(tool) as Record<
+      string,
+      unknown
+    >;
+    return {
+      type: 'function',
+      function: functionDef,
+    };
+  });
 };
 
 const translateResponsesToolChoiceToChat = (toolChoice: unknown): unknown => {
