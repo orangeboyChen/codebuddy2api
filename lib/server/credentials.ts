@@ -1,38 +1,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getCredsDir, getRotationCount } from './config';
+import { hasAccessKeys } from './access-keys';
+import { getCredsDir } from './config';
 import { recordCredentialUsage } from './stats';
 
 export type CredentialData = Record<string, unknown> & {
-  bearer_token?: string;
   access_token?: string;
-  user_id?: string;
+  bearer_token?: string;
   created_at?: number;
-  expires_in?: number;
-  refresh_token?: string;
-  token_type?: string;
-  scope?: string;
   domain?: string;
-  session_state?: string;
   enterprise_id?: string;
   enterpriseId?: string;
+  expires_in?: number;
+  refresh_token?: string;
+  scope?: string;
+  session_state?: string;
   tenant_id?: string;
   tenantId?: string;
+  token_type?: string;
+  user_id?: string;
   user_info?: Record<string, unknown>;
 };
 
-interface CredentialRecord {
-  filename: string;
-  filePath: string;
+export interface CredentialRecord {
   data: CredentialData;
+  filePath: string;
+  filename: string;
 }
 
 interface ManagerState {
-  currentIndex: number;
-  usageCount: number;
-  manualSelectedIndex: number | null;
-  autoRotationEnabled: boolean;
+  globalNextFilename: string | null;
+  keyNextFilenameByAccessKeyId: Record<string, string | null>;
 }
 
 const globalCredentialState = globalThis as typeof globalThis & {
@@ -67,10 +66,9 @@ const getRuntimeState = (): ManagerState => {
   if (!globalCredentialState.__codebuddy2apiCredentialState__) {
     const persisted = loadPersistedManagerState();
     globalCredentialState.__codebuddy2apiCredentialState__ = {
-      currentIndex: persisted.currentIndex ?? 0,
-      usageCount: 0,
-      manualSelectedIndex: persisted.manualSelectedIndex ?? null,
-      autoRotationEnabled: persisted.autoRotationEnabled ?? true,
+      globalNextFilename: persisted.globalNextFilename ?? null,
+      keyNextFilenameByAccessKeyId:
+        persisted.keyNextFilenameByAccessKeyId ?? {},
     };
   }
 
@@ -81,14 +79,18 @@ const saveRuntimeState = (): void => {
   ensureCredsDir();
 
   const state = getRuntimeState();
-  const payload = {
-    autoRotationEnabled: state.autoRotationEnabled,
-    currentIndex: state.currentIndex,
-    manualSelectedIndex: state.manualSelectedIndex,
-    savedAt: Math.floor(Date.now() / 1000),
-  };
-
-  fs.writeFileSync(getManagerStateFile(), JSON.stringify(payload, null, 2));
+  fs.writeFileSync(
+    getManagerStateFile(),
+    JSON.stringify(
+      {
+        globalNextFilename: state.globalNextFilename,
+        keyNextFilenameByAccessKeyId: state.keyNextFilenameByAccessKeyId,
+        savedAt: Math.floor(Date.now() / 1000),
+      },
+      null,
+      2,
+    ),
+  );
 };
 
 const getNestedValue = (
@@ -132,7 +134,7 @@ const getNestedValue = (
   return null;
 };
 
-const readCredentialRecords = (): CredentialRecord[] => {
+export const readCredentialRecords = (): CredentialRecord[] => {
   ensureCredsDir();
 
   return fs
@@ -152,11 +154,15 @@ const readCredentialRecords = (): CredentialRecord[] => {
           return [];
         }
 
-        return [{ filename, filePath, data }];
+        return [{ data, filePath, filename }];
       } catch {
         return [];
       }
     });
+};
+
+export const listCredentialFilenames = (): string[] => {
+  return readCredentialRecords().map((record) => record.filename);
 };
 
 const getCredentialExpiry = (credential: CredentialData): number | null => {
@@ -202,30 +208,60 @@ const formatTimeRemaining = (expiresAt: number | null): string => {
   return `${Math.ceil(remaining / 86400)}d`;
 };
 
-const getCredentialStatus = (
+const getEligibleRecords = (
   records: CredentialRecord[],
-): { records: CredentialRecord[]; indices: number[] } => {
-  const validIndices = records.reduce<number[]>((result, record, index) => {
-    if (!isCredentialExpired(record.data)) {
-      result.push(index);
+  allowedCredentialFilenames?: string[],
+): CredentialRecord[] => {
+  const allowedSet = allowedCredentialFilenames?.length
+    ? new Set(allowedCredentialFilenames)
+    : null;
+
+  return records.filter((record) => {
+    if (isCredentialExpired(record.data)) {
+      return false;
     }
 
-    return result;
-  }, []);
+    if (allowedSet && !allowedSet.has(record.filename)) {
+      return false;
+    }
 
-  return { records, indices: validIndices };
+    return true;
+  });
 };
 
-const getSafeIndex = (records: CredentialRecord[], index: number): number => {
-  if (!records.length) {
-    return -1;
+const chooseNextRecord = (
+  eligibleRecords: CredentialRecord[],
+  nextFilename: string | null,
+): { current: CredentialRecord; nextFilename: string } => {
+  const currentIndex = nextFilename
+    ? eligibleRecords.findIndex((record) => record.filename === nextFilename)
+    : -1;
+  const resolvedIndex = currentIndex >= 0 ? currentIndex : 0;
+  const current = eligibleRecords[resolvedIndex];
+  const nextIndex = (resolvedIndex + 1) % eligibleRecords.length;
+
+  return {
+    current,
+    nextFilename: eligibleRecords[nextIndex]?.filename ?? current.filename,
+  };
+};
+
+const peekNextFilename = (
+  eligibleRecords: CredentialRecord[],
+  nextFilename: string | null,
+): string | null => {
+  if (!eligibleRecords.length) {
+    return null;
   }
 
-  if (index >= 0 && index < records.length) {
-    return index;
+  if (
+    nextFilename &&
+    eligibleRecords.some((record) => record.filename === nextFilename)
+  ) {
+    return nextFilename;
   }
 
-  return 0;
+  return eligibleRecords[0]?.filename ?? null;
 };
 
 export const listCredentials = (): {
@@ -244,34 +280,34 @@ export const listCredentials = (): {
         getNestedValue(record.data, ['tenant_id', 'tenantId']) ?? enterpriseId;
 
       return {
-        index,
-        filename: record.filename,
-        user_id:
-          record.data.user_id ?? record.data.user_info?.email ?? 'unknown',
+        created_at: record.data.created_at ?? null,
+        domain:
+          getNestedValue(record.data, ['domain']) ?? 'copilot.tencent.com',
         email:
           (record.data.user_info as Record<string, unknown> | undefined)
             ?.email ??
           record.data.user_id ??
           'unknown',
+        enterprise_id: enterpriseId,
+        expires_at: expiresAt,
+        expires_in: record.data.expires_in ?? null,
+        filename: record.filename,
+        has_refresh_token: Boolean(record.data.refresh_token),
+        index,
+        is_expired: isCredentialExpired(record.data),
         name:
           (record.data.user_info as Record<string, unknown> | undefined)
             ?.name ?? null,
-        created_at: record.data.created_at ?? null,
-        expires_in: record.data.expires_in ?? null,
-        expires_at: expiresAt,
+        scope: record.data.scope ?? null,
+        session_state: record.data.session_state ?? null,
+        tenant_id: tenantId,
         time_remaining: expiresAt
           ? expiresAt - Math.floor(Date.now() / 1000)
           : null,
         time_remaining_str: formatTimeRemaining(expiresAt),
-        is_expired: isCredentialExpired(record.data),
         token_type: record.data.token_type ?? 'Bearer',
-        scope: record.data.scope ?? null,
-        domain:
-          getNestedValue(record.data, ['domain']) ?? 'copilot.tencent.com',
-        enterprise_id: enterpriseId,
-        tenant_id: tenantId,
-        has_refresh_token: Boolean(record.data.refresh_token),
-        session_state: record.data.session_state ?? null,
+        user_id:
+          record.data.user_id ?? record.data.user_info?.email ?? 'unknown',
       };
     }),
   };
@@ -279,41 +315,53 @@ export const listCredentials = (): {
 
 export const getCurrentCredentialInfo = (): Record<string, unknown> => {
   const records = readCredentialRecords();
+  const availableRecords = getEligibleRecords(records);
+  const state = getRuntimeState();
 
-  if (!records.length) {
+  if (hasAccessKeys()) {
+    return {
+      available_credential_count: availableRecords.length,
+      next_filename: peekNextFilename(
+        availableRecords,
+        state.globalNextFilename,
+      ),
+      status: 'access_keys_enabled',
+    };
+  }
+
+  if (!availableRecords.length) {
     return { status: 'no_credentials' };
   }
 
-  const state = getRuntimeState();
-  const index =
-    state.manualSelectedIndex ?? getSafeIndex(records, state.currentIndex);
-  const record = records[getSafeIndex(records, index)];
-  const enterpriseId = getNestedValue(record.data, [
+  const nextFilename = peekNextFilename(
+    availableRecords,
+    state.globalNextFilename,
+  );
+  const current =
+    availableRecords.find((record) => record.filename === nextFilename) ??
+    availableRecords[0];
+  const enterpriseId = getNestedValue(current.data, [
     'enterprise_id',
     'enterpriseId',
   ]);
   const tenantId =
-    getNestedValue(record.data, ['tenant_id', 'tenantId']) ?? enterpriseId;
+    getNestedValue(current.data, ['tenant_id', 'tenantId']) ?? enterpriseId;
 
   return {
-    status:
-      state.manualSelectedIndex !== null ? 'manual_selected' : 'auto_rotation',
-    index,
-    filename: record.filename,
-    user_id: record.data.user_id ?? 'unknown',
-    domain: getNestedValue(record.data, ['domain']) ?? 'copilot.tencent.com',
+    domain: getNestedValue(current.data, ['domain']) ?? 'copilot.tencent.com',
     enterprise_id: enterpriseId,
+    filename: current.filename,
+    next_filename: nextFilename,
+    status: 'round_robin',
     tenant_id: tenantId,
-    usage_count: state.usageCount,
-    rotation_count: getRotationCount(),
-    auto_rotation_enabled: state.autoRotationEnabled,
+    user_id: current.data.user_id ?? 'unknown',
   };
 };
 
 export const addCredential = (
   credentialData: CredentialData,
   filename?: string,
-): { success: boolean; filename: string } => {
+): { filename: string; success: boolean } => {
   ensureCredsDir();
 
   const now = Math.floor(Date.now() / 1000);
@@ -337,125 +385,108 @@ export const addCredential = (
   saveRuntimeState();
 
   return {
-    success: true,
     filename: jsonFilename,
+    success: true,
   };
 };
 
 export const deleteCredentialByIndex = (
   index: number,
-): { success: boolean; message: string } => {
+): { message: string; success: boolean } => {
   const records = readCredentialRecords();
 
   if (index < 0 || index >= records.length) {
-    return { success: false, message: 'Invalid credential index' };
+    return { message: 'Invalid credential index', success: false };
   }
 
   fs.unlinkSync(records[index].filePath);
 
   const state = getRuntimeState();
+  const deletedFilename = records[index].filename;
 
-  if (state.manualSelectedIndex === index) {
-    state.manualSelectedIndex = null;
+  if (state.globalNextFilename === deletedFilename) {
+    state.globalNextFilename = null;
   }
 
-  state.currentIndex = 0;
-  state.usageCount = 0;
+  Object.entries(state.keyNextFilenameByAccessKeyId).forEach(([key, value]) => {
+    if (value === deletedFilename) {
+      state.keyNextFilenameByAccessKeyId[key] = null;
+    }
+  });
   saveRuntimeState();
 
-  return { success: true, message: 'Credential deleted' };
+  return { message: 'Credential deleted', success: true };
 };
 
 export const selectCredential = (
   index: number,
-): { success: boolean; message: string } => {
+): { message: string; success: boolean } => {
   const records = readCredentialRecords();
 
   if (index < 0 || index >= records.length) {
-    return { success: false, message: 'Invalid credential index' };
+    return { message: 'Invalid credential index', success: false };
   }
 
   const state = getRuntimeState();
-  state.manualSelectedIndex = index;
-  state.currentIndex = index;
-  state.usageCount = 0;
-  saveRuntimeState();
-
-  return { success: true, message: 'Credential selected' };
-};
-
-export const resumeAutoRotation = (): { success: boolean; message: string } => {
-  const state = getRuntimeState();
-  state.manualSelectedIndex = null;
-  state.autoRotationEnabled = true;
-  state.usageCount = 0;
-  saveRuntimeState();
-
-  return { success: true, message: 'Automatic rotation resumed' };
-};
-
-export const toggleAutoRotation = (): {
-  success: boolean;
-  auto_rotation_enabled: boolean;
-} => {
-  const state = getRuntimeState();
-  state.autoRotationEnabled = !state.autoRotationEnabled;
+  state.globalNextFilename = records[index].filename;
   saveRuntimeState();
 
   return {
+    message: 'Next credential updated for round-robin',
     success: true,
-    auto_rotation_enabled: state.autoRotationEnabled,
   };
 };
 
-export const resolveCredentialForRequest = (): CredentialRecord | null => {
-  const records = readCredentialRecords();
+export const resumeAutoRotation = (): { message: string; success: boolean } => {
+  return {
+    message: 'Round-robin is always enabled',
+    success: true,
+  };
+};
 
-  if (!records.length) {
+export const toggleAutoRotation = (): {
+  auto_rotation_enabled: boolean;
+  success: boolean;
+} => {
+  return {
+    auto_rotation_enabled: true,
+    success: true,
+  };
+};
+
+export const resolveCredentialForRequest = ({
+  accessKeyId,
+  allowedCredentialFilenames,
+}: {
+  accessKeyId?: string;
+  allowedCredentialFilenames?: string[];
+} = {}): CredentialRecord | null => {
+  const records = readCredentialRecords();
+  const eligibleRecords = getEligibleRecords(
+    records,
+    allowedCredentialFilenames,
+  );
+
+  if (!eligibleRecords.length) {
     return null;
   }
 
   const state = getRuntimeState();
-  const { indices } = getCredentialStatus(records);
+  const stateKey = accessKeyId ? `key:${accessKeyId}` : 'global';
+  const currentNextFilename = accessKeyId
+    ? (state.keyNextFilenameByAccessKeyId[accessKeyId] ?? null)
+    : state.globalNextFilename;
+  const { current, nextFilename } = chooseNextRecord(
+    eligibleRecords,
+    currentNextFilename,
+  );
 
-  if (!indices.length) {
-    return null;
+  if (stateKey === 'global') {
+    state.globalNextFilename = nextFilename;
+  } else {
+    state.keyNextFilenameByAccessKeyId[accessKeyId!] = nextFilename;
   }
 
-  const manualIndex = state.manualSelectedIndex;
-
-  if (
-    manualIndex !== null &&
-    manualIndex >= 0 &&
-    manualIndex < records.length &&
-    !isCredentialExpired(records[manualIndex].data)
-  ) {
-    recordCredentialUsage(records[manualIndex].filename);
-    return records[manualIndex];
-  }
-
-  if (!indices.includes(state.currentIndex)) {
-    state.currentIndex = indices[0];
-    state.usageCount = 0;
-  }
-
-  const rotationCount = getRotationCount();
-
-  if (!state.autoRotationEnabled || rotationCount <= 0) {
-    const current = records[getSafeIndex(records, state.currentIndex)];
-    recordCredentialUsage(current.filename);
-    return current;
-  }
-
-  if (state.usageCount >= rotationCount) {
-    const currentPosition = indices.indexOf(state.currentIndex);
-    const nextPosition = (currentPosition + 1) % indices.length;
-    state.currentIndex = indices[nextPosition];
-    state.usageCount = 0;
-  }
-
-  const current = records[getSafeIndex(records, state.currentIndex)];
-  state.usageCount += 1;
   recordCredentialUsage(current.filename);
   saveRuntimeState();
 

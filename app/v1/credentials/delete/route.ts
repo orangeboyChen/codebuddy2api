@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 
-import { getAuthErrorResponse } from '@/lib/server/auth';
+import { getAdminAuthErrorResponse } from '@/lib/server/auth';
 import { deleteCredentialByIndex } from '@/lib/server/credentials';
 import { createErrorResponse, getJsonBody } from '@/lib/server/http';
 
@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export const POST = async (request: NextRequest): Promise<Response> => {
-  const authError = getAuthErrorResponse(request);
+  const authError = getAdminAuthErrorResponse(request);
 
   if (authError) {
     return authError;

@@ -22,6 +22,7 @@ import {
   activeTabAtom,
   apiTestStateAtom,
   authStateAtom,
+  type AccessKeySummary,
   type CredentialSummary,
   credentialsStateAtom,
   dashboardStateAtom,
@@ -31,6 +32,7 @@ import {
   notificationAtom,
   settingsStateAtom,
   themeAtom,
+  type ThemeMode,
 } from '@/app/admin/_components/admin-store';
 
 interface HealthResponse {
@@ -42,11 +44,21 @@ interface CredentialsResponse {
   credentials?: CredentialSummary[];
 }
 
+interface AccessKeysResponse {
+  access_keys?: AccessKeySummary[];
+}
+
+interface AccessKeySecretResponse {
+  id?: string;
+  name?: string;
+  secret?: string;
+}
+
 interface CurrentCredentialResponse {
-  auto_rotation_enabled?: boolean;
+  available_credential_count?: number;
   filename?: string;
   index?: number;
-  rotation_count?: number;
+  next_filename?: string | null;
   status?: string;
   user_id?: string;
 }
@@ -142,6 +154,22 @@ const buildApiEndpoint = () => {
   }
 
   return `${window.location.origin}/v1`;
+};
+
+const resolveSystemDark = () => {
+  if (typeof window === 'undefined' || !window.matchMedia) {
+    return false;
+  }
+
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+};
+
+const resolveDarkMode = (theme: ThemeMode) => {
+  if (theme === 'system') {
+    return resolveSystemDark();
+  }
+
+  return theme === 'dark';
 };
 
 const formatResult = (payload: unknown) => {
@@ -250,24 +278,30 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   const loadCredentials = useCallback(async () => {
     setCredentials((current) => ({
       ...current,
+      accessKeysLoading: true,
       currentLoading: true,
       loading: true,
     }));
 
-    const [listResult, currentResult] = await Promise.all([
+    const [listResult, currentResult, accessKeyResult] = await Promise.all([
       requestJson<CredentialsResponse>('/admin-api/credentials'),
       requestJson<CurrentCredentialResponse>('/admin-api/credentials/current'),
+      requestJson<AccessKeysResponse>('/admin-api/access-keys'),
     ]);
 
     setCredentials((current) => ({
       ...current,
+      accessKeyActionId: null,
+      accessKeys: accessKeyResult.data?.access_keys ?? [],
+      accessKeysLoading: false,
       actionIndex: null,
       current: currentResult.data
         ? {
-            auto_rotation_enabled: currentResult.data.auto_rotation_enabled,
+            available_credential_count:
+              currentResult.data.available_credential_count,
             filename: currentResult.data.filename,
             index: currentResult.data.index,
-            rotation_count: currentResult.data.rotation_count,
+            next_filename: currentResult.data.next_filename,
             status: currentResult.data.status ?? 'no_credentials',
             user_id: currentResult.data.user_id,
           }
@@ -462,36 +496,6 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     await refreshAdminData();
   };
 
-  const selectCredential = async (index: number) => {
-    setCredentials((current) => ({
-      ...current,
-      actionIndex: index,
-    }));
-
-    const result = await requestJson<{ success?: boolean }>(
-      '/admin-api/credentials/select',
-      {
-        body: JSON.stringify({ index }),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        method: 'POST',
-      },
-    );
-
-    if (!result.ok || !result.data?.success) {
-      showNotification('error', getErrorMessage(result.data, '切换凭证失败。'));
-      setCredentials((current) => ({
-        ...current,
-        actionIndex: null,
-      }));
-      return;
-    }
-
-    showNotification('success', '当前凭证已切换。');
-    await refreshAdminData();
-  };
-
   const deleteCredential = async (index: number) => {
     setCredentials((current) => ({
       ...current,
@@ -522,49 +526,144 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     await refreshAdminData();
   };
 
-  const toggleRotation = async () => {
-    const result = await requestJson<{ auto_rotation_enabled?: boolean }>(
-      '/admin-api/credentials/toggle-rotation',
-      {
-        method: 'POST',
+  const saveAccessKey = async () => {
+    const { credentialFilenames, editingId, name } = credentials.accessKeyForm;
+
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: editingId ?? '__new__',
+    }));
+
+    const endpoint = editingId
+      ? `/admin-api/access-keys/${editingId}`
+      : '/admin-api/access-keys';
+    const method = editingId ? 'PATCH' : 'POST';
+    const result = await requestJson<{
+      access_key?: AccessKeySummary;
+      secret?: string;
+    }>(endpoint, {
+      body: JSON.stringify({
+        credential_filenames: credentialFilenames,
+        name,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
       },
-    );
+      method,
+    });
 
     if (!result.ok) {
       showNotification(
         'error',
-        getErrorMessage(result.data, '更新轮换状态失败。'),
+        getErrorMessage(
+          result.data,
+          editingId ? '更新访问 key 失败。' : '创建访问 key 失败。',
+        ),
       );
+      setCredentials((current) => ({
+        ...current,
+        accessKeyActionId: null,
+      }));
       return;
     }
 
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: null,
+      accessKeyForm: {
+        credentialFilenames: [],
+        editingId: null,
+        name: '',
+      },
+      revealedSecret:
+        result.data?.access_key && result.data.secret
+          ? {
+              id: result.data.access_key.id,
+              name: result.data.access_key.name,
+              secret: result.data.secret,
+            }
+          : current.revealedSecret,
+    }));
     showNotification(
       'success',
-      result.data?.auto_rotation_enabled
-        ? '自动轮换已开启。'
-        : '自动轮换已暂停。',
+      editingId ? '访问 key 已更新。' : '访问 key 已生成。',
     );
     await loadCredentials();
   };
 
-  const resumeAutoRotation = async () => {
+  const deleteAccessKey = async (id: string) => {
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: id,
+    }));
+
     const result = await requestJson<{ success?: boolean }>(
-      '/admin-api/credentials/auto',
+      `/admin-api/access-keys/${id}`,
       {
-        method: 'POST',
+        method: 'DELETE',
       },
     );
 
     if (!result.ok || !result.data?.success) {
       showNotification(
         'error',
-        getErrorMessage(result.data, '恢复自动轮换失败。'),
+        getErrorMessage(result.data, '删除访问 key 失败。'),
       );
+      setCredentials((current) => ({
+        ...current,
+        accessKeyActionId: null,
+      }));
       return;
     }
 
-    showNotification('success', '自动轮换已恢复。');
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: null,
+      revealedSecret:
+        current.revealedSecret?.id === id ? null : current.revealedSecret,
+    }));
+    showNotification('success', '访问 key 已删除。');
     await loadCredentials();
+  };
+
+  const revealAccessKeySecret = async (id: string) => {
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: id,
+    }));
+
+    const result = await requestJson<AccessKeySecretResponse>(
+      `/admin-api/access-keys/${id}/secret`,
+    );
+
+    if (!result.ok || !result.data?.secret || !result.data?.name) {
+      showNotification(
+        'error',
+        getErrorMessage(result.data, '读取访问 key 失败。'),
+      );
+      setCredentials((current) => ({
+        ...current,
+        accessKeyActionId: null,
+      }));
+      return;
+    }
+
+    const secretPayload = result.data as {
+      id?: string;
+      name: string;
+      secret: string;
+    };
+
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: null,
+      revealedSecret: {
+        id: secretPayload.id ?? id,
+        name: secretPayload.name,
+        secret: secretPayload.secret,
+      },
+    }));
+    showNotification('success', '访问 key 已显示。');
   };
 
   const copyText = async (value: string, successMessage: string) => {
@@ -721,7 +820,11 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     );
     const storedTab = window.localStorage.getItem('codebuddy2api-admin-tab');
 
-    if (storedTheme === 'dark' || storedTheme === 'light') {
+    if (
+      storedTheme === 'dark' ||
+      storedTheme === 'light' ||
+      storedTheme === 'system'
+    ) {
       setTheme(storedTheme);
     }
 
@@ -736,8 +839,31 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   }, [setActiveTab, setTheme]);
 
   useEffect(() => {
-    document.body.classList.toggle('dark', theme === 'dark');
+    const applyTheme = () => {
+      const isDark = resolveDarkMode(theme);
+
+      document.documentElement.classList.toggle('dark', isDark);
+      document.body.classList.toggle('dark', isDark);
+      document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    };
+
+    applyTheme();
     window.localStorage.setItem('codebuddy2api-admin-theme', theme);
+
+    if (theme !== 'system' || !window.matchMedia) {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => {
+      applyTheme();
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleChange);
+    };
   }, [theme]);
 
   useEffect(() => {
@@ -767,17 +893,29 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
             CodeBuddy2API 管理面板
           </h1>
           <div className="flex items-center gap-4">
-            <button
-              className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-4 py-2 cursor-pointer transition-all hover:bg-bg-light hover:border-primary hover:text-primary dark:hover:bg-bg-dark"
-              onClick={() => {
-                setTheme(theme === 'dark' ? 'light' : 'dark');
-              }}
-            >
+            <label className="flex items-center gap-2 text-sm text-secondary">
               <i
-                className={theme === 'dark' ? 'fas fa-sun' : 'fas fa-moon'}
-                id="themeIcon"
+                className={
+                  theme === 'dark'
+                    ? 'fas fa-moon'
+                    : theme === 'light'
+                      ? 'fas fa-sun'
+                      : 'fas fa-desktop'
+                }
               ></i>
-            </button>
+              <select
+                aria-label="Theme mode"
+                className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-3 py-2 cursor-pointer transition-all hover:border-primary focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+                value={theme}
+                onChange={(event) => {
+                  setTheme(event.target.value as ThemeMode);
+                }}
+              >
+                <option value="system">跟随系统</option>
+                <option value="light">浅色模式</option>
+                <option value="dark">暗黑模式</option>
+              </select>
+            </label>
           </div>
         </header>
         <main className="mt-20 px-8 py-8 max-w-[1400px] mx-auto">
@@ -833,6 +971,19 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onDeleteCredential={(index) => {
                 void deleteCredential(index);
               }}
+              onDeleteAccessKey={(id) => {
+                void deleteAccessKey(id);
+              }}
+              onEditAccessKey={(accessKey) => {
+                setCredentials((current) => ({
+                  ...current,
+                  accessKeyForm: {
+                    credentialFilenames: [...accessKey.credentialFilenames],
+                    editingId: accessKey.id,
+                    name: accessKey.name,
+                  },
+                }));
+              }}
               onOpenAuthUrl={() => {
                 if (!auth.authUrl) {
                   showNotification('warning', '认证链接还未生成。');
@@ -847,11 +998,11 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onRefreshCredentials={() => {
                 void refreshAdminData();
               }}
-              onResumeAutoRotation={() => {
-                void resumeAutoRotation();
+              onRevealAccessKeySecret={(id) => {
+                void revealAccessKeySecret(id);
               }}
-              onSelectCredential={(index) => {
-                void selectCredential(index);
+              onSaveAccessKey={() => {
+                void saveAccessKey();
               }}
               onSubmitCallbackUrl={() => {
                 void submitCallbackUrl();
@@ -862,8 +1013,47 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
                   showManualCallback: showManual,
                 }));
               }}
-              onToggleRotation={() => {
-                void toggleRotation();
+              onToggleCredentialSelection={(filename) => {
+                setCredentials((current) => {
+                  const selected =
+                    current.accessKeyForm.credentialFilenames.includes(
+                      filename,
+                    );
+
+                  return {
+                    ...current,
+                    accessKeyForm: {
+                      ...current.accessKeyForm,
+                      credentialFilenames: selected
+                        ? current.accessKeyForm.credentialFilenames.filter(
+                            (item) => item !== filename,
+                          )
+                        : [
+                            ...current.accessKeyForm.credentialFilenames,
+                            filename,
+                          ],
+                    },
+                  };
+                });
+              }}
+              onUpdateAccessKeyName={(value) => {
+                setCredentials((current) => ({
+                  ...current,
+                  accessKeyForm: {
+                    ...current.accessKeyForm,
+                    name: value,
+                  },
+                }));
+              }}
+              onResetAccessKeyForm={() => {
+                setCredentials((current) => ({
+                  ...current,
+                  accessKeyForm: {
+                    credentialFilenames: [],
+                    editingId: null,
+                    name: '',
+                  },
+                }));
               }}
             />
           ) : null}
@@ -904,10 +1094,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
                   ...current,
                   values: {
                     ...current.values,
-                    [key]:
-                      key === 'CODEBUDDY_ROTATION_COUNT'
-                        ? Number(value)
-                        : value,
+                    [key]: value,
                   },
                 }));
               }}

@@ -1,4 +1,5 @@
 import type {
+  AccessKeySummary,
   CredentialsState,
   CredentialSummary,
   CurrentCredentialInfo,
@@ -24,6 +25,7 @@ export interface AdminSettingsSnapshot {
 }
 
 export interface AdminConsoleInitialData {
+  accessKeys: AccessKeySummary[];
   apiEndpoint: string;
   credentials: CredentialSummary[];
   currentCredential: CurrentCredentialInfo;
@@ -71,6 +73,14 @@ export const createCredentialsState = (
   initialData: AdminConsoleInitialData,
 ): CredentialsState => {
   return {
+    accessKeyActionId: null,
+    accessKeyForm: {
+      credentialFilenames: [],
+      editingId: null,
+      name: '',
+    },
+    accessKeys: initialData.accessKeys,
+    accessKeysLoading: false,
     actionIndex: null,
     current: initialData.currentCredential,
     currentLoading: false,
@@ -80,6 +90,7 @@ export const createCredentialsState = (
     },
     items: initialData.credentials,
     loading: false,
+    revealedSecret: null,
   };
 };
 

@@ -4,6 +4,8 @@ export type TabKey = 'dashboard' | 'credentials' | 'api-test' | 'settings';
 
 export type NotificationType = 'success' | 'error' | 'warning' | 'info';
 
+export type ThemeMode = 'light' | 'dark' | 'system';
+
 export interface NotificationState {
   message: string;
   type: NotificationType;
@@ -30,17 +32,31 @@ export interface CredentialSummary {
   session_state: string | null;
 }
 
+export interface AccessKeySummary {
+  createdAt: string;
+  credentialFilenames: string[];
+  id: string;
+  maskedSecret: string;
+  name: string;
+  updatedAt: string;
+}
+
+export interface RevealedAccessKeySecret {
+  id: string;
+  name: string;
+  secret: string;
+}
+
 export interface CurrentCredentialInfo {
   status: string;
+  available_credential_count?: number;
   index?: number;
   filename?: string;
+  next_filename?: string | null;
   user_id?: string;
   domain?: string;
   enterprise_id?: string | number | null;
   tenant_id?: string | number | null;
-  usage_count?: number;
-  rotation_count?: number;
-  auto_rotation_enabled?: boolean;
 }
 
 export interface DashboardState {
@@ -75,13 +91,24 @@ export interface CredentialFormState {
   userId: string;
 }
 
+export interface AccessKeyFormState {
+  credentialFilenames: string[];
+  editingId: string | null;
+  name: string;
+}
+
 export interface CredentialsState {
+  accessKeyActionId: string | null;
+  accessKeyForm: AccessKeyFormState;
+  accessKeys: AccessKeySummary[];
+  accessKeysLoading: boolean;
   actionIndex: number | null;
   current: CurrentCredentialInfo | null;
   currentLoading: boolean;
   form: CredentialFormState;
   items: CredentialSummary[];
   loading: boolean;
+  revealedSecret: RevealedAccessKeySecret | null;
 }
 
 export interface ApiTestState {
@@ -160,7 +187,7 @@ export const dashboardStateAtom = atom<DashboardState>(defaultDashboardState);
 
 export const activeTabAtom = atom<TabKey>('dashboard');
 
-export const themeAtom = atom<'light' | 'dark'>('light');
+export const themeAtom = atom<ThemeMode>('system');
 
 export const notificationAtom = atom<NotificationState | null>(null);
 
@@ -179,6 +206,14 @@ export const defaultAuthState: AuthState = {
 export const authStateAtom = atom<AuthState>(defaultAuthState);
 
 export const defaultCredentialsState: CredentialsState = {
+  accessKeyActionId: null,
+  accessKeyForm: {
+    credentialFilenames: [],
+    editingId: null,
+    name: '',
+  },
+  accessKeys: [],
+  accessKeysLoading: true,
   actionIndex: null,
   current: null,
   currentLoading: true,
@@ -188,6 +223,7 @@ export const defaultCredentialsState: CredentialsState = {
   },
   items: [],
   loading: true,
+  revealedSecret: null,
 };
 
 export const credentialsStateAtom = atom<CredentialsState>(

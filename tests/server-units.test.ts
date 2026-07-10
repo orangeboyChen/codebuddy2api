@@ -4,8 +4,21 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 
 import {
+  createAccessKey,
+  deleteAccessKey,
+  findAccessKeyById,
+  findAccessKeyBySecret,
+  getAccessKeySecret,
+  hasAccessKeys,
+  listAccessKeys,
+  listStoredAccessKeys,
+  updateAccessKey,
+} from '@/lib/server/access-keys';
+import {
+  getAdminAuthErrorResponse,
   getAnthropicAuthErrorResponse,
-  getAuthErrorResponse,
+  getClientAuthErrorResponse,
+  resolveRequestAccessKey,
 } from '@/lib/server/auth';
 import {
   getAuthCallbackResponse,
@@ -38,12 +51,12 @@ import {
   resetUsageStats,
 } from '@/lib/server/stats';
 
-const tempConfigDir = path.join(process.cwd(), '.tmp-test-config');
-const tempCredsDir = path.join(process.cwd(), '.tmp-test-creds');
+const tempConfigDir = path.join(process.cwd(), '.tmp-test-config-units');
+const tempCredsDir = path.join(process.cwd(), '.tmp-test-creds-units');
 
 const cleanupTempState = (): void => {
-  fs.rmSync(tempConfigDir, { force: true, recursive: true });
-  fs.rmSync(tempCredsDir, { force: true, recursive: true });
+  fs.rmSync(tempConfigDir, { force: true, recursive: true, maxRetries: 5 });
+  fs.rmSync(tempCredsDir, { force: true, recursive: true, maxRetries: 5 });
 };
 
 const makeNextRequest = (
@@ -72,42 +85,178 @@ describe('server units', () => {
     resetResponseSessions();
     resetUsageStats();
     vi.restoreAllMocks();
-    process.env.CODEBUDDY_CONFIG_PATH = '.tmp-test-config/config.json';
-    process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds';
-    process.env.CODEBUDDY_PASSWORD = '';
+    process.env.CODEBUDDY_CONFIG_PATH = '.tmp-test-config-units/config.json';
+    process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds-units';
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
     process.env.CODEBUDDY_API_KEY = '';
-    process.env.CODEBUDDY_ROTATION_COUNT = '1';
   });
 
   afterEach(() => {
     cleanupTempState();
+    delete process.env.CODEBUDDY_PASSWORD;
   });
 
   it('covers auth guard branches', () => {
     expect(
-      getAuthErrorResponse(makeNextRequest('http://localhost/test')),
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test')),
     ).toBeNull();
 
-    process.env.CODEBUDDY_PASSWORD = 'secret';
+    const credential = addCredential({
+      bearer_token: 'token-auth',
+      user_id: 'guard@example.com',
+    });
+    const created = createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Guard Key',
+    });
 
     expect(
-      getAuthErrorResponse(makeNextRequest('http://localhost/test'))?.status,
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test'))
+        ?.status,
     ).toBe(401);
     expect(
-      getAuthErrorResponse(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Basic nope' },
+        }),
+      )?.status,
+    ).toBe(401);
+    expect(
+      getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
           headers: { authorization: 'Bearer nope' },
         }),
       )?.status,
     ).toBe(403);
     expect(
-      getAuthErrorResponse(
+      getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
-          headers: { authorization: 'Bearer secret' },
+          headers: { authorization: `Bearer ${created.secret} trailing` },
         }),
       ),
     ).toBeNull();
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { 'x-api-key': created.secret },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps legacy password auth during migration and scopes admin auth', () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+
+    expect(
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test'))
+        ?.status,
+    ).toBe(401);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer wrong-secret' },
+        }),
+      )?.status,
+    ).toBe(403);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAdminAuthErrorResponse(
+        makeNextRequest('http://localhost/admin', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+
+    const credential = addCredential({
+      bearer_token: 'token-auth',
+      user_id: 'guard@example.com',
+    });
+    const created = createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Guard Key',
+    });
+
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: `Bearer ${created.secret}` },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAdminAuthErrorResponse(
+        makeNextRequest('http://localhost/admin', {
+          headers: { authorization: `Bearer ${created.secret}` },
+        }),
+      )?.status,
+    ).toBe(403);
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: `Bearer ${created.secret}` },
+        }),
+      )?.id,
+    ).toBe(created.access_key.id);
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('covers auth behavior when access key storage is unreadable', async () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+    fs.mkdirSync(tempConfigDir, { recursive: true });
+    fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
+
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer any-token' },
+        }),
+      ),
+    ).toBeNull();
+
+    const clientError = getClientAuthErrorResponse(
+      makeNextRequest('http://localhost/test', {
+        headers: { authorization: 'Bearer any-token' },
+      }),
+    );
+    expect(clientError?.status).toBe(503);
+    expect(await clientError?.json()).toEqual({
+      error: {
+        message:
+          'Access key storage is unreadable. Fix access-keys.json first.',
+      },
+    });
+
+    const adminError = getAdminAuthErrorResponse(
+      makeNextRequest('http://localhost/admin', {
+        headers: { authorization: 'Bearer legacy-secret' },
+      }),
+    );
+    expect(adminError?.status).toBe(503);
+
+    const anthropicError = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { authorization: 'Bearer legacy-secret' },
+      }),
+    );
+    expect(anthropicError?.status).toBe(503);
+    expect(await anthropicError?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        type: 'authentication_error',
+      },
+    });
   });
 
   it('covers anthropic auth with x-api-key and bearer', async () => {
@@ -118,7 +267,14 @@ describe('server units', () => {
       ),
     ).toBeNull();
 
-    process.env.CODEBUDDY_PASSWORD = 'anthropic-secret';
+    const credential = addCredential({
+      bearer_token: 'token-anthropic',
+      user_id: 'anthropic@example.com',
+    });
+    const { secret } = createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Anthropic Key',
+    });
 
     // Missing key entirely.
     const noKey = getAnthropicAuthErrorResponse(
@@ -128,19 +284,19 @@ describe('server units', () => {
     expect((await noKey!.json()).type).toBe('error');
 
     // Wrong key via x-api-key.
-    expect(
-      getAnthropicAuthErrorResponse(
-        makeNextRequest('http://localhost/v1/messages', {
-          headers: { 'x-api-key': 'wrong' },
-        }),
-      )?.status,
-    ).toBe(403);
+    const wrongKey = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { 'x-api-key': 'wrong' },
+      }),
+    );
+    expect(wrongKey?.status).toBe(403);
+    expect(wrongKey).not.toBeNull();
 
     // Correct key via x-api-key.
     expect(
       getAnthropicAuthErrorResponse(
         makeNextRequest('http://localhost/v1/messages', {
-          headers: { 'x-api-key': 'anthropic-secret' },
+          headers: { 'x-api-key': secret },
         }),
       ),
     ).toBeNull();
@@ -149,13 +305,49 @@ describe('server units', () => {
     expect(
       getAnthropicAuthErrorResponse(
         makeNextRequest('http://localhost/v1/messages', {
-          headers: { authorization: 'Bearer anthropic-secret' },
+          headers: { authorization: `Bearer ${secret}` },
         }),
       ),
     ).toBeNull();
   });
 
-  it('covers credential rotation, invalid operations, and usage stats', () => {
+  it('covers anthropic legacy password branches', async () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+
+    const missing = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages'),
+    );
+    expect(missing?.status).toBe(401);
+    expect(await missing?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        message: 'Authorization header is required',
+      },
+    });
+
+    const wrong = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { authorization: 'Bearer wrong-secret' },
+      }),
+    );
+    expect(wrong?.status).toBe(403);
+    expect(await wrong?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        message: 'Invalid API key',
+      },
+    });
+
+    expect(
+      getAnthropicAuthErrorResponse(
+        makeNextRequest('http://localhost/v1/messages', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('covers credential round-robin, invalid operations, and usage stats', () => {
     expect(getCurrentCredentialInfo().status).toBe('no_credentials');
     expect(selectCredential(0).success).toBe(false);
     expect(deleteCredentialByIndex(0).success).toBe(false);
@@ -182,8 +374,14 @@ describe('server units', () => {
     });
 
     const listed = listCredentials();
-    expect(listed.credentials[0].is_expired).toBe(true);
-    expect(listed.credentials[1].tenant_id).toBe('tenant-a');
+    const expiredCredential = listed.credentials.find((item) => {
+      return item.user_id === 'expired@example.com' || item.is_expired === true;
+    });
+    const tenantCredential = listed.credentials.find(
+      (item) => item.user_id === 'one@example.com',
+    );
+    expect(expiredCredential?.is_expired).toBe(true);
+    expect(tenantCredential?.tenant_id).toBe('tenant-a');
 
     const first = resolveCredentialForRequest();
     const second = resolveCredentialForRequest();
@@ -194,13 +392,149 @@ describe('server units', () => {
     expect(resolveCredentialForRequest()?.data.user_id).toBe('one@example.com');
 
     const toggle = toggleAutoRotation();
-    expect(toggle.auto_rotation_enabled).toBe(false);
+    expect(toggle.auto_rotation_enabled).toBe(true);
     expect(resumeAutoRotation().success).toBe(true);
+
+    const keyedCredential = addCredential({
+      bearer_token: 'token-3',
+      created_at: Math.floor(Date.now() / 1000),
+      expires_in: 3600,
+      user_id: 'keyed@example.com',
+    });
+    const keyedAccess = createAccessKey({
+      credentialFilenames: [keyedCredential.filename],
+      name: 'Subset Key',
+    });
+    expect(
+      resolveCredentialForRequest({
+        accessKeyId: keyedAccess.access_key.id,
+        allowedCredentialFilenames: keyedAccess.access_key.credentialFilenames,
+      })?.filename,
+    ).toBe(keyedCredential.filename);
 
     recordModelUsage('glm-5.1');
     recordCredentialUsage('cred-a');
     expect(getUsageStats().model_usage['glm-5.1']).toBe(1);
     expect(getUsageStats().credential_usage['cred-a']).toBe(1);
+  });
+
+  it('covers access key store edge cases and mutation failures', () => {
+    expect(hasAccessKeys()).toBe(false);
+    expect(findAccessKeyBySecret('   ')).toBeNull();
+    expect(getAccessKeySecret('missing')).toBeNull();
+    expect(deleteAccessKey('missing')).toBe(false);
+    expect(listAccessKeys().access_keys).toEqual([]);
+    expect(listStoredAccessKeys()).toEqual([]);
+
+    fs.mkdirSync(tempConfigDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tempConfigDir, 'access-keys.json'),
+      JSON.stringify({
+        accessKeys: [
+          {
+            id: 'valid-id',
+            name: 'Valid Key',
+            secret: 'shortsecret',
+            createdAt: '2026-07-10T00:00:00.000Z',
+            updatedAt: '2026-07-10T00:00:00.000Z',
+            credentialFilenames: ['cred-b.json', 'cred-a.json'],
+          },
+          {
+            id: 'invalid-id',
+            name: 'Broken Key',
+            credentialFilenames: 'bad-shape',
+          },
+        ],
+      }),
+    );
+
+    expect(hasAccessKeys()).toBe(true);
+    expect(findAccessKeyById('valid-id')?.name).toBe('Valid Key');
+    expect(findAccessKeyBySecret('shortsecret')?.id).toBe('valid-id');
+    expect(getAccessKeySecret('valid-id')?.secret).toBe('shortsecret');
+    expect(listStoredAccessKeys()).toHaveLength(1);
+    expect(listAccessKeys().access_keys[0]?.maskedSecret).toBe('shor****');
+
+    fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
+    expect(listStoredAccessKeys()).toEqual([]);
+    expect(hasAccessKeys()).toBe(false);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer anything' },
+        }),
+      )?.status,
+    ).toBe(503);
+  });
+
+  it('covers access key validation, normalization, and deletion', () => {
+    const firstCredential = addCredential({
+      bearer_token: 'token-first',
+      user_id: 'first@example.com',
+    });
+    const secondCredential = addCredential({
+      bearer_token: 'token-second',
+      user_id: 'second@example.com',
+    });
+
+    expect(() =>
+      createAccessKey({
+        credentialFilenames: [firstCredential.filename],
+        name: '   ',
+      }),
+    ).toThrow('Access key name is required');
+    expect(() =>
+      createAccessKey({
+        credentialFilenames: ['   '],
+        name: 'Missing Credentials',
+      }),
+    ).toThrow('At least one credential must be selected');
+
+    const created = createAccessKey({
+      credentialFilenames: [
+        ` ${secondCredential.filename} `,
+        firstCredential.filename,
+        secondCredential.filename,
+      ],
+      name: '  Mixed Key  ',
+    });
+    expect(created.access_key.name).toBe('Mixed Key');
+    expect(created.access_key.credentialFilenames).toEqual([
+      firstCredential.filename,
+      secondCredential.filename,
+    ]);
+    expect(created.secret.startsWith('cb2_')).toBe(true);
+    expect(created.access_key.maskedSecret).toContain('...');
+
+    expect(() =>
+      updateAccessKey(created.access_key.id, {
+        credentialFilenames: [firstCredential.filename],
+        name: '   ',
+      }),
+    ).toThrow('Access key name is required');
+    expect(() =>
+      updateAccessKey(created.access_key.id, {
+        credentialFilenames: [],
+        name: 'Still Bad',
+      }),
+    ).toThrow('At least one credential must be selected');
+    expect(() =>
+      updateAccessKey('missing-id', {
+        credentialFilenames: [firstCredential.filename],
+        name: 'Unknown Key',
+      }),
+    ).toThrow('Access key not found');
+
+    const updated = updateAccessKey(created.access_key.id, {
+      credentialFilenames: [secondCredential.filename],
+      name: 'Updated Key',
+    });
+    expect(updated.name).toBe('Updated Key');
+    expect(updated.credentialFilenames).toEqual([secondCredential.filename]);
+
+    expect(deleteAccessKey(created.access_key.id)).toBe(true);
+    expect(findAccessKeyById(created.access_key.id)).toBeNull();
+    expect(getAccessKeySecret(created.access_key.id)).toBeNull();
   });
 
   it('covers chat proxy error, token auth, and streaming branches', async () => {
@@ -1223,7 +1557,7 @@ describe('server units', () => {
 
     // The credential should have been saved with enterprise/tenant info.
     const credInfo = getCurrentCredentialInfo();
-    expect(credInfo.status).toBe('auto_rotation');
+    expect(credInfo.status).toBe('round_robin');
     expect(credInfo.tenant_id).toBe('tenant-456');
   });
 
@@ -1662,11 +1996,10 @@ describe('server units', () => {
   });
 
   it('coerces nullable string settings to strings', () => {
-    updateSettings({ CODEBUDDY_PASSWORD: 12345, CODEBUDDY_API_KEY: true });
+    updateSettings({ CODEBUDDY_API_KEY: true });
 
     const config = getActiveConfig();
 
-    expect(config.CODEBUDDY_PASSWORD).toBe('12345');
     expect(config.CODEBUDDY_API_KEY).toBe('true');
   });
 });
