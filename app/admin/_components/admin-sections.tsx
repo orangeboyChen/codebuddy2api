@@ -74,8 +74,10 @@ interface SettingsSectionProps {
 }
 
 interface DebugSectionProps {
+  autoRefreshOptions: Array<{ label: string; value: number }>;
   onClear: () => void;
   onCopy: (value: string) => void;
+  onAutoRefreshSecondsChange: (value: number) => void;
   onEnabledChange: (value: boolean) => void;
   onMaxEntriesChange: (value: number) => void;
   onRefresh: () => void;
@@ -360,8 +362,8 @@ const CredentialCard = ({
             </span>
             <span className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark">
               {credential.first_message_role_to_system
-                ? '转 Chat 时首条 developer 改 system'
-                : '转 Chat 时保留 developer role'}
+                ? '转 Chat 时按位置转换 developer 角色'
+                : '转 Chat 时保留 developer 角色'}
             </span>
           </div>
         </div>
@@ -614,7 +616,7 @@ const AccessKeyCard = ({
             当前 API Key
           </div>
           <div className="p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark font-mono text-sm break-all">
-            {revealedSecret?.secret}
+            {revealedSecret?.secret.replace(/^Bearer\s+/i, '')}
           </div>
         </div>
       ) : null}
@@ -1609,9 +1611,6 @@ export const SettingsSection = ({
             ></i>
             保存设置
           </button>
-          <small className="text-secondary block mt-4">
-            注意：部分设置（如端口号）需要重启服务后才能生效。
-          </small>
         </div>
       </div>
     </div>
@@ -1619,8 +1618,10 @@ export const SettingsSection = ({
 };
 
 export const DebugSection = ({
+  autoRefreshOptions,
   onClear,
   onCopy,
+  onAutoRefreshSecondsChange,
   onEnabledChange,
   onMaxEntriesChange,
   onRefresh,
@@ -1670,6 +1671,28 @@ export const DebugSection = ({
             Debug 记录
           </h3>
           <div className="flex gap-2">
+            <div className="min-w-[160px]">
+              <label className="sr-only" htmlFor="debugAutoRefreshSeconds">
+                自动刷新时间
+              </label>
+              <select
+                id="debugAutoRefreshSeconds"
+                className="w-full p-2 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-sm text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+                disabled={!state.enabled || state.saving}
+                value={state.autoRefreshSeconds}
+                onChange={(event) => {
+                  onAutoRefreshSecondsChange(
+                    Number.parseInt(event.target.value, 10) || 0,
+                  );
+                }}
+              >
+                {autoRefreshOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <button
               className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
               onClick={onRefresh}

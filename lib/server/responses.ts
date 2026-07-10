@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 
-import { getAvailableModels } from './config';
+import { getDefaultModel } from './config';
 import type { DebugTrace } from './debug';
 import {
   proxyChatCompletions,
@@ -754,10 +754,9 @@ const prepareTranscript = (
 
   const transcript = [...(previousSession?.transcript ?? [])];
   const model =
-    body.model ??
-    previousSession?.model ??
-    getAvailableModels()[0] ??
-    'glm-5.1';
+    typeof body.model === 'string' && body.model.trim()
+      ? body.model
+      : (previousSession?.model ?? getDefaultModel());
   const defaults = {
     instructions:
       body.instructions ?? previousSession?.defaults.instructions ?? undefined,

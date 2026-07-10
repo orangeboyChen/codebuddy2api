@@ -1,7 +1,11 @@
 import type { NextRequest } from 'next/server';
 
 import { resolveRequestAccessKey } from './auth';
-import { getAvailableModels, getCodeBuddyApiEndpoint } from './config';
+import {
+  getAvailableModels,
+  getCodeBuddyApiEndpoint,
+  getDefaultModel,
+} from './config';
 import {
   type CredentialRecord,
   findCredentialRecordByFilename,
@@ -394,9 +398,13 @@ const buildUpstreamBody = (
     context.preferences.firstMessageRoleToSystem,
   );
   const maxTokens = body.max_tokens ?? body.max_completion_tokens;
+  const model =
+    typeof body.model === 'string' && body.model.trim()
+      ? body.model
+      : getDefaultModel();
 
   return {
-    model: body.model ?? getAvailableModels()[0] ?? 'glm-5.1',
+    model,
     messages: normalizedMessages,
     stream: true,
     temperature: body.temperature,
@@ -962,7 +970,7 @@ export const proxyResponsesUpstream = async (
       model:
         typeof body.model === 'string' && body.model.trim()
           ? body.model
-          : (getAvailableModels()[0] ?? 'glm-5.1'),
+          : getDefaultModel(),
     };
     const upstreamUrl = `${getCodeBuddyApiEndpoint()}/v1/responses`;
     const upstreamHeaders = buildUpstreamHeaders(request, resolvedContext.auth);

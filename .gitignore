@@ -21,10 +21,15 @@ test-report.junit.xml
 .env.test.local
 .env.production.local
 config/config.json
+config/debug-config.json
+config/debug-logs.json
+config/usage/
 
 # Local test artifacts
 .tmp-test-config/
 .tmp-test-creds/
+.tmp-test-debug-usage-root/
+.tmp-test-runtime-root/
 
 # Credentials
 .codebuddy_creds/

@@ -38,6 +38,7 @@ import {
   selectCredential,
   toggleAutoRotation,
 } from '@/lib/server/credentials';
+import { createDebugTrace, setDebugUpstreamRequest } from '@/lib/server/debug';
 import {
   handleResponsesRequest,
   resetResponseSessions,
@@ -99,7 +100,49 @@ describe('server units', () => {
 
   afterEach(() => {
     cleanupTempState();
-    delete process.env.CODEBUDDY_PASSWORD;
+  });
+
+  it('masks sensitive debug headers and body fields', () => {
+    const requestKey = 'cb2_request_key_1234567890';
+    const requestUserId = 'request-user-id-1234567890';
+    const upstreamUserId = 'upstream-user-id-1234567890';
+    const trace = createDebugTrace({
+      requestBody: {
+        authorization: 'Bearer request-authorization-token',
+        nested: {
+          x_user_id: requestUserId,
+        },
+      },
+      requestKey,
+      route: '/v1/responses',
+    });
+
+    setDebugUpstreamRequest(trace, {
+      body: {
+        user_id: upstreamUserId,
+      },
+      headers: {
+        authorization: 'Bearer upstream-authorization-token',
+        'x-api-key': 'upstream-api-key-1234567890',
+        'x-user-id': upstreamUserId,
+      },
+      method: 'POST',
+      url: 'https://example.com/v1/chat/completions',
+    });
+
+    expect(JSON.stringify(trace)).not.toContain(requestKey);
+    expect(JSON.stringify(trace)).not.toContain(requestUserId);
+    expect(JSON.stringify(trace)).not.toContain(upstreamUserId);
+    expect(trace.requestKey).toMatch(/^cb2_requ\.\.\./);
+    expect(trace.upstreamRequest?.headers.authorization).toMatch(
+      /^Bearer upstrea/,
+    );
+    expect(trace.upstreamRequest?.headers['x-api-key']).toMatch(
+      /^upstream\.\.\./,
+    );
+    expect(trace.upstreamRequest?.headers['x-user-id']).toMatch(
+      /^upstream\.\.\./,
+    );
   });
 
   it('covers auth guard branches', () => {
@@ -164,35 +207,7 @@ describe('server units', () => {
     ).toBeNull();
   });
 
-  it('keeps legacy password auth during migration and scopes admin auth', () => {
-    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
-
-    expect(
-      getClientAuthErrorResponse(makeNextRequest('http://localhost/test'))
-        ?.status,
-    ).toBe(401);
-    expect(
-      getClientAuthErrorResponse(
-        makeNextRequest('http://localhost/test', {
-          headers: { authorization: 'Bearer wrong-secret' },
-        }),
-      )?.status,
-    ).toBe(403);
-    expect(
-      getClientAuthErrorResponse(
-        makeNextRequest('http://localhost/test', {
-          headers: { authorization: 'Bearer legacy-secret' },
-        }),
-      ),
-    ).toBeNull();
-    expect(
-      getAdminAuthErrorResponse(
-        makeNextRequest('http://localhost/admin', {
-          headers: { authorization: 'Bearer legacy-secret' },
-        }),
-      ),
-    ).toBeNull();
-
+  it('requires access keys once they are configured', () => {
     const credential = addCredential({
       bearer_token: 'token-auth',
       user_id: 'guard@example.com',
@@ -214,6 +229,13 @@ describe('server units', () => {
         makeNextRequest('http://localhost/admin', {
           headers: { authorization: `Bearer ${created.secret}` },
         }),
+      ),
+    ).toBeNull();
+    expect(
+      getAdminAuthErrorResponse(
+        makeNextRequest('http://localhost/admin', {
+          headers: { authorization: 'Bearer wrong-secret' },
+        }),
       )?.status,
     ).toBe(403);
     expect(
@@ -226,14 +248,13 @@ describe('server units', () => {
     expect(
       resolveRequestAccessKey(
         makeNextRequest('http://localhost/test', {
-          headers: { authorization: 'Bearer legacy-secret' },
+          headers: { authorization: 'Bearer wrong-secret' },
         }),
       ),
     ).toBeNull();
   });
 
   it('covers auth behavior when access key storage is unreadable', async () => {
-    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
     fs.mkdirSync(tempConfigDir, { recursive: true });
     fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
 
@@ -260,14 +281,14 @@ describe('server units', () => {
 
     const adminError = getAdminAuthErrorResponse(
       makeNextRequest('http://localhost/admin', {
-        headers: { authorization: 'Bearer legacy-secret' },
+        headers: { authorization: 'Bearer any-token' },
       }),
     );
     expect(adminError?.status).toBe(503);
 
     const anthropicError = getAnthropicAuthErrorResponse(
       makeNextRequest('http://localhost/v1/messages', {
-        headers: { authorization: 'Bearer legacy-secret' },
+        headers: { authorization: 'Bearer any-token' },
       }),
     );
     expect(anthropicError?.status).toBe(503);
@@ -331,41 +352,6 @@ describe('server units', () => {
     ).toBeNull();
   });
 
-  it('covers anthropic legacy password branches', async () => {
-    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
-
-    const missing = getAnthropicAuthErrorResponse(
-      makeNextRequest('http://localhost/v1/messages'),
-    );
-    expect(missing?.status).toBe(401);
-    expect(await missing?.json()).toMatchObject({
-      type: 'error',
-      error: {
-        message: 'Authorization header is required',
-      },
-    });
-
-    const wrong = getAnthropicAuthErrorResponse(
-      makeNextRequest('http://localhost/v1/messages', {
-        headers: { authorization: 'Bearer wrong-secret' },
-      }),
-    );
-    expect(wrong?.status).toBe(403);
-    expect(await wrong?.json()).toMatchObject({
-      type: 'error',
-      error: {
-        message: 'Invalid API key',
-      },
-    });
-
-    expect(
-      getAnthropicAuthErrorResponse(
-        makeNextRequest('http://localhost/v1/messages', {
-          headers: { authorization: 'Bearer legacy-secret' },
-        }),
-      ),
-    ).toBeNull();
-  });
   it('covers credential round-robin, invalid operations, and usage stats', () => {
     while (deleteCredentialByIndex(0).success) {
       // delete all seeded credentials for a clean no-credentials assertion
@@ -470,12 +456,12 @@ describe('server units', () => {
       }),
     );
 
-    expect(hasAccessKeys()).toBe(true);
-    expect(findAccessKeyById('valid-id')?.name).toBe('Valid Key');
-    expect(findAccessKeyBySecret('shortsecret')?.id).toBe('valid-id');
-    expect(getAccessKeySecret('valid-id')?.secret).toBe('shortsecret');
-    expect(listStoredAccessKeys()).toHaveLength(1);
-    expect(listAccessKeys().access_keys[0]?.maskedSecret).toBe('shor****');
+    expect(hasAccessKeys()).toBe(false);
+    expect(findAccessKeyById('valid-id')).toBeNull();
+    expect(findAccessKeyBySecret('shortsecret')).toBeNull();
+    expect(getAccessKeySecret('valid-id')).toBeNull();
+    expect(listStoredAccessKeys()).toEqual([]);
+    expect(listAccessKeys().access_keys).toEqual([]);
 
     fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
     expect(listStoredAccessKeys()).toEqual([]);

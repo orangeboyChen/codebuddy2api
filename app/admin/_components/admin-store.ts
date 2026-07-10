@@ -152,6 +152,7 @@ export interface DebugLogEntry {
 }
 
 export interface DebugState {
+  autoRefreshSeconds: number;
   enabled: boolean;
   items: DebugLogEntry[];
   loading: boolean;
@@ -286,6 +287,7 @@ export const defaultApiTestState: ApiTestState = {
 export const apiTestStateAtom = atom<ApiTestState>(defaultApiTestState);
 
 export const defaultDebugState: DebugState = {
+  autoRefreshSeconds: 0,
   enabled: false,
   items: [],
   loading: true,

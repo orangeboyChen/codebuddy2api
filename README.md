@@ -123,22 +123,19 @@ console.log(response.choices[0]?.message?.content);
 ### Authentication
 
 - Client inference routes (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/models`) accept managed access keys. Send them as `Authorization: Bearer <access-key>` or `x-api-key: <access-key>`.
-- During migration, if `CODEBUDDY_PASSWORD` is still set and no access keys have been created yet, the same client routes continue to accept `Authorization: Bearer <password>`.
-- Admin and global credential management routes only accept the legacy Bearer password when `CODEBUDDY_PASSWORD` is configured.
+- Global credential management routes under `/v1/credentials*` and `/api/settings` use the same managed access keys.
+- The built-in web admin console continues to use its existing `/admin-api/*` routes without introducing a password prompt.
 
 ## Configuration
 
 Settings resolve in this order: `config/config.json` > environment variables > built-in defaults.
 
-| Key                   | Default | Description                                                                |
-| --------------------- | ------- | -------------------------------------------------------------------------- |
-| `CODEBUDDY_PASSWORD`  | empty   | Optional legacy Bearer password for admin routes and access-key migration. |
-| `CODEBUDDY_AUTH_MODE` | `auto`  | `auto` or `token`, both based on saved credentials.                        |
-| `CODEBUDDY_LOG_LEVEL` | `INFO`  | Runtime log level.                                                         |
+| Key                   | Default | Description                                         |
+| --------------------- | ------- | --------------------------------------------------- |
+| `CODEBUDDY_AUTH_MODE` | `auto`  | `auto` or `token`, both based on saved credentials. |
+| `CODEBUDDY_LOG_LEVEL` | `INFO`  | Runtime log level.                                  |
 
 See `.env.example` and `config/config.example.json` for all options.
-
-Some settings, such as port-related deployment changes, only take effect after restarting the service.
 
 ## Deployment
 

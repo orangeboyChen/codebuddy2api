@@ -96,6 +96,7 @@ interface SettingsResponse {
 }
 
 interface DebugResponse {
+  autoRefreshSeconds?: number;
   enabled?: boolean;
   items?: Array<
     typeof defaultDebugState.items extends Array<infer Item> ? Item : never
@@ -103,6 +104,17 @@ interface DebugResponse {
   maxEntries?: number;
   message?: string;
 }
+
+const DEBUG_AUTO_REFRESH_OPTIONS = [
+  { label: '自动刷新：关闭', value: 0 },
+  { label: '自动刷新：5 秒', value: 5 },
+  { label: '自动刷新：10 秒', value: 10 },
+  { label: '自动刷新：15 秒', value: 15 },
+  { label: '自动刷新：30 秒', value: 30 },
+  { label: '自动刷新：1 分钟', value: 60 },
+  { label: '自动刷新：2 分钟', value: 120 },
+  { label: '自动刷新：5 分钟', value: 300 },
+] as const;
 
 interface ApiTestSuccess {
   choices?: Array<{
@@ -239,6 +251,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   const [apiTest, setApiTest] = useAtom(apiTestStateAtom);
   const [settings, setSettings] = useAtom(settingsStateAtom);
   const authPollTimerRef = useRef<number | null>(null);
+  const debugAutoRefreshTimerRef = useRef<number | null>(null);
 
   const showNotification = useCallback(
     (type: 'success' | 'error' | 'warning' | 'info', message: string) => {
@@ -256,6 +269,13 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       authPollTimerRef.current = null;
     }
   };
+
+  const clearDebugAutoRefreshTimer = useCallback(() => {
+    if (debugAutoRefreshTimerRef.current !== null) {
+      window.clearInterval(debugAutoRefreshTimerRef.current);
+      debugAutoRefreshTimerRef.current = null;
+    }
+  }, []);
 
   const loadDashboard = useCallback(async () => {
     setDashboard((current) => ({
@@ -390,37 +410,50 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     });
   }, [setApiTest, setSettings]);
 
-  const loadDebug = useCallback(async () => {
-    setDebug((current) => ({
-      ...current,
-      loading: true,
-    }));
-
-    const result = await requestJson<DebugResponse>('/admin-api/debug');
-
-    if (!result.ok) {
+  const loadDebug = useCallback(
+    async ({
+      preserveSettings = false,
+    }: { preserveSettings?: boolean } = {}) => {
       setDebug((current) => ({
         ...current,
-        loading: false,
+        loading: true,
       }));
-      showNotification(
-        'error',
-        getErrorMessage(result.data, '加载 Debug 记录失败。'),
-      );
-      return;
-    }
 
-    setDebug({
-      enabled: Boolean(result.data?.enabled),
-      items: result.data?.items ?? [],
-      loading: false,
-      maxEntries:
-        typeof result.data?.maxEntries === 'number'
-          ? result.data.maxEntries
-          : 100,
-      saving: false,
-    });
-  }, [setDebug, showNotification]);
+      const result = await requestJson<DebugResponse>('/admin-api/debug');
+
+      if (!result.ok) {
+        setDebug((current) => ({
+          ...current,
+          loading: false,
+        }));
+        showNotification(
+          'error',
+          getErrorMessage(result.data, '加载 Debug 记录失败。'),
+        );
+        return;
+      }
+
+      setDebug((current) => ({
+        autoRefreshSeconds: preserveSettings
+          ? current.autoRefreshSeconds
+          : typeof result.data?.autoRefreshSeconds === 'number'
+            ? result.data.autoRefreshSeconds
+            : 0,
+        enabled: preserveSettings
+          ? current.enabled
+          : Boolean(result.data?.enabled),
+        items: result.data?.items ?? [],
+        loading: false,
+        maxEntries: preserveSettings
+          ? current.maxEntries
+          : typeof result.data?.maxEntries === 'number'
+            ? result.data.maxEntries
+            : 100,
+        saving: false,
+      }));
+    },
+    [setDebug, showNotification],
+  );
 
   const refreshAdminData = useCallback(async () => {
     await Promise.all([loadDashboard(), loadCredentials()]);
@@ -940,6 +973,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
 
     const result = await requestJson<DebugResponse>('/admin-api/debug', {
       body: JSON.stringify({
+        autoRefreshSeconds: debug.autoRefreshSeconds,
         enabled: debug.enabled,
         maxEntries: debug.maxEntries,
       }),
@@ -962,6 +996,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     }
 
     setDebug({
+      autoRefreshSeconds:
+        typeof result.data?.autoRefreshSeconds === 'number'
+          ? result.data.autoRefreshSeconds
+          : debug.autoRefreshSeconds,
       enabled: Boolean(result.data?.enabled),
       items: result.data?.items ?? [],
       loading: false,
@@ -1016,8 +1054,16 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
 
     return () => {
       clearAuthTimer();
+      clearDebugAutoRefreshTimer();
     };
-  }, [initialData, loadCredentials, loadDashboard, loadDebug, loadSettings]);
+  }, [
+    clearDebugAutoRefreshTimer,
+    initialData,
+    loadCredentials,
+    loadDashboard,
+    loadDebug,
+    loadSettings,
+  ]);
 
   useEffect(() => {
     const storedTheme = window.localStorage.getItem(
@@ -1089,6 +1135,27 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       window.clearTimeout(timeoutId);
     };
   }, [notification, setNotification]);
+
+  useEffect(() => {
+    clearDebugAutoRefreshTimer();
+
+    if (!debug.enabled || debug.autoRefreshSeconds <= 0) {
+      return;
+    }
+
+    debugAutoRefreshTimerRef.current = window.setInterval(() => {
+      void loadDebug({ preserveSettings: true });
+    }, debug.autoRefreshSeconds * 1000);
+
+    return () => {
+      clearDebugAutoRefreshTimer();
+    };
+  }, [
+    clearDebugAutoRefreshTimer,
+    debug.autoRefreshSeconds,
+    debug.enabled,
+    loadDebug,
+  ]);
 
   return (
     <>
@@ -1347,11 +1414,18 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
           ) : null}
           {activeTab === 'debug' ? (
             <DebugSection
+              autoRefreshOptions={[...DEBUG_AUTO_REFRESH_OPTIONS]}
               onClear={() => {
                 void clearDebugItems();
               }}
               onCopy={(value) => {
                 void copyText(value, '内容已复制。');
+              }}
+              onAutoRefreshSecondsChange={(value) => {
+                setDebug((current) => ({
+                  ...current,
+                  autoRefreshSeconds: value,
+                }));
               }}
               onEnabledChange={(value) => {
                 setDebug((current) => ({
@@ -1366,7 +1440,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
                 }));
               }}
               onRefresh={() => {
-                void loadDebug();
+                void loadDebug({ preserveSettings: true });
               }}
               onSave={() => {
                 void saveDebugSettings();

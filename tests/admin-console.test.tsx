@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 
 import AdminConsole from '@/app/admin/_components/admin-console';
 import type { AdminConsoleInitialData } from '@/app/admin/_components/admin-initial-state';
@@ -71,6 +77,7 @@ describe('AdminConsole', () => {
       values: {},
     },
     debug: {
+      autoRefreshSeconds: 10,
       enabled: true,
       items: [
         {
@@ -341,6 +348,77 @@ describe('AdminConsole', () => {
     expect(screen.getByText('返回状态: 200')).toBeInTheDocument();
   });
 
+  it('continuously refreshes debug data without replacing refresh settings', async () => {
+    vi.useFakeTimers();
+    let debugRequestCount = 0;
+
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      if (input === '/admin-api/debug') {
+        debugRequestCount += 1;
+
+        return makeJsonResponse({
+          ...initialData.debug,
+          autoRefreshSeconds: 0,
+          items: [
+            {
+              ...initialData.debug.items[0],
+              id: `debug-refresh-${debugRequestCount}`,
+              route: `/v1/debug-refresh-${debugRequestCount}`,
+            },
+          ],
+        });
+      }
+
+      return makeJsonResponse({});
+    });
+
+    try {
+      render(React.createElement(AdminConsole, { initialData }));
+      fireEvent.click(screen.getByText('Debug'));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(debugRequestCount).toBe(1);
+      expect(screen.getByText('/v1/debug-refresh-1')).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(debugRequestCount).toBe(2);
+      expect(screen.getByText('/v1/debug-refresh-2')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not auto-refresh debug data while debug is disabled', async () => {
+    vi.useFakeTimers();
+    const disabledDebugData: AdminConsoleInitialData = {
+      ...initialData,
+      debug: {
+        ...initialData.debug,
+        enabled: false,
+      },
+    };
+
+    try {
+      render(
+        React.createElement(AdminConsole, { initialData: disabledDebugData }),
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+
+      expect(globalThis.fetch).not.toHaveBeenCalledWith('/admin-api/debug');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows credential routing labels with accurate developer conversion wording', async () => {
     render(React.createElement(AdminConsole, { initialData }));
 
@@ -350,7 +428,7 @@ describe('AdminConsole', () => {
       await screen.findByText('Responses 先转 Chat 再请求上游'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('转 Chat 时保留 developer role'),
+      screen.getByText('转 Chat 时保留 developer 角色'),
     ).toBeInTheDocument();
   });
 

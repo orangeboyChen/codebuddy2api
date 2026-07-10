@@ -13,6 +13,7 @@ export const GET = async (): Promise<Response> => {
   const settings = getDebugSettings();
 
   return Response.json({
+    autoRefreshSeconds: settings.autoRefreshSeconds,
     enabled: settings.enabled,
     items: listDebugLogs(),
     maxEntries: settings.maxEntries,
@@ -21,15 +22,18 @@ export const GET = async (): Promise<Response> => {
 
 export const POST = async (request: Request): Promise<Response> => {
   const body = await getJsonBody<{
+    autoRefreshSeconds?: number;
     enabled?: boolean;
     maxEntries?: number;
   }>(request);
   const settings = updateDebugSettings({
+    autoRefreshSeconds: body.autoRefreshSeconds,
     enabled: body.enabled,
     maxEntries: body.maxEntries,
   });
 
   return Response.json({
+    autoRefreshSeconds: settings.autoRefreshSeconds,
     enabled: settings.enabled,
     items: listDebugLogs(),
     maxEntries: settings.maxEntries,
@@ -41,6 +45,7 @@ export const DELETE = async (): Promise<Response> => {
   clearDebugLogs();
 
   return Response.json({
+    autoRefreshSeconds: getDebugSettings().autoRefreshSeconds,
     enabled: getDebugSettings().enabled,
     items: [],
     maxEntries: getDebugSettings().maxEntries,

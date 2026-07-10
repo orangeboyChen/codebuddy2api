@@ -26,6 +26,7 @@ export interface AdminSettingsSnapshot {
 }
 
 export interface AdminDebugSnapshot {
+  autoRefreshSeconds: number;
   enabled: boolean;
   items: DebugState['items'];
   maxEntries: number;
@@ -120,6 +121,7 @@ export const createDebugState = (
   initialData: AdminConsoleInitialData,
 ): DebugState => {
   return {
+    autoRefreshSeconds: initialData.debug.autoRefreshSeconds,
     enabled: initialData.debug.enabled,
     items: initialData.debug.items,
     loading: false,

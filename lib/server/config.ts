@@ -5,14 +5,11 @@ export interface RuntimeConfig {
   CODEBUDDY_API_ENDPOINT: string;
   CODEBUDDY_AUTH_MODE: 'auto' | 'token';
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa' | 'internal' | 'public';
-  CODEBUDDY_CREDS_DIR: string;
   CODEBUDDY_LOG_LEVEL: string;
   CODEBUDDY_MODELS: string;
 }
 
-interface PersistedConfigFile extends Partial<RuntimeConfig> {
-  CODEBUDDY_PASSWORD?: unknown;
-}
+type PersistedConfigFile = Partial<RuntimeConfig>;
 
 export const getConfigPath = (): string => {
   return process.env.CODEBUDDY_CONFIG_PATH
@@ -35,7 +32,6 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_API_ENDPOINT: 'https://copilot.tencent.com',
   CODEBUDDY_AUTH_MODE: 'auto',
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa',
-  CODEBUDDY_CREDS_DIR: '.codebuddy_creds',
   CODEBUDDY_LOG_LEVEL: 'INFO',
   CODEBUDDY_MODELS:
     'glm-5.1,glm-5.0,glm-5.0-turbo,glm-5v-turbo,glm-4.7,minimax-m3-play,minimax-m2.7,minimax-m2.5,kimi-k2.6,kimi-k2.5,hy3-preview-agent,deepseek-v4-pro,deepseek-v4-flash,deepseek-v3-2-volc,claude-sonnet-4.6,claude-opus-4.8,claude-opus-4.8-1m,claude-opus-4.7,claude-opus-4.7-1m,claude-opus-4.6,claude-opus-4.6-1m,claude-haiku-4.5,gemini-3.1-pro,gemini-3.5-flash,gemini-2.5-pro,gpt-5.5,gpt-5.4,gpt-5.3-codex,gpt-5.1-codex,gpt-5.1-codex-mini,glm-5.2-ioa,glm-5v-turbo-ioa,glm-5.0-ioa,glm-4.7-ioa,minimax-m3-ioa,minimax-m2.7-ioa,minimax-m2.5-ioa,kimi-k2.6-ioa,hy3-preview-agent-ioa,deepseek-v4-pro-ioa,deepseek-v4-flash-ioa,deepseek-v3-2-volc-ioa',
@@ -45,7 +41,6 @@ export const SETTING_LABELS: Record<keyof RuntimeConfig, string> = {
   CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方API端点',
   CODEBUDDY_AUTH_MODE: '认证模式 (auto/token)',
   CODEBUDDY_INTERNET_ENVIRONMENT: '网络环境 (internal/ioa/public)',
-  CODEBUDDY_CREDS_DIR: '凭证文件目录',
   CODEBUDDY_LOG_LEVEL: '日志级别',
   CODEBUDDY_MODELS: '可用模型列表 (逗号分隔)',
 };
@@ -106,10 +101,6 @@ export const getActiveConfig = (): RuntimeConfig => {
       persisted.CODEBUDDY_INTERNET_ENVIRONMENT ??
         process.env.CODEBUDDY_INTERNET_ENVIRONMENT,
     ),
-    CODEBUDDY_CREDS_DIR: normalizeValue(
-      'CODEBUDDY_CREDS_DIR',
-      persisted.CODEBUDDY_CREDS_DIR ?? process.env.CODEBUDDY_CREDS_DIR,
-    ),
     CODEBUDDY_LOG_LEVEL: normalizeValue(
       'CODEBUDDY_LOG_LEVEL',
       persisted.CODEBUDDY_LOG_LEVEL ?? process.env.CODEBUDDY_LOG_LEVEL,
@@ -119,21 +110,6 @@ export const getActiveConfig = (): RuntimeConfig => {
       persisted.CODEBUDDY_MODELS ?? process.env.CODEBUDDY_MODELS,
     ),
   };
-};
-
-export const getLegacyServerPassword = (): string | null => {
-  const persisted = loadPersistedConfigFile().CODEBUDDY_PASSWORD;
-  const password =
-    typeof persisted === 'string' && persisted.trim()
-      ? persisted
-      : process.env.CODEBUDDY_PASSWORD;
-
-  if (typeof password !== 'string') {
-    return null;
-  }
-
-  const trimmed = password.trim();
-  return trimmed ? trimmed : null;
 };
 
 export const updateSettings = (
@@ -183,9 +159,13 @@ export const getAvailableModels = (): string[] => {
     .filter(Boolean);
 };
 
+export const getDefaultModel = (fallback = 'glm-5.1'): string => {
+  return getAvailableModels()[0] ?? fallback;
+};
+
 export const getCredsDir = (): string => {
   return path.resolve(
     /* turbopackIgnore: true */ process.cwd(),
-    getActiveConfig().CODEBUDDY_CREDS_DIR,
+    '.codebuddy_creds',
   );
 };

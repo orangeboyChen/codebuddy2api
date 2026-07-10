@@ -40,6 +40,7 @@ const getInitialData = async (): Promise<AdminConsoleInitialData> => {
     currentCredential:
       getCurrentCredentialInfo() as unknown as AdminConsoleInitialData['currentCredential'],
     debug: {
+      autoRefreshSeconds: debugSettings.autoRefreshSeconds,
       enabled: debugSettings.enabled,
       items: listDebugLogs(),
       maxEntries: debugSettings.maxEntries,

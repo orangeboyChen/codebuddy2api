@@ -1,0 +1,7 @@
+{
+  "CODEBUDDY_API_ENDPOINT": "https://copilot.tencent.com",
+  "CODEBUDDY_AUTH_MODE": "auto",
+  "CODEBUDDY_INTERNET_ENVIRONMENT": "ioa",
+  "CODEBUDDY_LOG_LEVEL": "INFO",
+  "CODEBUDDY_MODELS": "glm-5.1,glm-5.0,glm-5.0-turbo"
+}

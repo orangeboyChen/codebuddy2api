@@ -33,12 +33,12 @@ import { resetCredentialRuntimeState } from '@/lib/server/credentials';
 import { resetResponseSessions } from '@/lib/server/responses';
 import { resetUsageStats } from '@/lib/server/stats';
 
-const tempConfigDir = path.join(process.cwd(), '.tmp-test-config');
-const tempCredsDir = path.join(process.cwd(), '.tmp-test-creds');
+const repoRoot = process.cwd();
+const tempRootDir = path.join(repoRoot, '.tmp-test-runtime-root');
+const tempConfigDir = path.join(tempRootDir, 'config');
 
 const cleanupTempState = (): void => {
-  fs.rmSync(tempConfigDir, { force: true, recursive: true });
-  fs.rmSync(tempCredsDir, { force: true, recursive: true });
+  fs.rmSync(tempRootDir, { force: true, recursive: true });
 };
 
 const makeNextRequest = (
@@ -85,15 +85,14 @@ describe('server runtime', () => {
     resetResponseSessions();
     resetUsageStats();
     vi.restoreAllMocks();
-    process.env.CODEBUDDY_CONFIG_PATH = '.tmp-test-config/config.json';
-    process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds';
+    vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
+    process.env.CODEBUDDY_CONFIG_PATH = 'config/config.json';
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
     process.env.CODEBUDDY_API_KEY = '';
   });
 
   afterEach(() => {
     cleanupTempState();
-    delete process.env.CODEBUDDY_PASSWORD;
   });
 
   it('serves health and model metadata', async () => {
@@ -221,8 +220,6 @@ describe('server runtime', () => {
   });
 
   it('enforces auth on protected v1 routes and mirrors successful actions', async () => {
-    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
-
     await AdminCredentialsRoute.POST(
       makeJsonRequest('http://localhost/admin-api/credentials', {
         bearer_token: 'token-b',
@@ -249,17 +246,6 @@ describe('server runtime', () => {
     );
     expect(unauthorized.status).toBe(401);
 
-    const legacyListPayload = await (
-      await V1CredentialsRoute.GET(
-        makeNextRequest('http://localhost/v1/credentials', {
-          headers: {
-            authorization: 'Bearer legacy-secret',
-          },
-        }),
-      )
-    ).json();
-    expect(legacyListPayload.credentials).toHaveLength(1);
-
     const authHeaders = {
       authorization: `Bearer ${createdAccessKeyPayload.secret}`,
     };
@@ -268,7 +254,8 @@ describe('server runtime', () => {
         headers: authHeaders,
       }),
     );
-    expect(listResponse.status).toBe(403);
+    expect(listResponse.status).toBe(200);
+    expect((await listResponse.json()).credentials).toHaveLength(1);
 
     const authorizedModels = await (
       await V1ModelsRoute.GET(
@@ -284,7 +271,7 @@ describe('server runtime', () => {
         headers: authHeaders,
       }),
     );
-    expect(currentResponse.status).toBe(403);
+    expect(currentResponse.status).toBe(200);
 
     const selectResponse = await V1CredentialsSelectRoute.POST(
       makeNextRequest('http://localhost/v1/credentials/select', {
@@ -296,7 +283,7 @@ describe('server runtime', () => {
         body: JSON.stringify({ index: 0 }),
       }),
     );
-    expect(selectResponse.status).toBe(403);
+    expect(selectResponse.status).toBe(200);
 
     const invalidSelectResponse = await V1CredentialsSelectRoute.POST(
       makeNextRequest('http://localhost/v1/credentials/select', {
@@ -315,7 +302,7 @@ describe('server runtime', () => {
         headers: authHeaders,
       }),
     );
-    expect(toggleResponse.status).toBe(403);
+    expect(toggleResponse.status).toBe(200);
 
     const autoResponse = await V1CredentialsAutoRoute.POST(
       makeNextRequest('http://localhost/v1/credentials/auto', {
@@ -323,7 +310,7 @@ describe('server runtime', () => {
         headers: authHeaders,
       }),
     );
-    expect(autoResponse.status).toBe(403);
+    expect(autoResponse.status).toBe(200);
 
     const invalidDeleteResponse = await V1CredentialsDeleteRoute.POST(
       makeNextRequest('http://localhost/v1/credentials/delete', {
@@ -346,12 +333,16 @@ describe('server runtime', () => {
         body: JSON.stringify({ index: 0 }),
       }),
     );
-    expect(deleteResponse.status).toBe(403);
+    expect(deleteResponse.status).toBe(200);
   });
 
   it('proxies chat completions for admin and v1 endpoints', async () => {
-    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
-    process.env.CODEBUDDY_API_KEY = 'cb-key';
+    await AdminCredentialsRoute.POST(
+      makeJsonRequest('http://localhost/admin-api/credentials', {
+        bearer_token: 'chat-token',
+        user_id: 'chat@example.com',
+      }),
+    );
 
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
@@ -403,8 +394,12 @@ describe('server runtime', () => {
   });
 
   it('supports responses api for non-stream, stream, tool flattening, and previous response state', async () => {
-    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
-    process.env.CODEBUDDY_API_KEY = 'cb-key';
+    await AdminCredentialsRoute.POST(
+      makeJsonRequest('http://localhost/admin-api/credentials', {
+        bearer_token: 'responses-token',
+        user_id: 'responses@example.com',
+      }),
+    );
 
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
@@ -721,12 +716,6 @@ describe('server runtime', () => {
     );
     expect(forbiddenSettings.status).toBe(401);
 
-    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
-    const missingLegacySettings = await ApiSettingsRoute.GET(
-      makeNextRequest('http://localhost/api/settings'),
-    );
-    expect(missingLegacySettings.status).toBe(401);
-
     const protectedSettings = await ApiSettingsRoute.GET(
       makeNextRequest('http://localhost/api/settings', {
         headers: {
@@ -734,16 +723,7 @@ describe('server runtime', () => {
         },
       }),
     );
-    expect(protectedSettings.status).toBe(403);
-
-    const adminSettings = await ApiSettingsRoute.GET(
-      makeNextRequest('http://localhost/api/settings', {
-        headers: {
-          authorization: 'Bearer legacy-secret',
-        },
-      }),
-    );
-    expect(adminSettings.status).toBe(200);
+    expect(protectedSettings.status).toBe(200);
 
     const statsPayload = await (await AdminStatsRoute.GET()).json();
     expect(statsPayload.credential_usage).toBeTruthy();

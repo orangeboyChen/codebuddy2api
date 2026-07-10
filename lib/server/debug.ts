@@ -23,6 +23,7 @@ export interface DebugHttpSnapshot {
 }
 
 export interface DebugSettings {
+  autoRefreshSeconds: number;
   enabled: boolean;
   maxEntries: number;
 }
@@ -41,6 +42,7 @@ export interface DebugTrace {
 }
 
 interface DebugConfigFile {
+  autoRefreshSeconds?: number;
   enabled?: boolean;
   maxEntries?: number;
 }
@@ -53,11 +55,40 @@ export interface DebugUpstreamRequest {
 }
 
 const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
+  autoRefreshSeconds: 0,
   enabled: false,
   maxEntries: 100,
 };
 
 const MAX_SNAPSHOT_TEXT_LENGTH = 200_000;
+const REDACTED_VALUE = '[redacted]';
+const SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'x-user-id',
+  'cookie',
+  'set-cookie',
+]);
+const SENSITIVE_FIELD_NAMES = new Set([
+  'access_token',
+  'api_key',
+  'authorization',
+  'bearer_token',
+  'cookie',
+  'id_token',
+  'refresh_token',
+  'requestkey',
+  'request_key',
+  'secret',
+  'session_state',
+  'set-cookie',
+  'token',
+  'user_id',
+  'x-api-key',
+  'x-user-id',
+  'x_user_id',
+]);
 
 const getDebugConfigPath = (): string => {
   return path.join(getConfigDir(), 'debug-config.json');
@@ -89,8 +120,89 @@ const readJsonFile = <T>(filePath: string, fallback: T): T => {
   }
 };
 
+const maskSensitiveString = (value: string): string => {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return value;
+  }
+
+  const bearerPrefixMatch = trimmed.match(/^Bearer\s+/i);
+
+  if (bearerPrefixMatch) {
+    const prefix = bearerPrefixMatch[0];
+    const token = trimmed.slice(prefix.length);
+
+    if (!token) {
+      return prefix.trim();
+    }
+
+    if (token.length <= 12) {
+      return `${prefix}${token.slice(0, 4)}****`;
+    }
+
+    return `${prefix}${token.slice(0, 8)}...${token.slice(-4)}`;
+  }
+
+  if (trimmed.length <= 12) {
+    return `${trimmed.slice(0, 4)}****`;
+  }
+
+  return `${trimmed.slice(0, 8)}...${trimmed.slice(-4)}`;
+};
+
+const isSensitiveFieldName = (name: string): boolean => {
+  return SENSITIVE_FIELD_NAMES.has(name.trim().toLowerCase());
+};
+
+const sanitizeValue = (value: unknown, key?: string): unknown => {
+  if (typeof key === 'string' && isSensitiveFieldName(key)) {
+    if (value === null || value === undefined || value === '') {
+      return value;
+    }
+
+    return typeof value === 'string'
+      ? maskSensitiveString(value)
+      : REDACTED_VALUE;
+  }
+
+  if (typeof value === 'string') {
+    return truncateString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeValue(item));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(
+        ([entryKey, entryValue]) => [
+          entryKey,
+          sanitizeValue(entryValue, entryKey),
+        ],
+      ),
+    );
+  }
+
+  return value;
+};
+
+const sanitizeHeadersRecord = (
+  headers: Record<string, string>,
+): Record<string, string> => {
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [
+      key,
+      SENSITIVE_HEADER_NAMES.has(key.trim().toLowerCase())
+        ? maskSensitiveString(value)
+        : truncateString(value),
+    ]),
+  );
+};
+
 const toHeadersRecord = (headers: Headers): Record<string, string> => {
-  return Object.fromEntries(headers.entries());
+  return sanitizeHeadersRecord(Object.fromEntries(headers.entries()));
 };
 
 const truncateString = (value: string): string => {
@@ -113,7 +225,9 @@ const tryParseBody = (
 
   if (contentType.toLowerCase().includes('application/json')) {
     try {
-      return JSON.parse(trimmed) as Record<string, unknown> | unknown[];
+      return sanitizeValue(
+        JSON.parse(trimmed) as Record<string, unknown> | unknown[],
+      ) as Record<string, unknown> | unknown[];
     } catch {
       return truncateString(trimmed);
     }
@@ -135,10 +249,28 @@ const normalizeMaxEntries = (value: unknown): number => {
   return Math.min(1000, Math.max(1, numeric));
 };
 
+const normalizeAutoRefreshSeconds = (value: unknown): number => {
+  const numeric =
+    typeof value === 'number'
+      ? value
+      : Number.parseInt(String(value ?? ''), 10);
+
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return DEFAULT_DEBUG_SETTINGS.autoRefreshSeconds;
+  }
+
+  const allowedValues = new Set([0, 5, 10, 15, 30, 60, 120, 300]);
+
+  return allowedValues.has(numeric)
+    ? numeric
+    : DEFAULT_DEBUG_SETTINGS.autoRefreshSeconds;
+};
+
 export const getDebugSettings = (): DebugSettings => {
   const file = readJsonFile<DebugConfigFile>(getDebugConfigPath(), {});
 
   return {
+    autoRefreshSeconds: normalizeAutoRefreshSeconds(file.autoRefreshSeconds),
     enabled:
       typeof file.enabled === 'boolean'
         ? file.enabled
@@ -152,6 +284,10 @@ export const updateDebugSettings = (
 ): DebugSettings => {
   const current = getDebugSettings();
   const merged: DebugSettings = {
+    autoRefreshSeconds:
+      nextSettings.autoRefreshSeconds !== undefined
+        ? normalizeAutoRefreshSeconds(nextSettings.autoRefreshSeconds)
+        : current.autoRefreshSeconds,
     enabled:
       typeof nextSettings.enabled === 'boolean'
         ? nextSettings.enabled
@@ -209,8 +345,11 @@ export const createDebugTrace = ({
     error: null,
     id: crypto.randomUUID(),
     pending: [],
-    requestBody,
-    requestKey,
+    requestBody: sanitizeValue(requestBody),
+    requestKey:
+      typeof requestKey === 'string'
+        ? maskSensitiveString(requestKey)
+        : requestKey,
     route,
     transformedResponse: null,
     upstreamRequest: null,
@@ -238,7 +377,11 @@ export const setDebugUpstreamRequest = (
     return;
   }
 
-  trace.upstreamRequest = request;
+  trace.upstreamRequest = {
+    ...request,
+    body: sanitizeValue(request.body),
+    headers: sanitizeHeadersRecord(request.headers),
+  };
 };
 
 const captureResponseSnapshot = async (
