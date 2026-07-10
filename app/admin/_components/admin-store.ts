@@ -234,7 +234,7 @@ export interface SettingsState {
 
 export const TAB_ITEMS: Array<{ key: TabKey; label: string; icon: string }> = [
   { key: 'dashboard', label: '仪表板', icon: 'fas fa-tachometer-alt' },
-  { key: 'usage', label: 'Usage', icon: 'fas fa-wave-square' },
+  { key: 'usage', label: '用量统计', icon: 'fas fa-wave-square' },
   { key: 'credentials', label: '凭证管理', icon: 'fas fa-key' },
   { key: 'api-test', label: 'API 测试', icon: 'fas fa-flask' },
   { key: 'debug', label: 'Debug', icon: 'fas fa-bug' },

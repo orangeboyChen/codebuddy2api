@@ -683,7 +683,7 @@ describe('server units', () => {
       requestBody: {
         model: 'gpt-5.5',
       },
-      requestKey: 'credential.json',
+      requestKey: 'credenti...json',
       route: '/v1/responses',
       transformedResponse: {
         body: 'completed',

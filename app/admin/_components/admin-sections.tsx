@@ -78,7 +78,6 @@ interface SettingsSectionProps {
 interface UsageSectionProps {
   onAccessKeyChange: (value: string) => void;
   onClearHistory: () => void;
-  onCloseAutoRefresh: () => void;
   onCredentialChange: (value: string) => void;
   onHoverPoint: (point: UsageState['hoveredPoint']) => void;
   onRangeChange: (value: UsageRange) => void;
@@ -263,7 +262,6 @@ const renderUsageChart = ({
         <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
           {title}
         </h3>
-        <div className="text-xs text-secondary">悬停节点可查看明细</div>
       </div>
       {series.length && pointCount ? (
         <div className="relative">
@@ -609,13 +607,13 @@ const CredentialCard = ({
           <div className="flex flex-wrap gap-2 mt-3">
             <span className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark">
               {credential.responses_passthrough
-                ? 'Responses 直通上游'
-                : 'Responses 先转 Chat 再请求上游'}
+                ? 'Responses 请求直接转发至上游'
+                : 'Responses 请求先转换为 Chat Completions 再发送至上游'}
             </span>
             <span className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark">
               {credential.first_message_role_to_system
-                ? '转 Chat 时按位置转换 developer 角色'
-                : '转 Chat 时保留 developer 角色'}
+                ? '转换为 Chat Completions 时按消息位置处理 developer 角色'
+                : '转换为 Chat Completions 时保留 developer 角色'}
             </span>
           </div>
         </div>
@@ -652,10 +650,11 @@ const CredentialCard = ({
               />
               <div>
                 <div className="font-medium text-text-light dark:text-text-dark">
-                  Responses 请求直接透传上游
+                  直接转发 Responses 请求至上游
                 </div>
                 <div className="text-sm text-secondary">
-                  开启后，该凭证命中的 `/v1/responses` 不再做 response 转 chat。
+                  开启后，该凭证命中的 `/v1/responses`
+                  请求将直接发送至上游，不再转换为 Chat Completions。
                 </div>
               </div>
             </label>
@@ -671,10 +670,10 @@ const CredentialCard = ({
               />
               <div>
                 <div className="font-medium text-text-light dark:text-text-dark">
-                  首条 developer 改为 system
+                  将首条 developer 消息转换为 system
                 </div>
                 <div className="text-sm text-secondary">
-                  仅在该凭证走 chat 代理链路时生效。
+                  仅在该凭证通过 Chat Completions 代理链路转发时生效。
                 </div>
               </div>
             </label>
@@ -1255,7 +1254,6 @@ export const DashboardSection = ({
 export const UsageSection = ({
   onAccessKeyChange,
   onClearHistory,
-  onCloseAutoRefresh,
   onCredentialChange,
   onHoverPoint,
   onRangeChange,
@@ -1268,14 +1266,10 @@ export const UsageSection = ({
       {state.autoRefreshVisible ? (
         <div className="mb-6 p-4 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 text-sm text-text-light dark:text-text-dark">
-            <span className="inline-flex items-center gap-2">
-              <i className="fas fa-sync-alt text-primary"></i>
-              Usage 自动刷新默认已开启
-            </span>
             <label className="inline-flex items-center gap-2 text-secondary">
               自动刷新
               <select
-                aria-label="Usage auto refresh interval"
+                aria-label="用量统计自动刷新间隔"
                 className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-3 py-2 cursor-pointer transition-all hover:border-primary focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
                 value={state.autoRefreshSeconds}
                 onChange={(event) => {
@@ -1290,14 +1284,6 @@ export const UsageSection = ({
               </select>
             </label>
           </div>
-          <button
-            className="inline-flex items-center gap-2 px-4 py-2 border border-border-light dark:border-border-dark text-secondary hover:text-text-light dark:hover:text-text-dark"
-            onClick={onCloseAutoRefresh}
-            type="button"
-          >
-            <i className="fas fa-times"></i>
-            关闭提示
-          </button>
         </div>
       ) : null}
 
@@ -1309,7 +1295,7 @@ export const UsageSection = ({
                 时间范围
               </div>
               <select
-                aria-label="Usage range"
+                aria-label="用量统计时间范围"
                 className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
                 value={state.request.range}
                 onChange={(event) => {
@@ -1325,10 +1311,10 @@ export const UsageSection = ({
             </label>
             <label className="block">
               <div className="mb-2 text-sm font-medium text-text-light dark:text-text-dark">
-                Credential
+                凭证
               </div>
               <select
-                aria-label="Usage credential filter"
+                aria-label="用量统计凭证筛选"
                 className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
                 value={state.request.credential}
                 onChange={(event) => {
@@ -1344,10 +1330,10 @@ export const UsageSection = ({
             </label>
             <label className="block">
               <div className="mb-2 text-sm font-medium text-text-light dark:text-text-dark">
-                Access Key
+                API Key
               </div>
               <select
-                aria-label="Usage access key filter"
+                aria-label="用量统计 API Key 筛选"
                 className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
                 value={state.request.accessKey}
                 onChange={(event) => {
@@ -1388,7 +1374,7 @@ export const UsageSection = ({
         <div className="mt-4 text-sm text-secondary">
           {state.lastUpdatedAt
             ? `最后更新于 ${state.lastUpdatedAt}`
-            : '等待首次加载 Usage 数据'}
+            : '等待首次加载用量统计数据'}
         </div>
       </div>
 
@@ -1719,10 +1705,11 @@ export const CredentialsSection = ({
               />
               <div>
                 <div className="font-medium text-text-light dark:text-text-dark">
-                  Responses 请求直接透传上游
+                  直接转发 Responses 请求至上游
                 </div>
                 <div className="text-sm text-secondary">
-                  开启后，该凭证命中的 `/v1/responses` 不再做 response 转 chat。
+                  开启后，该凭证命中的 `/v1/responses`
+                  请求将直接发送至上游，不再转换为 Chat Completions。
                 </div>
               </div>
             </label>
@@ -1738,10 +1725,10 @@ export const CredentialsSection = ({
               />
               <div>
                 <div className="font-medium text-text-light dark:text-text-dark">
-                  首条 developer 改为 system
+                  将首条 developer 消息转换为 system
                 </div>
                 <div className="text-sm text-secondary">
-                  仅在该凭证走 chat 代理链路时生效。
+                  仅在该凭证通过 Chat Completions 代理链路转发时生效。
                 </div>
               </div>
             </label>

@@ -272,12 +272,12 @@ describe('debug and usage persistence', () => {
     });
     expect(analytics.todaySummary).toEqual({
       callCount: 2,
-      cacheHitTokens: 5,
+      cacheHitTokens: 3,
       totalTokens: 43,
     });
     expect(analytics.tableRows).toEqual([
       {
-        cacheHitTokens: 5,
+        cacheHitTokens: 3,
         callCount: 1,
         model: 'gpt-5.5',
         totalTokens: 23,

@@ -529,7 +529,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         }));
         showNotification(
           'error',
-          getErrorMessage(result.data, '加载 Usage 数据失败。'),
+          getErrorMessage(result.data, '加载用量统计数据失败。'),
         );
         return;
       }
@@ -593,12 +593,12 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       }));
       showNotification(
         'error',
-        getErrorMessage(result.data, '清空 Usage 历史失败。'),
+        getErrorMessage(result.data, '清空用量统计历史失败。'),
       );
       return;
     }
 
-    showNotification('success', 'Usage 历史已清空。');
+    showNotification('success', '用量统计历史已清空。');
     await loadUsage();
   };
 
@@ -1554,13 +1554,6 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               }}
               onClearHistory={() => {
                 void clearUsageHistory();
-              }}
-              onCloseAutoRefresh={() => {
-                setUsage((current) => ({
-                  ...current,
-                  autoRefreshSeconds: 0,
-                  autoRefreshVisible: false,
-                }));
               }}
               onCredentialChange={(value) => {
                 void loadUsage({

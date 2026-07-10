@@ -269,7 +269,9 @@ describe('AdminConsole', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '编辑' })[1]);
 
     expect(await screen.findByText('编辑凭证配置')).toBeInTheDocument();
-    expect(screen.getByText('Responses 请求直接透传上游')).toBeInTheDocument();
+    expect(
+      screen.getByText('直接转发 Responses 请求至上游'),
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText('Bearer Token')).not.toBeInTheDocument();
     expect(screen.queryByText('手动添加凭证')).not.toBeInTheDocument();
   });
@@ -389,18 +391,19 @@ describe('AdminConsole', () => {
 
     render(React.createElement(AdminConsole));
 
-    fireEvent.click(screen.getByText('Usage'));
+    fireEvent.click(screen.getByText('用量统计'));
 
-    expect(await screen.findByLabelText('Usage range')).toBeInTheDocument();
-    expect(screen.getByText('Usage 自动刷新默认已开启')).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText('用量统计时间范围'),
+    ).toBeInTheDocument();
     expect(screen.getByText('今日调用次数')).toBeInTheDocument();
     expect(screen.getByText('Token 消耗趋势')).toBeInTheDocument();
     expect(screen.getByText('模型汇总')).toBeInTheDocument();
     expect(screen.getAllByText('glm-5.1')).toHaveLength(3);
-    expect(screen.getByLabelText('Usage auto refresh interval')).toHaveValue(
-      '15',
-    );
+    expect(screen.getByLabelText('用量统计自动刷新间隔')).toHaveValue('15');
     expect(screen.getByRole('option', { name: '关闭' })).toHaveValue('0');
+    expect(screen.queryByText('关闭提示')).not.toBeInTheDocument();
+    expect(screen.queryByText('悬停节点可查看明细')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText('清空历史'));
 
@@ -565,10 +568,12 @@ describe('AdminConsole', () => {
     fireEvent.click(screen.getByText('凭证管理'));
 
     expect(
-      await screen.findByText('Responses 先转 Chat 再请求上游'),
+      await screen.findByText(
+        'Responses 请求先转换为 Chat Completions 再发送至上游',
+      ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('转 Chat 时保留 developer 角色'),
+      screen.getByText('转换为 Chat Completions 时保留 developer 角色'),
     ).toBeInTheDocument();
   });
 
