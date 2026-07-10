@@ -16,6 +16,19 @@ const makeJsonResponse = (payload: Record<string, unknown>, status = 200) => {
 
 describe('AdminConsole', () => {
   beforeEach(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        addEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+        matches: query === '(prefers-color-scheme: dark)',
+        media: query,
+        onchange: null,
+        removeEventListener: vi.fn(),
+      })),
+      writable: true,
+    });
+
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
       value: {
@@ -114,5 +127,31 @@ describe('AdminConsole', () => {
         document.getElementById('authUrlSection')?.classList.contains('hidden'),
       ).toBe(false);
     });
+  });
+
+  it('supports system theme and keeps test result panel theme-safe', async () => {
+    vi.mocked(globalThis.localStorage.getItem).mockImplementation((key) => {
+      if (key === 'codebuddy2api-admin-theme') {
+        return 'system';
+      }
+
+      return null;
+    });
+
+    render(React.createElement(AdminConsole));
+
+    const themeSelect = await screen.findByLabelText('Theme mode');
+
+    expect((themeSelect as HTMLSelectElement).value).toBe('system');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+
+    fireEvent.click(screen.getByText('API 测试'));
+
+    const testResult = await screen.findByText('点击"发送测试"查看API响应...');
+    const resultPanel = testResult.closest('#testResult');
+
+    expect(resultPanel).not.toBeNull();
+    expect(resultPanel?.className).toContain('text-text-light');
+    expect(resultPanel?.className).not.toContain('bg-bg-dark text-text-dark');
   });
 });

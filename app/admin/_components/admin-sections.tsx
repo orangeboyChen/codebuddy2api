@@ -789,7 +789,7 @@ export const CredentialsSection = ({
           </p>
           <input
             id="authUrlInput"
-            className="w-full p-3 border border-border-light dark:border-border-dark bg-white dark:bg-card-dark font-mono text-sm mb-4 text-text-light dark:text-text-dark"
+            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark font-mono text-sm mb-4 text-text-light dark:text-text-dark"
             readOnly
             type="text"
             value={auth.authUrl}
@@ -1279,7 +1279,7 @@ export const ApiTestSection = ({
           </label>
           <div
             id="testResult"
-            className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4 bg-bg-dark text-text-dark min-h-[200px]"
+            className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4 min-h-[200px]"
           >
             <pre className="m-0 whitespace-pre-wrap">{state.result}</pre>
           </div>
@@ -1292,7 +1292,7 @@ export const ApiTestSection = ({
           </h3>
         </div>
         <h4 className="text-primary mb-4">curl 示例:</h4>
-        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4">{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
+        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4">{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
 -H "Authorization: Bearer YOUR_PASSWORD" \\
 -H "Content-Type: application/json" \\
 -d '{
@@ -1300,7 +1300,7 @@ export const ApiTestSection = ({
   "messages": [{ "role": "user", "content": "Hello!" }]
 }'`}</div>
         <h4 className="text-primary mt-6 mb-4">Python 示例:</h4>
-        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4">{`import openai
+        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4">{`import openai
 
 client = openai.OpenAI(
     api_key="YOUR_PASSWORD",

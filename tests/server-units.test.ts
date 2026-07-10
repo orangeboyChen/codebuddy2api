@@ -18,6 +18,7 @@ import {
   getAdminAuthErrorResponse,
   getAnthropicAuthErrorResponse,
   getClientAuthErrorResponse,
+  resolveRequestAccessKey,
 } from '@/lib/server/auth';
 import {
   getAuthCallbackResponse,
@@ -104,7 +105,7 @@ describe('server units', () => {
       bearer_token: 'token-auth',
       user_id: 'guard@example.com',
     });
-    const { secret } = createAccessKey({
+    const created = createAccessKey({
       credentialFilenames: [credential.filename],
       name: 'Guard Key',
     });
@@ -130,14 +131,14 @@ describe('server units', () => {
     expect(
       getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
-          headers: { authorization: `Bearer ${secret} trailing` },
+          headers: { authorization: `Bearer ${created.secret} trailing` },
         }),
       ),
     ).toBeNull();
     expect(
       getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
-          headers: { 'x-api-key': secret },
+          headers: { 'x-api-key': created.secret },
         }),
       ),
     ).toBeNull();
@@ -176,7 +177,7 @@ describe('server units', () => {
       bearer_token: 'token-auth',
       user_id: 'guard@example.com',
     });
-    const { secret } = createAccessKey({
+    const created = createAccessKey({
       credentialFilenames: [credential.filename],
       name: 'Guard Key',
     });
@@ -184,17 +185,78 @@ describe('server units', () => {
     expect(
       getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
-          headers: { authorization: `Bearer ${secret}` },
+          headers: { authorization: `Bearer ${created.secret}` },
         }),
       ),
     ).toBeNull();
     expect(
       getAdminAuthErrorResponse(
         makeNextRequest('http://localhost/admin', {
-          headers: { authorization: `Bearer ${secret}` },
+          headers: { authorization: `Bearer ${created.secret}` },
         }),
       )?.status,
     ).toBe(403);
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: `Bearer ${created.secret}` },
+        }),
+      )?.id,
+    ).toBe(created.access_key.id);
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('covers auth behavior when access key storage is unreadable', async () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+    fs.mkdirSync(tempConfigDir, { recursive: true });
+    fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
+
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer any-token' },
+        }),
+      ),
+    ).toBeNull();
+
+    const clientError = getClientAuthErrorResponse(
+      makeNextRequest('http://localhost/test', {
+        headers: { authorization: 'Bearer any-token' },
+      }),
+    );
+    expect(clientError?.status).toBe(503);
+    expect(await clientError?.json()).toEqual({
+      error: {
+        message:
+          'Access key storage is unreadable. Fix access-keys.json first.',
+      },
+    });
+
+    const adminError = getAdminAuthErrorResponse(
+      makeNextRequest('http://localhost/admin', {
+        headers: { authorization: 'Bearer legacy-secret' },
+      }),
+    );
+    expect(adminError?.status).toBe(503);
+
+    const anthropicError = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { authorization: 'Bearer legacy-secret' },
+      }),
+    );
+    expect(anthropicError?.status).toBe(503);
+    expect(await anthropicError?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        type: 'authentication_error',
+      },
+    });
   });
 
   it('covers anthropic auth with x-api-key and bearer', async () => {
@@ -244,6 +306,42 @@ describe('server units', () => {
       getAnthropicAuthErrorResponse(
         makeNextRequest('http://localhost/v1/messages', {
           headers: { authorization: `Bearer ${secret}` },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('covers anthropic legacy password branches', async () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+
+    const missing = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages'),
+    );
+    expect(missing?.status).toBe(401);
+    expect(await missing?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        message: 'Authorization header is required',
+      },
+    });
+
+    const wrong = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { authorization: 'Bearer wrong-secret' },
+      }),
+    );
+    expect(wrong?.status).toBe(403);
+    expect(await wrong?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        message: 'Invalid API key',
+      },
+    });
+
+    expect(
+      getAnthropicAuthErrorResponse(
+        makeNextRequest('http://localhost/v1/messages', {
+          headers: { authorization: 'Bearer legacy-secret' },
         }),
       ),
     ).toBeNull();

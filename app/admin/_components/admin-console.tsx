@@ -32,6 +32,7 @@ import {
   notificationAtom,
   settingsStateAtom,
   themeAtom,
+  type ThemeMode,
 } from '@/app/admin/_components/admin-store';
 
 interface HealthResponse {
@@ -153,6 +154,22 @@ const buildApiEndpoint = () => {
   }
 
   return `${window.location.origin}/v1`;
+};
+
+const resolveSystemDark = () => {
+  if (typeof window === 'undefined' || !window.matchMedia) {
+    return false;
+  }
+
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+};
+
+const resolveDarkMode = (theme: ThemeMode) => {
+  if (theme === 'system') {
+    return resolveSystemDark();
+  }
+
+  return theme === 'dark';
 };
 
 const formatResult = (payload: unknown) => {
@@ -803,7 +820,11 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     );
     const storedTab = window.localStorage.getItem('codebuddy2api-admin-tab');
 
-    if (storedTheme === 'dark' || storedTheme === 'light') {
+    if (
+      storedTheme === 'dark' ||
+      storedTheme === 'light' ||
+      storedTheme === 'system'
+    ) {
       setTheme(storedTheme);
     }
 
@@ -818,8 +839,31 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   }, [setActiveTab, setTheme]);
 
   useEffect(() => {
-    document.body.classList.toggle('dark', theme === 'dark');
+    const applyTheme = () => {
+      const isDark = resolveDarkMode(theme);
+
+      document.documentElement.classList.toggle('dark', isDark);
+      document.body.classList.toggle('dark', isDark);
+      document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    };
+
+    applyTheme();
     window.localStorage.setItem('codebuddy2api-admin-theme', theme);
+
+    if (theme !== 'system' || !window.matchMedia) {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => {
+      applyTheme();
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleChange);
+    };
   }, [theme]);
 
   useEffect(() => {
@@ -849,17 +893,29 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
             CodeBuddy2API 管理面板
           </h1>
           <div className="flex items-center gap-4">
-            <button
-              className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-4 py-2 cursor-pointer transition-all hover:bg-bg-light hover:border-primary hover:text-primary dark:hover:bg-bg-dark"
-              onClick={() => {
-                setTheme(theme === 'dark' ? 'light' : 'dark');
-              }}
-            >
+            <label className="flex items-center gap-2 text-sm text-secondary">
               <i
-                className={theme === 'dark' ? 'fas fa-sun' : 'fas fa-moon'}
-                id="themeIcon"
+                className={
+                  theme === 'dark'
+                    ? 'fas fa-moon'
+                    : theme === 'light'
+                      ? 'fas fa-sun'
+                      : 'fas fa-desktop'
+                }
               ></i>
-            </button>
+              <select
+                aria-label="Theme mode"
+                className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-3 py-2 cursor-pointer transition-all hover:border-primary focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+                value={theme}
+                onChange={(event) => {
+                  setTheme(event.target.value as ThemeMode);
+                }}
+              >
+                <option value="system">跟随系统</option>
+                <option value="light">浅色模式</option>
+                <option value="dark">暗黑模式</option>
+              </select>
+            </label>
           </div>
         </header>
         <main className="mt-20 px-8 py-8 max-w-[1400px] mx-auto">

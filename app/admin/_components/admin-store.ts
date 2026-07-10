@@ -4,6 +4,8 @@ export type TabKey = 'dashboard' | 'credentials' | 'api-test' | 'settings';
 
 export type NotificationType = 'success' | 'error' | 'warning' | 'info';
 
+export type ThemeMode = 'light' | 'dark' | 'system';
+
 export interface NotificationState {
   message: string;
   type: NotificationType;
@@ -185,7 +187,7 @@ export const dashboardStateAtom = atom<DashboardState>(defaultDashboardState);
 
 export const activeTabAtom = atom<TabKey>('dashboard');
 
-export const themeAtom = atom<'light' | 'dark'>('light');
+export const themeAtom = atom<ThemeMode>('system');
 
 export const notificationAtom = atom<NotificationState | null>(null);
 
