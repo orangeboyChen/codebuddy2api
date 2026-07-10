@@ -93,6 +93,7 @@ describe('server runtime', () => {
 
   afterEach(() => {
     cleanupTempState();
+    delete process.env.CODEBUDDY_PASSWORD;
   });
 
   it('serves health and model metadata', async () => {
@@ -220,6 +221,8 @@ describe('server runtime', () => {
   });
 
   it('enforces auth on protected v1 routes and mirrors successful actions', async () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+
     await AdminCredentialsRoute.POST(
       makeJsonRequest('http://localhost/admin-api/credentials', {
         bearer_token: 'token-b',
@@ -246,17 +249,26 @@ describe('server runtime', () => {
     );
     expect(unauthorized.status).toBe(401);
 
-    const authHeaders = {
-      authorization: `Bearer ${createdAccessKeyPayload.secret}`,
-    };
-    const listPayload = await (
+    const legacyListPayload = await (
       await V1CredentialsRoute.GET(
         makeNextRequest('http://localhost/v1/credentials', {
-          headers: authHeaders,
+          headers: {
+            authorization: 'Bearer legacy-secret',
+          },
         }),
       )
     ).json();
-    expect(listPayload.credentials).toHaveLength(1);
+    expect(legacyListPayload.credentials).toHaveLength(1);
+
+    const authHeaders = {
+      authorization: `Bearer ${createdAccessKeyPayload.secret}`,
+    };
+    const listResponse = await V1CredentialsRoute.GET(
+      makeNextRequest('http://localhost/v1/credentials', {
+        headers: authHeaders,
+      }),
+    );
+    expect(listResponse.status).toBe(403);
 
     const authorizedModels = await (
       await V1ModelsRoute.GET(
@@ -267,29 +279,24 @@ describe('server runtime', () => {
     ).json();
     expect(authorizedModels.object).toBe('list');
 
-    const currentPayload = await (
-      await V1CredentialsCurrentRoute.GET(
-        makeNextRequest('http://localhost/v1/credentials/current', {
-          headers: authHeaders,
-        }),
-      )
-    ).json();
-    expect(currentPayload.status).toBe('access_keys_enabled');
-    expect(currentPayload.available_credential_count).toBe(1);
+    const currentResponse = await V1CredentialsCurrentRoute.GET(
+      makeNextRequest('http://localhost/v1/credentials/current', {
+        headers: authHeaders,
+      }),
+    );
+    expect(currentResponse.status).toBe(403);
 
-    const selectPayload = await (
-      await V1CredentialsSelectRoute.POST(
-        makeNextRequest('http://localhost/v1/credentials/select', {
-          method: 'POST',
-          headers: {
-            ...authHeaders,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ index: 0 }),
-        }),
-      )
-    ).json();
-    expect(selectPayload.success).toBe(true);
+    const selectResponse = await V1CredentialsSelectRoute.POST(
+      makeNextRequest('http://localhost/v1/credentials/select', {
+        method: 'POST',
+        headers: {
+          ...authHeaders,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ index: 0 }),
+      }),
+    );
+    expect(selectResponse.status).toBe(403);
 
     const invalidSelectResponse = await V1CredentialsSelectRoute.POST(
       makeNextRequest('http://localhost/v1/credentials/select', {
@@ -301,27 +308,23 @@ describe('server runtime', () => {
         body: JSON.stringify({ index: null }),
       }),
     );
-    expect(invalidSelectResponse.status).toBe(400);
+    expect(invalidSelectResponse.status).toBe(403);
 
-    const togglePayload = await (
-      await V1CredentialsToggleRoute.POST(
-        makeNextRequest('http://localhost/v1/credentials/toggle-rotation', {
-          method: 'POST',
-          headers: authHeaders,
-        }),
-      )
-    ).json();
-    expect(togglePayload.success).toBe(true);
+    const toggleResponse = await V1CredentialsToggleRoute.POST(
+      makeNextRequest('http://localhost/v1/credentials/toggle-rotation', {
+        method: 'POST',
+        headers: authHeaders,
+      }),
+    );
+    expect(toggleResponse.status).toBe(403);
 
-    const autoPayload = await (
-      await V1CredentialsAutoRoute.POST(
-        makeNextRequest('http://localhost/v1/credentials/auto', {
-          method: 'POST',
-          headers: authHeaders,
-        }),
-      )
-    ).json();
-    expect(autoPayload.success).toBe(true);
+    const autoResponse = await V1CredentialsAutoRoute.POST(
+      makeNextRequest('http://localhost/v1/credentials/auto', {
+        method: 'POST',
+        headers: authHeaders,
+      }),
+    );
+    expect(autoResponse.status).toBe(403);
 
     const invalidDeleteResponse = await V1CredentialsDeleteRoute.POST(
       makeNextRequest('http://localhost/v1/credentials/delete', {
@@ -333,21 +336,19 @@ describe('server runtime', () => {
         body: JSON.stringify({ index: null }),
       }),
     );
-    expect(invalidDeleteResponse.status).toBe(400);
+    expect(invalidDeleteResponse.status).toBe(403);
 
-    const deletePayload = await (
-      await V1CredentialsDeleteRoute.POST(
-        makeNextRequest('http://localhost/v1/credentials/delete', {
-          method: 'POST',
-          headers: {
-            ...authHeaders,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ index: 0 }),
-        }),
-      )
-    ).json();
-    expect(deletePayload.success).toBe(true);
+    const deleteResponse = await V1CredentialsDeleteRoute.POST(
+      makeNextRequest('http://localhost/v1/credentials/delete', {
+        method: 'POST',
+        headers: {
+          ...authHeaders,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ index: 0 }),
+      }),
+    );
+    expect(deleteResponse.status).toBe(403);
   });
 
   it('proxies chat completions for admin and v1 endpoints', async () => {
@@ -720,7 +721,13 @@ describe('server runtime', () => {
     const forbiddenSettings = await ApiSettingsRoute.GET(
       makeNextRequest('http://localhost/api/settings'),
     );
-    expect(forbiddenSettings.status).toBe(401);
+    expect(forbiddenSettings.status).toBe(200);
+
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+    const missingLegacySettings = await ApiSettingsRoute.GET(
+      makeNextRequest('http://localhost/api/settings'),
+    );
+    expect(missingLegacySettings.status).toBe(401);
 
     const protectedSettings = await ApiSettingsRoute.GET(
       makeNextRequest('http://localhost/api/settings', {
@@ -729,7 +736,16 @@ describe('server runtime', () => {
         },
       }),
     );
-    expect(protectedSettings.status).toBe(200);
+    expect(protectedSettings.status).toBe(403);
+
+    const adminSettings = await ApiSettingsRoute.GET(
+      makeNextRequest('http://localhost/api/settings', {
+        headers: {
+          authorization: 'Bearer legacy-secret',
+        },
+      }),
+    );
+    expect(adminSettings.status).toBe(200);
 
     const statsPayload = await (await AdminStatsRoute.GET()).json();
     expect(statsPayload.credential_usage).toBeTruthy();

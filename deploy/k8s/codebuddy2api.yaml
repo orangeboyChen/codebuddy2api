@@ -12,7 +12,6 @@ data:
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa'
   CODEBUDDY_CREDS_DIR: '.codebuddy_creds'
   CODEBUDDY_LOG_LEVEL: 'INFO'
-  CODEBUDDY_ROTATION_COUNT: '1'
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -15,8 +15,9 @@ import {
   updateAccessKey,
 } from '@/lib/server/access-keys';
 import {
+  getAdminAuthErrorResponse,
   getAnthropicAuthErrorResponse,
-  getAuthErrorResponse,
+  getClientAuthErrorResponse,
 } from '@/lib/server/auth';
 import {
   getAuthCallbackResponse,
@@ -91,11 +92,12 @@ describe('server units', () => {
 
   afterEach(() => {
     cleanupTempState();
+    delete process.env.CODEBUDDY_PASSWORD;
   });
 
   it('covers auth guard branches', () => {
     expect(
-      getAuthErrorResponse(makeNextRequest('http://localhost/test')),
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test')),
     ).toBeNull();
 
     const credential = addCredential({
@@ -108,36 +110,91 @@ describe('server units', () => {
     });
 
     expect(
-      getAuthErrorResponse(makeNextRequest('http://localhost/test'))?.status,
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test'))
+        ?.status,
     ).toBe(401);
     expect(
-      getAuthErrorResponse(
+      getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
           headers: { authorization: 'Basic nope' },
         }),
       )?.status,
     ).toBe(401);
     expect(
-      getAuthErrorResponse(
+      getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
           headers: { authorization: 'Bearer nope' },
         }),
       )?.status,
     ).toBe(403);
     expect(
-      getAuthErrorResponse(
+      getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
           headers: { authorization: `Bearer ${secret} trailing` },
         }),
       ),
     ).toBeNull();
     expect(
-      getAuthErrorResponse(
+      getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
           headers: { 'x-api-key': secret },
         }),
       ),
     ).toBeNull();
+  });
+
+  it('keeps legacy password auth during migration and scopes admin auth', () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+
+    expect(
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test'))
+        ?.status,
+    ).toBe(401);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer wrong-secret' },
+        }),
+      )?.status,
+    ).toBe(403);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAdminAuthErrorResponse(
+        makeNextRequest('http://localhost/admin', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+
+    const credential = addCredential({
+      bearer_token: 'token-auth',
+      user_id: 'guard@example.com',
+    });
+    const { secret } = createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Guard Key',
+    });
+
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: `Bearer ${secret}` },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAdminAuthErrorResponse(
+        makeNextRequest('http://localhost/admin', {
+          headers: { authorization: `Bearer ${secret}` },
+        }),
+      )?.status,
+    ).toBe(403);
   });
 
   it('covers anthropic auth with x-api-key and bearer', async () => {
@@ -303,6 +360,13 @@ describe('server units', () => {
     fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
     expect(listStoredAccessKeys()).toEqual([]);
     expect(hasAccessKeys()).toBe(false);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer anything' },
+        }),
+      )?.status,
+    ).toBe(503);
   });
 
   it('covers access key validation, normalization, and deletion', () => {

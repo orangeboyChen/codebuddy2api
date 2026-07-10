@@ -26,6 +26,11 @@ interface AccessKeyStore {
   accessKeys: AccessKeyRecord[];
 }
 
+type AccessKeyStoreState =
+  | { kind: 'ok'; store: AccessKeyStore }
+  | { kind: 'missing'; store: AccessKeyStore }
+  | { kind: 'error'; error: string; store: AccessKeyStore };
+
 const getAccessKeysPath = (): string => {
   return path.join(getConfigDir(), 'access-keys.json');
 };
@@ -34,36 +39,50 @@ const ensureConfigDir = (): void => {
   fs.mkdirSync(getConfigDir(), { recursive: true });
 };
 
-const readAccessKeyStore = (): AccessKeyStore => {
+const readAccessKeyStoreState = (): AccessKeyStoreState => {
   const filePath = getAccessKeysPath();
 
   if (!fs.existsSync(filePath)) {
-    return { accessKeys: [] };
+    return { kind: 'missing', store: { accessKeys: [] } };
   }
 
   try {
     const parsed = JSON.parse(
       fs.readFileSync(filePath, 'utf8'),
     ) as Partial<AccessKeyStore>;
+    const accessKeys = Array.isArray(parsed.accessKeys)
+      ? parsed.accessKeys.filter((item): item is AccessKeyRecord => {
+          return Boolean(
+            item &&
+            typeof item === 'object' &&
+            typeof item.id === 'string' &&
+            typeof item.name === 'string' &&
+            typeof item.secret === 'string' &&
+            typeof item.createdAt === 'string' &&
+            typeof item.updatedAt === 'string' &&
+            Array.isArray(item.credentialFilenames),
+          );
+        })
+      : [];
+
     return {
-      accessKeys: Array.isArray(parsed.accessKeys)
-        ? parsed.accessKeys.filter((item): item is AccessKeyRecord => {
-            return Boolean(
-              item &&
-              typeof item === 'object' &&
-              typeof item.id === 'string' &&
-              typeof item.name === 'string' &&
-              typeof item.secret === 'string' &&
-              typeof item.createdAt === 'string' &&
-              typeof item.updatedAt === 'string' &&
-              Array.isArray(item.credentialFilenames),
-            );
-          })
-        : [],
+      kind: 'ok',
+      store: { accessKeys },
     };
-  } catch {
-    return { accessKeys: [] };
+  } catch (error) {
+    return {
+      kind: 'error',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to read access key store',
+      store: { accessKeys: [] },
+    };
   }
+};
+
+const readAccessKeyStore = (): AccessKeyStore => {
+  return readAccessKeyStoreState().store;
 };
 
 const writeAccessKeyStore = (store: AccessKeyStore): void => {
@@ -104,6 +123,11 @@ const generateSecret = (): string => {
 
 export const hasAccessKeys = (): boolean => {
   return readAccessKeyStore().accessKeys.length > 0;
+};
+
+export const getAccessKeyStoreError = (): string | null => {
+  const state = readAccessKeyStoreState();
+  return state.kind === 'error' ? state.error : null;
 };
 
 export const listAccessKeys = (): { access_keys: AccessKeySummary[] } => {

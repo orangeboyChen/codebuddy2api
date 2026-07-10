@@ -118,25 +118,22 @@ const response = await client.chat.completions.create({
 console.log(response.choices[0]?.message?.content);
 ```
 
-### Password Protection
+### Authentication
 
-If `CODEBUDDY_PASSWORD` is set, include it as a Bearer token:
-
-```
-Authorization: Bearer <password>
-```
+- Client inference routes (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/models`) accept managed access keys. Send them as `Authorization: Bearer <access-key>` or `x-api-key: <access-key>`.
+- During migration, if `CODEBUDDY_PASSWORD` is still set and no access keys have been created yet, the same client routes continue to accept `Authorization: Bearer <password>`.
+- Admin and global credential management routes only accept the legacy Bearer password when `CODEBUDDY_PASSWORD` is configured.
 
 ## Configuration
 
 Settings resolve in this order: `config/config.json` > environment variables > built-in defaults.
 
-| Key                        | Default | Description                                           |
-| -------------------------- | ------- | ----------------------------------------------------- |
-| `CODEBUDDY_PASSWORD`       | empty   | Optional Bearer password for protected API routes.    |
-| `CODEBUDDY_AUTH_MODE`      | `auto`  | `auto`, `api_key`, or `token`.                        |
-| `CODEBUDDY_API_KEY`        | empty   | Required when `CODEBUDDY_AUTH_MODE=api_key`.          |
-| `CODEBUDDY_ROTATION_COUNT` | `1`     | Rotate credentials every N requests. `0` disables it. |
-| `CODEBUDDY_LOG_LEVEL`      | `INFO`  | Runtime log level.                                    |
+| Key                   | Default | Description                                                                |
+| --------------------- | ------- | -------------------------------------------------------------------------- |
+| `CODEBUDDY_PASSWORD`  | empty   | Optional legacy Bearer password for admin routes and access-key migration. |
+| `CODEBUDDY_AUTH_MODE` | `auto`  | `auto`, `api_key`, or `token`.                                             |
+| `CODEBUDDY_API_KEY`   | empty   | Required when `CODEBUDDY_AUTH_MODE=api_key`.                               |
+| `CODEBUDDY_LOG_LEVEL` | `INFO`  | Runtime log level.                                                         |
 
 See `.env.example` and `config/config.example.json` for all options.
 

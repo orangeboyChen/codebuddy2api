@@ -11,6 +11,10 @@ export interface RuntimeConfig {
   CODEBUDDY_MODELS: string;
 }
 
+interface PersistedConfigFile extends Partial<RuntimeConfig> {
+  CODEBUDDY_PASSWORD?: unknown;
+}
+
 export const getConfigPath = (): string => {
   return process.env.CODEBUDDY_CONFIG_PATH
     ? path.resolve(
@@ -49,7 +53,7 @@ export const SETTING_LABELS: Record<keyof RuntimeConfig, string> = {
   CODEBUDDY_MODELS: '可用模型列表 (逗号分隔)',
 };
 
-const loadPersistedConfig = (): Partial<RuntimeConfig> => {
+const loadPersistedConfigFile = (): PersistedConfigFile => {
   if (!fs.existsSync(getConfigPath())) {
     return {};
   }
@@ -61,10 +65,14 @@ const loadPersistedConfig = (): Partial<RuntimeConfig> => {
       return {};
     }
 
-    return JSON.parse(content) as Partial<RuntimeConfig>;
+    return JSON.parse(content) as PersistedConfigFile;
   } catch {
     return {};
   }
+};
+
+const loadPersistedConfig = (): Partial<RuntimeConfig> => {
+  return loadPersistedConfigFile();
 };
 
 const normalizeValue = <K extends keyof RuntimeConfig>(
@@ -124,6 +132,21 @@ export const getActiveConfig = (): RuntimeConfig => {
       persisted.CODEBUDDY_MODELS ?? process.env.CODEBUDDY_MODELS,
     ),
   };
+};
+
+export const getLegacyServerPassword = (): string | null => {
+  const persisted = loadPersistedConfigFile().CODEBUDDY_PASSWORD;
+  const password =
+    typeof persisted === 'string' && persisted.trim()
+      ? persisted
+      : process.env.CODEBUDDY_PASSWORD;
+
+  if (typeof password !== 'string') {
+    return null;
+  }
+
+  const trimmed = password.trim();
+  return trimmed ? trimmed : null;
 };
 
 export const updateSettings = (
