@@ -4,6 +4,7 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 
 import { handleMessagesRequest } from '@/lib/server/anthropic';
+import { addCredential } from '@/lib/server/credentials';
 
 const tempConfigDir = path.join(process.cwd(), '.tmp-test-config-anthropic');
 const tempCredsDir = path.join(process.cwd(), '.tmp-test-creds-anthropic');
@@ -48,10 +49,13 @@ describe('anthropic messages api', () => {
     process.env.CODEBUDDY_CONFIG_PATH =
       '.tmp-test-config-anthropic/config.json';
     process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds-anthropic';
-    process.env.CODEBUDDY_PASSWORD = '';
-    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
-    process.env.CODEBUDDY_API_KEY = 'cb-key';
-    process.env.CODEBUDDY_ROTATION_COUNT = '1';
+    process.env.CODEBUDDY_AUTH_MODE = 'auto';
+    addCredential({
+      bearer_token: 'anthropic-test-token',
+      first_message_role_to_system: false,
+      responses_passthrough: false,
+      user_id: 'anthropic@example.com',
+    });
   });
 
   afterEach(() => {

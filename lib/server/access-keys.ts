@@ -2,20 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const getConfigDir = (): string => {
-  const configPath = process.env.CODEBUDDY_CONFIG_PATH
-    ? path.resolve(
-        /* turbopackIgnore: true */ process.cwd(),
-        process.env.CODEBUDDY_CONFIG_PATH,
-      )
-    : path.join(
-        /* turbopackIgnore: true */ process.cwd(),
-        'config',
-        'config.json',
-      );
-
-  return path.dirname(configPath);
-};
+import { getConfigDir } from './config';
 
 export interface AccessKeyRecord {
   createdAt: string;
@@ -39,6 +26,11 @@ interface AccessKeyStore {
   accessKeys: AccessKeyRecord[];
 }
 
+type AccessKeyStoreState =
+  | { kind: 'ok'; store: AccessKeyStore }
+  | { kind: 'missing'; store: AccessKeyStore }
+  | { kind: 'error'; error: string; store: AccessKeyStore };
+
 const getAccessKeysPath = (): string => {
   return path.join(getConfigDir(), 'access-keys.json');
 };
@@ -47,37 +39,50 @@ const ensureConfigDir = (): void => {
   fs.mkdirSync(getConfigDir(), { recursive: true });
 };
 
-const readAccessKeyStore = (): AccessKeyStore => {
+const readAccessKeyStoreState = (): AccessKeyStoreState => {
   const filePath = getAccessKeysPath();
 
   if (!fs.existsSync(filePath)) {
-    return { accessKeys: [] };
+    return { kind: 'missing', store: { accessKeys: [] } };
   }
 
   try {
     const parsed = JSON.parse(
       fs.readFileSync(filePath, 'utf8'),
     ) as Partial<AccessKeyStore>;
+    const accessKeys = Array.isArray(parsed.accessKeys)
+      ? parsed.accessKeys.filter((item): item is AccessKeyRecord => {
+          return Boolean(
+            item &&
+            typeof item === 'object' &&
+            typeof item.id === 'string' &&
+            typeof item.name === 'string' &&
+            typeof item.secret === 'string' &&
+            typeof item.createdAt === 'string' &&
+            typeof item.updatedAt === 'string' &&
+            Array.isArray(item.credentialFilenames),
+          );
+        })
+      : [];
 
     return {
-      accessKeys: Array.isArray(parsed.accessKeys)
-        ? parsed.accessKeys.filter((item): item is AccessKeyRecord => {
-            return Boolean(
-              item &&
-              typeof item === 'object' &&
-              typeof item.id === 'string' &&
-              typeof item.name === 'string' &&
-              typeof item.secret === 'string' &&
-              typeof item.createdAt === 'string' &&
-              typeof item.updatedAt === 'string' &&
-              Array.isArray(item.credentialFilenames),
-            );
-          })
-        : [],
+      kind: 'ok',
+      store: { accessKeys },
     };
-  } catch {
-    return { accessKeys: [] };
+  } catch (error) {
+    return {
+      kind: 'error',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to read access key store',
+      store: { accessKeys: [] },
+    };
   }
+};
+
+const readAccessKeyStore = (): AccessKeyStore => {
+  return readAccessKeyStoreState().store;
 };
 
 const writeAccessKeyStore = (store: AccessKeyStore): void => {
@@ -118,6 +123,11 @@ const generateSecret = (): string => {
 
 export const hasAccessKeys = (): boolean => {
   return readAccessKeyStore().accessKeys.length > 0;
+};
+
+export const getAccessKeyStoreError = (): string | null => {
+  const state = readAccessKeyStoreState();
+  return state.kind === 'error' ? state.error : null;
 };
 
 export const listAccessKeys = (): { access_keys: AccessKeySummary[] } => {
@@ -214,18 +224,18 @@ export const updateAccessKey = (
   }
 
   const store = readAccessKeyStore();
-  const target = store.accessKeys.find((item) => item.id === id);
+  const record = store.accessKeys.find((item) => item.id === id);
 
-  if (!target) {
+  if (!record) {
     throw new Error('Access key not found');
   }
 
-  target.name = trimmedName;
-  target.credentialFilenames = normalizedCredentialFilenames;
-  target.updatedAt = new Date().toISOString();
+  record.name = trimmedName;
+  record.credentialFilenames = normalizedCredentialFilenames;
+  record.updatedAt = new Date().toISOString();
   writeAccessKeyStore(store);
 
-  return toSummary(target);
+  return toSummary(record);
 };
 
 export const deleteAccessKey = (id: string): boolean => {
@@ -243,15 +253,15 @@ export const deleteAccessKey = (id: string): boolean => {
 export const getAccessKeySecret = (
   id: string,
 ): { id: string; name: string; secret: string } | null => {
-  const target = findAccessKeyById(id);
+  const record = findAccessKeyById(id);
 
-  if (!target) {
+  if (!record) {
     return null;
   }
 
   return {
-    id: target.id,
-    name: target.name,
-    secret: target.secret,
+    id: record.id,
+    name: record.name,
+    secret: record.secret,
   };
 };

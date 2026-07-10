@@ -1,8 +1,14 @@
 import type { NextRequest } from 'next/server';
 
 import { getAvailableModels } from './config';
+import type { DebugTrace } from './debug';
+import {
+  proxyChatCompletions,
+  proxyResponsesUpstream,
+  resolveProxyContext,
+  type ProxyContext,
+} from './codebuddy';
 import { createErrorResponse } from './http';
-import { proxyChatCompletions } from './codebuddy';
 
 interface ResponsesInputItem {
   type?: string;
@@ -901,23 +907,30 @@ const createResponsesEventStream = async (
   model: string,
   previousResponseId: string | null,
   maxOutputTokens?: number,
+  proxyContext?: ProxyContext,
+  debugTrace?: DebugTrace,
 ): Promise<Response> => {
-  const upstreamResponse = await proxyChatCompletions(request, {
-    model,
-    messages: [
-      ...(defaults.instructions
-        ? [{ role: 'system', content: defaults.instructions }]
-        : []),
-      ...normalizeTranscriptMessageToolNames(transcript, defaults.tools),
-    ],
-    max_tokens: maxOutputTokens,
-    stream: true,
-    tools: translateResponsesToolsToChat(defaults.tools),
-    tool_choice: translateResponsesToolChoiceToChatWithTools(
-      defaults.tools,
-      defaults.tool_choice,
-    ),
-  });
+  const upstreamResponse = await proxyChatCompletions(
+    request,
+    {
+      model,
+      messages: [
+        ...(defaults.instructions
+          ? [{ role: 'system', content: defaults.instructions }]
+          : []),
+        ...normalizeTranscriptMessageToolNames(transcript, defaults.tools),
+      ],
+      max_tokens: maxOutputTokens,
+      stream: true,
+      tools: translateResponsesToolsToChat(defaults.tools),
+      tool_choice: translateResponsesToolChoiceToChatWithTools(
+        defaults.tools,
+        defaults.tool_choice,
+      ),
+    },
+    proxyContext,
+    debugTrace,
+  );
 
   if (!upstreamResponse.ok || !upstreamResponse.body) {
     return upstreamResponse;
@@ -1251,6 +1264,13 @@ const createResponsesEventStream = async (
               });
             });
           } catch {
+            console.error(
+              '[CodeBuddy2API] Failed to parse upstream SSE frame',
+              {
+                route: '/v1/responses',
+                frame: raw.slice(0, 1000),
+              },
+            );
             enqueueEvent({
               type: 'response.error',
               error: {
@@ -1280,8 +1300,20 @@ const createResponsesEventStream = async (
 export const handleResponsesRequest = async (
   request: NextRequest,
   body: ResponsesRequestBody,
+  debugTrace?: DebugTrace,
 ): Promise<Response> => {
   try {
+    const proxyContext = resolveProxyContext(request);
+
+    if (proxyContext.preferences.responsesPassthrough) {
+      return proxyResponsesUpstream(
+        request,
+        body as Record<string, unknown>,
+        proxyContext,
+        debugTrace,
+      );
+    }
+
     const prepared = prepareTranscript(body);
     const compatibilityError = getResponsesCompatibilityError(
       prepared.defaults.tools,
@@ -1302,28 +1334,35 @@ export const handleResponsesRequest = async (
         prepared.model,
         prepared.previousResponseId,
         body.max_output_tokens,
+        proxyContext,
+        debugTrace,
       );
     }
 
-    const upstreamResponse = await proxyChatCompletions(request, {
-      model: prepared.model,
-      messages: [
-        ...(prepared.defaults.instructions
-          ? [{ role: 'system', content: prepared.defaults.instructions }]
-          : []),
-        ...normalizeTranscriptMessageToolNames(
-          prepared.transcript,
+    const upstreamResponse = await proxyChatCompletions(
+      request,
+      {
+        model: prepared.model,
+        messages: [
+          ...(prepared.defaults.instructions
+            ? [{ role: 'system', content: prepared.defaults.instructions }]
+            : []),
+          ...normalizeTranscriptMessageToolNames(
+            prepared.transcript,
+            prepared.defaults.tools,
+          ),
+        ],
+        max_tokens: body.max_output_tokens,
+        stream: false,
+        tools: translateResponsesToolsToChat(prepared.defaults.tools),
+        tool_choice: translateResponsesToolChoiceToChatWithTools(
           prepared.defaults.tools,
+          prepared.defaults.tool_choice,
         ),
-      ],
-      max_tokens: body.max_output_tokens,
-      stream: false,
-      tools: translateResponsesToolsToChat(prepared.defaults.tools),
-      tool_choice: translateResponsesToolChoiceToChatWithTools(
-        prepared.defaults.tools,
-        prepared.defaults.tool_choice,
-      ),
-    });
+      },
+      proxyContext,
+      debugTrace,
+    );
 
     if (!upstreamResponse.ok) {
       return upstreamResponse;
@@ -1344,6 +1383,10 @@ export const handleResponsesRequest = async (
       ),
     );
   } catch (error) {
+    console.error('[CodeBuddy2API] Responses request failed', {
+      route: '/v1/responses',
+      error,
+    });
     return createErrorResponse(
       error instanceof Error && error.message.includes('previous_response_id')
         ? 400

@@ -6,6 +6,7 @@ import { useHydrateAtoms } from 'jotai/utils';
 
 import {
   createCredentialsState,
+  createDebugState,
   createDashboardState,
   createSettingsState,
   type AdminConsoleInitialData,
@@ -13,6 +14,7 @@ import {
 import {
   ApiTestSection,
   CredentialsSection,
+  DebugSection,
   DashboardSection,
   NotificationBar,
   SettingsSection,
@@ -22,15 +24,19 @@ import {
   activeTabAtom,
   apiTestStateAtom,
   authStateAtom,
+  type AccessKeySummary,
   type CredentialSummary,
   credentialsStateAtom,
+  debugStateAtom,
   dashboardStateAtom,
   defaultCredentialsState,
+  defaultDebugState,
   defaultDashboardState,
   defaultSettingsState,
   notificationAtom,
   settingsStateAtom,
   themeAtom,
+  type ThemeMode,
 } from '@/app/admin/_components/admin-store';
 
 interface HealthResponse {
@@ -42,11 +48,21 @@ interface CredentialsResponse {
   credentials?: CredentialSummary[];
 }
 
+interface AccessKeysResponse {
+  access_keys?: AccessKeySummary[];
+}
+
+interface AccessKeySecretResponse {
+  id?: string;
+  name?: string;
+  secret?: string;
+}
+
 interface CurrentCredentialResponse {
-  auto_rotation_enabled?: boolean;
+  available_credential_count?: number;
   filename?: string;
   index?: number;
-  rotation_count?: number;
+  next_filename?: string | null;
   status?: string;
   user_id?: string;
 }
@@ -77,6 +93,15 @@ interface PollAuthResponse {
 interface SettingsResponse {
   labels?: Record<string, string>;
   settings?: Record<string, string | number | null>;
+}
+
+interface DebugResponse {
+  enabled?: boolean;
+  items?: Array<
+    typeof defaultDebugState.items extends Array<infer Item> ? Item : never
+  >;
+  maxEntries?: number;
+  message?: string;
 }
 
 interface ApiTestSuccess {
@@ -144,6 +169,29 @@ const buildApiEndpoint = () => {
   return `${window.location.origin}/v1`;
 };
 
+const getConfiguredModels = (rawValue: string | number | null | undefined) => {
+  return String(rawValue ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const resolveSystemDark = () => {
+  if (typeof window === 'undefined' || !window.matchMedia) {
+    return false;
+  }
+
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+};
+
+const resolveDarkMode = (theme: ThemeMode) => {
+  if (theme === 'system') {
+    return resolveSystemDark();
+  }
+
+  return theme === 'dark';
+};
+
 const formatResult = (payload: unknown) => {
   if (typeof payload === 'string') {
     return payload;
@@ -167,6 +215,9 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   const initialCredentialsState = initialData
     ? createCredentialsState(initialData)
     : defaultCredentialsState;
+  const initialDebugState = initialData
+    ? createDebugState(initialData)
+    : defaultDebugState;
   const initialSettingsState = initialData
     ? createSettingsState(initialData)
     : defaultSettingsState;
@@ -174,6 +225,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   useHydrateAtoms([
     [dashboardStateAtom, initialDashboardState],
     [credentialsStateAtom, initialCredentialsState],
+    [debugStateAtom, initialDebugState],
     [settingsStateAtom, initialSettingsState],
   ]);
 
@@ -182,20 +234,21 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   const [notification, setNotification] = useAtom(notificationAtom);
   const [dashboard, setDashboard] = useAtom(dashboardStateAtom);
   const [credentials, setCredentials] = useAtom(credentialsStateAtom);
+  const [debug, setDebug] = useAtom(debugStateAtom);
   const [auth, setAuth] = useAtom(authStateAtom);
   const [apiTest, setApiTest] = useAtom(apiTestStateAtom);
   const [settings, setSettings] = useAtom(settingsStateAtom);
   const authPollTimerRef = useRef<number | null>(null);
 
-  const showNotification = (
-    type: 'success' | 'error' | 'warning' | 'info',
-    message: string,
-  ) => {
-    setNotification({
-      message,
-      type,
-    });
-  };
+  const showNotification = useCallback(
+    (type: 'success' | 'error' | 'warning' | 'info', message: string) => {
+      setNotification({
+        message,
+        type,
+      });
+    },
+    [setNotification],
+  );
 
   const clearAuthTimer = () => {
     if (authPollTimerRef.current !== null) {
@@ -250,24 +303,30 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   const loadCredentials = useCallback(async () => {
     setCredentials((current) => ({
       ...current,
+      accessKeysLoading: true,
       currentLoading: true,
       loading: true,
     }));
 
-    const [listResult, currentResult] = await Promise.all([
+    const [listResult, currentResult, accessKeyResult] = await Promise.all([
       requestJson<CredentialsResponse>('/admin-api/credentials'),
       requestJson<CurrentCredentialResponse>('/admin-api/credentials/current'),
+      requestJson<AccessKeysResponse>('/admin-api/access-keys'),
     ]);
 
     setCredentials((current) => ({
       ...current,
+      accessKeyActionId: null,
+      accessKeys: accessKeyResult.data?.access_keys ?? [],
+      accessKeysLoading: false,
       actionIndex: null,
       current: currentResult.data
         ? {
-            auto_rotation_enabled: currentResult.data.auto_rotation_enabled,
+            available_credential_count:
+              currentResult.data.available_credential_count,
             filename: currentResult.data.filename,
             index: currentResult.data.index,
-            rotation_count: currentResult.data.rotation_count,
+            next_filename: currentResult.data.next_filename,
             status: currentResult.data.status ?? 'no_credentials',
             user_id: currentResult.data.user_id,
           }
@@ -278,7 +337,27 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       items: listResult.data?.credentials ?? [],
       loading: false,
     }));
-  }, [setCredentials]);
+
+    setApiTest((current) => {
+      const validCredentials = (listResult.data?.credentials ?? []).filter(
+        (item) => !item.is_expired,
+      );
+
+      if (
+        current.credentialFilename &&
+        validCredentials.some(
+          (credential) => credential.filename === current.credentialFilename,
+        )
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        credentialFilename: validCredentials[0]?.filename ?? '',
+      };
+    });
+  }, [setApiTest, setCredentials]);
 
   const loadSettings = useCallback(async () => {
     setSettings((current) => ({
@@ -288,13 +367,60 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
 
     const result = await requestJson<SettingsResponse>('/admin-api/settings');
 
+    const nextValues = result.data?.settings ?? {};
+
     setSettings((current) => ({
       ...current,
       labels: result.data?.labels ?? {},
       loading: false,
-      values: result.data?.settings ?? {},
+      values: nextValues,
     }));
-  }, [setSettings]);
+
+    setApiTest((current) => {
+      if (current.model.trim()) {
+        return current;
+      }
+
+      const configuredModels = getConfiguredModels(nextValues.CODEBUDDY_MODELS);
+
+      return {
+        ...current,
+        model: configuredModels[0] ?? current.model,
+      };
+    });
+  }, [setApiTest, setSettings]);
+
+  const loadDebug = useCallback(async () => {
+    setDebug((current) => ({
+      ...current,
+      loading: true,
+    }));
+
+    const result = await requestJson<DebugResponse>('/admin-api/debug');
+
+    if (!result.ok) {
+      setDebug((current) => ({
+        ...current,
+        loading: false,
+      }));
+      showNotification(
+        'error',
+        getErrorMessage(result.data, '加载 Debug 记录失败。'),
+      );
+      return;
+    }
+
+    setDebug({
+      enabled: Boolean(result.data?.enabled),
+      items: result.data?.items ?? [],
+      loading: false,
+      maxEntries:
+        typeof result.data?.maxEntries === 'number'
+          ? result.data.maxEntries
+          : 100,
+      saving: false,
+    });
+  }, [setDebug, showNotification]);
 
   const refreshAdminData = useCallback(async () => {
     await Promise.all([loadDashboard(), loadCredentials()]);
@@ -413,7 +539,9 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   };
 
   const addCredential = async () => {
-    if (!credentials.form.bearerToken.trim()) {
+    const isEditing = credentials.form.editingIndex !== null;
+
+    if (!isEditing && !credentials.form.bearerToken.trim()) {
       showNotification('warning', 'Bearer Token 不能为空。');
       return;
     }
@@ -426,11 +554,23 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     const result = await requestJson<{ filename?: string; success?: boolean }>(
       '/admin-api/credentials',
       {
-        body: JSON.stringify({
-          access_token: credentials.form.bearerToken.trim(),
-          bearer_token: credentials.form.bearerToken.trim(),
-          user_id: credentials.form.userId.trim() || undefined,
-        }),
+        body: JSON.stringify(
+          isEditing
+            ? {
+                index: credentials.form.editingIndex,
+                first_message_role_to_system:
+                  credentials.form.firstMessageRoleToSystem,
+                responses_passthrough: credentials.form.responsesPassthrough,
+              }
+            : {
+                access_token: credentials.form.bearerToken.trim(),
+                bearer_token: credentials.form.bearerToken.trim(),
+                first_message_role_to_system:
+                  credentials.form.firstMessageRoleToSystem,
+                responses_passthrough: credentials.form.responsesPassthrough,
+                user_id: credentials.form.userId.trim() || undefined,
+              },
+        ),
         headers: {
           'Content-Type': 'application/json',
         },
@@ -452,6 +592,9 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       actionIndex: null,
       form: {
         bearerToken: '',
+        editingIndex: null,
+        firstMessageRoleToSystem: false,
+        responsesPassthrough: false,
         userId: '',
       },
     }));
@@ -459,36 +602,6 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       'success',
       `凭证已保存：${result.data.filename ?? 'unknown'}`,
     );
-    await refreshAdminData();
-  };
-
-  const selectCredential = async (index: number) => {
-    setCredentials((current) => ({
-      ...current,
-      actionIndex: index,
-    }));
-
-    const result = await requestJson<{ success?: boolean }>(
-      '/admin-api/credentials/select',
-      {
-        body: JSON.stringify({ index }),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        method: 'POST',
-      },
-    );
-
-    if (!result.ok || !result.data?.success) {
-      showNotification('error', getErrorMessage(result.data, '切换凭证失败。'));
-      setCredentials((current) => ({
-        ...current,
-        actionIndex: null,
-      }));
-      return;
-    }
-
-    showNotification('success', '当前凭证已切换。');
     await refreshAdminData();
   };
 
@@ -522,49 +635,144 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     await refreshAdminData();
   };
 
-  const toggleRotation = async () => {
-    const result = await requestJson<{ auto_rotation_enabled?: boolean }>(
-      '/admin-api/credentials/toggle-rotation',
-      {
-        method: 'POST',
+  const saveAccessKey = async () => {
+    const { credentialFilenames, editingId, name } = credentials.accessKeyForm;
+
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: editingId ?? '__new__',
+    }));
+
+    const endpoint = editingId
+      ? `/admin-api/access-keys/${editingId}`
+      : '/admin-api/access-keys';
+    const method = editingId ? 'PATCH' : 'POST';
+    const result = await requestJson<{
+      access_key?: AccessKeySummary;
+      secret?: string;
+    }>(endpoint, {
+      body: JSON.stringify({
+        credential_filenames: credentialFilenames,
+        name,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
       },
-    );
+      method,
+    });
 
     if (!result.ok) {
       showNotification(
         'error',
-        getErrorMessage(result.data, '更新轮换状态失败。'),
+        getErrorMessage(
+          result.data,
+          editingId ? '更新 API Key 失败。' : '创建 API Key 失败。',
+        ),
       );
+      setCredentials((current) => ({
+        ...current,
+        accessKeyActionId: null,
+      }));
       return;
     }
 
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: null,
+      accessKeyForm: {
+        credentialFilenames: [],
+        editingId: null,
+        name: '',
+      },
+      revealedSecret:
+        result.data?.access_key && result.data.secret
+          ? {
+              id: result.data.access_key.id,
+              name: result.data.access_key.name,
+              secret: result.data.secret,
+            }
+          : current.revealedSecret,
+    }));
     showNotification(
       'success',
-      result.data?.auto_rotation_enabled
-        ? '自动轮换已开启。'
-        : '自动轮换已暂停。',
+      editingId ? 'API Key 已更新。' : 'API Key 已生成。',
     );
     await loadCredentials();
   };
 
-  const resumeAutoRotation = async () => {
+  const deleteAccessKey = async (id: string) => {
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: id,
+    }));
+
     const result = await requestJson<{ success?: boolean }>(
-      '/admin-api/credentials/auto',
+      `/admin-api/access-keys/${id}`,
       {
-        method: 'POST',
+        method: 'DELETE',
       },
     );
 
     if (!result.ok || !result.data?.success) {
       showNotification(
         'error',
-        getErrorMessage(result.data, '恢复自动轮换失败。'),
+        getErrorMessage(result.data, '删除 API Key 失败。'),
       );
+      setCredentials((current) => ({
+        ...current,
+        accessKeyActionId: null,
+      }));
       return;
     }
 
-    showNotification('success', '自动轮换已恢复。');
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: null,
+      revealedSecret:
+        current.revealedSecret?.id === id ? null : current.revealedSecret,
+    }));
+    showNotification('success', 'API Key 已删除。');
     await loadCredentials();
+  };
+
+  const revealAccessKeySecret = async (id: string) => {
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: id,
+    }));
+
+    const result = await requestJson<AccessKeySecretResponse>(
+      `/admin-api/access-keys/${id}/secret`,
+    );
+
+    if (!result.ok || !result.data?.secret || !result.data?.name) {
+      showNotification(
+        'error',
+        getErrorMessage(result.data, '读取 API Key 失败。'),
+      );
+      setCredentials((current) => ({
+        ...current,
+        accessKeyActionId: null,
+      }));
+      return;
+    }
+
+    const secretPayload = result.data as {
+      id?: string;
+      name: string;
+      secret: string;
+    };
+
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: null,
+      revealedSecret: {
+        id: secretPayload.id ?? id,
+        name: secretPayload.name,
+        secret: secretPayload.secret,
+      },
+    }));
+    showNotification('success', 'API Key 已显示。');
   };
 
   const copyText = async (value: string, successMessage: string) => {
@@ -612,6 +820,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
 
     const response = await fetch('/admin-api/chat/completions', {
       body: JSON.stringify({
+        credential_filename: apiTest.credentialFilename || undefined,
         messages: [
           {
             content: apiTest.message,
@@ -702,18 +911,113 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       saving: false,
       values: result.data?.settings ?? current.values,
     }));
+    setApiTest((current) => {
+      const configuredModels = getConfiguredModels(
+        result.data?.settings?.CODEBUDDY_MODELS,
+      );
+      const nextModel = configuredModels[0] ?? current.model;
+
+      if (
+        current.model.trim() &&
+        configuredModels.includes(current.model.trim())
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        model: nextModel,
+      };
+    });
     showNotification('success', result.data?.message ?? '设置已保存。');
+  };
+
+  const saveDebugSettings = async () => {
+    setDebug((current) => ({
+      ...current,
+      saving: true,
+    }));
+
+    const result = await requestJson<DebugResponse>('/admin-api/debug', {
+      body: JSON.stringify({
+        enabled: debug.enabled,
+        maxEntries: debug.maxEntries,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!result.ok) {
+      setDebug((current) => ({
+        ...current,
+        saving: false,
+      }));
+      showNotification(
+        'error',
+        getErrorMessage(result.data, '保存 Debug 设置失败。'),
+      );
+      return;
+    }
+
+    setDebug({
+      enabled: Boolean(result.data?.enabled),
+      items: result.data?.items ?? [],
+      loading: false,
+      maxEntries:
+        typeof result.data?.maxEntries === 'number'
+          ? result.data.maxEntries
+          : debug.maxEntries,
+      saving: false,
+    });
+    showNotification('success', result.data?.message ?? 'Debug 设置已保存。');
+  };
+
+  const clearDebugItems = async () => {
+    setDebug((current) => ({
+      ...current,
+      saving: true,
+    }));
+
+    const result = await requestJson<DebugResponse>('/admin-api/debug', {
+      method: 'DELETE',
+    });
+
+    if (!result.ok) {
+      setDebug((current) => ({
+        ...current,
+        saving: false,
+      }));
+      showNotification(
+        'error',
+        getErrorMessage(result.data, '清空 Debug 记录失败。'),
+      );
+      return;
+    }
+
+    setDebug((current) => ({
+      ...current,
+      items: [],
+      saving: false,
+    }));
+    showNotification('success', result.data?.message ?? 'Debug 记录已清空。');
   };
 
   useEffect(() => {
     if (!initialData) {
-      void Promise.all([loadDashboard(), loadCredentials(), loadSettings()]);
+      void Promise.all([
+        loadDashboard(),
+        loadCredentials(),
+        loadDebug(),
+        loadSettings(),
+      ]);
     }
 
     return () => {
       clearAuthTimer();
     };
-  }, [initialData, loadCredentials, loadDashboard, loadSettings]);
+  }, [initialData, loadCredentials, loadDashboard, loadDebug, loadSettings]);
 
   useEffect(() => {
     const storedTheme = window.localStorage.getItem(
@@ -721,7 +1025,11 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     );
     const storedTab = window.localStorage.getItem('codebuddy2api-admin-tab');
 
-    if (storedTheme === 'dark' || storedTheme === 'light') {
+    if (
+      storedTheme === 'dark' ||
+      storedTheme === 'light' ||
+      storedTheme === 'system'
+    ) {
       setTheme(storedTheme);
     }
 
@@ -729,6 +1037,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       storedTab === 'dashboard' ||
       storedTab === 'credentials' ||
       storedTab === 'api-test' ||
+      storedTab === 'debug' ||
       storedTab === 'settings'
     ) {
       setActiveTab(storedTab);
@@ -736,8 +1045,31 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   }, [setActiveTab, setTheme]);
 
   useEffect(() => {
-    document.body.classList.toggle('dark', theme === 'dark');
+    const applyTheme = () => {
+      const isDark = resolveDarkMode(theme);
+
+      document.documentElement.classList.toggle('dark', isDark);
+      document.body.classList.toggle('dark', isDark);
+      document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    };
+
+    applyTheme();
     window.localStorage.setItem('codebuddy2api-admin-theme', theme);
+
+    if (theme !== 'system' || !window.matchMedia) {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => {
+      applyTheme();
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleChange);
+    };
   }, [theme]);
 
   useEffect(() => {
@@ -767,17 +1099,29 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
             CodeBuddy2API 管理面板
           </h1>
           <div className="flex items-center gap-4">
-            <button
-              className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-4 py-2 cursor-pointer transition-all hover:bg-bg-light hover:border-primary hover:text-primary dark:hover:bg-bg-dark"
-              onClick={() => {
-                setTheme(theme === 'dark' ? 'light' : 'dark');
-              }}
-            >
+            <label className="flex items-center gap-2 text-sm text-secondary">
               <i
-                className={theme === 'dark' ? 'fas fa-sun' : 'fas fa-moon'}
-                id="themeIcon"
+                className={
+                  theme === 'dark'
+                    ? 'fas fa-moon'
+                    : theme === 'light'
+                      ? 'fas fa-sun'
+                      : 'fas fa-desktop'
+                }
               ></i>
-            </button>
+              <select
+                aria-label="Theme mode"
+                className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-3 py-2 cursor-pointer transition-all hover:border-primary focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+                value={theme}
+                onChange={(event) => {
+                  setTheme(event.target.value as ThemeMode);
+                }}
+              >
+                <option value="system">跟随系统</option>
+                <option value="light">浅色模式</option>
+                <option value="dark">暗黑模式</option>
+              </select>
+            </label>
           </div>
         </header>
         <main className="mt-20 px-8 py-8 max-w-[1400px] mx-auto">
@@ -812,6 +1156,24 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onCopyAuthUrl={() => {
                 void copyText(auth.authUrl, '认证链接已复制。');
               }}
+              onCredentialFirstMessageRoleToSystemChange={(value) => {
+                setCredentials((current) => ({
+                  ...current,
+                  form: {
+                    ...current.form,
+                    firstMessageRoleToSystem: value,
+                  },
+                }));
+              }}
+              onCredentialResponsesPassthroughChange={(value) => {
+                setCredentials((current) => ({
+                  ...current,
+                  form: {
+                    ...current.form,
+                    responsesPassthrough: value,
+                  },
+                }));
+              }}
               onCredentialTokenChange={(value) => {
                 setCredentials((current) => ({
                   ...current,
@@ -833,6 +1195,32 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onDeleteCredential={(index) => {
                 void deleteCredential(index);
               }}
+              onEditCredential={(credential) => {
+                setCredentials((current) => ({
+                  ...current,
+                  form: {
+                    bearerToken: '',
+                    editingIndex: credential.index,
+                    firstMessageRoleToSystem:
+                      credential.first_message_role_to_system,
+                    responsesPassthrough: credential.responses_passthrough,
+                    userId: credential.user_id ?? '',
+                  },
+                }));
+              }}
+              onDeleteAccessKey={(id) => {
+                void deleteAccessKey(id);
+              }}
+              onEditAccessKey={(accessKey) => {
+                setCredentials((current) => ({
+                  ...current,
+                  accessKeyForm: {
+                    credentialFilenames: [...accessKey.credentialFilenames],
+                    editingId: accessKey.id,
+                    name: accessKey.name,
+                  },
+                }));
+              }}
               onOpenAuthUrl={() => {
                 if (!auth.authUrl) {
                   showNotification('warning', '认证链接还未生成。');
@@ -847,11 +1235,23 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onRefreshCredentials={() => {
                 void refreshAdminData();
               }}
-              onResumeAutoRotation={() => {
-                void resumeAutoRotation();
+              onResetCredentialForm={() => {
+                setCredentials((current) => ({
+                  ...current,
+                  form: {
+                    bearerToken: '',
+                    editingIndex: null,
+                    firstMessageRoleToSystem: false,
+                    responsesPassthrough: false,
+                    userId: '',
+                  },
+                }));
               }}
-              onSelectCredential={(index) => {
-                void selectCredential(index);
+              onRevealAccessKeySecret={(id) => {
+                void revealAccessKeySecret(id);
+              }}
+              onSaveAccessKey={() => {
+                void saveAccessKey();
               }}
               onSubmitCallbackUrl={() => {
                 void submitCallbackUrl();
@@ -862,13 +1262,61 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
                   showManualCallback: showManual,
                 }));
               }}
-              onToggleRotation={() => {
-                void toggleRotation();
+              onToggleCredentialSelection={(filename) => {
+                setCredentials((current) => {
+                  const selected =
+                    current.accessKeyForm.credentialFilenames.includes(
+                      filename,
+                    );
+
+                  return {
+                    ...current,
+                    accessKeyForm: {
+                      ...current.accessKeyForm,
+                      credentialFilenames: selected
+                        ? current.accessKeyForm.credentialFilenames.filter(
+                            (item) => item !== filename,
+                          )
+                        : [
+                            ...current.accessKeyForm.credentialFilenames,
+                            filename,
+                          ],
+                    },
+                  };
+                });
+              }}
+              onUpdateAccessKeyName={(value) => {
+                setCredentials((current) => ({
+                  ...current,
+                  accessKeyForm: {
+                    ...current.accessKeyForm,
+                    name: value,
+                  },
+                }));
+              }}
+              onResetAccessKeyForm={() => {
+                setCredentials((current) => ({
+                  ...current,
+                  accessKeyForm: {
+                    credentialFilenames: [],
+                    editingId: null,
+                    name: '',
+                  },
+                }));
               }}
             />
           ) : null}
           {activeTab === 'api-test' ? (
             <ApiTestSection
+              credentialOptions={credentials.items.filter(
+                (item) => !item.is_expired,
+              )}
+              onCredentialChange={(value) => {
+                setApiTest((current) => ({
+                  ...current,
+                  credentialFilename: value,
+                }));
+              }}
               models={String(settings.values.CODEBUDDY_MODELS ?? '')
                 .split(',')
                 .map((item) => item.trim())
@@ -897,6 +1345,35 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               state={apiTest}
             />
           ) : null}
+          {activeTab === 'debug' ? (
+            <DebugSection
+              onClear={() => {
+                void clearDebugItems();
+              }}
+              onCopy={(value) => {
+                void copyText(value, '内容已复制。');
+              }}
+              onEnabledChange={(value) => {
+                setDebug((current) => ({
+                  ...current,
+                  enabled: value,
+                }));
+              }}
+              onMaxEntriesChange={(value) => {
+                setDebug((current) => ({
+                  ...current,
+                  maxEntries: value,
+                }));
+              }}
+              onRefresh={() => {
+                void loadDebug();
+              }}
+              onSave={() => {
+                void saveDebugSettings();
+              }}
+              state={debug}
+            />
+          ) : null}
           {activeTab === 'settings' ? (
             <SettingsSection
               onChange={(key, value) => {
@@ -904,10 +1381,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
                   ...current,
                   values: {
                     ...current.values,
-                    [key]:
-                      key === 'CODEBUDDY_ROTATION_COUNT'
-                        ? Number(value)
-                        : value,
+                    [key]: value,
                   },
                 }));
               }}

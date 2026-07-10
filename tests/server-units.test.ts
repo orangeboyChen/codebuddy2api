@@ -15,8 +15,11 @@ import {
   updateAccessKey,
 } from '@/lib/server/access-keys';
 import {
-  getAnthropicAuthErrorResponse,
+  getAdminAuthErrorResponse,
   getAuthErrorResponse,
+  getAnthropicAuthErrorResponse,
+  getClientAuthErrorResponse,
+  resolveRequestAccessKey,
 } from '@/lib/server/auth';
 import {
   getAuthCallbackResponse,
@@ -86,32 +89,46 @@ describe('server units', () => {
     process.env.CODEBUDDY_CONFIG_PATH = '.tmp-test-config-units/config.json';
     process.env.CODEBUDDY_CREDS_DIR = '.tmp-test-creds-units';
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
-    process.env.CODEBUDDY_API_KEY = '';
+    addCredential({
+      bearer_token: 'default-test-token',
+      first_message_role_to_system: false,
+      responses_passthrough: false,
+      user_id: 'default@example.com',
+    });
   });
 
   afterEach(() => {
     cleanupTempState();
+    delete process.env.CODEBUDDY_PASSWORD;
   });
 
   it('covers auth guard branches', () => {
     expect(
-      getAuthErrorResponse(makeNextRequest('http://localhost/test')),
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test')),
     ).toBeNull();
 
     const credential = addCredential({
       bearer_token: 'token-auth',
       user_id: 'guard@example.com',
     });
-    const { secret } = createAccessKey({
+    const created = createAccessKey({
       credentialFilenames: [credential.filename],
       name: 'Guard Key',
     });
 
     expect(
-      getAuthErrorResponse(makeNextRequest('http://localhost/test'))?.status,
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test'))
+        ?.status,
     ).toBe(401);
     expect(
-      getAuthErrorResponse(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Basic nope' },
+        }),
+      )?.status,
+    ).toBe(401);
+    expect(
+      getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
           headers: { authorization: 'Basic nope' },
         }),
@@ -125,19 +142,141 @@ describe('server units', () => {
       )?.status,
     ).toBe(403);
     expect(
-      getAuthErrorResponse(
+      getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
-          headers: { authorization: `Bearer ${secret} trailing` },
+          headers: { authorization: `Bearer ${created.secret} trailing` },
         }),
       ),
     ).toBeNull();
     expect(
       getAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
-          headers: { 'x-api-key': secret },
+          headers: { 'x-api-key': created.secret },
         }),
       ),
     ).toBeNull();
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { 'x-api-key': created.secret },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps legacy password auth during migration and scopes admin auth', () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+
+    expect(
+      getClientAuthErrorResponse(makeNextRequest('http://localhost/test'))
+        ?.status,
+    ).toBe(401);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer wrong-secret' },
+        }),
+      )?.status,
+    ).toBe(403);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAdminAuthErrorResponse(
+        makeNextRequest('http://localhost/admin', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+
+    const credential = addCredential({
+      bearer_token: 'token-auth',
+      user_id: 'guard@example.com',
+    });
+    const created = createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Guard Key',
+    });
+
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: `Bearer ${created.secret}` },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAdminAuthErrorResponse(
+        makeNextRequest('http://localhost/admin', {
+          headers: { authorization: `Bearer ${created.secret}` },
+        }),
+      )?.status,
+    ).toBe(403);
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: `Bearer ${created.secret}` },
+        }),
+      )?.id,
+    ).toBe(created.access_key.id);
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('covers auth behavior when access key storage is unreadable', async () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+    fs.mkdirSync(tempConfigDir, { recursive: true });
+    fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
+
+    expect(
+      resolveRequestAccessKey(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer any-token' },
+        }),
+      ),
+    ).toBeNull();
+
+    const clientError = getClientAuthErrorResponse(
+      makeNextRequest('http://localhost/test', {
+        headers: { authorization: 'Bearer any-token' },
+      }),
+    );
+    expect(clientError?.status).toBe(503);
+    expect(await clientError?.json()).toEqual({
+      error: {
+        message:
+          'Access key storage is unreadable. Fix access-keys.json first.',
+      },
+    });
+
+    const adminError = getAdminAuthErrorResponse(
+      makeNextRequest('http://localhost/admin', {
+        headers: { authorization: 'Bearer legacy-secret' },
+      }),
+    );
+    expect(adminError?.status).toBe(503);
+
+    const anthropicError = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { authorization: 'Bearer legacy-secret' },
+      }),
+    );
+    expect(anthropicError?.status).toBe(503);
+    expect(await anthropicError?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        type: 'authentication_error',
+      },
+    });
   });
 
   it('covers anthropic auth with x-api-key and bearer', async () => {
@@ -165,13 +304,13 @@ describe('server units', () => {
     expect((await noKey!.json()).type).toBe('error');
 
     // Wrong key via x-api-key.
-    expect(
-      getAnthropicAuthErrorResponse(
-        makeNextRequest('http://localhost/v1/messages', {
-          headers: { 'x-api-key': 'wrong' },
-        }),
-      )?.status,
-    ).toBe(403);
+    const wrongKey = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { 'x-api-key': 'wrong' },
+      }),
+    );
+    expect(wrongKey?.status).toBe(403);
+    expect(wrongKey).not.toBeNull();
 
     // Correct key via x-api-key.
     expect(
@@ -192,7 +331,43 @@ describe('server units', () => {
     ).toBeNull();
   });
 
+  it('covers anthropic legacy password branches', async () => {
+    process.env.CODEBUDDY_PASSWORD = 'legacy-secret';
+
+    const missing = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages'),
+    );
+    expect(missing?.status).toBe(401);
+    expect(await missing?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        message: 'Authorization header is required',
+      },
+    });
+
+    const wrong = getAnthropicAuthErrorResponse(
+      makeNextRequest('http://localhost/v1/messages', {
+        headers: { authorization: 'Bearer wrong-secret' },
+      }),
+    );
+    expect(wrong?.status).toBe(403);
+    expect(await wrong?.json()).toMatchObject({
+      type: 'error',
+      error: {
+        message: 'Invalid API key',
+      },
+    });
+
+    expect(
+      getAnthropicAuthErrorResponse(
+        makeNextRequest('http://localhost/v1/messages', {
+          headers: { authorization: 'Bearer legacy-secret' },
+        }),
+      ),
+    ).toBeNull();
+  });
   it('covers credential round-robin, invalid operations, and usage stats', () => {
+    expect(deleteCredentialByIndex(0).success).toBe(true);
     expect(getCurrentCredentialInfo().status).toBe('no_credentials');
     expect(selectCredential(0).success).toBe(false);
     expect(deleteCredentialByIndex(0).success).toBe(false);
@@ -303,6 +478,13 @@ describe('server units', () => {
     fs.writeFileSync(path.join(tempConfigDir, 'access-keys.json'), '{');
     expect(listStoredAccessKeys()).toEqual([]);
     expect(hasAccessKeys()).toBe(false);
+    expect(
+      getClientAuthErrorResponse(
+        makeNextRequest('http://localhost/test', {
+          headers: { authorization: 'Bearer anything' },
+        }),
+      )?.status,
+    ).toBe(503);
   });
 
   it('covers access key validation, normalization, and deletion', () => {
@@ -403,8 +585,11 @@ describe('server units', () => {
     });
     process.env.CODEBUDDY_AUTH_MODE = 'token';
     const tokenCredentials = listCredentials();
+    const tokenCredential = tokenCredentials.credentials.find(
+      (credential) => credential.user_id === 'token@example.com',
+    );
     const tokenAccessKey = createAccessKey({
-      credentialFilenames: [String(tokenCredentials.credentials[0]?.filename)],
+      credentialFilenames: [String(tokenCredential?.filename)],
       name: 'Token Mode Key',
     });
 
@@ -1338,6 +1523,8 @@ describe('server units', () => {
   });
 
   it('covers successful auth flow with JWT token decoding', async () => {
+    expect(deleteCredentialByIndex(0).success).toBe(true);
+
     // Build a fake JWT payload with enterprise/tenant/user info.
     const jwtPayload = {
       email: 'user@example.com',
@@ -1893,11 +2080,11 @@ describe('server units', () => {
     expect(result['originator']).toBeUndefined();
   });
 
-  it('coerces nullable string settings to strings', () => {
-    updateSettings({ CODEBUDDY_API_KEY: true });
+  it('coerces settings values to strings', () => {
+    updateSettings({ CODEBUDDY_LOG_LEVEL: true });
 
     const config = getActiveConfig();
 
-    expect(config.CODEBUDDY_API_KEY).toBe('true');
+    expect(config.CODEBUDDY_LOG_LEVEL).toBe('true');
   });
 });

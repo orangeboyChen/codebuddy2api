@@ -1,7 +1,9 @@
 import type {
+  AccessKeySummary,
   CredentialsState,
   CredentialSummary,
   CurrentCredentialInfo,
+  DebugState,
   DashboardState,
   SettingsState,
 } from '@/app/admin/_components/admin-store';
@@ -23,10 +25,18 @@ export interface AdminSettingsSnapshot {
   values: Record<string, string | number | null>;
 }
 
+export interface AdminDebugSnapshot {
+  enabled: boolean;
+  items: DebugState['items'];
+  maxEntries: number;
+}
+
 export interface AdminConsoleInitialData {
+  accessKeys: AccessKeySummary[];
   apiEndpoint: string;
   credentials: CredentialSummary[];
   currentCredential: CurrentCredentialInfo;
+  debug: AdminDebugSnapshot;
   health: AdminHealthState;
   settings: AdminSettingsSnapshot;
   stats: AdminStatsState;
@@ -71,15 +81,27 @@ export const createCredentialsState = (
   initialData: AdminConsoleInitialData,
 ): CredentialsState => {
   return {
+    accessKeyActionId: null,
+    accessKeyForm: {
+      credentialFilenames: [],
+      editingId: null,
+      name: '',
+    },
+    accessKeys: initialData.accessKeys,
+    accessKeysLoading: false,
     actionIndex: null,
     current: initialData.currentCredential,
     currentLoading: false,
     form: {
       bearerToken: '',
+      editingIndex: null,
+      firstMessageRoleToSystem: false,
+      responsesPassthrough: false,
       userId: '',
     },
     items: initialData.credentials,
     loading: false,
+    revealedSecret: null,
   };
 };
 
@@ -91,5 +113,17 @@ export const createSettingsState = (
     loading: false,
     saving: false,
     values: initialData.settings.values,
+  };
+};
+
+export const createDebugState = (
+  initialData: AdminConsoleInitialData,
+): DebugState => {
+  return {
+    enabled: initialData.debug.enabled,
+    items: initialData.debug.items,
+    loading: false,
+    maxEntries: initialData.debug.maxEntries,
+    saving: false,
   };
 };

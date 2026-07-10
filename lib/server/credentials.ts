@@ -21,6 +21,8 @@ export type CredentialData = Record<string, unknown> & {
   token_type?: string;
   user_id?: string;
   user_info?: Record<string, unknown>;
+  responses_passthrough?: boolean;
+  first_message_role_to_system?: boolean;
 };
 
 export interface CredentialRecord {
@@ -134,6 +136,26 @@ const getNestedValue = (
   return null;
 };
 
+const getBooleanSetting = (value: unknown, fallback = false): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+
+    if (normalized === 'true') {
+      return true;
+    }
+
+    if (normalized === 'false') {
+      return false;
+    }
+  }
+
+  return fallback;
+};
+
 export const readCredentialRecords = (): CredentialRecord[] => {
   ensureCredsDir();
 
@@ -163,6 +185,15 @@ export const readCredentialRecords = (): CredentialRecord[] => {
 
 export const listCredentialFilenames = (): string[] => {
   return readCredentialRecords().map((record) => record.filename);
+};
+
+export const findCredentialRecordByFilename = (
+  filename: string,
+): CredentialRecord | null => {
+  return (
+    readCredentialRecords().find((record) => record.filename === filename) ??
+    null
+  );
 };
 
 const getCredentialExpiry = (credential: CredentialData): number | null => {
@@ -306,6 +337,12 @@ export const listCredentials = (): {
           : null,
         time_remaining_str: formatTimeRemaining(expiresAt),
         token_type: record.data.token_type ?? 'Bearer',
+        responses_passthrough: getBooleanSetting(
+          record.data.responses_passthrough,
+        ),
+        first_message_role_to_system: getBooleanSetting(
+          record.data.first_message_role_to_system,
+        ),
         user_id:
           record.data.user_id ?? record.data.user_info?.email ?? 'unknown',
       };
@@ -372,15 +409,37 @@ export const addCredential = (
   const jsonFilename = resolvedFilename.endsWith('.json')
     ? resolvedFilename
     : `${resolvedFilename}.json`;
+  const filePath = path.join(getCredsDir(), jsonFilename);
+  let existingPayload: CredentialData = {};
+
+  if (fs.existsSync(filePath)) {
+    try {
+      existingPayload = JSON.parse(
+        fs.readFileSync(filePath, 'utf8'),
+      ) as CredentialData;
+    } catch {
+      existingPayload = {};
+    }
+  }
+
   const payload = {
-    created_at: now,
+    ...existingPayload,
     ...credentialData,
+    created_at:
+      typeof existingPayload.created_at === 'number'
+        ? existingPayload.created_at
+        : now,
+    responses_passthrough: getBooleanSetting(
+      credentialData.responses_passthrough ??
+        existingPayload.responses_passthrough,
+    ),
+    first_message_role_to_system: getBooleanSetting(
+      credentialData.first_message_role_to_system ??
+        existingPayload.first_message_role_to_system,
+    ),
   };
 
-  fs.writeFileSync(
-    path.join(getCredsDir(), jsonFilename),
-    JSON.stringify(payload, null, 2),
-  );
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
 
   saveRuntimeState();
 
@@ -418,62 +477,66 @@ export const deleteCredentialByIndex = (
   return { message: 'Credential deleted', success: true };
 };
 
+export const updateCredentialByIndex = (
+  index: number,
+  credentialData: CredentialData,
+): { filename: string; success: boolean } => {
+  const records = readCredentialRecords();
+
+  if (index < 0 || index >= records.length) {
+    throw new Error('Invalid credential index');
+  }
+
+  return addCredential(credentialData, records[index].filename);
+};
+
 export const selectCredential = (
   index: number,
 ): { message: string; success: boolean } => {
   const records = readCredentialRecords();
-  const eligibleRecords = getEligibleRecords(records);
 
   if (index < 0 || index >= records.length) {
     return { message: 'Invalid credential index', success: false };
   }
 
-  const selectedRecord = records[index];
-
-  if (
-    !selectedRecord ||
-    !eligibleRecords.some((item) => item === selectedRecord)
-  ) {
-    return { message: 'Credential is expired or unavailable', success: false };
-  }
-
   const state = getRuntimeState();
-  state.globalNextFilename = selectedRecord.filename;
+  state.globalNextFilename = records[index].filename;
   saveRuntimeState();
 
-  return { message: 'Credential selected', success: true };
+  return {
+    message: 'Next credential updated for round-robin',
+    success: true,
+  };
+};
+
+export const resumeAutoRotation = (): { message: string; success: boolean } => {
+  return {
+    message: 'Round-robin is always enabled',
+    success: true,
+  };
 };
 
 export const toggleAutoRotation = (): {
   auto_rotation_enabled: boolean;
   success: boolean;
 } => {
-  const state = getRuntimeState();
-  state.globalNextFilename = null;
-  saveRuntimeState();
-
   return {
     auto_rotation_enabled: true,
     success: true,
   };
 };
 
-export const resumeAutoRotation = (): { message: string; success: boolean } => {
-  const state = getRuntimeState();
-  state.globalNextFilename = null;
-  saveRuntimeState();
-
-  return { message: 'Auto rotation resumed', success: true };
-};
-
-export const resolveCredentialForRequest = (options?: {
+export const resolveCredentialForRequest = ({
+  accessKeyId,
+  allowedCredentialFilenames,
+}: {
   accessKeyId?: string;
   allowedCredentialFilenames?: string[];
-}): CredentialRecord | null => {
+} = {}): CredentialRecord | null => {
   const records = readCredentialRecords();
   const eligibleRecords = getEligibleRecords(
     records,
-    options?.allowedCredentialFilenames,
+    allowedCredentialFilenames,
   );
 
   if (!eligibleRecords.length) {
@@ -481,26 +544,20 @@ export const resolveCredentialForRequest = (options?: {
   }
 
   const state = getRuntimeState();
-  const accessKeyId = options?.accessKeyId?.trim() || null;
-
-  if (accessKeyId) {
-    const currentKeyNextFilename =
-      state.keyNextFilenameByAccessKeyId[accessKeyId] ?? null;
-    const { current, nextFilename } = chooseNextRecord(
-      eligibleRecords,
-      currentKeyNextFilename,
-    );
-    state.keyNextFilenameByAccessKeyId[accessKeyId] = nextFilename;
-    saveRuntimeState();
-    recordCredentialUsage(current.filename);
-    return current;
-  }
-
+  const currentNextFilename = accessKeyId
+    ? (state.keyNextFilenameByAccessKeyId[accessKeyId] ?? null)
+    : state.globalNextFilename;
   const { current, nextFilename } = chooseNextRecord(
     eligibleRecords,
-    state.globalNextFilename,
+    currentNextFilename,
   );
-  state.globalNextFilename = nextFilename;
+
+  if (accessKeyId) {
+    state.keyNextFilenameByAccessKeyId[accessKeyId] = nextFilename;
+  } else {
+    state.globalNextFilename = nextFilename;
+  }
+
   saveRuntimeState();
   recordCredentialUsage(current.filename);
 
@@ -509,4 +566,18 @@ export const resolveCredentialForRequest = (options?: {
 
 export const resetCredentialRuntimeState = (): void => {
   delete globalCredentialState.__codebuddy2apiCredentialState__;
+};
+
+export const getCredentialProxySettings = (
+  credential: CredentialData | null | undefined,
+): {
+  firstMessageRoleToSystem: boolean;
+  responsesPassthrough: boolean;
+} => {
+  return {
+    firstMessageRoleToSystem: getBooleanSetting(
+      credential?.first_message_role_to_system,
+    ),
+    responsesPassthrough: getBooleanSetting(credential?.responses_passthrough),
+  };
 };

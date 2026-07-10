@@ -1,9 +1,11 @@
 import type {
+  AccessKeySummary,
   ApiTestState,
   AuthState,
   CredentialSummary,
   CredentialsState,
   CurrentCredentialInfo,
+  DebugState,
   DashboardState,
   NotificationState,
   SettingsState,
@@ -33,20 +35,30 @@ interface CredentialsSectionProps {
   onAuthAction: () => void;
   onCallbackUrlChange: (value: string) => void;
   onCopyAuthUrl: () => void;
+  onCredentialFirstMessageRoleToSystemChange: (value: boolean) => void;
+  onCredentialResponsesPassthroughChange: (value: boolean) => void;
   onCredentialTokenChange: (value: string) => void;
   onCredentialUserIdChange: (value: string) => void;
   onDeleteCredential: (index: number) => void;
+  onDeleteAccessKey: (id: string) => void;
+  onEditCredential: (credential: CredentialSummary) => void;
+  onEditAccessKey: (accessKey: AccessKeySummary) => void;
   onOpenAuthUrl: () => void;
   onPollAuth: () => void;
   onRefreshCredentials: () => void;
-  onResumeAutoRotation: () => void;
-  onSelectCredential: (index: number) => void;
+  onResetCredentialForm: () => void;
+  onResetAccessKeyForm: () => void;
+  onRevealAccessKeySecret: (id: string) => void;
+  onSaveAccessKey: () => void;
   onSubmitCallbackUrl: () => void;
   onToggleCallbackMode: (showManual: boolean) => void;
-  onToggleRotation: () => void;
+  onToggleCredentialSelection: (filename: string) => void;
+  onUpdateAccessKeyName: (value: string) => void;
 }
 
 interface ApiTestSectionProps {
+  credentialOptions: CredentialSummary[];
+  onCredentialChange: (value: string) => void;
   models: string[];
   onMessageChange: (value: string) => void;
   onModelChange: (value: string) => void;
@@ -59,6 +71,16 @@ interface SettingsSectionProps {
   onChange: (key: string, value: string) => void;
   onSave: () => void;
   state: SettingsState;
+}
+
+interface DebugSectionProps {
+  onClear: () => void;
+  onCopy: (value: string) => void;
+  onEnabledChange: (value: boolean) => void;
+  onMaxEntriesChange: (value: number) => void;
+  onRefresh: () => void;
+  onSave: () => void;
+  state: DebugState;
 }
 
 interface NotificationBarProps {
@@ -81,17 +103,13 @@ const getCredentialBadge = (
   credential: CredentialSummary,
   current: CurrentCredentialInfo | null,
 ) => {
-  if (current?.index === credential.index) {
-    if (current.status === 'manual_selected') {
-      return {
-        className: 'px-3 py-1 text-xs font-medium bg-warning/10 text-warning',
-        label: '手动选中',
-      };
-    }
-
+  if (
+    current?.status === 'round_robin' &&
+    current.next_filename === credential.filename
+  ) {
     return {
       className: 'px-3 py-1 text-xs font-medium bg-success/10 text-success',
-      label: '当前使用中',
+      label: '下一次轮询',
     };
   }
 
@@ -140,11 +158,11 @@ const formatCurrentStatus = (current: CurrentCredentialInfo | null) => {
     return '当前没有可用凭证';
   }
 
-  if (current.status === 'manual_selected') {
-    return '当前处于手动选中模式';
+  if (current.status === 'access_keys_enabled') {
+    return '已启用 API Key，业务请求会在各自绑定的凭证子集里轮询。';
   }
 
-  return '当前处于自动轮换模式';
+  return '当前未配置 API Key，请求会在全局可用凭证之间轮询。';
 };
 
 const SettingsInput = ({
@@ -162,7 +180,7 @@ const SettingsInput = ({
     return (
       <div className="mb-4">
         <label
-          className="block mb-2 font-medium text-text-light dark:text-text-dark"
+          className="block mb-2 font-medium text-text-light dark:text-text-dark whitespace-normal break-words"
           htmlFor={settingKey}
         >
           {label}
@@ -176,7 +194,6 @@ const SettingsInput = ({
           }}
         >
           <option value="auto">auto</option>
-          <option value="api_key">api_key</option>
           <option value="token">token</option>
         </select>
       </div>
@@ -187,7 +204,7 @@ const SettingsInput = ({
     return (
       <div className="mb-4">
         <label
-          className="block mb-2 font-medium text-text-light dark:text-text-dark"
+          className="block mb-2 font-medium text-text-light dark:text-text-dark whitespace-normal break-words"
           htmlFor={settingKey}
         >
           {label}
@@ -212,7 +229,7 @@ const SettingsInput = ({
     return (
       <div className="mb-4">
         <label
-          className="block mb-2 font-medium text-text-light dark:text-text-dark"
+          className="block mb-2 font-medium text-text-light dark:text-text-dark whitespace-normal break-words"
           htmlFor={settingKey}
         >
           {label}
@@ -234,10 +251,32 @@ const SettingsInput = ({
     );
   }
 
+  if (settingKey === 'CODEBUDDY_MODELS') {
+    return (
+      <div className="mb-4">
+        <label
+          className="block mb-2 font-medium text-text-light dark:text-text-dark whitespace-normal break-words"
+          htmlFor={settingKey}
+        >
+          {label}
+        </label>
+        <textarea
+          id={settingKey}
+          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10 resize-y min-h-[120px] whitespace-pre-wrap break-words"
+          rows={6}
+          value={value}
+          onChange={(event) => {
+            onChange(event.target.value);
+          }}
+        ></textarea>
+      </div>
+    );
+  }
+
   return (
     <div className="mb-4">
       <label
-        className="block mb-2 font-medium text-text-light dark:text-text-dark"
+        className="block mb-2 font-medium text-text-light dark:text-text-dark whitespace-normal break-words"
         htmlFor={settingKey}
       >
         {label}
@@ -245,14 +284,7 @@ const SettingsInput = ({
       <input
         id={settingKey}
         className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-        type={
-          settingKey === 'CODEBUDDY_PASSWORD' ||
-          settingKey === 'CODEBUDDY_API_KEY'
-            ? 'password'
-            : settingKey === 'CODEBUDDY_ROTATION_COUNT'
-              ? 'number'
-              : 'text'
-        }
+        type="text"
         value={value}
         onChange={(event) => {
           onChange(event.target.value);
@@ -265,81 +297,177 @@ const SettingsInput = ({
 const CredentialCard = ({
   credential,
   current,
+  form,
+  onCredentialFirstMessageRoleToSystemChange,
+  onCredentialResponsesPassthroughChange,
   onDelete,
-  onSelect,
+  onEdit,
+  onResetCredentialForm,
+  onSaveCredential,
 }: {
   credential: CredentialSummary;
   current: CurrentCredentialInfo | null;
+  form: CredentialsState['form'];
+  onCredentialFirstMessageRoleToSystemChange: (value: boolean) => void;
+  onCredentialResponsesPassthroughChange: (value: boolean) => void;
   onDelete: () => void;
-  onSelect: () => void;
+  onEdit: () => void;
+  onResetCredentialForm: () => void;
+  onSaveCredential: () => void;
 }) => {
   const badge = getCredentialBadge(credential, current);
   const avatarText = (credential.name ?? credential.email ?? credential.user_id)
     .slice(0, 1)
     .toUpperCase();
+  const isEditing = form.editingIndex === credential.index;
 
   return (
-    <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-5 flex items-center gap-4 transition-all relative hover:-translate-y-px hover:shadow-md hover:border-primary">
-      <div className={getCredentialAvatarClassName(credential)}>
-        {avatarText || 'C'}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-2">
-          <div className="font-semibold text-text-light dark:text-text-dark">
-            {credential.filename}
+    <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-5 transition-all relative hover:-translate-y-px hover:shadow-md hover:border-primary">
+      <div className="flex items-center gap-4">
+        <div className={getCredentialAvatarClassName(credential)}>
+          {avatarText || 'C'}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="font-semibold text-text-light dark:text-text-dark">
+              {credential.filename}
+            </div>
+            <span className={badge.className}>{badge.label}</span>
           </div>
-          <span className={badge.className}>{badge.label}</span>
+          <div className="flex flex-wrap gap-4 text-sm text-secondary">
+            <span className="flex items-center gap-1">
+              <i className="fas fa-user"></i>
+              {credential.email || credential.user_id}
+            </span>
+            <span className="flex items-center gap-1">
+              <i className="fas fa-globe"></i>
+              {credential.domain}
+            </span>
+            <span className="flex items-center gap-1">
+              <i className="fas fa-clock"></i>
+              {credential.time_remaining_str}
+            </span>
+            <span className="flex items-center gap-1">
+              <i className="fas fa-calendar"></i>
+              {formatDateTime(credential.created_at)}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            <span className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark">
+              {credential.responses_passthrough
+                ? 'Responses 直通上游'
+                : 'Responses 先转 Chat 再请求上游'}
+            </span>
+            <span className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark">
+              {credential.first_message_role_to_system
+                ? '转 Chat 时首条 developer 改 system'
+                : '转 Chat 时保留 developer role'}
+            </span>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-4 text-sm text-secondary">
-          <span className="flex items-center gap-1">
-            <i className="fas fa-user"></i>
-            {credential.email || credential.user_id}
-          </span>
-          <span className="flex items-center gap-1">
-            <i className="fas fa-globe"></i>
-            {credential.domain}
-          </span>
-          <span className="flex items-center gap-1">
-            <i className="fas fa-clock"></i>
-            {credential.time_remaining_str}
-          </span>
-          <span className="flex items-center gap-1">
-            <i className="fas fa-calendar"></i>
-            {formatDateTime(credential.created_at)}
-          </span>
+        <div className="flex gap-2 shrink-0">
+          <button
+            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+            onClick={onEdit}
+          >
+            <i className="fas fa-pen"></i>
+            编辑
+          </button>
+          <button
+            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
+            onClick={onDelete}
+          >
+            <i className="fas fa-trash"></i>
+            删除
+          </button>
         </div>
       </div>
-      <div className="flex gap-2 shrink-0">
-        <button
-          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-          onClick={onSelect}
-        >
-          <i className="fas fa-bullseye"></i>
-          设为当前
-        </button>
-        <button
-          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
-          onClick={onDelete}
-        >
-          <i className="fas fa-trash"></i>
-          删除
-        </button>
-      </div>
+      {isEditing ? (
+        <div className="mt-4 border-t border-border-light dark:border-border-dark pt-4">
+          <div className="mb-3 font-medium text-text-light dark:text-text-dark">
+            编辑凭证配置
+          </div>
+          <div className="mb-4 grid gap-3">
+            <label className="flex items-start gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
+              <input
+                checked={form.responsesPassthrough}
+                type="checkbox"
+                onChange={(event) => {
+                  onCredentialResponsesPassthroughChange(event.target.checked);
+                }}
+              />
+              <div>
+                <div className="font-medium text-text-light dark:text-text-dark">
+                  Responses 请求直接透传上游
+                </div>
+                <div className="text-sm text-secondary">
+                  开启后，该凭证命中的 `/v1/responses` 不再做 response 转 chat。
+                </div>
+              </div>
+            </label>
+            <label className="flex items-start gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
+              <input
+                checked={form.firstMessageRoleToSystem}
+                type="checkbox"
+                onChange={(event) => {
+                  onCredentialFirstMessageRoleToSystemChange(
+                    event.target.checked,
+                  );
+                }}
+              />
+              <div>
+                <div className="font-medium text-text-light dark:text-text-dark">
+                  首条 developer 改为 system
+                </div>
+                <div className="text-sm text-secondary">
+                  仅在该凭证走 chat 代理链路时生效。
+                </div>
+              </div>
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <button
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
+              onClick={onSaveCredential}
+            >
+              <i className="fas fa-save"></i>
+              保存凭证
+            </button>
+            <button
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+              onClick={onResetCredentialForm}
+            >
+              <i className="fas fa-times"></i>
+              取消
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };
 
 const CredentialGroup = ({
   current,
+  form,
   items,
   title,
   onDelete,
-  onSelect,
+  onEdit,
+  onCredentialFirstMessageRoleToSystemChange,
+  onCredentialResponsesPassthroughChange,
+  onResetCredentialForm,
+  onSaveCredential,
 }: {
   current: CurrentCredentialInfo | null;
+  form: CredentialsState['form'];
   items: CredentialSummary[];
+  onCredentialFirstMessageRoleToSystemChange: (value: boolean) => void;
+  onCredentialResponsesPassthroughChange: (value: boolean) => void;
   onDelete: (index: number) => void;
-  onSelect: (index: number) => void;
+  onEdit: (credential: CredentialSummary) => void;
+  onResetCredentialForm: () => void;
+  onSaveCredential: () => void;
   title: string;
 }) => {
   if (!items.length) {
@@ -364,16 +492,218 @@ const CredentialGroup = ({
               key={credential.filename}
               credential={credential}
               current={current}
+              form={form}
+              onCredentialFirstMessageRoleToSystemChange={
+                onCredentialFirstMessageRoleToSystemChange
+              }
+              onCredentialResponsesPassthroughChange={
+                onCredentialResponsesPassthroughChange
+              }
               onDelete={() => {
                 onDelete(credential.index);
               }}
-              onSelect={() => {
-                onSelect(credential.index);
+              onEdit={() => {
+                onEdit(credential);
               }}
+              onResetCredentialForm={onResetCredentialForm}
+              onSaveCredential={onSaveCredential}
             />
           ))}
         </div>
       </div>
+    </div>
+  );
+};
+
+const AccessKeyCard = ({
+  accessKey,
+  actionId,
+  form,
+  revealedSecret,
+  validCredentials,
+  onDelete,
+  onEdit,
+  onResetAccessKeyForm,
+  onRevealSecret,
+  onSaveAccessKey,
+  onToggleCredentialSelection,
+  onUpdateAccessKeyName,
+}: {
+  accessKey: AccessKeySummary;
+  actionId: string | null;
+  form: CredentialsState['accessKeyForm'];
+  revealedSecret: CredentialsState['revealedSecret'];
+  validCredentials: CredentialSummary[];
+  onDelete: () => void;
+  onEdit: () => void;
+  onResetAccessKeyForm: () => void;
+  onRevealSecret: () => void;
+  onSaveAccessKey: () => void;
+  onToggleCredentialSelection: (filename: string) => void;
+  onUpdateAccessKeyName: (value: string) => void;
+}) => {
+  const isEditing = form.editingId === accessKey.id;
+  const isRevealed = revealedSecret?.id === accessKey.id;
+  const isBusy = actionId === accessKey.id;
+
+  return (
+    <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-5 transition-all relative hover:-translate-y-px hover:shadow-md hover:border-primary">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="font-semibold text-text-light dark:text-text-dark">
+              {accessKey.name}
+            </div>
+            <span className="px-3 py-1 text-xs font-medium bg-primary/10 text-primary">
+              {accessKey.credentialFilenames.length} 个凭证
+            </span>
+          </div>
+          <div className="font-mono text-sm text-secondary break-all">
+            {accessKey.maskedSecret}
+          </div>
+          <div className="flex flex-wrap gap-4 text-sm text-secondary mt-3">
+            <span className="flex items-center gap-1">
+              <i className="fas fa-calendar"></i>
+              创建于 {new Date(accessKey.createdAt).toLocaleString('zh-CN')}
+            </span>
+            <span className="flex items-center gap-1">
+              <i className="fas fa-pen"></i>
+              更新于 {new Date(accessKey.updatedAt).toLocaleString('zh-CN')}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {accessKey.credentialFilenames.map((filename) => (
+              <span
+                key={filename}
+                className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark font-mono"
+              >
+                {filename}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          <button
+            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+            disabled={isBusy}
+            onClick={onRevealSecret}
+          >
+            <i className="fas fa-eye"></i>
+            查看 Key
+          </button>
+          <button
+            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+            onClick={onEdit}
+          >
+            <i className="fas fa-pen"></i>
+            编辑
+          </button>
+          <button
+            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
+            disabled={isBusy}
+            onClick={onDelete}
+          >
+            <i className="fas fa-trash"></i>
+            删除
+          </button>
+        </div>
+      </div>
+      {isRevealed ? (
+        <div className="mt-4 border-t border-border-light dark:border-border-dark pt-4">
+          <div className="mb-2 font-medium text-text-light dark:text-text-dark">
+            当前 API Key
+          </div>
+          <div className="p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark font-mono text-sm break-all">
+            {revealedSecret?.secret}
+          </div>
+        </div>
+      ) : null}
+      {isEditing ? (
+        <div className="mt-4 border-t border-border-light dark:border-border-dark pt-4">
+          <div className="font-medium text-text-light dark:text-text-dark">
+            编辑 API Key
+          </div>
+          <div className="text-sm text-secondary mt-2">
+            secret 由服务端自动生成；这里只修改名称和绑定凭证。
+          </div>
+          <div className="mt-4">
+            <label
+              className="block mb-2 font-medium text-text-light dark:text-text-dark"
+              htmlFor={`accessKeyName-${accessKey.id}`}
+            >
+              API Key 名称
+            </label>
+            <input
+              id={`accessKeyName-${accessKey.id}`}
+              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+              placeholder="例如：Claude Team / CI Runner"
+              type="text"
+              value={form.name}
+              onChange={(event) => {
+                onUpdateAccessKeyName(event.target.value);
+              }}
+            />
+          </div>
+          <div className="mt-4">
+            <div className="block mb-2 font-medium text-text-light dark:text-text-dark">
+              绑定凭证
+            </div>
+            <div className="grid gap-2 max-h-72 overflow-y-auto pr-1">
+              {validCredentials.length ? (
+                validCredentials.map((credential) => {
+                  const selected = form.credentialFilenames.includes(
+                    credential.filename,
+                  );
+
+                  return (
+                    <label
+                      key={credential.filename}
+                      className="flex items-center justify-between gap-4 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium text-text-light dark:text-text-dark">
+                          {credential.filename}
+                        </div>
+                        <div className="text-sm text-secondary">
+                          {credential.email || credential.user_id}
+                        </div>
+                      </div>
+                      <input
+                        checked={selected}
+                        type="checkbox"
+                        onChange={() => {
+                          onToggleCredentialSelection(credential.filename);
+                        }}
+                      />
+                    </label>
+                  );
+                })
+              ) : (
+                <div className="text-sm text-secondary">
+                  还没有可绑定的有效凭证。
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="mt-4 flex gap-2">
+            <button
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
+              disabled={isBusy}
+              onClick={onSaveAccessKey}
+            >
+              <i className="fas fa-save"></i>
+              保存 API Key
+            </button>
+            <button
+              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+              onClick={onResetAccessKeyForm}
+            >
+              <i className="fas fa-times"></i>
+              取消
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -675,27 +1005,30 @@ export const CredentialsSection = ({
   onAuthAction,
   onCallbackUrlChange,
   onCopyAuthUrl,
+  onCredentialFirstMessageRoleToSystemChange,
+  onCredentialResponsesPassthroughChange,
   onCredentialTokenChange,
   onCredentialUserIdChange,
   onDeleteCredential,
+  onDeleteAccessKey,
+  onEditCredential,
+  onEditAccessKey,
   onOpenAuthUrl,
   onPollAuth,
   onRefreshCredentials,
-  onResumeAutoRotation,
-  onSelectCredential,
+  onResetCredentialForm,
+  onResetAccessKeyForm,
+  onRevealAccessKeySecret,
+  onSaveAccessKey,
   onSubmitCallbackUrl,
   onToggleCallbackMode,
-  onToggleRotation,
+  onToggleCredentialSelection,
+  onUpdateAccessKeyName,
 }: CredentialsSectionProps) => {
   const validCredentials = credentials.items.filter((item) => !item.is_expired);
   const expiredCredentials = credentials.items.filter(
     (item) => item.is_expired,
   );
-  const rotationEnabled =
-    credentials.current?.auto_rotation_enabled ??
-    (credentials.current
-      ? credentials.current.status !== 'no_credentials'
-      : false);
 
   return (
     <div id="credentials" className="block">
@@ -735,7 +1068,7 @@ export const CredentialsSection = ({
           </p>
           <input
             id="authUrlInput"
-            className="w-full p-3 border border-border-light dark:border-border-dark bg-white dark:bg-card-dark font-mono text-sm mb-4 text-text-light dark:text-text-dark"
+            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark font-mono text-sm mb-4 text-text-light dark:text-text-dark"
             readOnly
             type="text"
             value={auth.authUrl}
@@ -831,76 +1164,104 @@ export const CredentialsSection = ({
           </div>
         </div>
       </div>
+      {credentials.form.editingIndex === null ? (
+        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+          <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+            <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
+              <i className="fas fa-edit"></i>
+              手动添加凭证
+            </h3>
+          </div>
+          <div className="mb-4">
+            <label
+              className="block mb-2 font-medium text-text-light dark:text-text-dark"
+              htmlFor="bearerToken"
+            >
+              Bearer Token
+              <span className="text-error">*</span>
+            </label>
+            <textarea
+              id="bearerToken"
+              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10 resize-y min-h-[100px]"
+              placeholder="输入您的 CodeBuddy Bearer Token..."
+              rows={3}
+              value={credentials.form.bearerToken}
+              onChange={(event) => {
+                onCredentialTokenChange(event.target.value);
+              }}
+            ></textarea>
+          </div>
+          <div className="mb-4">
+            <label
+              className="block mb-2 font-medium text-text-light dark:text-text-dark"
+              htmlFor="userId"
+            >
+              用户ID (可选)
+            </label>
+            <input
+              id="userId"
+              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+              placeholder="输入用户ID (可选)"
+              type="text"
+              value={credentials.form.userId}
+              onChange={(event) => {
+                onCredentialUserIdChange(event.target.value);
+              }}
+            />
+          </div>
+          <div className="mb-4 grid gap-3">
+            <label className="flex items-start gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
+              <input
+                checked={credentials.form.responsesPassthrough}
+                type="checkbox"
+                onChange={(event) => {
+                  onCredentialResponsesPassthroughChange(event.target.checked);
+                }}
+              />
+              <div>
+                <div className="font-medium text-text-light dark:text-text-dark">
+                  Responses 请求直接透传上游
+                </div>
+                <div className="text-sm text-secondary">
+                  开启后，该凭证命中的 `/v1/responses` 不再做 response 转 chat。
+                </div>
+              </div>
+            </label>
+            <label className="flex items-start gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
+              <input
+                checked={credentials.form.firstMessageRoleToSystem}
+                type="checkbox"
+                onChange={(event) => {
+                  onCredentialFirstMessageRoleToSystemChange(
+                    event.target.checked,
+                  );
+                }}
+              />
+              <div>
+                <div className="font-medium text-text-light dark:text-text-dark">
+                  首条 developer 改为 system
+                </div>
+                <div className="text-sm text-secondary">
+                  仅在该凭证走 chat 代理链路时生效。
+                </div>
+              </div>
+            </label>
+          </div>
+          <button
+            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
+            onClick={onAddCredential}
+          >
+            <i className="fas fa-plus"></i>
+            添加凭证
+          </button>
+        </div>
+      ) : null}
       <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
         <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
           <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            <i className="fas fa-edit"></i>
-            手动添加凭证
-          </h3>
-        </div>
-        <div className="mb-4">
-          <label
-            className="block mb-2 font-medium text-text-light dark:text-text-dark"
-            htmlFor="bearerToken"
-          >
-            Bearer Token
-            <span className="text-error">*</span>
-          </label>
-          <textarea
-            id="bearerToken"
-            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10 resize-y min-h-[100px]"
-            placeholder="输入您的 CodeBuddy Bearer Token..."
-            rows={3}
-            value={credentials.form.bearerToken}
-            onChange={(event) => {
-              onCredentialTokenChange(event.target.value);
-            }}
-          ></textarea>
-        </div>
-        <div className="mb-4">
-          <label
-            className="block mb-2 font-medium text-text-light dark:text-text-dark"
-            htmlFor="userId"
-          >
-            用户ID (可选)
-          </label>
-          <input
-            id="userId"
-            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-            placeholder="输入用户ID (可选)"
-            type="text"
-            value={credentials.form.userId}
-            onChange={(event) => {
-              onCredentialUserIdChange(event.target.value);
-            }}
-          />
-        </div>
-        <button
-          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
-          onClick={onAddCredential}
-        >
-          <i className="fas fa-plus"></i>
-          添加凭证
-        </button>
-      </div>
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            已保存的凭证
+            API Key
           </h3>
           <div>
-            <button
-              id="rotationToggleBtn"
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary mr-2"
-              onClick={
-                rotationEnabled ? onToggleRotation : onResumeAutoRotation
-              }
-            >
-              <i
-                className={rotationEnabled ? 'fas fa-pause' : 'fas fa-play'}
-              ></i>
-              {rotationEnabled ? '暂停自动轮换' : '恢复自动轮换'}
-            </button>
             <button
               className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
               onClick={onRefreshCredentials}
@@ -910,9 +1271,62 @@ export const CredentialsSection = ({
             </button>
           </div>
         </div>
+        <div id="accessKeysList">
+          {credentials.accessKeysLoading ? (
+            <div className="text-center py-8 text-secondary">
+              <i className="fas fa-spinner fa-spin"></i>
+              <div>加载中...</div>
+            </div>
+          ) : credentials.accessKeys.length ? (
+            <div className="grid gap-3">
+              {credentials.accessKeys.map((accessKey) => (
+                <AccessKeyCard
+                  key={accessKey.id}
+                  accessKey={accessKey}
+                  actionId={credentials.accessKeyActionId}
+                  form={credentials.accessKeyForm}
+                  revealedSecret={credentials.revealedSecret}
+                  validCredentials={validCredentials}
+                  onDelete={() => {
+                    onDeleteAccessKey(accessKey.id);
+                  }}
+                  onEdit={() => {
+                    onEditAccessKey(accessKey);
+                  }}
+                  onRevealSecret={() => {
+                    onRevealAccessKeySecret(accessKey.id);
+                  }}
+                  onResetAccessKeyForm={onResetAccessKeyForm}
+                  onSaveAccessKey={onSaveAccessKey}
+                  onToggleCredentialSelection={onToggleCredentialSelection}
+                  onUpdateAccessKeyName={onUpdateAccessKeyName}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-secondary">
+              <i className="fas fa-key"></i>
+              <div>还没有 API Key，创建后即可按 key 绑定凭证。</div>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
+            已保存的凭证
+          </h3>
+          <button
+            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+            onClick={onRefreshCredentials}
+          >
+            <i className="fas fa-sync-alt"></i>
+            刷新列表
+          </button>
+        </div>
         <div
           id="currentCredentialStatus"
-          className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark"
+          className="mb-4 pb-4 border-b border-border-light dark:border-border-dark"
         >
           {credentials.currentLoading ? (
             <div className="text-center py-8 text-secondary">
@@ -926,18 +1340,19 @@ export const CredentialsSection = ({
               </div>
               {credentials.current?.status !== 'no_credentials' ? (
                 <div className="flex flex-wrap gap-4 text-sm text-secondary mt-2">
-                  <span className="flex items-center gap-1">
-                    <i className="fas fa-file"></i>
-                    {credentials.current?.filename ?? 'Unknown'}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <i className="fas fa-user"></i>
-                    {credentials.current?.user_id ?? 'Unknown'}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <i className="fas fa-repeat"></i>
-                    轮换频率 {credentials.current?.rotation_count ?? 0}
-                  </span>
+                  {credentials.current?.next_filename ? (
+                    <span className="flex items-center gap-1">
+                      <i className="fas fa-file"></i>
+                      下一凭证 {credentials.current.next_filename}
+                    </span>
+                  ) : null}
+                  {credentials.current?.available_credential_count !==
+                  undefined ? (
+                    <span className="flex items-center gap-1">
+                      <i className="fas fa-layer-group"></i>
+                      可用凭证 {credentials.current.available_credential_count}
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -953,16 +1368,34 @@ export const CredentialsSection = ({
             <>
               <CredentialGroup
                 current={credentials.current}
+                form={credentials.form}
                 items={validCredentials}
+                onCredentialFirstMessageRoleToSystemChange={
+                  onCredentialFirstMessageRoleToSystemChange
+                }
+                onCredentialResponsesPassthroughChange={
+                  onCredentialResponsesPassthroughChange
+                }
                 onDelete={onDeleteCredential}
-                onSelect={onSelectCredential}
+                onEdit={onEditCredential}
+                onResetCredentialForm={onResetCredentialForm}
+                onSaveCredential={onAddCredential}
                 title="可用凭证"
               />
               <CredentialGroup
                 current={credentials.current}
+                form={credentials.form}
                 items={expiredCredentials}
+                onCredentialFirstMessageRoleToSystemChange={
+                  onCredentialFirstMessageRoleToSystemChange
+                }
+                onCredentialResponsesPassthroughChange={
+                  onCredentialResponsesPassthroughChange
+                }
                 onDelete={onDeleteCredential}
-                onSelect={onSelectCredential}
+                onEdit={onEditCredential}
+                onResetCredentialForm={onResetCredentialForm}
+                onSaveCredential={onAddCredential}
                 title="已过期凭证"
               />
             </>
@@ -979,6 +1412,8 @@ export const CredentialsSection = ({
 };
 
 export const ApiTestSection = ({
+  credentialOptions,
+  onCredentialChange,
   models,
   onMessageChange,
   onModelChange,
@@ -995,6 +1430,29 @@ export const ApiTestSection = ({
           <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
             聊天完成测试
           </h3>
+        </div>
+        <div className="mb-4">
+          <label
+            className="block mb-2 font-medium text-text-light dark:text-text-dark"
+            htmlFor="testCredential"
+          >
+            凭证
+          </label>
+          <select
+            id="testCredential"
+            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+            value={state.credentialFilename}
+            onChange={(event) => {
+              onCredentialChange(event.target.value);
+            }}
+          >
+            <option value="">跟随当前轮询</option>
+            {credentialOptions.map((credential) => (
+              <option key={credential.filename} value={credential.filename}>
+                {credential.filename} · {credential.email || credential.user_id}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="mb-4">
           <label
@@ -1068,7 +1526,7 @@ export const ApiTestSection = ({
           </label>
           <div
             id="testResult"
-            className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4 bg-bg-dark text-text-dark min-h-[200px]"
+            className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4 min-h-[200px]"
           >
             <pre className="m-0 whitespace-pre-wrap">{state.result}</pre>
           </div>
@@ -1081,18 +1539,18 @@ export const ApiTestSection = ({
           </h3>
         </div>
         <h4 className="text-primary mb-4">curl 示例:</h4>
-        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4">{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
--H "Authorization: Bearer YOUR_PASSWORD" \\
+        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4">{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
+-H "Authorization: Bearer YOUR_API_KEY" \\
 -H "Content-Type: application/json" \\
 -d '{
   "model": "glm-5.1",
   "messages": [{ "role": "user", "content": "Hello!" }]
 }'`}</div>
         <h4 className="text-primary mt-6 mb-4">Python 示例:</h4>
-        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm overflow-x-auto my-4">{`import openai
+        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4">{`import openai
 
 client = openai.OpenAI(
-    api_key="YOUR_PASSWORD",
+    api_key="YOUR_API_KEY",
     base_url="http://127.0.0.1:8001/v1",
 )
 response = client.chat.completions.create(
@@ -1155,6 +1613,181 @@ export const SettingsSection = ({
             注意：部分设置（如端口号）需要重启服务后才能生效。
           </small>
         </div>
+      </div>
+    </div>
+  );
+};
+
+export const DebugSection = ({
+  onClear,
+  onCopy,
+  onEnabledChange,
+  onMaxEntriesChange,
+  onRefresh,
+  onSave,
+  state,
+}: DebugSectionProps) => {
+  const renderDebugBlock = (title: string, value: unknown) => {
+    const content = JSON.stringify(value, null, 2);
+    const singleLinePreview = content.replace(/\s+/g, ' ').trim() || 'null';
+
+    return (
+      <details className="w-full min-w-0 max-w-full overflow-hidden border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark">
+        <summary className="list-none cursor-pointer p-3 flex items-start justify-between gap-3 w-full min-w-0 max-w-full overflow-hidden">
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-text-light dark:text-text-dark mb-1">
+              {title}
+            </div>
+            <div className="block w-full min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-xs text-secondary">
+              {singleLinePreview}
+            </div>
+          </div>
+          <button
+            className="inline-flex items-center gap-2 px-3 py-2 border-none font-medium cursor-pointer transition-all text-xs bg-secondary text-white hover:bg-secondary shrink-0"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCopy(content);
+            }}
+            type="button"
+          >
+            <i className="fas fa-copy"></i>
+            复制
+          </button>
+        </summary>
+        <pre className="w-full min-w-0 max-w-full overflow-hidden p-3 pt-0 whitespace-pre-wrap break-all text-xs text-text-light dark:text-text-dark">
+          {content}
+        </pre>
+      </details>
+    );
+  };
+
+  return (
+    <div id="debug" className="block">
+      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
+            Debug 记录
+          </h3>
+          <div className="flex gap-2">
+            <button
+              className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+              onClick={onRefresh}
+            >
+              <i className="fas fa-sync-alt"></i>
+              刷新
+            </button>
+            <button
+              className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
+              disabled={state.saving}
+              onClick={onClear}
+            >
+              <i className="fas fa-trash"></i>
+              清空
+            </button>
+          </div>
+        </div>
+        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px_auto] items-end mb-6">
+          <label className="flex items-center gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
+            <input
+              checked={state.enabled}
+              type="checkbox"
+              onChange={(event) => {
+                onEnabledChange(event.target.checked);
+              }}
+            />
+            <div>
+              <div className="font-medium text-text-light dark:text-text-dark">
+                启用 Debug 采集
+              </div>
+              <div className="text-sm text-secondary">
+                记录时间、请求 key、请求内容、上游请求、上游回包、转换后回包。
+              </div>
+            </div>
+          </label>
+          <div>
+            <label
+              className="block mb-2 font-medium text-text-light dark:text-text-dark"
+              htmlFor="debugMaxEntries"
+            >
+              最大保留条数
+            </label>
+            <input
+              id="debugMaxEntries"
+              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+              min={1}
+              type="number"
+              value={state.maxEntries}
+              onChange={(event) => {
+                onMaxEntriesChange(
+                  Number.parseInt(event.target.value || '0', 10) || 1,
+                );
+              }}
+            />
+          </div>
+          <button
+            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+            disabled={state.saving}
+            onClick={onSave}
+          >
+            <i
+              className={
+                state.saving ? 'fas fa-spinner fa-spin' : 'fas fa-save'
+              }
+            ></i>
+            保存 Debug 设置
+          </button>
+        </div>
+        {state.loading ? (
+          <div className="text-center py-8 text-secondary">
+            <i className="fas fa-spinner fa-spin"></i>
+            <div>加载 Debug 记录中...</div>
+          </div>
+        ) : state.items.length ? (
+          <div className="grid gap-4 w-full min-w-0">
+            {state.items.map((item) => (
+              <details
+                key={item.id}
+                className="w-full min-w-0 max-w-full overflow-hidden border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark"
+              >
+                <summary className="cursor-pointer list-none p-4 flex flex-wrap items-center justify-between gap-3 w-full min-w-0 max-w-full overflow-hidden">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-text-light dark:text-text-dark">
+                      {item.route}
+                    </div>
+                    <div className="text-sm text-secondary break-all min-w-0 max-w-full">
+                      {item.createdAt} · key: {item.requestKey ?? 'none'}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-xs min-w-0 max-w-full">
+                    <span className="px-2 py-1 bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark">
+                      上游状态: {item.upstreamResponse?.status ?? '-'}
+                    </span>
+                    <span className="px-2 py-1 bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark">
+                      返回状态: {item.transformedResponse?.status ?? '-'}
+                    </span>
+                    {item.error ? (
+                      <span className="px-2 py-1 bg-error/10 text-error">
+                        {item.error}
+                      </span>
+                    ) : null}
+                  </div>
+                </summary>
+                <div className="p-4 pt-0 grid gap-4 w-full min-w-0">
+                  {renderDebugBlock('原始请求', item.requestBody)}
+                  {renderDebugBlock('上游请求', item.upstreamRequest)}
+                  {renderDebugBlock('上游回包', item.upstreamResponse)}
+                  {renderDebugBlock('转换后回包', item.transformedResponse)}
+                </div>
+              </details>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-8 text-secondary">
+            <i className="fas fa-bug"></i>
+            <div>暂无 Debug 记录。</div>
+          </div>
+        )}
       </div>
     </div>
   );

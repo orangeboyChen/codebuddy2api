@@ -1,14 +1,21 @@
 import type { NextRequest } from 'next/server';
 
 import { resolveRequestAccessKey } from './auth';
+import { getAvailableModels, getCodeBuddyApiEndpoint } from './config';
 import {
-  getActiveConfig,
-  getAvailableModels,
-  getCodeBuddyApiEndpoint,
-} from './config';
-import { resolveCredentialForRequest } from './credentials';
+  type CredentialRecord,
+  findCredentialRecordByFilename,
+  getCredentialProxySettings,
+  resolveCredentialForRequest,
+} from './credentials';
+import {
+  enqueueUpstreamResponseSnapshot,
+  setDebugTraceError,
+  setDebugUpstreamRequest,
+  type DebugTrace,
+} from './debug';
 import { createErrorResponse, getRequestHeaderMap } from './http';
-import { recordModelUsage } from './stats';
+import { recordUsageEvent, type UsageSnapshot } from './usage';
 
 interface OpenAIMessage {
   role?: string;
@@ -76,56 +83,129 @@ interface ToolCallNormalizationState {
   nextIndex: number;
 }
 
-type ResolvedAuth =
-  | {
-      type: 'api_key';
-      apiKey: string;
-      userId: string;
-    }
-  | {
-      type: 'bearer';
-      bearerToken: string;
-      userId: string;
-      credentialData: Record<string, unknown>;
-    };
+interface ResolvedAuth {
+  type: 'bearer';
+  bearerToken: string;
+  userId: string;
+  credentialData: Record<string, unknown>;
+}
 
-const normalizeMessages = (messages: OpenAIMessage[]): OpenAIMessage[] => {
+export interface ProxyContext {
+  accessKeyId: string | null;
+  accessKeyName: string | null;
+  auth: ResolvedAuth;
+  credentialFilename: string | null;
+  preferences: {
+    firstMessageRoleToSystem: boolean;
+    responsesPassthrough: boolean;
+  };
+}
+
+const toUsageSnapshot = (usage: unknown): UsageSnapshot | null => {
+  if (!usage || typeof usage !== 'object') {
+    return null;
+  }
+
+  return usage as UsageSnapshot;
+};
+
+const recordProxyUsage = ({
+  model,
+  proxyContext,
+  route,
+  usage,
+}: {
+  model: string;
+  proxyContext: ProxyContext;
+  route: string;
+  usage: unknown;
+}) => {
+  recordUsageEvent({
+    accessKeyId: proxyContext.accessKeyId,
+    accessKeyName: proxyContext.accessKeyName,
+    credentialFilename: proxyContext.credentialFilename,
+    model,
+    route,
+    usage: toUsageSnapshot(usage),
+  });
+};
+
+const logUpstreamFailure = ({
+  detail,
+  error,
+  route,
+  status,
+  url,
+}: {
+  detail?: string;
+  error?: unknown;
+  route: string;
+  status?: number;
+  url: string;
+}): void => {
+  const payload: Record<string, unknown> = {
+    route,
+    url,
+  };
+
+  if (typeof status === 'number') {
+    payload.status = status;
+  }
+
+  if (detail) {
+    payload.detail = detail.slice(0, 1000);
+  }
+
+  if (error) {
+    payload.error = error;
+  }
+
+  console.error('[CodeBuddy2API] Upstream request failed', payload);
+};
+
+const normalizeMessages = (
+  messages: OpenAIMessage[],
+  firstMessageRoleToSystem: boolean,
+): OpenAIMessage[] => {
   const filtered = messages.filter(
     (item) => item.role && item.content !== undefined,
   );
 
-  if (filtered.length === 1 && filtered[0]?.role === 'user') {
-    return [
-      {
-        role: 'system',
-        content: 'You are a helpful assistant.',
-      },
-      ...filtered,
-    ];
+  if (!firstMessageRoleToSystem) {
+    return filtered;
   }
 
-  // Preserve role:'tool' messages so the OpenAI-compatible upstream
-  // receives a valid tool_calls/tool-result pair for multi-step tool loops.
-  return filtered;
-};
+  let hasSystemMessage = false;
 
-const getResolvedAuth = (request: NextRequest): ResolvedAuth => {
-  const config = getActiveConfig();
-  const mode = config.CODEBUDDY_AUTH_MODE;
-  const apiKey = config.CODEBUDDY_API_KEY?.trim();
+  return filtered.map((message, index) => {
+    if (message.role === 'system') {
+      hasSystemMessage = true;
+      return message;
+    }
 
-  if (mode === 'api_key' || (mode === 'auto' && apiKey)) {
-    if (!apiKey) {
-      throw new Error('CODEBUDDY_API_KEY is required for api_key mode');
+    if (message.role !== 'developer') {
+      return message;
+    }
+
+    if (index === 0 && !hasSystemMessage) {
+      hasSystemMessage = true;
+      return {
+        ...message,
+        role: 'system',
+      };
     }
 
     return {
-      type: 'api_key',
-      apiKey,
-      userId: 'anonymous',
+      ...message,
+      role: 'user',
     };
-  }
+  });
 
+  // Preserve role:'tool' messages so the OpenAI-compatible upstream
+  // receives a valid tool_calls/tool-result pair for multi-step tool loops.
+};
+
+export const resolveProxyContext = (request: NextRequest): ProxyContext => {
   const accessKey = resolveRequestAccessKey(request);
   const credential = resolveCredentialForRequest({
     accessKeyId: accessKey?.id,
@@ -145,11 +225,54 @@ const getResolvedAuth = (request: NextRequest): ResolvedAuth => {
   }
 
   return {
-    type: 'bearer',
-    bearerToken,
-    userId: String(credential.data.user_id ?? 'unknown'),
-    credentialData: credential.data,
+    accessKeyId: accessKey?.id ?? null,
+    accessKeyName: accessKey?.name ?? null,
+    auth: {
+      type: 'bearer',
+      bearerToken,
+      userId: String(credential.data.user_id ?? 'unknown'),
+      credentialData: credential.data,
+    },
+    credentialFilename: credential.filename,
+    preferences: getCredentialProxySettings(credential.data),
   };
+};
+
+export const createProxyContextFromCredential = (
+  credential: CredentialRecord,
+): ProxyContext => {
+  const bearerToken = String(
+    credential.data.bearer_token ?? credential.data.access_token ?? '',
+  ).trim();
+
+  if (!bearerToken) {
+    throw new Error('Saved credential does not include a bearer token');
+  }
+
+  return {
+    accessKeyId: null,
+    accessKeyName: null,
+    auth: {
+      type: 'bearer',
+      bearerToken,
+      userId: String(credential.data.user_id ?? 'unknown'),
+      credentialData: credential.data,
+    },
+    credentialFilename: credential.filename,
+    preferences: getCredentialProxySettings(credential.data),
+  };
+};
+
+export const resolveProxyContextByCredentialFilename = (
+  filename: string,
+): ProxyContext => {
+  const credential = findCredentialRecordByFilename(filename);
+
+  if (!credential) {
+    throw new Error('Selected credential was not found');
+  }
+
+  return createProxyContextFromCredential(credential);
 };
 
 const getCredentialValue = (
@@ -206,10 +329,7 @@ const buildUpstreamHeaders = (
     crypto.randomUUID().replaceAll('-', '');
   const headers = new Headers({
     Accept: 'application/json',
-    Authorization:
-      auth.type === 'api_key'
-        ? `Bearer ${auth.apiKey}`
-        : `Bearer ${auth.bearerToken}`,
+    Authorization: `Bearer ${auth.bearerToken}`,
     'Content-Type': 'application/json',
     Host: baseUrl.host,
     'User-Agent': 'CLI/1.0.7 CodeBuddy/1.0.7',
@@ -233,31 +353,25 @@ const buildUpstreamHeaders = (
     'x-stainless-runtime-version': process.version,
   });
 
-  if (auth.type === 'api_key') {
-    headers.set('X-API-Key', auth.apiKey);
+  const domain = getCredentialValue(auth.credentialData, ['domain']);
+  const enterpriseId = getCredentialValue(auth.credentialData, [
+    'enterprise_id',
+    'enterpriseId',
+  ]);
+  const tenantId =
+    getCredentialValue(auth.credentialData, ['tenant_id', 'tenantId']) ??
+    enterpriseId;
+
+  if (domain) {
+    headers.set('X-Domain', String(domain));
   }
 
-  if (auth.type === 'bearer') {
-    const domain = getCredentialValue(auth.credentialData, ['domain']);
-    const enterpriseId = getCredentialValue(auth.credentialData, [
-      'enterprise_id',
-      'enterpriseId',
-    ]);
-    const tenantId =
-      getCredentialValue(auth.credentialData, ['tenant_id', 'tenantId']) ??
-      enterpriseId;
+  if (enterpriseId) {
+    headers.set('X-Enterprise-Id', String(enterpriseId));
+  }
 
-    if (domain) {
-      headers.set('X-Domain', String(domain));
-    }
-
-    if (enterpriseId) {
-      headers.set('X-Enterprise-Id', String(enterpriseId));
-    }
-
-    if (tenantId) {
-      headers.set('X-Tenant-Id', String(tenantId));
-    }
+  if (tenantId) {
+    headers.set('X-Tenant-Id', String(tenantId));
   }
 
   Object.entries(incoming).forEach(([key, value]) => {
@@ -267,8 +381,18 @@ const buildUpstreamHeaders = (
   return headers;
 };
 
-const buildUpstreamBody = (body: ChatRequestBody): ChatRequestBody => {
-  const normalizedMessages = normalizeMessages(body.messages ?? []);
+const headersToRecord = (headers: HeadersInit): Record<string, string> => {
+  return Object.fromEntries(new Headers(headers).entries());
+};
+
+const buildUpstreamBody = (
+  body: ChatRequestBody,
+  context: ProxyContext,
+): ChatRequestBody => {
+  const normalizedMessages = normalizeMessages(
+    body.messages ?? [],
+    context.preferences.firstMessageRoleToSystem,
+  );
   const maxTokens = body.max_tokens ?? body.max_completion_tokens;
 
   return {
@@ -461,7 +585,17 @@ const normalizeStreamToolCalls = (
   };
 };
 
-const normalizeStreamingResponse = (upstreamResponse: Response): Response => {
+const normalizeStreamingResponse = ({
+  model,
+  proxyContext,
+  route,
+  upstreamResponse,
+}: {
+  model: string;
+  proxyContext: ProxyContext;
+  route: string;
+  upstreamResponse: Response;
+}): Response => {
   if (!upstreamResponse.body) {
     return new Response(null, {
       status: upstreamResponse.status,
@@ -485,6 +619,7 @@ const normalizeStreamingResponse = (upstreamResponse: Response): Response => {
     start: (controller) => {
       const reader = upstreamResponse.body!.getReader();
       let buffer = '';
+      let latestUsage: unknown = null;
 
       const processFrame = (frame: string): string => {
         const lines = frame.split('\n');
@@ -502,6 +637,9 @@ const normalizeStreamingResponse = (upstreamResponse: Response): Response => {
 
         try {
           const chunk = JSON.parse(raw) as ChatStreamChunk;
+          if (chunk.usage !== undefined) {
+            latestUsage = chunk.usage;
+          }
           const normalized = normalizeStreamToolCalls(chunk, state);
           lines[lineIndex] = `data: ${JSON.stringify(normalized)}`;
           return lines.join('\n');
@@ -523,6 +661,13 @@ const normalizeStreamingResponse = (upstreamResponse: Response): Response => {
           if (buffer.trim()) {
             flushFrames([buffer]);
           }
+
+          recordProxyUsage({
+            model,
+            proxyContext,
+            route,
+            usage: latestUsage,
+          });
 
           controller.close();
           return;
@@ -553,7 +698,7 @@ const normalizeStreamingResponse = (upstreamResponse: Response): Response => {
 const aggregateUpstreamStream = async (
   upstreamResponse: Response,
   fallbackModel: string,
-): Promise<Response> => {
+): Promise<{ model: string; response: Response; usage: unknown }> => {
   const payloadText = await upstreamResponse.text();
   const toolCalls: NonNullable<ChatStreamDelta['tool_calls']> = [];
   let responseId = '';
@@ -586,7 +731,14 @@ const aggregateUpstreamStream = async (
     try {
       chunk = JSON.parse(raw) as ChatStreamChunk;
     } catch {
-      return createErrorResponse(502, 'Failed to parse upstream SSE frame');
+      return {
+        model: fallbackModel,
+        response: createErrorResponse(
+          502,
+          'Failed to parse upstream SSE frame',
+        ),
+        usage: null,
+      };
     }
 
     if (chunk.id) {
@@ -647,21 +799,26 @@ const aggregateUpstreamStream = async (
     message.tool_calls = aggregatedToolCalls;
   }
 
-  return Response.json({
-    id: responseId || `chatcmpl_${crypto.randomUUID().replaceAll('-', '')}`,
-    object: responseObject,
-    created,
+  return {
     model,
-    choices: [
-      {
-        index: 0,
-        message,
-        finish_reason:
-          finishReason ?? (aggregatedToolCalls.length ? 'tool_calls' : 'stop'),
-      },
-    ],
+    response: Response.json({
+      id: responseId || `chatcmpl_${crypto.randomUUID().replaceAll('-', '')}`,
+      object: responseObject,
+      created,
+      model,
+      choices: [
+        {
+          index: 0,
+          message,
+          finish_reason:
+            finishReason ??
+            (aggregatedToolCalls.length ? 'tool_calls' : 'stop'),
+        },
+      ],
+      usage,
+    }),
     usage,
-  });
+  };
 };
 
 export const getModelsResponse = (): Response => {
@@ -684,28 +841,44 @@ export const getModelsResponse = (): Response => {
 export const proxyChatCompletions = async (
   request: NextRequest,
   body: ChatRequestBody,
+  context?: ProxyContext,
+  debugTrace?: DebugTrace,
 ): Promise<Response> => {
   if (!body.messages?.length) {
     return createErrorResponse(400, 'messages is required');
   }
 
   try {
-    const auth = getResolvedAuth(request);
-    const upstreamBody = buildUpstreamBody(body);
-    const upstreamResponse = await fetch(
-      `${getCodeBuddyApiEndpoint()}/v2/chat/completions`,
-      {
-        method: 'POST',
-        headers: buildUpstreamHeaders(request, auth),
-        body: JSON.stringify(upstreamBody),
-        cache: 'no-store',
-      },
-    );
+    const resolvedContext = context ?? resolveProxyContext(request);
+    const upstreamBody = buildUpstreamBody(body, resolvedContext);
+    const upstreamUrl = `${getCodeBuddyApiEndpoint()}/v2/chat/completions`;
+    const upstreamHeaders = buildUpstreamHeaders(request, resolvedContext.auth);
 
-    recordModelUsage(String(upstreamBody.model ?? 'unknown'));
+    setDebugUpstreamRequest(debugTrace, {
+      body: upstreamBody,
+      headers: headersToRecord(upstreamHeaders),
+      method: 'POST',
+      url: upstreamUrl,
+    });
+
+    const upstreamResponse = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers: upstreamHeaders,
+      body: JSON.stringify(upstreamBody),
+      cache: 'no-store',
+    });
+
+    enqueueUpstreamResponseSnapshot(debugTrace, upstreamResponse);
 
     if (!upstreamResponse.ok) {
       const detail = await upstreamResponse.text();
+      logUpstreamFailure({
+        detail,
+        route: '/v1/chat/completions',
+        status: upstreamResponse.status,
+        url: upstreamUrl,
+      });
+      setDebugTraceError(debugTrace, detail);
       return createErrorResponse(
         upstreamResponse.status,
         'Upstream CodeBuddy request failed',
@@ -714,13 +887,34 @@ export const proxyChatCompletions = async (
     }
 
     if (body.stream) {
-      return normalizeStreamingResponse(upstreamResponse);
+      return normalizeStreamingResponse({
+        model: String(upstreamBody.model ?? 'unknown'),
+        proxyContext: resolvedContext,
+        route: '/v1/chat/completions',
+        upstreamResponse,
+      });
     }
 
     const contentType = upstreamResponse.headers.get('content-type') ?? '';
 
     if (contentType.toLowerCase().includes('application/json')) {
-      return new Response(await upstreamResponse.text(), {
+      const payloadText = await upstreamResponse.text();
+      let usage: unknown = null;
+
+      try {
+        usage = (JSON.parse(payloadText) as { usage?: unknown }).usage ?? null;
+      } catch {
+        usage = null;
+      }
+
+      recordProxyUsage({
+        model: String(upstreamBody.model ?? 'unknown'),
+        proxyContext: resolvedContext,
+        route: '/v1/chat/completions',
+        usage,
+      });
+
+      return new Response(payloadText, {
         status: upstreamResponse.status,
         headers: {
           'Content-Type': 'application/json; charset=utf-8',
@@ -728,11 +922,94 @@ export const proxyChatCompletions = async (
       });
     }
 
-    return aggregateUpstreamStream(
+    const aggregated = await aggregateUpstreamStream(
       upstreamResponse,
       String(upstreamBody.model ?? 'unknown'),
     );
+
+    recordProxyUsage({
+      model: aggregated.model,
+      proxyContext: resolvedContext,
+      route: '/v1/chat/completions',
+      usage: aggregated.usage,
+    });
+
+    return aggregated.response;
   } catch (error) {
+    setDebugTraceError(debugTrace, error);
+    logUpstreamFailure({
+      error,
+      route: '/v1/chat/completions',
+      url: `${getCodeBuddyApiEndpoint()}/v2/chat/completions`,
+    });
+    return createErrorResponse(
+      500,
+      error instanceof Error ? error.message : 'Unexpected upstream error',
+    );
+  }
+};
+
+export const proxyResponsesUpstream = async (
+  request: NextRequest,
+  body: Record<string, unknown>,
+  context?: ProxyContext,
+  debugTrace?: DebugTrace,
+): Promise<Response> => {
+  try {
+    const resolvedContext = context ?? resolveProxyContext(request);
+    const upstreamBody = {
+      ...body,
+      model:
+        typeof body.model === 'string' && body.model.trim()
+          ? body.model
+          : (getAvailableModels()[0] ?? 'glm-5.1'),
+    };
+    const upstreamUrl = `${getCodeBuddyApiEndpoint()}/v1/responses`;
+    const upstreamHeaders = buildUpstreamHeaders(request, resolvedContext.auth);
+
+    setDebugUpstreamRequest(debugTrace, {
+      body: upstreamBody,
+      headers: headersToRecord(upstreamHeaders),
+      method: 'POST',
+      url: upstreamUrl,
+    });
+
+    const upstreamResponse = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers: upstreamHeaders,
+      body: JSON.stringify(upstreamBody),
+      cache: 'no-store',
+    });
+
+    enqueueUpstreamResponseSnapshot(debugTrace, upstreamResponse);
+
+    if (!upstreamResponse.ok) {
+      const detail = await upstreamResponse.text();
+      logUpstreamFailure({
+        detail,
+        route: '/v1/responses',
+        status: upstreamResponse.status,
+        url: upstreamUrl,
+      });
+      setDebugTraceError(debugTrace, detail);
+      return createErrorResponse(
+        upstreamResponse.status,
+        'Upstream CodeBuddy request failed',
+        detail,
+      );
+    }
+
+    return new Response(upstreamResponse.body, {
+      status: upstreamResponse.status,
+      headers: upstreamResponse.headers,
+    });
+  } catch (error) {
+    setDebugTraceError(debugTrace, error);
+    logUpstreamFailure({
+      error,
+      route: '/v1/responses',
+      url: `${getCodeBuddyApiEndpoint()}/v1/responses`,
+    });
     return createErrorResponse(
       500,
       error instanceof Error ? error.message : 'Unexpected upstream error',

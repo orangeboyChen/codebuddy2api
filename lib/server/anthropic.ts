@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 
 import { getAvailableModels } from './config';
+import type { DebugTrace } from './debug';
 
 import { proxyChatCompletions } from './codebuddy';
 
@@ -839,6 +840,7 @@ const mapOpenAIStreamToAnthropicSSE = (
 export const handleMessagesRequest = async (
   request: NextRequest,
   body: AnthropicMessagesRequestBody,
+  debugTrace?: DebugTrace,
 ): Promise<Response> => {
   if (!body.messages?.length) {
     return createAnthropicError(400, 'messages is required');
@@ -846,7 +848,12 @@ export const handleMessagesRequest = async (
 
   try {
     const chatBody = buildChatRequestBody(body);
-    const upstreamResponse = await proxyChatCompletions(request, chatBody);
+    const upstreamResponse = await proxyChatCompletions(
+      request,
+      chatBody,
+      undefined,
+      debugTrace,
+    );
 
     if (!upstreamResponse.ok) {
       return upstreamResponse;

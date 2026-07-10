@@ -1,8 +1,11 @@
 import { atom } from 'jotai';
 
-export type TabKey = 'dashboard' | 'credentials' | 'api-test' | 'settings';
+export type TabKey =
+  'dashboard' | 'credentials' | 'api-test' | 'debug' | 'settings';
 
 export type NotificationType = 'success' | 'error' | 'warning' | 'info';
+
+export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface NotificationState {
   message: string;
@@ -24,23 +27,39 @@ export interface CredentialSummary {
   token_type: string;
   scope: string | null;
   domain: string;
+  responses_passthrough: boolean;
+  first_message_role_to_system: boolean;
   enterprise_id: string | number | null;
   tenant_id: string | number | null;
   has_refresh_token: boolean;
   session_state: string | null;
 }
 
+export interface AccessKeySummary {
+  createdAt: string;
+  credentialFilenames: string[];
+  id: string;
+  maskedSecret: string;
+  name: string;
+  updatedAt: string;
+}
+
+export interface RevealedAccessKeySecret {
+  id: string;
+  name: string;
+  secret: string;
+}
+
 export interface CurrentCredentialInfo {
   status: string;
+  available_credential_count?: number;
   index?: number;
   filename?: string;
+  next_filename?: string | null;
   user_id?: string;
   domain?: string;
   enterprise_id?: string | number | null;
   tenant_id?: string | number | null;
-  usage_count?: number;
-  rotation_count?: number;
-  auto_rotation_enabled?: boolean;
 }
 
 export interface DashboardState {
@@ -72,24 +91,72 @@ export interface AuthState {
 
 export interface CredentialFormState {
   bearerToken: string;
+  editingIndex: number | null;
+  firstMessageRoleToSystem: boolean;
+  responsesPassthrough: boolean;
   userId: string;
 }
 
+export interface AccessKeyFormState {
+  credentialFilenames: string[];
+  editingId: string | null;
+  name: string;
+}
+
 export interface CredentialsState {
+  accessKeyActionId: string | null;
+  accessKeyForm: AccessKeyFormState;
+  accessKeys: AccessKeySummary[];
+  accessKeysLoading: boolean;
   actionIndex: number | null;
   current: CurrentCredentialInfo | null;
   currentLoading: boolean;
   form: CredentialFormState;
   items: CredentialSummary[];
   loading: boolean;
+  revealedSecret: RevealedAccessKeySecret | null;
 }
 
 export interface ApiTestState {
+  credentialFilename: string;
   message: string;
   model: string;
   result: string;
   stream: boolean;
   submitting: boolean;
+}
+
+export interface DebugLogEntry {
+  createdAt: string;
+  error: string | null;
+  id: string;
+  requestBody: unknown;
+  requestKey: string | null;
+  route: string;
+  transformedResponse: {
+    body: unknown;
+    headers: Record<string, string>;
+    status: number;
+  } | null;
+  upstreamRequest: {
+    body: unknown;
+    headers: Record<string, string>;
+    method: string;
+    url: string;
+  } | null;
+  upstreamResponse: {
+    body: unknown;
+    headers: Record<string, string>;
+    status: number;
+  } | null;
+}
+
+export interface DebugState {
+  enabled: boolean;
+  items: DebugLogEntry[];
+  loading: boolean;
+  maxEntries: number;
+  saving: boolean;
 }
 
 export type SettingsValue = string | number | null;
@@ -105,6 +172,7 @@ export const TAB_ITEMS: Array<{ key: TabKey; label: string; icon: string }> = [
   { key: 'dashboard', label: '仪表板', icon: 'fas fa-tachometer-alt' },
   { key: 'credentials', label: '凭证管理', icon: 'fas fa-key' },
   { key: 'api-test', label: 'API 测试', icon: 'fas fa-flask' },
+  { key: 'debug', label: 'Debug', icon: 'fas fa-bug' },
   { key: 'settings', label: '设置', icon: 'fas fa-cog' },
 ];
 
@@ -160,7 +228,7 @@ export const dashboardStateAtom = atom<DashboardState>(defaultDashboardState);
 
 export const activeTabAtom = atom<TabKey>('dashboard');
 
-export const themeAtom = atom<'light' | 'dark'>('light');
+export const themeAtom = atom<ThemeMode>('system');
 
 export const notificationAtom = atom<NotificationState | null>(null);
 
@@ -179,15 +247,27 @@ export const defaultAuthState: AuthState = {
 export const authStateAtom = atom<AuthState>(defaultAuthState);
 
 export const defaultCredentialsState: CredentialsState = {
+  accessKeyActionId: null,
+  accessKeyForm: {
+    credentialFilenames: [],
+    editingId: null,
+    name: '',
+  },
+  accessKeys: [],
+  accessKeysLoading: true,
   actionIndex: null,
   current: null,
   currentLoading: true,
   form: {
     bearerToken: '',
+    editingIndex: null,
+    firstMessageRoleToSystem: false,
+    responsesPassthrough: false,
     userId: '',
   },
   items: [],
   loading: true,
+  revealedSecret: null,
 };
 
 export const credentialsStateAtom = atom<CredentialsState>(
@@ -195,14 +275,25 @@ export const credentialsStateAtom = atom<CredentialsState>(
 );
 
 export const defaultApiTestState: ApiTestState = {
+  credentialFilename: '',
   message: 'Hello, what is 2+2?',
-  model: 'glm-5.1',
+  model: '',
   result: '点击"发送测试"查看API响应...',
   stream: false,
   submitting: false,
 };
 
 export const apiTestStateAtom = atom<ApiTestState>(defaultApiTestState);
+
+export const defaultDebugState: DebugState = {
+  enabled: false,
+  items: [],
+  loading: true,
+  maxEntries: 100,
+  saving: false,
+};
+
+export const debugStateAtom = atom<DebugState>(defaultDebugState);
 
 export const defaultSettingsState: SettingsState = {
   labels: {},
