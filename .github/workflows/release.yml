@@ -132,6 +132,42 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_PASSWORD != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Determine image tags
+        id: tags
+        shell: bash
+        env:
+          GHCR_IMAGE: ${{ needs.prepare.outputs.image }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          tags=(
+            "${GHCR_IMAGE}:${VERSION}"
+            "${GHCR_IMAGE}:latest"
+          )
+
+          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_PASSWORD}" ]]; then
+            tags+=(
+              "docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${VERSION}"
+              "docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:latest"
+            )
+          fi
+
+          {
+            echo 'tags<<EOF'
+            printf '%s\n' "${tags[@]}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push release image
         uses: docker/build-push-action@v6
         with:
@@ -141,9 +177,7 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
-            ${{ needs.prepare.outputs.image }}:latest
+          tags: ${{ steps.tags.outputs.tags }}
 
   release:
     needs:
@@ -163,11 +197,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IMAGE_NAME: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          RELEASE_TITLE: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_TITLE: ${{ needs.prepare.outputs.version }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
+
+          release_notes="Docker image: \`${IMAGE_NAME}\`"
+
+          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+            release_notes="${release_notes}"$'\n'"Docker Hub image: \`docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${RELEASE_TITLE}\`"
+          fi
 
           gh release create "$RELEASE_TAG" \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_TITLE" \
-            --notes "Docker image: \`$IMAGE_NAME\`"
+            --latest \
+            --notes "$release_notes"
