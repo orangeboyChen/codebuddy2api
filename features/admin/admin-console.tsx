@@ -1496,73 +1496,73 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
                   return;
                 }
 
-                  window.open(auth.authUrl, '_blank', 'noopener,noreferrer');
-                }}
-                onPollAuth={() => {
-                  void pollAuth();
-                }}
-                onRefreshCredentials={() => {
-                  void refreshAdminData();
-                }}
-                onResetCredentialForm={() => {
-                  setCredentials((current) => ({
-                    ...current,
-                    form: {
-                      bearerToken: '',
-                      editingIndex: null,
-                      firstMessageRoleToSystem: false,
-                      responsesPassthrough: false,
-                      userId: '',
-                    },
-                  }));
-                }}
-                onRevealAccessKeySecret={(id) => {
-                  void revealAccessKeySecret(id);
-                }}
-                onSaveAccessKey={() => {
-                  void saveAccessKey();
-                }}
-                onSubmitCallbackUrl={() => {
-                  void submitCallbackUrl();
-                }}
-                onToggleCallbackMode={(showManual) => {
-                  setAuth((current) => ({
-                    ...current,
-                    showManualCallback: showManual,
-                  }));
-                }}
-                onToggleCredentialSelection={(filename) => {
-                  setCredentials((current) => {
-                    const selected =
-                      current.accessKeyForm.credentialFilenames.includes(
-                        filename,
-                      );
+                window.open(auth.authUrl, '_blank', 'noopener,noreferrer');
+              }}
+              onPollAuth={() => {
+                void pollAuth();
+              }}
+              onRefreshCredentials={() => {
+                void refreshAdminData();
+              }}
+              onResetCredentialForm={() => {
+                setCredentials((current) => ({
+                  ...current,
+                  form: {
+                    bearerToken: '',
+                    editingIndex: null,
+                    firstMessageRoleToSystem: false,
+                    responsesPassthrough: false,
+                    userId: '',
+                  },
+                }));
+              }}
+              onRevealAccessKeySecret={(id) => {
+                void revealAccessKeySecret(id);
+              }}
+              onSaveAccessKey={() => {
+                void saveAccessKey();
+              }}
+              onSubmitCallbackUrl={() => {
+                void submitCallbackUrl();
+              }}
+              onToggleCallbackMode={(showManual) => {
+                setAuth((current) => ({
+                  ...current,
+                  showManualCallback: showManual,
+                }));
+              }}
+              onToggleCredentialSelection={(filename) => {
+                setCredentials((current) => {
+                  const selected =
+                    current.accessKeyForm.credentialFilenames.includes(
+                      filename,
+                    );
 
-                    return {
-                      ...current,
-                      accessKeyForm: {
-                        ...current.accessKeyForm,
-                        credentialFilenames: selected
-                          ? current.accessKeyForm.credentialFilenames.filter(
-                              (item) => item !== filename,
-                            )
-                          : [
-                              ...current.accessKeyForm.credentialFilenames,
-                              filename,
-                            ],
-                      },
-                    };
-                  });
-                }}
-                onUpdateAccessKeyName={(value) => {
-                  setCredentials((current) => ({
+                  return {
                     ...current,
                     accessKeyForm: {
                       ...current.accessKeyForm,
-                      name: value,
+                      credentialFilenames: selected
+                        ? current.accessKeyForm.credentialFilenames.filter(
+                            (item) => item !== filename,
+                          )
+                        : [
+                            ...current.accessKeyForm.credentialFilenames,
+                            filename,
+                          ],
                     },
-                  }));
-                }}
+                  };
+                });
+              }}
+              onUpdateAccessKeyName={(value) => {
+                setCredentials((current) => ({
+                  ...current,
+                  accessKeyForm: {
+                    ...current.accessKeyForm,
+                    name: value,
+                  },
+                }));
+              }}
               onResetAccessKeyForm={() => {
                 setCredentials((current) => ({
                   ...current,
