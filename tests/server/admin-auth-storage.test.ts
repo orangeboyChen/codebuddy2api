@@ -4,6 +4,8 @@ import path from 'node:path';
 import {
   beginAdminPasskeyAuthentication,
   beginAdminPasskeyRegistration,
+  changeAdminPassword,
+  disableAdminAuthentication,
   getAdminSessionErrorResponse,
   getAdminSessionSummary,
   hasAdminAccount,
@@ -170,6 +172,85 @@ describe('admin auth and storage', () => {
       200, 409,
     ]);
     expect(await hasAdminAccountAsync()).toBe(true);
+  });
+
+  it('changes an authenticated admin password and revokes other sessions', async () => {
+    const setupResponse = await setupAdminPassword(
+      makeRequest('/admin-api/auth/setup'),
+      'correct horse battery staple',
+    );
+    const firstCookie = getCookieHeader(setupResponse);
+    const loginResponse = await loginWithAdminPassword(
+      makeRequest('/admin-api/auth/session'),
+      'correct horse battery staple',
+    );
+    const currentCookie = getCookieHeader(loginResponse);
+
+    const response = await changeAdminPassword(
+      makeRequest('/admin-api/auth/password', { cookie: currentCookie }),
+      'correct horse battery staple',
+      'new correct horse battery staple',
+    );
+
+    expect(response.status).toBe(200);
+    expect(
+      await isAdminSessionAuthenticated(
+        makeRequest('/admin-api/settings', { cookie: firstCookie }),
+      ),
+    ).toBe(false);
+    expect(
+      (
+        await loginWithAdminPassword(
+          makeRequest('/admin-api/auth/session'),
+          'correct horse battery staple',
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await loginWithAdminPassword(
+          makeRequest('/admin-api/auth/session'),
+          'new correct horse battery staple',
+        )
+      ).status,
+    ).toBe(200);
+  });
+
+  it('enables admin authentication with a username and can disable it', async () => {
+    const setupResponse = await setupAdminPassword(
+      makeRequest('/admin-api/auth/setup'),
+      'operator',
+      'correct horse battery staple',
+    );
+    const sessionCookie = getCookieHeader(setupResponse);
+
+    expect(
+      (
+        await loginWithAdminPassword(
+          makeRequest('/admin-api/auth/session'),
+          'admin',
+          'correct horse battery staple',
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await loginWithAdminPassword(
+          makeRequest('/admin-api/auth/session'),
+          'operator',
+          'correct horse battery staple',
+        )
+      ).status,
+    ).toBe(200);
+
+    const disableResponse = await disableAdminAuthentication(
+      makeRequest('/admin-api/auth/password', { cookie: sessionCookie }),
+    );
+    expect(disableResponse.status).toBe(200);
+    expect(await hasAdminAccountAsync()).toBe(false);
+    expect(
+      await getAdminSessionErrorResponse(makeRequest('/admin-api/settings')),
+    ).toBeNull();
   });
 
   it('requires an admin session before starting or polling OAuth credentials', async () => {

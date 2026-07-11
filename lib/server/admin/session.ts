@@ -28,7 +28,7 @@ const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const PASSWORD_MIN_LENGTH = 8;
 const ADMIN_RP_NAME = 'CodeBuddy2API Admin';
 const ADMIN_USER_ID = 'codebuddy-admin';
-const ADMIN_USER_NAME = 'admin';
+const DEFAULT_ADMIN_USER_NAME = 'admin';
 let adminAuthMutationQueue: Promise<void> = Promise.resolve();
 
 type RequestLike = Request | NextRequest;
@@ -66,10 +66,12 @@ interface PendingChallengeRecord {
 }
 
 interface AdminAuthState {
+  enabled: boolean;
   passkeys: StoredPasskeyRecord[];
   password: StoredPasswordRecord | null;
   pendingChallenges: PendingChallengeRecord[];
   sessions: StoredSessionRecord[];
+  username: string;
 }
 
 class AdminAuthStorageError extends Error {}
@@ -88,10 +90,12 @@ const enqueueAdminAuthMutation = async <T>(
 
 const getEmptyAdminAuthState = (): AdminAuthState => {
   return {
+    enabled: false,
     passkeys: [],
     password: null,
     pendingChallenges: [],
     sessions: [],
+    username: DEFAULT_ADMIN_USER_NAME,
   };
 };
 
@@ -102,7 +106,15 @@ const normalizeAdminAuthState = (input: unknown): AdminAuthState => {
 
   const record = input as Partial<AdminAuthState>;
 
+  const hasLegacyAuthenticator =
+    Boolean(record.password) ||
+    (Array.isArray(record.passkeys) && record.passkeys.length > 0);
+
   return {
+    enabled:
+      typeof record.enabled === 'boolean'
+        ? record.enabled
+        : hasLegacyAuthenticator,
     passkeys: Array.isArray(record.passkeys) ? record.passkeys : [],
     password:
       record.password && typeof record.password === 'object'
@@ -112,6 +124,10 @@ const normalizeAdminAuthState = (input: unknown): AdminAuthState => {
       ? record.pendingChallenges
       : [],
     sessions: Array.isArray(record.sessions) ? record.sessions : [],
+    username:
+      typeof record.username === 'string' && record.username.trim()
+        ? record.username.trim()
+        : DEFAULT_ADMIN_USER_NAME,
   };
 };
 
@@ -140,6 +156,16 @@ const createPasswordHash = (password: string, salt?: string) => {
     hash,
     salt: resolvedSalt,
   };
+};
+
+const normalizeUsername = (username: string): string | null => {
+  const normalized = username.trim();
+
+  if (normalized.length < 3 || normalized.length > 64) {
+    return null;
+  }
+
+  return normalized;
 };
 
 const verifyPasswordHash = (
@@ -394,7 +420,9 @@ export const hasAdminAccount = (): boolean => {
 
 export const hasAdminAccountAsync = async (): Promise<boolean> => {
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
-  return Boolean(state.password) || state.passkeys.length > 0;
+  return (
+    state.enabled && (Boolean(state.password) || state.passkeys.length > 0)
+  );
 };
 
 export const hasAdminPassword = async (): Promise<boolean> => {
@@ -404,6 +432,52 @@ export const hasAdminPassword = async (): Promise<boolean> => {
 
 export const listAdminPasskeys = async (): Promise<StoredPasskeyRecord[]> => {
   return pruneExpiredState(await loadAdminAuthStateAsync()).passkeys;
+};
+
+export const deleteAdminPasskey = async (
+  request: RequestLike,
+  id: string,
+): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
+  const result = await mutateAdminAuthState((state) => {
+    const passkey = state.passkeys.find((entry) => entry.id === id);
+
+    if (!passkey) {
+      return 'missing';
+    }
+
+    if (!state.password && state.passkeys.length === 1) {
+      return 'last-authenticator';
+    }
+
+    state.passkeys = state.passkeys.filter((entry) => entry.id !== id);
+    return 'deleted';
+  });
+
+  if (result === 'missing') {
+    return Response.json(
+      { error: { message: 'Passkey not found' } },
+      { status: 404 },
+    );
+  }
+
+  if (result === 'last-authenticator') {
+    return Response.json(
+      {
+        error: {
+          message: 'Set an admin password before removing the last passkey',
+        },
+      },
+      { status: 409 },
+    );
+  }
+
+  return Response.json({ success: true });
 };
 
 export const isAdminSessionAuthenticated = async (
@@ -416,10 +490,13 @@ export const getAdminSessionSummary = async (request: RequestLike) => {
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
 
   return {
-    accountConfigured: Boolean(state.password) || state.passkeys.length > 0,
+    accountConfigured:
+      state.enabled && (Boolean(state.password) || state.passkeys.length > 0),
+    authEnabled: state.enabled,
     authenticated: await isAdminSessionAuthenticated(request),
     passkeyCount: state.passkeys.length,
     passwordConfigured: Boolean(state.password),
+    username: state.username,
   };
 };
 
@@ -465,9 +542,21 @@ export const getAdminSessionErrorResponse = (
 
 export const setupAdminPassword = async (
   request: RequestLike,
-  password: string,
+  usernameOrPassword: string,
+  password?: string,
 ): Promise<Response> => {
-  const normalized = password.trim();
+  const username =
+    password === undefined ? DEFAULT_ADMIN_USER_NAME : usernameOrPassword;
+  const resolvedPassword = password ?? usernameOrPassword;
+  const normalized = resolvedPassword.trim();
+  const normalizedUsername = normalizeUsername(username);
+
+  if (!normalizedUsername) {
+    return Response.json(
+      { error: { message: 'Username must be between 3 and 64 characters' } },
+      { status: 400 },
+    );
+  }
 
   if (normalized.length < PASSWORD_MIN_LENGTH) {
     return Response.json(
@@ -484,15 +573,17 @@ export const setupAdminPassword = async (
   const { session, token } = createAdminSession();
 
   const configured = await mutateAdminAuthState((state) => {
-    if (state.password || state.passkeys.length) {
+    if (state.enabled) {
       return false;
     }
 
+    state.enabled = true;
     state.password = {
       hash: nextPassword.hash,
       salt: nextPassword.salt,
       updatedAt: new Date().toISOString(),
     };
+    state.username = normalizedUsername;
     state.sessions.push(session);
     return true;
   });
@@ -514,9 +605,11 @@ export const setupAdminPassword = async (
       success: true,
       session: {
         accountConfigured: true,
+        authEnabled: true,
         authenticated: true,
         passkeyCount: 0,
         passwordConfigured: true,
+        username: normalizedUsername,
       },
     }),
     token,
@@ -525,11 +618,15 @@ export const setupAdminPassword = async (
 
 export const loginWithAdminPassword = async (
   request: RequestLike,
-  password: string,
+  usernameOrPassword: string,
+  password?: string,
 ): Promise<Response> => {
+  const username =
+    password === undefined ? DEFAULT_ADMIN_USER_NAME : usernameOrPassword;
+  const resolvedPassword = password ?? usernameOrPassword;
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
 
-  if (!state.password) {
+  if (!state.enabled || !state.password) {
     return Response.json(
       {
         error: {
@@ -540,7 +637,10 @@ export const loginWithAdminPassword = async (
     );
   }
 
-  if (!verifyPasswordHash(password, state.password)) {
+  if (
+    username.trim() !== state.username ||
+    !verifyPasswordHash(resolvedPassword, state.password)
+  ) {
     return Response.json(
       {
         error: {
@@ -563,13 +663,114 @@ export const loginWithAdminPassword = async (
       success: true,
       session: {
         accountConfigured: true,
+        authEnabled: true,
         authenticated: true,
         passkeyCount: state.passkeys.length,
         passwordConfigured: true,
+        username: state.username,
       },
     }),
     token,
   );
+};
+
+export const changeAdminPassword = async (
+  request: RequestLike,
+  currentPassword: string,
+  nextPassword: string,
+  nextUsername?: string,
+): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
+  const normalizedNextPassword = nextPassword.trim();
+  const normalizedUsername = nextUsername
+    ? normalizeUsername(nextUsername)
+    : undefined;
+
+  if (nextUsername && !normalizedUsername) {
+    return Response.json(
+      { error: { message: 'Username must be between 3 and 64 characters' } },
+      { status: 400 },
+    );
+  }
+
+  if (normalizedNextPassword.length < PASSWORD_MIN_LENGTH) {
+    return Response.json(
+      {
+        error: {
+          message: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`,
+        },
+      },
+      { status: 400 },
+    );
+  }
+
+  const sessionToken = getSessionToken(request);
+
+  if (!sessionToken) {
+    return Response.json(
+      { error: { message: 'Admin session required' } },
+      { status: 401 },
+    );
+  }
+
+  const sessionTokenHash = hashSessionToken(sessionToken);
+  const nextPasswordHash = createPasswordHash(normalizedNextPassword);
+  const updated = await mutateAdminAuthState((state) => {
+    if (
+      state.password &&
+      !verifyPasswordHash(currentPassword, state.password)
+    ) {
+      return false;
+    }
+
+    state.password = {
+      hash: nextPasswordHash.hash,
+      salt: nextPasswordHash.salt,
+      updatedAt: new Date().toISOString(),
+    };
+    if (normalizedUsername) {
+      state.username = normalizedUsername;
+    }
+    state.sessions = state.sessions.filter((entry) => {
+      return entry.tokenHash === sessionTokenHash;
+    });
+    return true;
+  });
+
+  if (!updated) {
+    return Response.json(
+      { error: { message: 'Current password is invalid' } },
+      { status: 401 },
+    );
+  }
+
+  return Response.json({ success: true });
+};
+
+export const disableAdminAuthentication = async (
+  request: RequestLike,
+): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
+  await mutateAdminAuthState((state) => {
+    state.enabled = false;
+    state.passkeys = [];
+    state.password = null;
+    state.pendingChallenges = [];
+    state.sessions = [];
+    state.username = DEFAULT_ADMIN_USER_NAME;
+  });
+
+  return attachLogoutCookie(request, Response.json({ success: true }));
 };
 
 export const logoutAdminSession = async (
@@ -619,7 +820,7 @@ export const beginAdminPasskeyRegistration = async (
     rpName: ADMIN_RP_NAME,
     userDisplayName: trimmedName,
     userID: new TextEncoder().encode(ADMIN_USER_ID),
-    userName: ADMIN_USER_NAME,
+    userName: state.username,
   });
 
   await setPendingChallenge('registration', options.challenge);
@@ -716,7 +917,7 @@ export const beginAdminPasskeyAuthentication = async (
 ): Promise<Response> => {
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
 
-  if (!state.passkeys.length) {
+  if (!state.enabled || !state.passkeys.length) {
     return Response.json(
       {
         error: {
@@ -743,6 +944,13 @@ export const finishAdminPasskeyAuthentication = async (
   responseBody: Record<string, unknown>,
 ): Promise<Response> => {
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
+  if (!state.enabled) {
+    return Response.json(
+      { error: { message: 'Admin authentication is disabled' } },
+      { status: 400 },
+    );
+  }
+
   const credentialId =
     typeof responseBody.id === 'string' ? responseBody.id : undefined;
   const passkey = state.passkeys.find((entry) => entry.id === credentialId);
@@ -833,9 +1041,11 @@ export const finishAdminPasskeyAuthentication = async (
       success: true,
       session: {
         accountConfigured: true,
+        authEnabled: true,
         authenticated: true,
         passkeyCount: state.passkeys.length,
         passwordConfigured: Boolean(state.password),
+        username: state.username,
       },
     }),
     token,

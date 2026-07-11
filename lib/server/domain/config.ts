@@ -16,6 +16,8 @@ export interface RuntimeConfig {
   CODEBUDDY_MODELS: string;
 }
 
+export type ConfigLabelLocale = 'zh-CN' | 'en-US' | 'ja-JP';
+
 type PersistedConfigFile = Partial<RuntimeConfig>;
 
 const DEFAULT_CONFIG: RuntimeConfig = {
@@ -29,15 +31,46 @@ const DEFAULT_CONFIG: RuntimeConfig = {
 };
 let configMutationQueue: Promise<void> = Promise.resolve();
 
-export const SETTING_LABELS: Record<keyof RuntimeConfig, string> = {
-  CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方API端点',
-  CODEBUDDY_ADMIN_PASSKEY_RP_ID:
-    '管理员 Passkey RP ID / 域名（留空则跟随当前访问域名）',
-  CODEBUDDY_AUTH_MODE: '认证模式 (auto/token)',
-  CODEBUDDY_INTERNET_ENVIRONMENT: '网络环境 (internal/ioa/public)',
-  CODEBUDDY_LOG_LEVEL: '日志级别',
-  CODEBUDDY_MODELS: '可用模型列表 (逗号分隔)',
+const SETTING_LABELS_BY_LOCALE: Record<
+  ConfigLabelLocale,
+  Record<keyof RuntimeConfig, string>
+> = {
+  'en-US': {
+    CODEBUDDY_API_ENDPOINT: 'CodeBuddy API endpoint',
+    CODEBUDDY_ADMIN_PASSKEY_RP_ID:
+      'Admin passkey RP ID / domain (leave empty to follow the current host)',
+    CODEBUDDY_AUTH_MODE: 'Authentication mode (auto/token)',
+    CODEBUDDY_INTERNET_ENVIRONMENT: 'Network environment (internal/ioa/public)',
+    CODEBUDDY_LOG_LEVEL: 'Log level',
+    CODEBUDDY_MODELS: 'Available models (comma-separated)',
+  },
+  'ja-JP': {
+    CODEBUDDY_API_ENDPOINT: 'CodeBuddy API エンドポイント',
+    CODEBUDDY_ADMIN_PASSKEY_RP_ID:
+      '管理者 passkey RP ID / ドメイン (空欄なら現在のホストに追従)',
+    CODEBUDDY_AUTH_MODE: '認証モード (auto/token)',
+    CODEBUDDY_INTERNET_ENVIRONMENT: 'ネットワーク環境 (internal/ioa/public)',
+    CODEBUDDY_LOG_LEVEL: 'ログレベル',
+    CODEBUDDY_MODELS: '利用可能なモデル一覧 (カンマ区切り)',
+  },
+  'zh-CN': {
+    CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方 API 端点',
+    CODEBUDDY_ADMIN_PASSKEY_RP_ID:
+      '管理员 Passkey RP ID / 域名（留空则跟随当前访问域名）',
+    CODEBUDDY_AUTH_MODE: '认证模式 (auto/token)',
+    CODEBUDDY_INTERNET_ENVIRONMENT: '网络环境 (internal/ioa/public)',
+    CODEBUDDY_LOG_LEVEL: '日志级别',
+    CODEBUDDY_MODELS: '可用模型列表 (逗号分隔)',
+  },
 };
+
+export const getSettingLabels = (
+  locale: ConfigLabelLocale = 'zh-CN',
+): Record<keyof RuntimeConfig, string> => {
+  return SETTING_LABELS_BY_LOCALE[locale];
+};
+
+export const SETTING_LABELS = getSettingLabels();
 
 const loadPersistedConfig = async (): Promise<Partial<RuntimeConfig>> => {
   return (

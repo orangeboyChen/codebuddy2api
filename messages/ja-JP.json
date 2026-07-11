@@ -64,6 +64,25 @@
       "saveSuccess": "設定を保存しました。",
       "title": "サービス設定"
     },
+    "securityPanel": {
+      "title": "管理者セキュリティ",
+      "enabled": "認証は有効です。",
+      "disabled": "認証は無効で、コンソールには直接アクセスできます。",
+      "enable": "管理者認証を有効化",
+      "username": "管理者ユーザー名",
+      "currentPassword": "現在のパスワード",
+      "newPassword": "新しいパスワード",
+      "password": "管理者パスワード",
+      "confirmPassword": "パスワードの確認",
+      "minimumPassword": "8 文字以上",
+      "update": "管理者アカウントを更新",
+      "saveAndEnable": "保存して管理者認証を有効化",
+      "disable": "管理者認証を無効化",
+      "passkeyName": "Passkey 名 (任意)",
+      "addPasskey": "Passkey を追加",
+      "noPasskeys": "Passkey はまだ追加されていません。",
+      "delete": "削除"
+    },
     "loginPage": {
       "autofillAvailable": "対応ブラウザでは passkey 自動入力が利用可能で、このページで自動的に試行されます。",
       "autofillUnavailable": "passkey は設定済みですが、このブラウザは条件付き自動入力をサポートしていません。代わりに passkey ボタンを使用してください。",
@@ -94,7 +113,8 @@
       "signInWithPassword": "管理者アカウントを作成しています...",
       "signingInPassword": "パスワードでサインインしています...",
       "title": "管理者サインイン",
-      "waitingForPasskey": "保存済み passkey を待っています..."
+      "waitingForPasskey": "保存済み passkey を待っています...",
+      "usernameLabel": "管理者ユーザー名"
     }
   }
 }

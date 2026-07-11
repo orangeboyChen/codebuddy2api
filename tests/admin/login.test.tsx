@@ -53,6 +53,7 @@ const loginTranslations: AdminLoginMessages = {
   signInWithPassword: 'Creating the admin account...',
   signingInPassword: 'Signing in with password...',
   title: 'Admin sign in',
+  usernameLabel: 'Admin username',
   waitingForPasskey: 'Waiting for a saved passkey...',
 };
 
@@ -107,7 +108,7 @@ describe('LoginClient', () => {
           method: 'POST',
         }),
       );
-      expect(window.location.assign).toHaveBeenCalledWith('/admin');
+      expect(window.location.assign).toHaveBeenCalledWith('/');
     });
   });
 
@@ -156,7 +157,7 @@ describe('LoginClient', () => {
           method: 'POST',
         }),
       );
-      expect(window.location.assign).toHaveBeenCalledWith('/admin');
+      expect(window.location.assign).toHaveBeenCalledWith('/');
     });
   });
 
@@ -221,7 +222,7 @@ describe('LoginClient', () => {
           verifyBrowserAutofillInput: false,
         }),
       );
-      expect(window.location.assign).toHaveBeenCalledWith('/admin');
+      expect(window.location.assign).toHaveBeenCalledWith('/');
     });
   });
 });

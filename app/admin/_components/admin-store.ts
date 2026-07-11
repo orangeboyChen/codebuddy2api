@@ -108,7 +108,6 @@ export interface CredentialsState {
   accessKeyForm: AccessKeyFormState;
   accessKeys: AccessKeySummary[];
   accessKeysLoading: boolean;
-  accessKeyCreating: boolean;
   actionIndex: number | null;
   current: CurrentCredentialInfo | null;
   currentLoading: boolean;
@@ -321,7 +320,6 @@ export const defaultCredentialsState: CredentialsState = {
   },
   accessKeys: [],
   accessKeysLoading: true,
-  accessKeyCreating: false,
   actionIndex: null,
   current: null,
   currentLoading: true,
@@ -345,7 +343,7 @@ export const defaultApiTestState: ApiTestState = {
   credentialFilename: '',
   message: 'Hello, what is 2+2?',
   model: '',
-  result: '点击"发送测试"查看API响应...',
+  result: '',
   stream: false,
   submitting: false,
 };

@@ -1,8 +1,10 @@
-import createMiddleware from 'next-intl/middleware';
+import { NextResponse } from 'next/server';
 
-import { routing } from '@/lib/i18n/routing';
+const proxy = () => {
+  return NextResponse.next();
+};
 
-export default createMiddleware(routing);
+export default proxy;
 
 export const config = {
   matcher: ['/((?!admin-api|v1|health|_next|.*\\..*).*)'],

@@ -64,6 +64,25 @@
       "saveSuccess": "Settings saved.",
       "title": "Service settings"
     },
+    "securityPanel": {
+      "title": "Administrator security",
+      "enabled": "Authentication is enabled.",
+      "disabled": "Authentication is disabled; the console is publicly accessible.",
+      "enable": "Enable administrator authentication",
+      "username": "Administrator username",
+      "currentPassword": "Current password",
+      "newPassword": "New password",
+      "password": "Administrator password",
+      "confirmPassword": "Confirm password",
+      "minimumPassword": "At least 8 characters",
+      "update": "Update administrator account",
+      "saveAndEnable": "Save and enable administrator authentication",
+      "disable": "Disable administrator authentication",
+      "passkeyName": "Passkey name (optional)",
+      "addPasskey": "Add passkey",
+      "noPasskeys": "No passkeys have been added.",
+      "delete": "Delete"
+    },
     "loginPage": {
       "autofillAvailable": "Passkey autofill is available and the page will try it automatically.",
       "autofillUnavailable": "Passkeys are configured, but this browser does not support conditional autofill. Use the passkey button instead.",
@@ -94,7 +113,8 @@
       "signInWithPassword": "Creating the admin account...",
       "signingInPassword": "Signing in with password...",
       "title": "Admin sign in",
-      "waitingForPasskey": "Waiting for a saved passkey..."
+      "waitingForPasskey": "Waiting for a saved passkey...",
+      "usernameLabel": "Admin username"
     }
   }
 }

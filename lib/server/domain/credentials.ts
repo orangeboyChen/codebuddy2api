@@ -48,6 +48,8 @@ const globalCredentialState = globalThis as typeof globalThis & {
   __codebuddy2apiCredentialState__?: ManagerState;
 };
 
+const MANAGER_STATE_FILENAME = 'manager_state.json';
+
 const loadPersistedManagerState = async (): Promise<Partial<ManagerState>> => {
   return (
     (await readStorageJson<Partial<ManagerState>>(
@@ -393,6 +395,10 @@ export const addCredential = async (
   const jsonFilename = resolvedFilename.endsWith('.json')
     ? resolvedFilename
     : `${resolvedFilename}.json`;
+
+  if (jsonFilename === MANAGER_STATE_FILENAME) {
+    throw new Error('Credential filename is reserved');
+  }
   let existingPayload: CredentialData = {};
 
   const storedPayload = await readStorageJson<CredentialData>(

@@ -171,9 +171,11 @@ describe('admin auth passkeys', () => {
     );
     expect(summary).toEqual({
       accountConfigured: true,
+      authEnabled: true,
       authenticated: true,
       passkeyCount: 1,
       passwordConfigured: true,
+      username: 'admin',
     });
 
     await storage.deleteStorageJson('admin-auth', 'state');

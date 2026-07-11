@@ -7,12 +7,20 @@ import {
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 
 import type { AdminLoginMessages } from '@/lib/i18n/messages';
+import { localeCookieName, locales } from '@/lib/i18n/routing';
+import {
+  resolvedThemeCookieName,
+  themeCookieName,
+  type ThemeMode,
+} from '@/lib/theme';
 
 interface SessionSummary {
   accountConfigured: boolean;
+  authEnabled?: boolean;
   authenticated: boolean;
   passkeyCount: number;
   passwordConfigured: boolean;
+  username?: string;
 }
 
 interface JsonResponse {
@@ -31,9 +39,13 @@ interface PasskeyOptionsResponse {
 }
 
 interface LoginClientProps {
+  initialTheme?: ThemeMode;
   initialSession: SessionSummary;
   locale: string;
-  translations: AdminLoginMessages;
+  themeLabels?: Record<ThemeMode, string>;
+  translations: Omit<AdminLoginMessages, 'usernameLabel'> & {
+    usernameLabel?: string;
+  };
 }
 
 const getErrorMessage = (payload: JsonResponse | PasskeyOptionsResponse) => {
@@ -42,13 +54,16 @@ const getErrorMessage = (payload: JsonResponse | PasskeyOptionsResponse) => {
 
 const LoginClient = ({
   initialSession,
-  locale: _locale,
+  initialTheme = 'system',
+  locale,
+  themeLabels = { dark: 'Dark', light: 'Light', system: 'System' },
   translations,
 }: LoginClientProps) => {
   const [session, setSession] = useState(initialSession);
   const [password, setPassword] = useState('');
+  const [theme, setTheme] = useState<ThemeMode>(initialTheme);
+  const [username, setUsername] = useState(initialSession.username ?? 'admin');
   const [error, setError] = useState('');
-  const [supportsPasskey, setSupportsPasskey] = useState(false);
   const [isPasskeyPending, setIsPasskeyPending] = useState(false);
   const [isPending, startTransition] = useTransition();
   const autoAttemptedRef = useRef(false);
@@ -68,12 +83,29 @@ const LoginClient = ({
       : translations.createPasswordStatus,
   );
 
+  const changeLocale = (nextLocale: string) => {
+    document.cookie = `${localeCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    window.location.reload();
+  };
+
+  const changeTheme = (nextTheme: ThemeMode) => {
+    const isDark =
+      nextTheme === 'dark' ||
+      (nextTheme === 'system' &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches);
+    setTheme(nextTheme);
+    document.documentElement.classList.toggle('dark', isDark);
+    document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    document.cookie = `${themeCookieName}=${nextTheme}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    document.cookie = `${resolvedThemeCookieName}=${isDark ? 'dark' : 'light'}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  };
+
   const applySuccess = useCallback((nextSession?: SessionSummary) => {
     if (nextSession) {
       setSession(nextSession);
     }
 
-    window.location.assign('/admin');
+    window.location.assign('/');
   }, []);
 
   const submitPassword = async () => {
@@ -90,7 +122,7 @@ const LoginClient = ({
     );
 
     const response = await fetch(endpoint, {
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, username }),
       headers: {
         'Content-Type': 'application/json',
       },
@@ -201,8 +233,6 @@ const LoginClient = ({
           return;
         }
 
-        setSupportsPasskey(supported);
-
         if (
           supported &&
           session.accountConfigured &&
@@ -213,11 +243,7 @@ const LoginClient = ({
           void submitPasskey(true);
         }
       })
-      .catch(() => {
-        if (!disposed) {
-          setSupportsPasskey(false);
-        }
-      });
+      .catch(() => undefined);
 
     return () => {
       disposed = true;
@@ -226,6 +252,31 @@ const LoginClient = ({
 
   return (
     <main className="login-page">
+      <header className="login-header">
+        <div className="login-header-brand">CodeBuddy2API</div>
+        <div className="login-header-controls">
+          <select
+            aria-label="Language"
+            onChange={(event) => changeLocale(event.target.value)}
+            value={locale}
+          >
+            {locales.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Theme mode"
+            onChange={(event) => changeTheme(event.target.value as ThemeMode)}
+            value={theme}
+          >
+            <option value="light">{themeLabels.light}</option>
+            <option value="dark">{themeLabels.dark}</option>
+            <option value="system">{themeLabels.system}</option>
+          </select>
+        </div>
+      </header>
       <section className="login-card">
         <div className="login-hero">
           <p className="login-eyebrow">CodeBuddy2API Admin</p>
@@ -234,11 +285,6 @@ const LoginClient = ({
               ? translations.headingSetup
               : translations.headingLogin}
           </h1>
-          <p className="login-description">
-            {passwordMode === 'setup'
-              ? translations.descriptionSetup
-              : translations.descriptionLogin}
-          </p>
         </div>
 
         <div className="login-surface">
@@ -251,6 +297,20 @@ const LoginClient = ({
               });
             }}
           >
+            <label className="login-label" htmlFor="admin-username">
+              {translations.usernameLabel ?? 'Admin username'}
+            </label>
+            <input
+              autoCapitalize="none"
+              autoComplete="username webauthn"
+              className="login-input"
+              id="admin-username"
+              name="username"
+              onChange={(event) => {
+                setUsername(event.target.value);
+              }}
+              value={username}
+            />
             <label className="login-label" htmlFor="admin-password">
               {passwordLabel}
             </label>
@@ -277,7 +337,11 @@ const LoginClient = ({
             />
             <button
               className="login-primary-button"
-              disabled={isPending || password.trim().length === 0}
+              disabled={
+                isPending ||
+                password.trim().length === 0 ||
+                username.trim().length === 0
+              }
               type="submit"
             >
               {passwordMode === 'setup'
@@ -291,40 +355,20 @@ const LoginClient = ({
             {error ? <span className="login-error">{error}</span> : null}
           </div>
 
-          <div className="login-divider" role="presentation">
-            <span>{translations.orLabel}</span>
-          </div>
-
-          <button
-            className="login-secondary-button"
-            disabled={!canUsePasskeys || isPasskeyPending}
-            onClick={() => {
-              startTransition(() => {
-                void submitPasskey(false);
-              });
-            }}
-            type="button"
-          >
-            {translations.continueWithPasskey}
-          </button>
-
-          <ul className="login-hints">
-            <li>
-              Password login uses <code>/admin-api/auth/session</code>{' '}
-              {translations.passkeyHintLogin}
-            </li>
-            <li>
-              First-time setup uses <code>/admin-api/auth/setup</code>{' '}
-              {translations.passkeyHintSetup}
-            </li>
-            <li>
-              {canUsePasskeys
-                ? supportsPasskey
-                  ? translations.autofillAvailable
-                  : translations.autofillUnavailable
-                : translations.noPasskeysConfigured}
-            </li>
-          </ul>
+          {canUsePasskeys ? (
+            <button
+              className="login-secondary-button"
+              disabled={isPasskeyPending}
+              onClick={() => {
+                startTransition(() => {
+                  void submitPasskey(false);
+                });
+              }}
+              type="button"
+            >
+              {translations.continueWithPasskey}
+            </button>
+          ) : null}
         </div>
       </section>
     </main>

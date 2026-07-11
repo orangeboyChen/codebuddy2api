@@ -213,6 +213,17 @@ const writeJsonFile = (filePath: string, value: unknown): void => {
   }
 };
 
+const isSafeCredentialFilename = (filename: string): boolean => {
+  return (
+    Boolean(filename) &&
+    filename === path.basename(filename) &&
+    !filename.includes('/') &&
+    !filename.includes('\\') &&
+    filename !== '.' &&
+    filename !== '..'
+  );
+};
+
 const getDocumentPath = (namespace: string, key: string): string => {
   if (namespace === 'config' && key === 'runtime') {
     return getConfigPath();
@@ -246,6 +257,10 @@ const getDocumentPath = (namespace: string, key: string): string => {
   }
 
   if (namespace === 'credentials') {
+    if (!isSafeCredentialFilename(key)) {
+      throw new Error('Credential filename must not contain path separators');
+    }
+
     return path.join(getCredsDir(), key);
   }
 

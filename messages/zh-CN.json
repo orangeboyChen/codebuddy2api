@@ -64,6 +64,25 @@
       "saveSuccess": "设置已保存。",
       "title": "服务配置"
     },
+    "securityPanel": {
+      "title": "管理员安全",
+      "enabled": "鉴权已启用。",
+      "disabled": "鉴权未启用，控制台可直接访问。",
+      "enable": "启用管理员鉴权",
+      "username": "管理员用户名",
+      "currentPassword": "当前密码",
+      "newPassword": "新密码",
+      "password": "管理员密码",
+      "confirmPassword": "确认密码",
+      "minimumPassword": "至少 8 位",
+      "update": "更新管理员账户",
+      "saveAndEnable": "保存并启用管理员鉴权",
+      "disable": "关闭管理员鉴权",
+      "passkeyName": "Passkey 名称（可选）",
+      "addPasskey": "添加 Passkey",
+      "noPasskeys": "尚未添加 Passkey。",
+      "delete": "删除"
+    },
     "loginPage": {
       "autofillAvailable": "当前浏览器支持 passkey 条件式自动填充，页面会自动尝试登录。",
       "autofillUnavailable": "已配置 passkey，但当前浏览器不支持条件式自动填充，请使用 passkey 按钮登录。",
@@ -94,7 +113,8 @@
       "signInWithPassword": "正在创建管理员账户...",
       "signingInPassword": "正在使用密码登录...",
       "title": "管理员登录",
-      "waitingForPasskey": "正在等待已保存的 passkey..."
+      "waitingForPasskey": "正在等待已保存的 passkey...",
+      "usernameLabel": "管理员用户名"
     }
   }
 }

@@ -11,10 +11,7 @@ import type {
   UsageFilterOption,
   UsageRange,
   UsageTableRow,
-} from '@/features/admin/admin-store';
-import type { AdminMessages } from '@/lib/i18n/messages';
-
-export type AdminConsoleTranslations = AdminMessages;
+} from '@/app/admin/_components/admin-store';
 
 export interface AdminHealthState {
   checkedAtLabel: string;
@@ -61,7 +58,6 @@ export interface AdminConsoleInitialData {
   health: AdminHealthState;
   settings: AdminSettingsSnapshot;
   stats: AdminStatsState;
-  translations: AdminMessages;
   usage?: AdminUsageSnapshot;
 }
 
@@ -112,7 +108,6 @@ export const createCredentialsState = (
     },
     accessKeys: initialData.accessKeys,
     accessKeysLoading: false,
-    accessKeyCreating: false,
     actionIndex: null,
     current: initialData.currentCredential,
     currentLoading: false,

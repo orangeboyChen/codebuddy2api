@@ -8,6 +8,7 @@ import LoginClient from '@/features/admin/login-client';
 import { getAdminSessionSummary } from '@/lib/server/admin/session';
 import { getMessages } from '@/lib/i18n/messages';
 import type { AppLocale } from '@/lib/i18n/routing';
+import { parseThemeMode, themeCookieName } from '@/lib/theme';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +26,7 @@ const resolveLoginLocale = async (): Promise<AppLocale> => {
 
 const LoginPage = async () => {
   const headerStore = await headers();
+  const cookieStore = await cookies();
   const locale = await resolveLoginLocale();
   const protocol = headerStore.get('x-forwarded-proto') ?? 'http';
   const host =
@@ -43,13 +45,19 @@ const LoginPage = async () => {
   const messages = getMessages(locale);
 
   if (session.authenticated) {
-    redirect('/admin');
+    redirect('/');
   }
 
   return (
     <LoginClient
       initialSession={session}
+      initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
       locale={locale}
+      themeLabels={{
+        dark: messages.Admin.themeDark,
+        light: messages.Admin.themeLight,
+        system: messages.Admin.themeSystem,
+      }}
       translations={messages.Admin.loginPage}
     />
   );

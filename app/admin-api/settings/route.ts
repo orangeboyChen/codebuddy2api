@@ -1,10 +1,11 @@
 import { getAdminSessionErrorResponse } from '@/lib/server/admin/session';
 import {
   getActiveConfig,
-  SETTING_LABELS,
+  getSettingLabels,
   updateSettings,
 } from '@/lib/server/domain/config';
 import { getJsonBody } from '@/lib/server/shared/http';
+import { defaultLocale, locales } from '@/lib/i18n/routing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,9 +17,18 @@ export const GET = async (request: Request): Promise<Response> => {
     return authError;
   }
 
+  const localeCookie = request.headers.get('cookie') ?? '';
+  const localeMatch = localeCookie.match(
+    /(?:^|;\s*)codebuddy2api-locale=([^;]+)/,
+  );
+  const localeValue = localeMatch?.[1];
+  const locale = locales.includes(localeValue as (typeof locales)[number])
+    ? (localeValue as (typeof locales)[number])
+    : defaultLocale;
+
   return Response.json({
     settings: await getActiveConfig(),
-    labels: SETTING_LABELS,
+    labels: getSettingLabels(locale),
   });
 };
 

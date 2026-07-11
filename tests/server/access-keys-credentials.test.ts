@@ -213,6 +213,18 @@ describe('access key credential reconciliation', () => {
     ).toHaveLength(2);
   });
 
+  it('rejects credential filenames that escape or replace manager state', async () => {
+    await expect(
+      addCredential(
+        { bearer_token: 'token-traversal' },
+        '../outside-credentials.json',
+      ),
+    ).rejects.toThrow('Credential filename must not contain path separators');
+    await expect(
+      addCredential({ bearer_token: 'token-state' }, 'manager_state.json'),
+    ).rejects.toThrow('Credential filename is reserved');
+  });
+
   it('preserves access keys created concurrently', async () => {
     const credential = (await listCredentials()).credentials[0];
     const filename = String(credential?.filename);
