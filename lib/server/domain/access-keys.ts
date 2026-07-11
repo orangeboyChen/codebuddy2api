@@ -25,9 +25,23 @@ interface AccessKeyStore {
 }
 
 type AccessKeyStoreState =
-  | { kind: 'ok'; store: AccessKeyStore }
-  | { kind: 'missing'; store: AccessKeyStore }
-  | { kind: 'error'; error: string; store: AccessKeyStore };
+  | { changed: boolean; kind: 'ok'; store: AccessKeyStore }
+  | { changed: boolean; kind: 'missing'; store: AccessKeyStore }
+  | { changed: boolean; error: string; kind: 'error'; store: AccessKeyStore };
+
+let accessKeyMutationQueue: Promise<void> = Promise.resolve();
+
+const enqueueAccessKeyMutation = async <T>(
+  mutation: () => Promise<T>,
+): Promise<T> => {
+  const operation = accessKeyMutationQueue.then(mutation, mutation);
+  accessKeyMutationQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return operation;
+};
 
 const normalizeCredentialFilenames = (
   credentialFilenames: string[],
@@ -103,6 +117,7 @@ const readAccessKeyStoreState = async (): Promise<AccessKeyStoreState> => {
 
   if (parsedResult.error) {
     return {
+      changed: false,
       kind: 'error',
       error: parsedResult.error,
       store: { accessKeys: [] },
@@ -110,11 +125,11 @@ const readAccessKeyStoreState = async (): Promise<AccessKeyStoreState> => {
   }
 
   if (!parsed && !parsedResult.exists) {
-    return { kind: 'missing', store: { accessKeys: [] } };
+    return { changed: false, kind: 'missing', store: { accessKeys: [] } };
   }
 
   if (!parsed) {
-    return { kind: 'ok', store: { accessKeys: [] } };
+    return { changed: false, kind: 'ok', store: { accessKeys: [] } };
   }
 
   try {
@@ -135,16 +150,14 @@ const readAccessKeyStoreState = async (): Promise<AccessKeyStoreState> => {
 
     const normalizedStore = await pruneAccessKeyStore({ accessKeys });
 
-    if (normalizedStore.changed) {
-      await writeAccessKeyStore(normalizedStore.store);
-    }
-
     return {
+      changed: normalizedStore.changed,
       kind: 'ok',
       store: normalizedStore.store,
     };
   } catch (error) {
     return {
+      changed: false,
       kind: 'error',
       error:
         error instanceof Error
@@ -156,11 +169,30 @@ const readAccessKeyStoreState = async (): Promise<AccessKeyStoreState> => {
 };
 
 const readAccessKeyStore = async (): Promise<AccessKeyStore> => {
-  return (await readAccessKeyStoreState()).store;
+  return enqueueAccessKeyMutation(async () => {
+    const state = await readAccessKeyStoreState();
+
+    if (state.changed) {
+      await writeAccessKeyStore(state.store);
+    }
+
+    return state.store;
+  });
 };
 
 const writeAccessKeyStore = async (store: AccessKeyStore): Promise<void> => {
   await writeStorageJson('access-keys', 'store', store);
+};
+
+const mutateAccessKeyStore = async <T>(
+  mutation: (store: AccessKeyStore) => T | Promise<T>,
+): Promise<T> => {
+  return enqueueAccessKeyMutation(async () => {
+    const state = await readAccessKeyStoreState();
+    const result = await mutation(state.store);
+    await writeAccessKeyStore(state.store);
+    return result;
+  });
 };
 
 const maskSecret = (secret: string): string => {
@@ -255,23 +287,23 @@ export const createAccessKey = async ({
     throw new Error('At least one credential must be selected');
   }
 
-  const now = new Date().toISOString();
-  const record: AccessKeyRecord = {
-    createdAt: now,
-    credentialFilenames: normalizedCredentialFilenames,
-    id: crypto.randomUUID(),
-    name: trimmedName,
-    secret: generateSecret(),
-    updatedAt: now,
-  };
-  const store = await readAccessKeyStore();
-  store.accessKeys.push(record);
-  await writeAccessKeyStore(store);
+  return mutateAccessKeyStore((store) => {
+    const now = new Date().toISOString();
+    const record: AccessKeyRecord = {
+      createdAt: now,
+      credentialFilenames: normalizedCredentialFilenames,
+      id: crypto.randomUUID(),
+      name: trimmedName,
+      secret: generateSecret(),
+      updatedAt: now,
+    };
+    store.accessKeys.push(record);
 
-  return {
-    access_key: toSummary(record),
-    secret: record.secret,
-  };
+    return {
+      access_key: toSummary(record),
+      secret: record.secret,
+    };
+  });
 };
 
 export const updateAccessKey = async (
@@ -296,69 +328,71 @@ export const updateAccessKey = async (
     throw new Error('At least one credential must be selected');
   }
 
-  const store = await readAccessKeyStore();
-  const record = store.accessKeys.find((item) => item.id === id);
+  return mutateAccessKeyStore((store) => {
+    const record = store.accessKeys.find((item) => item.id === id);
 
-  if (!record) {
-    throw new Error('Access key not found');
-  }
+    if (!record) {
+      throw new Error('Access key not found');
+    }
 
-  record.name = trimmedName;
-  record.credentialFilenames = normalizedCredentialFilenames;
-  record.updatedAt = new Date().toISOString();
-  await writeAccessKeyStore(store);
+    record.name = trimmedName;
+    record.credentialFilenames = normalizedCredentialFilenames;
+    record.updatedAt = new Date().toISOString();
 
-  return toSummary(record);
+    return toSummary(record);
+  });
 };
 
 export const deleteAccessKey = async (id: string): Promise<boolean> => {
-  const store = await readAccessKeyStore();
-  const nextAccessKeys = store.accessKeys.filter((item) => item.id !== id);
+  return mutateAccessKeyStore((store) => {
+    const nextAccessKeys = store.accessKeys.filter((item) => item.id !== id);
 
-  if (nextAccessKeys.length === store.accessKeys.length) {
-    return false;
-  }
+    if (nextAccessKeys.length === store.accessKeys.length) {
+      return false;
+    }
 
-  await writeAccessKeyStore({ accessKeys: nextAccessKeys });
-  return true;
+    store.accessKeys = nextAccessKeys;
+    return true;
+  });
 };
 
 export const removeCredentialReferencesFromAccessKeys = async (
   credentialFilename: string,
 ): Promise<boolean> => {
-  const store = await readAccessKeyStore();
-  let changed = false;
-  const accessKeys = store.accessKeys.flatMap((record) => {
-    const credentialFilenames = normalizeCredentialFilenames(
-      record.credentialFilenames,
-    ).filter((filename) => filename !== credentialFilename);
+  return mutateAccessKeyStore((store) => {
+    let changed = false;
+    const accessKeys = store.accessKeys.flatMap((record) => {
+      const credentialFilenames = normalizeCredentialFilenames(
+        record.credentialFilenames,
+      ).filter((filename) => filename !== credentialFilename);
 
-    if (credentialFilenames.length !== record.credentialFilenames.length) {
-      changed = true;
+      if (credentialFilenames.length !== record.credentialFilenames.length) {
+        changed = true;
+      }
+
+      if (!credentialFilenames.length) {
+        changed = true;
+        return [];
+      }
+
+      if (
+        credentialFilenames.some(
+          (filename, index) => filename !== record.credentialFilenames[index],
+        )
+      ) {
+        changed = true;
+      }
+
+      return [{ ...record, credentialFilenames }];
+    });
+
+    if (!changed) {
+      return false;
     }
 
-    if (!credentialFilenames.length) {
-      changed = true;
-      return [];
-    }
-
-    if (
-      credentialFilenames.some(
-        (filename, index) => filename !== record.credentialFilenames[index],
-      )
-    ) {
-      changed = true;
-    }
-
-    return [{ ...record, credentialFilenames }];
+    store.accessKeys = accessKeys;
+    return true;
   });
-
-  if (!changed) {
-    return false;
-  }
-
-  await writeAccessKeyStore({ accessKeys });
-  return true;
 };
 
 export const getAccessKeySecret = async (

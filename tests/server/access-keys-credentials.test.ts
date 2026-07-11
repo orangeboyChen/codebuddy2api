@@ -212,4 +212,27 @@ describe('access key credential reconciliation', () => {
       ),
     ).toHaveLength(2);
   });
+
+  it('preserves access keys created concurrently', async () => {
+    const credential = (await listCredentials()).credentials[0];
+    const filename = String(credential?.filename);
+
+    const [first, second] = await Promise.all([
+      createAccessKey({
+        credentialFilenames: [filename],
+        name: 'First Key',
+      }),
+      createAccessKey({
+        credentialFilenames: [filename],
+        name: 'Second Key',
+      }),
+    ]);
+
+    await expect(listStoredAccessKeys()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: first.access_key.id }),
+        expect.objectContaining({ id: second.access_key.id }),
+      ]),
+    );
+  });
 });
