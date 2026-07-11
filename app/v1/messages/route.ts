@@ -1,20 +1,20 @@
 import type { NextRequest } from 'next/server';
 
-import { getAnthropicAuthErrorResponse } from '@/lib/server/auth';
+import { getAnthropicAuthErrorResponse } from '@/lib/server/proxy/auth';
 import {
   createDebugTrace,
   finalizeDebugTrace,
   isDebugEnabled,
-} from '@/lib/server/debug';
-import { handleMessagesRequest } from '@/lib/server/anthropic';
-import { getJsonBody } from '@/lib/server/http';
+} from '@/lib/server/domain/debug';
+import { handleMessagesRequest } from '@/lib/server/proxy/anthropic';
+import { getJsonBody } from '@/lib/server/shared/http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export const POST = async (request: NextRequest): Promise<Response> => {
   const body = await getJsonBody<Record<string, unknown>>(request);
-  const debugTrace = isDebugEnabled()
+  const debugTrace = (await isDebugEnabled())
     ? createDebugTrace({
         requestBody: body,
         requestKey:
@@ -23,7 +23,7 @@ export const POST = async (request: NextRequest): Promise<Response> => {
         route: '/v1/messages',
       })
     : undefined;
-  const authError = getAnthropicAuthErrorResponse(request);
+  const authError = await getAnthropicAuthErrorResponse(request);
 
   if (authError) {
     finalizeDebugTrace(debugTrace, authError);

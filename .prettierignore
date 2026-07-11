@@ -8,6 +8,3 @@ bun.lock
 *.tsbuildinfo
 .turbo
 .codebuddy_creds
-config/debug-config.json
-config/debug-logs.json
-config/usage

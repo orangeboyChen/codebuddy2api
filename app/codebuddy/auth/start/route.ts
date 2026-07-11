@@ -1,4 +1,4 @@
-import { startCodeBuddyAuth } from '@/lib/server/codebuddy-auth';
+import { startCodeBuddyAuth } from '@/lib/server/proxy/codebuddy-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

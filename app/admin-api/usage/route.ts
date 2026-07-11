@@ -1,4 +1,5 @@
-import { getUsageAnalytics, type UsageRange } from '@/lib/server/usage';
+import { getAdminSessionErrorResponse } from '@/lib/server/admin/session';
+import { getUsageAnalytics, type UsageRange } from '@/lib/server/domain/usage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,6 +17,12 @@ const ALLOWED_RANGES = new Set<UsageRange>([
 ]);
 
 export const GET = async (request: Request): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
   const url = new URL(request.url);
   const range = url.searchParams.get('range') ?? '24h';
   const accessKey = url.searchParams.get('accessKey') ?? 'all';
@@ -33,7 +40,7 @@ export const GET = async (request: Request): Promise<Response> => {
   }
 
   return Response.json(
-    getUsageAnalytics({
+    await getUsageAnalytics({
       accessKey,
       credential,
       range: range as UsageRange,

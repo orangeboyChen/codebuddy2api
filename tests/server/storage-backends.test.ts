@@ -1,0 +1,246 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+const repoRoot = process.cwd();
+const tempRootDir = path.join(repoRoot, '.tmp-test-storage-backends');
+const tempDataDir = path.join(tempRootDir, '.codebuddy_data');
+const tempCredsDir = path.join(tempRootDir, '.codebuddy_creds');
+
+const cleanupTempState = (): void => {
+  fs.rmSync(tempRootDir, { force: true, recursive: true, maxRetries: 5 });
+};
+
+describe('storage backends', () => {
+  beforeEach(() => {
+    cleanupTempState();
+    vi.restoreAllMocks();
+    vi.resetModules();
+    vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
+    delete process.env.CODEBUDDY_STORAGE_FILE_DIR;
+    delete process.env.CODEBUDDY_CONFIG_PATH;
+    delete process.env.CODEBUDDY_STORAGE_BACKEND;
+    delete process.env.CODEBUDDY_STORAGE_PERSISTENCE;
+    delete process.env.CODEBUDDY_STORAGE_PG_URL;
+    delete process.env.DATABASE_URL;
+    delete process.env.CODEBUDDY_STORAGE_PG_SCHEMA;
+    delete process.env.CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES;
+    delete process.env.CODEBUDDY_STORAGE_ENCRYPTION_KEY;
+  });
+
+  afterEach(() => {
+    cleanupTempState();
+  });
+
+  it('selects file backend by default and pg when configured', async () => {
+    const storage = await import('@/lib/server/storage');
+
+    expect(storage.getStorageBackendMeta()).toEqual({
+      backend: 'file',
+      encryptionEnabled: false,
+      schema: null,
+    });
+
+    process.env.CODEBUDDY_STORAGE_PERSISTENCE = 'pg';
+    storage.resetStorageRuntime();
+    expect(storage.getStorageBackendMeta()).toEqual({
+      backend: 'pg',
+      encryptionEnabled: false,
+      schema: 'codebuddy2api',
+    });
+
+    process.env.CODEBUDDY_STORAGE_PERSISTENCE = 'file';
+    process.env.DATABASE_URL = 'postgres://example.test/codebuddy';
+    storage.resetStorageRuntime();
+    expect(storage.getStorageBackendMeta()).toEqual({
+      backend: 'file',
+      encryptionEnabled: false,
+      schema: null,
+    });
+
+    process.env.CODEBUDDY_STORAGE_PERSISTENCE = '';
+    process.env.CODEBUDDY_STORAGE_PG_SCHEMA = 'prod-app.schema';
+    storage.resetStorageRuntime();
+    expect(storage.getStorageBackendMeta()).toEqual({
+      backend: 'pg',
+      encryptionEnabled: false,
+      schema: 'prod_app_schema',
+    });
+  });
+
+  it('imports legacy files into the database backend and encrypts sensitive documents', async () => {
+    process.env.CODEBUDDY_STORAGE_BACKEND = 'pg';
+    process.env.CODEBUDDY_STORAGE_PG_URL = 'postgres://example.test/codebuddy';
+    process.env.CODEBUDDY_STORAGE_ENCRYPTION_KEY = 'storage-secret';
+
+    fs.mkdirSync(tempDataDir, { recursive: true });
+    fs.mkdirSync(tempCredsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDataDir, 'runtime.json'),
+      JSON.stringify({ CODEBUDDY_AUTH_MODE: 'token' }),
+    );
+    fs.writeFileSync(
+      path.join(tempDataDir, 'access-keys.json'),
+      JSON.stringify({ keys: [{ id: 'access-key-1' }] }),
+    );
+    fs.writeFileSync(
+      path.join(tempDataDir, 'debug-settings.json'),
+      JSON.stringify({ enabled: true }),
+    );
+    fs.writeFileSync(
+      path.join(tempDataDir, 'debug-logs.json'),
+      JSON.stringify([{ level: 'error' }]),
+    );
+    fs.writeFileSync(
+      path.join(tempDataDir, 'admin-auth.json'),
+      JSON.stringify({ password: { hash: 'hash', salt: 'salt' } }),
+    );
+    fs.writeFileSync(
+      path.join(tempDataDir, 'usage-history.json'),
+      JSON.stringify([{ id: 'usage-1' }]),
+    );
+    fs.writeFileSync(
+      path.join(tempCredsDir, 'manager_state.json'),
+      JSON.stringify({ selectedCredentialFilename: 'cred-a.json' }),
+    );
+    fs.writeFileSync(
+      path.join(tempCredsDir, 'cred-a.json'),
+      JSON.stringify({ bearer_token: 'token-a' }),
+    );
+
+    const ensureSchema = vi.fn(async () => undefined);
+    const getDocument = vi.fn(async () => null);
+    const listDocuments = vi.fn(async (namespace: string) => {
+      if (namespace === 'credentials') {
+        return [
+          {
+            encryptedPayload: 'broken',
+            encryptionMode: 'unknown',
+            key: 'cred-a.json',
+            payload: null,
+          },
+        ];
+      }
+
+      if (namespace === 'config') {
+        return [
+          {
+            encryptedPayload: null,
+            encryptionMode: null,
+            key: 'runtime',
+            payload: JSON.stringify({ CODEBUDDY_AUTH_MODE: 'token' }),
+          },
+        ];
+      }
+
+      return [];
+    });
+    const putDocument = vi.fn(async () => undefined);
+    const deleteDocument = vi.fn(async () => undefined);
+
+    vi.doMock('@/lib/server/storage/database', () => ({
+      DrizzlePgDatabaseStorageAdapter: class MockAdapter {
+        public deleteDocument = deleteDocument;
+        public ensureSchema = ensureSchema;
+        public getDocument = getDocument;
+        public listDocuments = listDocuments;
+        public putDocument = putDocument;
+      },
+    }));
+
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+
+    await storage.ensureStorageReady();
+
+    expect(ensureSchema).toHaveBeenCalledTimes(1);
+    expect(putDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encryptedPayload: null,
+        encryptionMode: null,
+        key: 'runtime',
+        namespace: 'config',
+        payload: { CODEBUDDY_AUTH_MODE: 'token' },
+      }),
+    );
+    expect(putDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encryptedPayload: expect.any(String),
+        encryptionMode: 'aes-256-gcm',
+        key: 'store',
+        namespace: 'access-keys',
+        payload: null,
+      }),
+    );
+    expect(putDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encryptedPayload: expect.any(String),
+        encryptionMode: 'aes-256-gcm',
+        key: 'cred-a.json',
+        namespace: 'credentials',
+        payload: null,
+      }),
+    );
+
+    await storage.writeStorageJson('credentials', 'cred-b.json', {
+      bearer_token: 'token-b',
+    });
+    await storage.writeStorageJson('config', 'runtime', {
+      CODEBUDDY_AUTH_MODE: 'auto',
+    });
+
+    expect(putDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encryptedPayload: expect.any(String),
+        encryptionMode: 'aes-256-gcm',
+        key: 'cred-b.json',
+        namespace: 'credentials',
+        payload: null,
+      }),
+    );
+    expect(putDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encryptedPayload: null,
+        encryptionMode: null,
+        key: 'runtime',
+        namespace: 'config',
+        payload: { CODEBUDDY_AUTH_MODE: 'auto' },
+      }),
+    );
+
+    await expect(storage.listStorageJson('credentials')).rejects.toThrow(
+      'Invalid authentication tag length',
+    );
+
+    process.env.CODEBUDDY_STORAGE_ENCRYPTION_KEY = 'storage-secret';
+    expect(await storage.listStorageJson('config')).toEqual([
+      {
+        key: 'runtime',
+        value: {
+          CODEBUDDY_AUTH_MODE: 'token',
+        },
+      },
+    ]);
+
+    expect(await storage.readStorageJsonResult('usage', 'history')).toEqual({
+      error: null,
+      exists: true,
+      value: null,
+    });
+
+    await storage.deleteStorageJson('credentials', 'cred-a.json');
+    expect(deleteDocument).toHaveBeenCalledWith('credentials', 'cred-a.json');
+  });
+
+  it('fails fast when pg backend is enabled without a connection string', async () => {
+    process.env.CODEBUDDY_STORAGE_BACKEND = 'pg';
+    process.env.CODEBUDDY_STORAGE_PG_URL = '';
+    process.env.DATABASE_URL = '';
+
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+
+    await expect(storage.ensureStorageReady()).rejects.toThrow(
+      'CODEBUDDY_STORAGE_PG_URL or DATABASE_URL is required when storage backend is pg',
+    );
+  });
+});

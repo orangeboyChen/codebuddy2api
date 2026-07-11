@@ -1,0 +1,386 @@
+import crypto from 'node:crypto';
+
+import {
+  listStorageJson,
+  readStorageJsonResult,
+  writeStorageJson,
+} from '../storage';
+
+export interface AccessKeyRecord {
+  createdAt: string;
+  credentialFilenames: string[];
+  id: string;
+  name: string;
+  secret: string;
+  updatedAt: string;
+}
+
+export interface AccessKeySummary {
+  createdAt: string;
+  credentialFilenames: string[];
+  id: string;
+  maskedSecret: string;
+  name: string;
+  updatedAt: string;
+}
+
+interface AccessKeyStore {
+  accessKeys: AccessKeyRecord[];
+}
+
+type AccessKeyStoreState =
+  | { kind: 'ok'; store: AccessKeyStore }
+  | { kind: 'missing'; store: AccessKeyStore }
+  | { kind: 'error'; error: string; store: AccessKeyStore };
+
+const listAvailableCredentialFilenames = async (): Promise<string[]> => {
+  const items = await listStorageJson<Record<string, unknown>>('credentials');
+
+  return items
+    .filter(
+      ({ key, value }) =>
+        key !== 'manager_state.json' &&
+        Boolean(value.bearer_token ?? value.access_token),
+    )
+    .map(({ key }) => key)
+    .sort((left, right) => left.localeCompare(right));
+};
+
+const pruneAccessKeyStore = (
+  store: AccessKeyStore,
+  availableCredentialFilenames: string[],
+): { changed: boolean; store: AccessKeyStore } => {
+  const available = new Set(availableCredentialFilenames);
+  let changed = false;
+
+  const accessKeys = store.accessKeys.flatMap((record) => {
+    const credentialFilenames = normalizeCredentialFilenames(
+      record.credentialFilenames,
+    ).filter((filename) => available.has(filename));
+
+    if (credentialFilenames.length !== record.credentialFilenames.length) {
+      changed = true;
+    }
+
+    if (!credentialFilenames.length) {
+      changed = true;
+      return [];
+    }
+
+    if (
+      credentialFilenames.some(
+        (filename, index) => filename !== record.credentialFilenames[index],
+      )
+    ) {
+      changed = true;
+    }
+
+    return [{ ...record, credentialFilenames }];
+  });
+
+  return {
+    changed,
+    store: { accessKeys },
+  };
+};
+
+const readAccessKeyStoreState = async (): Promise<AccessKeyStoreState> => {
+  const parsedResult = await readStorageJsonResult<Partial<AccessKeyStore>>(
+    'access-keys',
+    'store',
+  );
+  const parsed = parsedResult.value;
+
+  if (parsedResult.error) {
+    return {
+      kind: 'error',
+      error: parsedResult.error,
+      store: { accessKeys: [] },
+    };
+  }
+
+  if (!parsed && !parsedResult.exists) {
+    return { kind: 'missing', store: { accessKeys: [] } };
+  }
+
+  if (!parsed) {
+    return { kind: 'ok', store: { accessKeys: [] } };
+  }
+
+  try {
+    const accessKeys = Array.isArray(parsed.accessKeys)
+      ? parsed.accessKeys.filter((item): item is AccessKeyRecord => {
+          return Boolean(
+            item &&
+            typeof item === 'object' &&
+            typeof item.id === 'string' &&
+            typeof item.name === 'string' &&
+            typeof item.secret === 'string' &&
+            typeof item.createdAt === 'string' &&
+            typeof item.updatedAt === 'string' &&
+            Array.isArray(item.credentialFilenames),
+          );
+        })
+      : [];
+
+    const normalizedStore = pruneAccessKeyStore(
+      { accessKeys },
+      await listAvailableCredentialFilenames(),
+    );
+
+    if (normalizedStore.changed) {
+      await writeAccessKeyStore(normalizedStore.store);
+    }
+
+    return {
+      kind: 'ok',
+      store: normalizedStore.store,
+    };
+  } catch (error) {
+    return {
+      kind: 'error',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to read access key store',
+      store: { accessKeys: [] },
+    };
+  }
+};
+
+const readAccessKeyStore = async (): Promise<AccessKeyStore> => {
+  return (await readAccessKeyStoreState()).store;
+};
+
+const writeAccessKeyStore = async (store: AccessKeyStore): Promise<void> => {
+  await writeStorageJson('access-keys', 'store', store);
+};
+
+const normalizeCredentialFilenames = (
+  credentialFilenames: string[],
+): string[] => {
+  return Array.from(
+    new Set(credentialFilenames.map((item) => item.trim()).filter(Boolean)),
+  ).sort((left, right) => left.localeCompare(right));
+};
+
+const maskSecret = (secret: string): string => {
+  if (secret.length <= 12) {
+    return `${secret.slice(0, 4)}****`;
+  }
+
+  return `${secret.slice(0, 8)}...${secret.slice(-4)}`;
+};
+
+const toSummary = (record: AccessKeyRecord): AccessKeySummary => {
+  return {
+    createdAt: record.createdAt,
+    credentialFilenames: [...record.credentialFilenames],
+    id: record.id,
+    maskedSecret: maskSecret(record.secret),
+    name: record.name,
+    updatedAt: record.updatedAt,
+  };
+};
+
+const generateSecret = (): string => {
+  return `cb2_${crypto.randomBytes(32).toString('base64url')}`;
+};
+
+export const hasAccessKeys = async (): Promise<boolean> => {
+  return (await readAccessKeyStore()).accessKeys.length > 0;
+};
+
+export const getAccessKeyStoreError = async (): Promise<string | null> => {
+  const state = await readAccessKeyStoreState();
+  return state.kind === 'error' ? state.error : null;
+};
+
+export const listAccessKeys = async (): Promise<{
+  access_keys: AccessKeySummary[];
+}> => {
+  return {
+    access_keys: (await readAccessKeyStore()).accessKeys.map(toSummary),
+  };
+};
+
+export const listStoredAccessKeys = async (): Promise<AccessKeyRecord[]> => {
+  return (await readAccessKeyStore()).accessKeys.map((item) => ({
+    ...item,
+    credentialFilenames: [...item.credentialFilenames],
+  }));
+};
+
+export const findAccessKeyById = async (
+  id: string,
+): Promise<AccessKeyRecord | null> => {
+  return (
+    (await readAccessKeyStore()).accessKeys.find((item) => item.id === id) ??
+    null
+  );
+};
+
+export const findAccessKeyBySecret = async (
+  secret: string,
+): Promise<AccessKeyRecord | null> => {
+  if (!secret.trim()) {
+    return null;
+  }
+
+  return (
+    (await readAccessKeyStore()).accessKeys.find(
+      (item) => item.secret === secret,
+    ) ?? null
+  );
+};
+
+export const createAccessKey = async ({
+  credentialFilenames,
+  name,
+}: {
+  credentialFilenames: string[];
+  name: string;
+}): Promise<{
+  access_key: AccessKeySummary;
+  secret: string;
+}> => {
+  const trimmedName = name.trim();
+  const normalizedCredentialFilenames =
+    normalizeCredentialFilenames(credentialFilenames);
+
+  if (!trimmedName) {
+    throw new Error('Access key name is required');
+  }
+
+  if (!normalizedCredentialFilenames.length) {
+    throw new Error('At least one credential must be selected');
+  }
+
+  const now = new Date().toISOString();
+  const record: AccessKeyRecord = {
+    createdAt: now,
+    credentialFilenames: normalizedCredentialFilenames,
+    id: crypto.randomUUID(),
+    name: trimmedName,
+    secret: generateSecret(),
+    updatedAt: now,
+  };
+  const store = await readAccessKeyStore();
+  store.accessKeys.push(record);
+  await writeAccessKeyStore(store);
+
+  return {
+    access_key: toSummary(record),
+    secret: record.secret,
+  };
+};
+
+export const updateAccessKey = async (
+  id: string,
+  {
+    credentialFilenames,
+    name,
+  }: {
+    credentialFilenames: string[];
+    name: string;
+  },
+): Promise<AccessKeySummary> => {
+  const trimmedName = name.trim();
+  const normalizedCredentialFilenames =
+    normalizeCredentialFilenames(credentialFilenames);
+
+  if (!trimmedName) {
+    throw new Error('Access key name is required');
+  }
+
+  if (!normalizedCredentialFilenames.length) {
+    throw new Error('At least one credential must be selected');
+  }
+
+  const store = await readAccessKeyStore();
+  const record = store.accessKeys.find((item) => item.id === id);
+
+  if (!record) {
+    throw new Error('Access key not found');
+  }
+
+  record.name = trimmedName;
+  record.credentialFilenames = normalizedCredentialFilenames;
+  record.updatedAt = new Date().toISOString();
+  await writeAccessKeyStore(store);
+
+  return toSummary(record);
+};
+
+export const deleteAccessKey = async (id: string): Promise<boolean> => {
+  const store = await readAccessKeyStore();
+  const nextAccessKeys = store.accessKeys.filter((item) => item.id !== id);
+
+  if (nextAccessKeys.length === store.accessKeys.length) {
+    return false;
+  }
+
+  await writeAccessKeyStore({ accessKeys: nextAccessKeys });
+  return true;
+};
+
+export const removeCredentialReferencesFromAccessKeys = async (
+  credentialFilename: string,
+): Promise<boolean> => {
+  const store = await readAccessKeyStore();
+  let changed = false;
+  const available = new Set(
+    (await listAvailableCredentialFilenames()).filter(
+      (filename) => filename !== credentialFilename,
+    ),
+  );
+  const accessKeys = store.accessKeys.flatMap((record) => {
+    const credentialFilenames = normalizeCredentialFilenames(
+      record.credentialFilenames,
+    ).filter(
+      (filename) => filename !== credentialFilename && available.has(filename),
+    );
+
+    if (credentialFilenames.length !== record.credentialFilenames.length) {
+      changed = true;
+    }
+
+    if (!credentialFilenames.length) {
+      changed = true;
+      return [];
+    }
+
+    if (
+      credentialFilenames.some(
+        (filename, index) => filename !== record.credentialFilenames[index],
+      )
+    ) {
+      changed = true;
+    }
+
+    return [{ ...record, credentialFilenames }];
+  });
+
+  if (!changed) {
+    return false;
+  }
+
+  await writeAccessKeyStore({ accessKeys });
+  return true;
+};
+
+export const getAccessKeySecret = async (
+  id: string,
+): Promise<{ id: string; name: string; secret: string } | null> => {
+  const record = await findAccessKeyById(id);
+
+  if (!record) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    name: record.name,
+    secret: record.secret,
+  };
+};

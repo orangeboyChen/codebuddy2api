@@ -1,0 +1,100 @@
+{
+  "Admin": {
+    "common": {
+      "cancel": "Cancel",
+      "copy": "Copy",
+      "loading": "Loading...",
+      "refresh": "Refresh",
+      "save": "Save"
+    },
+    "brand": "CodeBuddy2API Console",
+    "description": "Manage credentials, usage, debug traces, and runtime settings in one place.",
+    "localeLabel": "Language",
+    "logoutLabel": "Log out",
+    "logoutUnavailable": "Log out is currently unavailable.",
+    "statusLabel": "Credentials",
+    "statusValue": "{count} active",
+    "tabsLabel": "Admin navigation",
+    "themeLabel": "Theme",
+    "themeSystem": "System",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "topbarHint": "Language is stored in a cookie, so stable routes do not need locale prefixes.",
+    "tabs": {
+      "dashboard": "Dashboard",
+      "usage": "Usage",
+      "credentials": "Credentials",
+      "apiTest": "API Test",
+      "debug": "Debug",
+      "settings": "Settings"
+    },
+    "sections": {
+      "dashboard": {
+        "eyebrow": "Operations overview",
+        "title": "Quickly confirm proxy health and credential pool availability."
+      },
+      "usage": {
+        "eyebrow": "Traffic analytics",
+        "title": "Inspect request volume, token load, and model mix trends."
+      },
+      "credentials": {
+        "eyebrow": "Credential workspace",
+        "title": "Manage CodeBuddy credentials, access keys, and OAuth refresh flows."
+      },
+      "apiTest": {
+        "eyebrow": "Request sandbox",
+        "title": "Run targeted requests through the current `/v1` proxy path."
+      },
+      "debug": {
+        "eyebrow": "Trace records",
+        "title": "Review sanitized upstream request and response traces."
+      },
+      "settings": {
+        "eyebrow": "Runtime configuration",
+        "title": "Adjust environment-facing settings directly from the console."
+      }
+    },
+    "authHooks": {
+      "loginTitle": "Admin sign in",
+      "loginDescription": "Use the built-in admin login to establish the session cookie, then manage credentials, access keys, and passkeys from the console."
+    },
+    "settingsPanel": {
+      "helper": "The passkey RP ID should usually match the final site domain. HTTPS works directly; localhost is commonly allowed for local development, while other non-HTTPS domains usually cannot use passkeys.",
+      "loading": "Loading settings...",
+      "saveSuccess": "Settings saved.",
+      "title": "Service settings"
+    },
+    "loginPage": {
+      "autofillAvailable": "Passkey autofill is available and the page will try it automatically.",
+      "autofillUnavailable": "Passkeys are configured, but this browser does not support conditional autofill. Use the passkey button instead.",
+      "continueWithPasskey": "Continue with passkey",
+      "continueWithPassword": "Continue with password",
+      "createAccountRedirecting": "Admin account created. Redirecting...",
+      "createPasswordLabel": "Create admin password",
+      "createPasswordPlaceholder": "Choose a strong password",
+      "createPasswordStatus": "Create the first admin password to unlock the console.",
+      "createPasswordSubmit": "Create password",
+      "description": "Sign in with the admin password or a passkey.",
+      "descriptionLogin": "Use the existing admin password or a registered passkey. When the browser supports conditional passkeys, the page will try it automatically.",
+      "descriptionSetup": "Create the first admin password. The backend will set the admin session cookie immediately after setup succeeds.",
+      "errorPasskeyFailed": "Passkey sign-in failed. Try again or use your password.",
+      "errorPasskeyUnavailable": "Passkey sign-in is unavailable right now.",
+      "errorPasswordStatus": "Use your admin password to continue.",
+      "headingLogin": "Sign in to the admin console",
+      "headingSetup": "Set up the admin account",
+      "noPasskeysConfigured": "No passkeys are configured for this admin account yet.",
+      "orLabel": "or",
+      "passkeyAccepted": "Passkey accepted. Redirecting...",
+      "passkeyHintLogin": "after the first account is configured.",
+      "passkeyHintSetup": "and signs you in immediately.",
+      "passkeyStatusManual": "Opening the passkey prompt...",
+      "passwordAccepted": "Password accepted. Redirecting...",
+      "passwordLabel": "Admin password",
+      "passwordSignInHint": "Use your password or a saved passkey to continue.",
+      "signInWithPassword": "Creating the admin account...",
+      "signingInPassword": "Signing in with password...",
+      "title": "Admin sign in",
+      "waitingForPasskey": "Waiting for a saved passkey..."
+    }
+  }
+}

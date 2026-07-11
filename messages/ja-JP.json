@@ -1,0 +1,100 @@
+{
+  "Admin": {
+    "common": {
+      "cancel": "キャンセル",
+      "copy": "コピー",
+      "loading": "読み込み中...",
+      "refresh": "更新",
+      "save": "保存"
+    },
+    "brand": "CodeBuddy2API コンソール",
+    "description": "認証情報、使用量、Debug トレース、実行時設定をまとめて管理します。",
+    "localeLabel": "言語",
+    "logoutLabel": "ログアウト",
+    "logoutUnavailable": "現在この環境ではログアウトを利用できません。",
+    "statusLabel": "認証情報",
+    "statusValue": "{count} 件が有効",
+    "tabsLabel": "管理ナビゲーション",
+    "themeLabel": "テーマ",
+    "themeSystem": "システム",
+    "themeLight": "ライト",
+    "themeDark": "ダーク",
+    "topbarHint": "言語は Cookie に保存されるため、locale プレフィックス付きのパスは不要です。",
+    "tabs": {
+      "dashboard": "ダッシュボード",
+      "usage": "使用量",
+      "credentials": "認証情報",
+      "apiTest": "API テスト",
+      "debug": "Debug",
+      "settings": "設定"
+    },
+    "sections": {
+      "dashboard": {
+        "eyebrow": "運用サマリー",
+        "title": "プロキシの状態と認証情報プールの可用性を素早く確認します。"
+      },
+      "usage": {
+        "eyebrow": "トラフィック分析",
+        "title": "リクエスト数、トークン消費量、モデル構成の推移を確認します。"
+      },
+      "credentials": {
+        "eyebrow": "認証情報ワークスペース",
+        "title": "CodeBuddy 認証情報、Access Key、OAuth 更新フローを管理します。"
+      },
+      "apiTest": {
+        "eyebrow": "リクエストサンドボックス",
+        "title": "現在の `/v1` プロキシ経路で対象リクエストを実行します。"
+      },
+      "debug": {
+        "eyebrow": "トレース記録",
+        "title": "マスク済みの上流リクエストとレスポンスを確認します。"
+      },
+      "settings": {
+        "eyebrow": "実行時設定",
+        "title": "環境向け設定をコンソールから直接変更します。"
+      }
+    },
+    "authHooks": {
+      "loginTitle": "管理者サインイン",
+      "loginDescription": "組み込みの管理者ログインで session cookie を作成し、その後コンソールから認証情報、Access Key、passkey を管理します。"
+    },
+    "settingsPanel": {
+      "helper": "Passkey の RP ID は通常、最終的にアクセスするドメインと一致させます。HTTPS ではそのまま利用でき、localhost はローカル開発で使えることが多い一方、それ以外の非 HTTPS ドメインでは通常 passkey を利用できません。",
+      "loading": "設定を読み込んでいます...",
+      "saveSuccess": "設定を保存しました。",
+      "title": "サービス設定"
+    },
+    "loginPage": {
+      "autofillAvailable": "対応ブラウザでは passkey 自動入力が利用可能で、このページで自動的に試行されます。",
+      "autofillUnavailable": "passkey は設定済みですが、このブラウザは条件付き自動入力をサポートしていません。代わりに passkey ボタンを使用してください。",
+      "continueWithPasskey": "passkey で続行",
+      "continueWithPassword": "パスワードで続行",
+      "createAccountRedirecting": "管理者アカウントを作成しました。リダイレクトしています...",
+      "createPasswordLabel": "管理者パスワードを作成",
+      "createPasswordPlaceholder": "強力なパスワードを入力",
+      "createPasswordStatus": "最初の管理者パスワードを作成してコンソールを有効化します。",
+      "createPasswordSubmit": "パスワードを作成",
+      "description": "管理者パスワードまたは passkey を使用してサインインします。",
+      "descriptionLogin": "既存の管理者パスワードまたは登録済み passkey を使用します。このブラウザが条件付き passkey をサポートしている場合、自動的に試行します。",
+      "descriptionSetup": "最初の管理者パスワードを作成します。設定に成功すると、バックエンドが管理者 session cookie を設定します。",
+      "errorPasskeyFailed": "passkey サインインに失敗しました。再試行するか、パスワードを使用してください。",
+      "errorPasskeyUnavailable": "現在 passkey サインインは利用できません。",
+      "errorPasswordStatus": "管理者パスワードを使用して続行してください。",
+      "headingLogin": "管理者コンソールにサインイン",
+      "headingSetup": "管理者アカウントをセットアップ",
+      "noPasskeysConfigured": "この管理者アカウントにはまだ passkey が設定されていません。",
+      "orLabel": "または",
+      "passkeyAccepted": "passkey を確認しました。リダイレクトしています...",
+      "passkeyHintLogin": "最初のアカウント設定後に使用します。",
+      "passkeyHintSetup": "設定成功後は即座にサインインされます。",
+      "passkeyStatusManual": "passkey プロンプトを開いています...",
+      "passwordAccepted": "パスワードを確認しました。リダイレクトしています...",
+      "passwordLabel": "管理者パスワード",
+      "passwordSignInHint": "パスワードまたは保存済み passkey を使用して続行してください。",
+      "signInWithPassword": "管理者アカウントを作成しています...",
+      "signingInPassword": "パスワードでサインインしています...",
+      "title": "管理者サインイン",
+      "waitingForPasskey": "保存済み passkey を待っています..."
+    }
+  }
+}

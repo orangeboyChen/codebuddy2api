@@ -9,7 +9,7 @@ services:
       PORT: '8001'
       NEXT_TELEMETRY_DISABLED: '1'
     volumes:
-      - ../config:/app/config
+      - ../.codebuddy_data:/app/.codebuddy_data
       - ../.codebuddy_creds:/app/.codebuddy_creds
     env_file:
       - path: ../.env

@@ -1,20 +1,20 @@
 import type { NextRequest } from 'next/server';
 
-import { getClientAuthErrorResponse } from '@/lib/server/auth';
+import { getClientAuthErrorResponse } from '@/lib/server/proxy/auth';
 import {
   createDebugTrace,
   finalizeDebugTrace,
   isDebugEnabled,
-} from '@/lib/server/debug';
-import { proxyChatCompletions } from '@/lib/server/codebuddy';
-import { getJsonBody } from '@/lib/server/http';
+} from '@/lib/server/domain/debug';
+import { proxyChatCompletions } from '@/lib/server/proxy/codebuddy';
+import { getJsonBody } from '@/lib/server/shared/http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export const POST = async (request: NextRequest): Promise<Response> => {
   const body = await getJsonBody<Record<string, unknown>>(request);
-  const debugTrace = isDebugEnabled()
+  const debugTrace = (await isDebugEnabled())
     ? createDebugTrace({
         requestBody: body,
         requestKey:
@@ -23,7 +23,7 @@ export const POST = async (request: NextRequest): Promise<Response> => {
         route: '/v1/chat/completions',
       })
     : undefined;
-  const authError = getClientAuthErrorResponse(request);
+  const authError = await getClientAuthErrorResponse(request);
 
   if (authError) {
     finalizeDebugTrace(debugTrace, authError);

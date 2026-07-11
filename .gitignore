@@ -20,6 +20,7 @@ test-report.junit.xml
 .env.development.local
 .env.test.local
 .env.production.local
+.codebuddy_data/
 config/config.json
 config/debug-config.json
 config/debug-logs.json
