@@ -9,11 +9,8 @@ coverage:
         threshold: 0%
     patch:
       default:
-        # Keep patch status aligned with the repository's real coverage gate.
-        # The hard 90% minimum is already enforced by vitest in CI, while the
-        # PR diff here can span large feature work and non-executable lines.
-        target: auto
-        threshold: 0%
+        target: 90%
+        threshold: 1%
 
 comment:
   layout: 'condensed_header, diff, flags, components'
@@ -44,5 +41,5 @@ flag_management:
         target: auto
         threshold: 0%
       - type: patch
-        target: auto
-        threshold: 0%
+        target: 90%
+        threshold: 1%
