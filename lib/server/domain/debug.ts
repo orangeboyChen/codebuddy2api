@@ -60,6 +60,7 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 
 const MAX_SNAPSHOT_TEXT_LENGTH = 200_000;
 const REDACTED_VALUE = '[redacted]';
+let debugWriteQueue: Promise<void> = Promise.resolve();
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
   'proxy-authorization',
@@ -87,6 +88,16 @@ const SENSITIVE_FIELD_NAMES = new Set([
   'x-user-id',
   'x_user_id',
 ]);
+
+const enqueueDebugWrite = async <T>(mutation: () => Promise<T>): Promise<T> => {
+  const operation = debugWriteQueue.then(mutation, mutation);
+  debugWriteQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return operation;
+};
 
 const maskSensitiveString = (value: string): string => {
   const trimmed = value.trim();
@@ -272,7 +283,7 @@ export const updateDebugSettings = async (
   return merged;
 };
 
-export const listDebugLogs = async (): Promise<DebugLogEntry[]> => {
+const readDebugLogs = async (): Promise<DebugLogEntry[]> => {
   const logs = (await readStorageJson<DebugLogEntry[]>('debug', 'logs')) ?? [];
 
   if (!Array.isArray(logs)) {
@@ -290,8 +301,15 @@ export const listDebugLogs = async (): Promise<DebugLogEntry[]> => {
   });
 };
 
+export const listDebugLogs = async (): Promise<DebugLogEntry[]> => {
+  await debugWriteQueue;
+  return readDebugLogs();
+};
+
 export const clearDebugLogs = async (): Promise<void> => {
-  await writeStorageJson('debug', 'logs', []);
+  await enqueueDebugWrite(async () => {
+    await writeStorageJson('debug', 'logs', []);
+  });
 };
 
 export const isDebugEnabled = async (): Promise<boolean> => {
@@ -385,10 +403,12 @@ export const enqueueUpstreamResponseSnapshot = (
 };
 
 const appendDebugLog = async (entry: DebugLogEntry): Promise<void> => {
-  const settings = await getDebugSettings();
-  const currentLogs = await listDebugLogs();
-  const nextLogs = [entry, ...currentLogs].slice(0, settings.maxEntries);
-  await writeStorageJson('debug', 'logs', nextLogs);
+  await enqueueDebugWrite(async () => {
+    const settings = await getDebugSettings();
+    const currentLogs = await readDebugLogs();
+    const nextLogs = [entry, ...currentLogs].slice(0, settings.maxEntries);
+    await writeStorageJson('debug', 'logs', nextLogs);
+  });
 };
 
 export const finalizeDebugTrace = (

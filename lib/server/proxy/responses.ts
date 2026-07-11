@@ -51,6 +51,8 @@ type ResponseSessionDefaults = Pick<
 >;
 
 interface ResponseSession {
+  accessKeyId: string | null;
+  createdAt: number;
   id: string;
   model: string;
   transcript: TranscriptMessage[];
@@ -110,6 +112,8 @@ const TOOL_SEARCH_PROXY_NAME = 'tool_search';
 const CUSTOM_TOOL_INPUT_FIELD = 'input';
 const CUSTOM_TOOL_INPUT_DESCRIPTION =
   'Raw string input for the original custom tool.';
+const MAX_RESPONSE_SESSIONS = 1_000;
+const RESPONSE_SESSION_TTL_MS = 60 * 60 * 1000;
 
 const globalResponsesState = globalThis as typeof globalThis & {
   __codebuddy2apiResponseSessions__?: Map<string, ResponseSession>;
@@ -121,6 +125,38 @@ const getSessionStore = (): Map<string, ResponseSession> => {
   }
 
   return globalResponsesState.__codebuddy2apiResponseSessions__;
+};
+
+const pruneResponseSessions = (): void => {
+  const store = getSessionStore();
+  const expiresBefore = Date.now() - RESPONSE_SESSION_TTL_MS;
+
+  for (const [id, session] of store) {
+    if (session.createdAt <= expiresBefore) {
+      store.delete(id);
+    }
+  }
+
+  while (store.size > MAX_RESPONSE_SESSIONS) {
+    const oldestId = store.keys().next().value;
+
+    if (!oldestId) {
+      return;
+    }
+
+    store.delete(oldestId);
+  }
+};
+
+const getResponseSession = (id: string): ResponseSession | undefined => {
+  pruneResponseSessions();
+  return getSessionStore().get(id);
+};
+
+const storeResponseSession = (session: ResponseSession): void => {
+  const store = getSessionStore();
+  store.set(session.id, session);
+  pruneResponseSessions();
 };
 
 const flattenNamespaceToolName = (namespace: string, name: string): string => {
@@ -737,6 +773,7 @@ const getStreamingToolCallLookupKeys = (
 
 const prepareTranscript = async (
   body: ResponsesRequestBody,
+  accessKeyId: string | null,
 ): Promise<{
   defaults: ResponseSessionDefaults;
   model: string;
@@ -745,10 +782,13 @@ const prepareTranscript = async (
 }> => {
   const previousResponseId = body.previous_response_id ?? null;
   const previousSession = previousResponseId
-    ? getSessionStore().get(previousResponseId)
+    ? getResponseSession(previousResponseId)
     : undefined;
 
-  if (previousResponseId && !previousSession) {
+  if (
+    previousResponseId &&
+    (!previousSession || previousSession.accessKeyId !== accessKeyId)
+  ) {
     throw new Error('Unknown or expired previous_response_id');
   }
 
@@ -819,6 +859,7 @@ const normalizeTranscriptMessageToolNames = (
 };
 
 const mapChatResponseToResponsesPayload = (
+  accessKeyId: string | null,
   defaults: ResponseSessionDefaults,
   transcript: TranscriptMessage[],
   model: string,
@@ -871,7 +912,9 @@ const mapChatResponseToResponsesPayload = (
     );
   });
 
-  getSessionStore().set(responseId, {
+  storeResponseSession({
+    accessKeyId,
+    createdAt: Date.now(),
     id: responseId,
     model,
     transcript: [
@@ -1072,7 +1115,9 @@ const createResponsesEventStream = async (
               [...toolCallStates.values()],
               defaults.tools,
             );
-          getSessionStore().set(responseId, {
+          storeResponseSession({
+            accessKeyId: proxyContext?.accessKeyId ?? null,
+            createdAt: Date.now(),
             id: responseId,
             model,
             transcript: [
@@ -1314,7 +1359,7 @@ export const handleResponsesRequest = async (
       );
     }
 
-    const prepared = await prepareTranscript(body);
+    const prepared = await prepareTranscript(body, proxyContext.accessKeyId);
     const compatibilityError = getResponsesCompatibilityError(
       prepared.defaults.tools,
       prepared.defaults.tool_choice,
@@ -1376,6 +1421,7 @@ export const handleResponsesRequest = async (
 
     return Response.json(
       mapChatResponseToResponsesPayload(
+        proxyContext.accessKeyId,
         prepared.defaults,
         prepared.transcript,
         prepared.model,

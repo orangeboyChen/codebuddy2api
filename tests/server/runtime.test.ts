@@ -699,6 +699,73 @@ describe('server runtime', () => {
     expect(missingStateResponse.status).toBe(400);
   });
 
+  it("does not allow one access key to resume another key's response", async () => {
+    const firstCredential = await (
+      await AdminCredentialsRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/credentials', {
+          bearer_token: 'responses-owner-token',
+          user_id: 'responses-owner@example.com',
+        }),
+      )
+    ).json();
+    const secondCredential = await (
+      await AdminCredentialsRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/credentials', {
+          bearer_token: 'responses-other-token',
+          user_id: 'responses-other@example.com',
+        }),
+      )
+    ).json();
+    const firstKey = await (
+      await AdminAccessKeysRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/access-keys', {
+          credential_filenames: [firstCredential.filename],
+          name: 'Response Owner Key',
+        }),
+      )
+    ).json();
+    const secondKey = await (
+      await AdminAccessKeysRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/access-keys', {
+          credential_filenames: [secondCredential.filename],
+          name: 'Response Other Key',
+        }),
+      )
+    ).json();
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        makeSseResponse([
+          'data: {"choices":[{"delta":{"content":"private"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":" response"},"finish_reason":"stop"}]}\n\n',
+          'data: [DONE]\n\n',
+        ]),
+      );
+
+    const firstResponse = await V1ResponsesRoute.POST(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${firstKey.secret}` },
+        body: JSON.stringify({ input: 'private prompt', model: 'glm-5.1' }),
+      }),
+    );
+    const firstPayload = await firstResponse.json();
+    const secondResponse = await V1ResponsesRoute.POST(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${secondKey.secret}` },
+        body: JSON.stringify({
+          input: 'attempt to continue',
+          previous_response_id: firstPayload.id,
+        }),
+      }),
+    );
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('supports codebuddy auth start, poll, callback, and protected api settings', async () => {
     const jwtPayload = Buffer.from(
       JSON.stringify({

@@ -81,6 +81,19 @@ const USAGE_STORE_KEY = 'history';
 const MAX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+let usageMutationQueue: Promise<void> = Promise.resolve();
+
+const enqueueUsageMutation = async <T>(
+  mutation: () => Promise<T>,
+): Promise<T> => {
+  const operation = usageMutationQueue.then(mutation, mutation);
+  usageMutationQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return operation;
+};
 
 const toNumber = (value: unknown): number => {
   const numeric =
@@ -402,28 +415,32 @@ export const recordUsageEvent = async ({
     return;
   }
 
-  const base = normalizeUsage(usage);
-  const event: UsageEventRecord = {
-    ...base,
-    accessKeyId: accessKeyId ?? null,
-    accessKeyName: accessKeyName ?? null,
-    credentialFilename: credentialFilename ?? null,
-    model: model.trim() || 'unknown',
-    route,
-    timestamp: timestamp ?? new Date().toISOString(),
-  };
+  await enqueueUsageMutation(async () => {
+    const base = normalizeUsage(usage);
+    const event: UsageEventRecord = {
+      ...base,
+      accessKeyId: accessKeyId ?? null,
+      accessKeyName: accessKeyName ?? null,
+      credentialFilename: credentialFilename ?? null,
+      model: model.trim() || 'unknown',
+      route,
+      timestamp: timestamp ?? new Date().toISOString(),
+    };
 
-  const nowMs = Date.now();
-  const store = await persistTrimmedStore(nowMs);
-  const events = trimExpiredEvents([...store.events, event], nowMs);
-  await writeUsageStore({
-    events,
+    const nowMs = Date.now();
+    const store = await persistTrimmedStore(nowMs);
+    const events = trimExpiredEvents([...store.events, event], nowMs);
+    await writeUsageStore({
+      events,
+    });
   });
 };
 
 export const clearUsageHistory = async (): Promise<void> => {
-  await writeUsageStore({
-    events: [],
+  await enqueueUsageMutation(async () => {
+    await writeUsageStore({
+      events: [],
+    });
   });
 };
 
@@ -438,168 +455,171 @@ export const getUsageAnalytics = async ({
   now?: Date;
   range: UsageRange;
 }): Promise<UsageAnalyticsResponse> => {
-  const nowMs = now.getTime();
-  const store = await persistTrimmedStore(nowMs);
-  const buckets = buildBuckets(range, now);
-  const tokenSeriesByModel = new Map<string, UsageBucketTotals[]>();
-  const callSeriesByModel = new Map<string, UsageBucketTotals[]>();
-  const tableRowsByModel = new Map<string, UsageBucketTotals>();
-  const credentialCallCounts: Record<string, number> = {};
-  const todaySummary = createEmptyTotals();
-  const todayBounds = getTodayBounds(now);
-  const { endMs, startMs } = getRangeWindow(range, now);
+  return enqueueUsageMutation(async () => {
+    const nowMs = now.getTime();
+    const store = await persistTrimmedStore(nowMs);
+    const buckets = buildBuckets(range, now);
+    const tokenSeriesByModel = new Map<string, UsageBucketTotals[]>();
+    const callSeriesByModel = new Map<string, UsageBucketTotals[]>();
+    const tableRowsByModel = new Map<string, UsageBucketTotals>();
+    const credentialCallCounts: Record<string, number> = {};
+    const todaySummary = createEmptyTotals();
+    const todayBounds = getTodayBounds(now);
+    const { endMs, startMs } = getRangeWindow(range, now);
 
-  store.events.forEach((event) => {
-    const eventMs = Date.parse(event.timestamp);
+    store.events.forEach((event) => {
+      const eventMs = Date.parse(event.timestamp);
 
-    if (!Number.isFinite(eventMs)) {
-      return;
-    }
+      if (!Number.isFinite(eventMs)) {
+        return;
+      }
 
-    if (!matchesFilter(event, accessKey, credential)) {
-      return;
-    }
+      if (!matchesFilter(event, accessKey, credential)) {
+        return;
+      }
 
-    if (event.credentialFilename) {
-      credentialCallCounts[event.credentialFilename] =
-        (credentialCallCounts[event.credentialFilename] ?? 0) + event.callCount;
-    }
+      if (event.credentialFilename) {
+        credentialCallCounts[event.credentialFilename] =
+          (credentialCallCounts[event.credentialFilename] ?? 0) +
+          event.callCount;
+      }
 
-    if (eventMs >= todayBounds.startMs && eventMs < todayBounds.endMs) {
-      const nextTodaySummary = addEventToTotals(todaySummary, event);
-      todaySummary.callCount = nextTodaySummary.callCount;
-      todaySummary.cacheHitTokens = nextTodaySummary.cacheHitTokens;
-      todaySummary.totalTokens = nextTodaySummary.totalTokens;
-    }
+      if (eventMs >= todayBounds.startMs && eventMs < todayBounds.endMs) {
+        const nextTodaySummary = addEventToTotals(todaySummary, event);
+        todaySummary.callCount = nextTodaySummary.callCount;
+        todaySummary.cacheHitTokens = nextTodaySummary.cacheHitTokens;
+        todaySummary.totalTokens = nextTodaySummary.totalTokens;
+      }
 
-    if (eventMs < startMs || eventMs >= endMs) {
-      return;
-    }
+      if (eventMs < startMs || eventMs >= endMs) {
+        return;
+      }
 
-    const bucketIndex = getBucketIndex(range, eventMs, now);
+      const bucketIndex = getBucketIndex(range, eventMs, now);
 
-    if (bucketIndex < 0) {
-      return;
-    }
+      if (bucketIndex < 0) {
+        return;
+      }
 
-    const tokenBuckets =
-      tokenSeriesByModel.get(event.model) ??
-      createEmptyBucketTotals(buckets.length);
-    const callBuckets =
-      callSeriesByModel.get(event.model) ??
-      createEmptyBucketTotals(buckets.length);
-    const tableTotals =
-      tableRowsByModel.get(event.model) ?? createEmptyTotals();
+      const tokenBuckets =
+        tokenSeriesByModel.get(event.model) ??
+        createEmptyBucketTotals(buckets.length);
+      const callBuckets =
+        callSeriesByModel.get(event.model) ??
+        createEmptyBucketTotals(buckets.length);
+      const tableTotals =
+        tableRowsByModel.get(event.model) ?? createEmptyTotals();
 
-    tokenBuckets[bucketIndex] = addEventToTotals(
-      tokenBuckets[bucketIndex],
-      event,
-    );
-    callBuckets[bucketIndex] = {
-      ...addEventToTotals(callBuckets[bucketIndex], event),
-      totalTokens: callBuckets[bucketIndex].totalTokens,
-      cacheHitTokens: callBuckets[bucketIndex].cacheHitTokens,
-    };
-    tableRowsByModel.set(event.model, addEventToTotals(tableTotals, event));
-    tokenSeriesByModel.set(event.model, tokenBuckets);
-    callSeriesByModel.set(event.model, callBuckets);
-  });
-
-  const toSeries = (
-    modelMap: Map<string, UsageBucketTotals[]>,
-  ): UsageChartSeries[] => {
-    return [...modelMap.entries()]
-      .sort((left, right) => left[0].localeCompare(right[0]))
-      .map(([model, points]) => ({
-        model,
-        points: points.map((point, index) => ({
-          callCount: point.callCount,
-          cacheHitTokens: point.cacheHitTokens,
-          label: buckets[index].label,
-          start: buckets[index].start,
-          totalTokens: point.totalTokens,
-        })),
-      }));
-  };
-
-  const accessKeys = await listAccessKeys();
-  const credentialFilenames = await listCredentialFilenames();
-  const accessKeyHistoryOptions = [...store.events]
-    .filter(
-      (
+      tokenBuckets[bucketIndex] = addEventToTotals(
+        tokenBuckets[bucketIndex],
         event,
-      ): event is UsageEventRecord & {
-        accessKeyId: string;
-        accessKeyName: string;
-      } =>
-        typeof event.accessKeyId === 'string' &&
-        event.accessKeyId.length > 0 &&
-        typeof event.accessKeyName === 'string' &&
-        event.accessKeyName.length > 0,
-    )
-    .map((event) => ({
-      label: event.accessKeyName,
-      value: event.accessKeyId,
-    }))
-    .sort((left, right) => left.label.localeCompare(right.label));
+      );
+      callBuckets[bucketIndex] = {
+        ...addEventToTotals(callBuckets[bucketIndex], event),
+        totalTokens: callBuckets[bucketIndex].totalTokens,
+        cacheHitTokens: callBuckets[bucketIndex].cacheHitTokens,
+      };
+      tableRowsByModel.set(event.model, addEventToTotals(tableTotals, event));
+      tokenSeriesByModel.set(event.model, tokenBuckets);
+      callSeriesByModel.set(event.model, callBuckets);
+    });
 
-  const credentialHistoryOptions = [
-    ...new Set(
-      store.events
-        .map((event) => event.credentialFilename)
-        .filter(
-          (value): value is string =>
-            typeof value === 'string' && value.length > 0,
-        ),
-    ),
-  ]
-    .sort((left, right) => left.localeCompare(right))
-    .map((value) => ({
-      label: value,
-      value,
-    }));
+    const toSeries = (
+      modelMap: Map<string, UsageBucketTotals[]>,
+    ): UsageChartSeries[] => {
+      return [...modelMap.entries()]
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map(([model, points]) => ({
+          model,
+          points: points.map((point, index) => ({
+            callCount: point.callCount,
+            cacheHitTokens: point.cacheHitTokens,
+            label: buckets[index].label,
+            start: buckets[index].start,
+            totalTokens: point.totalTokens,
+          })),
+        }));
+    };
 
-  return {
-    callSeries: toSeries(callSeriesByModel),
-    credentialCallCounts,
-    filters: {
-      accessKeys: mergeFilterOptions(
-        [
-          {
-            label: '全部 API Key',
-            value: 'all',
-          },
-          ...accessKeys.access_keys.map((item) => ({
-            label: item.name,
-            value: item.id,
-          })),
-        ],
-        accessKeyHistoryOptions,
-      ),
-      credentials: mergeFilterOptions(
-        [
-          {
-            label: '全部凭据',
-            value: 'all',
-          },
-          ...credentialFilenames.map((filename) => ({
-            label: filename,
-            value: filename,
-          })),
-        ],
-        credentialHistoryOptions,
-      ),
-    },
-    range,
-    tableRows: [...tableRowsByModel.entries()]
-      .map(([model, totals]) => ({
-        ...totals,
-        model,
+    const accessKeys = await listAccessKeys();
+    const credentialFilenames = await listCredentialFilenames();
+    const accessKeyHistoryOptions = [...store.events]
+      .filter(
+        (
+          event,
+        ): event is UsageEventRecord & {
+          accessKeyId: string;
+          accessKeyName: string;
+        } =>
+          typeof event.accessKeyId === 'string' &&
+          event.accessKeyId.length > 0 &&
+          typeof event.accessKeyName === 'string' &&
+          event.accessKeyName.length > 0,
+      )
+      .map((event) => ({
+        label: event.accessKeyName,
+        value: event.accessKeyId,
       }))
-      .sort((left, right) => right.totalTokens - left.totalTokens),
-    todaySummary,
-    tokenSeries: toSeries(tokenSeriesByModel),
-  };
+      .sort((left, right) => left.label.localeCompare(right.label));
+
+    const credentialHistoryOptions = [
+      ...new Set(
+        store.events
+          .map((event) => event.credentialFilename)
+          .filter(
+            (value): value is string =>
+              typeof value === 'string' && value.length > 0,
+          ),
+      ),
+    ]
+      .sort((left, right) => left.localeCompare(right))
+      .map((value) => ({
+        label: value,
+        value,
+      }));
+
+    return {
+      callSeries: toSeries(callSeriesByModel),
+      credentialCallCounts,
+      filters: {
+        accessKeys: mergeFilterOptions(
+          [
+            {
+              label: '全部 API Key',
+              value: 'all',
+            },
+            ...accessKeys.access_keys.map((item) => ({
+              label: item.name,
+              value: item.id,
+            })),
+          ],
+          accessKeyHistoryOptions,
+        ),
+        credentials: mergeFilterOptions(
+          [
+            {
+              label: '全部凭据',
+              value: 'all',
+            },
+            ...credentialFilenames.map((filename) => ({
+              label: filename,
+              value: filename,
+            })),
+          ],
+          credentialHistoryOptions,
+        ),
+      },
+      range,
+      tableRows: [...tableRowsByModel.entries()]
+        .map(([model, totals]) => ({
+          ...totals,
+          model,
+        }))
+        .sort((left, right) => right.totalTokens - left.totalTokens),
+      todaySummary,
+      tokenSeries: toSeries(tokenSeriesByModel),
+    };
+  });
 };
 
 export const resetUsageHistory = async (): Promise<void> => {

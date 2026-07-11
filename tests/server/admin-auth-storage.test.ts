@@ -180,6 +180,16 @@ describe('admin auth and storage', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('fails closed when admin auth storage is unreadable', async () => {
+    fs.mkdirSync(tempDataDir, { recursive: true });
+    fs.writeFileSync(path.join(tempDataDir, 'admin-auth.json'), '{');
+
+    expect(
+      (await getAdminSessionErrorResponse(makeRequest('/admin-api/settings')))
+        ?.status,
+    ).toBe(503);
+  });
+
   it('covers passkey auth guard branches and rp id resolution through config storage', async () => {
     const noPasskeyResponse = await beginAdminPasskeyAuthentication(
       makeRequest('/admin-api/auth/passkeys/authentication/options'),

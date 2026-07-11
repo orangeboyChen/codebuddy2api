@@ -223,6 +223,44 @@ describe('debug and usage persistence', () => {
     expect(await listDebugLogs()).toHaveLength(1);
   });
 
+  it('serializes concurrent debug and usage persistence', async () => {
+    await updateDebugSettings({ enabled: true, maxEntries: 2 });
+    const firstTrace = createDebugTrace({
+      requestBody: { input: 'first' },
+      requestKey: null,
+      route: '/v1/chat/completions',
+    });
+    const secondTrace = createDebugTrace({
+      requestBody: { input: 'second' },
+      requestKey: null,
+      route: '/v1/responses',
+    });
+
+    finalizeDebugTrace(firstTrace, Response.json({ ok: true }));
+    finalizeDebugTrace(secondTrace, Response.json({ ok: true }));
+
+    await vi.waitFor(async () => {
+      expect(await listDebugLogs()).toHaveLength(2);
+    });
+
+    await Promise.all([
+      recordUsageEvent({
+        model: 'first',
+        route: '/v1/chat/completions',
+        usage: { total_tokens: 1 },
+      }),
+      recordUsageEvent({
+        model: 'second',
+        route: '/v1/responses',
+        usage: { total_tokens: 1 },
+      }),
+    ]);
+
+    expect(
+      (await getUsageAnalytics({ range: 'today' })).todaySummary.callCount,
+    ).toBe(2);
+  });
+
   it('records usage, aggregates ranges, filters, and trims stale events', async () => {
     const now = new Date('2026-07-11T12:30:00.000Z');
     vi.spyOn(Date, 'now').mockReturnValue(now.getTime());

@@ -16,7 +16,7 @@ import {
   verifyRegistrationResponse,
 } from '@simplewebauthn/server';
 
-import { readStorageJson, writeStorageJson } from '../storage';
+import { readStorageJsonResult, writeStorageJson } from '../storage';
 
 import { getActiveConfig } from '../domain/config';
 
@@ -71,6 +71,8 @@ interface AdminAuthState {
   sessions: StoredSessionRecord[];
 }
 
+class AdminAuthStorageError extends Error {}
+
 const getEmptyAdminAuthState = (): AdminAuthState => {
   return {
     passkeys: [],
@@ -101,11 +103,16 @@ const normalizeAdminAuthState = (input: unknown): AdminAuthState => {
 };
 
 const loadAdminAuthStateAsync = async (): Promise<AdminAuthState> => {
-  const state = await readStorageJson<AdminAuthState>(
+  const result = await readStorageJsonResult<AdminAuthState>(
     ADMIN_AUTH_NAMESPACE,
     ADMIN_AUTH_KEY,
   );
-  return normalizeAdminAuthState(state);
+
+  if (result.error) {
+    throw new AdminAuthStorageError(result.error);
+  }
+
+  return normalizeAdminAuthState(result.value);
 };
 
 const saveAdminAuthState = async (state: AdminAuthState): Promise<void> => {
@@ -405,23 +412,39 @@ export const getAdminSessionErrorResponse = (
   request: RequestLike,
 ): Promise<Response | null> => {
   return (async () => {
-    if (!(await hasAdminAccountAsync())) {
-      return null;
-    }
+    try {
+      if (!(await hasAdminAccountAsync())) {
+        return null;
+      }
 
-    if (await isAdminSessionAuthenticated(request)) {
-      return null;
-    }
+      if (await isAdminSessionAuthenticated(request)) {
+        return null;
+      }
 
-    return Response.json(
-      {
-        error: {
-          code: 'admin_auth_required',
-          message: 'Admin session required',
+      return Response.json(
+        {
+          error: {
+            code: 'admin_auth_required',
+            message: 'Admin session required',
+          },
         },
-      },
-      { status: 401 },
-    );
+        { status: 401 },
+      );
+    } catch (error) {
+      if (error instanceof AdminAuthStorageError) {
+        return Response.json(
+          {
+            error: {
+              code: 'admin_auth_storage_unavailable',
+              message: 'Admin authentication storage is unreadable',
+            },
+          },
+          { status: 503 },
+        );
+      }
+
+      throw error;
+    }
   })();
 };
 

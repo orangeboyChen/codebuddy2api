@@ -800,6 +800,17 @@ describe('server units', () => {
         )
       )?.status,
     ).toBe(503);
+
+    fs.writeFileSync(path.join(tempDataDir, 'access-keys.json'), '');
+    expect(
+      (
+        await getClientAuthErrorResponse(
+          makeNextRequest('http://localhost/test', {
+            headers: { authorization: 'Bearer anything' },
+          }),
+        )
+      )?.status,
+    ).toBe(503);
   });
 
   it('covers access key validation, normalization, and deletion', async () => {

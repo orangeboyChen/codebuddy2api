@@ -167,7 +167,7 @@ const readJsonFileDetailed = <T>(
 
     if (!content) {
       return {
-        error: null,
+        error: 'JSON file is empty',
         exists: true,
         value: null,
       };
