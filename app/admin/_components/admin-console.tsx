@@ -855,6 +855,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     setCredentials((current) => ({
       ...current,
       accessKeyActionId: null,
+      accessKeyCreating: false,
       accessKeyForm: {
         credentialFilenames: [],
         editingId: null,
@@ -1443,9 +1444,22 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onDeleteAccessKey={(id) => {
                 void deleteAccessKey(id);
               }}
+              onAddAccessKey={() => {
+                setCredentials((current) => ({
+                  ...current,
+                  accessKeyCreating: true,
+                  accessKeyForm: {
+                    credentialFilenames: [],
+                    editingId: null,
+                    name: '',
+                  },
+                  revealedSecret: null,
+                }));
+              }}
               onEditAccessKey={(accessKey) => {
                 setCredentials((current) => ({
                   ...current,
+                  accessKeyCreating: false,
                   accessKeyForm: {
                     credentialFilenames: accessKey.credentialFilenames.filter(
                       (filename) =>
@@ -1536,6 +1550,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onResetAccessKeyForm={() => {
                 setCredentials((current) => ({
                   ...current,
+                  accessKeyCreating: false,
                   accessKeyForm: {
                     credentialFilenames: [],
                     editingId: null,

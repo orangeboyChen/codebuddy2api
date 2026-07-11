@@ -34,6 +34,7 @@ interface CredentialsSectionProps {
   auth: AuthState;
   credentials: CredentialsState;
   onAddCredential: () => void;
+  onAddAccessKey: () => void;
   onAuthAction: () => void;
   onCallbackUrlChange: (value: string) => void;
   onCopyAuthUrl: () => void;
@@ -801,7 +802,7 @@ const AccessKeyCard = ({
 
   return (
     <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-5 transition-all relative hover:-translate-y-px hover:shadow-md hover:border-primary">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-2">
             <div className="font-semibold text-text-light dark:text-text-dark">
@@ -835,9 +836,9 @@ const AccessKeyCard = ({
             ))}
           </div>
         </div>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex w-full flex-col gap-2 shrink-0 sm:w-auto sm:flex-row sm:flex-wrap">
           <button
-            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
+            className="inline-flex w-full items-center justify-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary sm:w-auto"
             disabled={isBusy}
             onClick={onRevealSecret}
           >
@@ -845,14 +846,14 @@ const AccessKeyCard = ({
             查看 Key
           </button>
           <button
-            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+            className="inline-flex w-full items-center justify-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark sm:w-auto"
             onClick={onEdit}
           >
             <i className="fas fa-pen"></i>
             编辑
           </button>
           <button
-            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
+            className="inline-flex w-full items-center justify-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error sm:w-auto"
             disabled={isBusy}
             onClick={onDelete}
           >
@@ -872,91 +873,127 @@ const AccessKeyCard = ({
         </div>
       ) : null}
       {isEditing ? (
-        <div className="mt-4 border-t border-border-light dark:border-border-dark pt-4">
-          <div className="font-medium text-text-light dark:text-text-dark">
-            编辑 API Key
-          </div>
-          <div className="text-sm text-secondary mt-2">
-            secret 由服务端自动生成；这里只修改名称和绑定凭证。
-          </div>
-          <div className="mt-4">
-            <label
-              className="block mb-2 font-medium text-text-light dark:text-text-dark"
-              htmlFor={`accessKeyName-${accessKey.id}`}
-            >
-              API Key 名称
-            </label>
-            <input
-              id={`accessKeyName-${accessKey.id}`}
-              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-              placeholder="例如：Claude Team / CI Runner"
-              type="text"
-              value={form.name}
-              onChange={(event) => {
-                onUpdateAccessKeyName(event.target.value);
-              }}
-            />
-          </div>
-          <div className="mt-4">
-            <div className="block mb-2 font-medium text-text-light dark:text-text-dark">
-              绑定凭证
-            </div>
-            <div className="grid gap-2 max-h-72 overflow-y-auto pr-1">
-              {validCredentials.length ? (
-                validCredentials.map((credential) => {
-                  const selected = form.credentialFilenames.includes(
-                    credential.filename,
-                  );
-
-                  return (
-                    <label
-                      key={credential.filename}
-                      className="flex items-center justify-between gap-4 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer"
-                    >
-                      <div className="min-w-0">
-                        <div className="font-medium text-text-light dark:text-text-dark">
-                          {credential.filename}
-                        </div>
-                        <div className="text-sm text-secondary">
-                          {credential.email || credential.user_id}
-                        </div>
-                      </div>
-                      <input
-                        checked={selected}
-                        type="checkbox"
-                        onChange={() => {
-                          onToggleCredentialSelection(credential.filename);
-                        }}
-                      />
-                    </label>
-                  );
-                })
-              ) : (
-                <div className="text-sm text-secondary">
-                  还没有可绑定的有效凭证。
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="mt-4 flex gap-2">
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
-              disabled={isBusy}
-              onClick={onSaveAccessKey}
-            >
-              <i className="fas fa-save"></i>
-              保存 API Key
-            </button>
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
-              onClick={onResetAccessKeyForm}
-            >
-              <i className="fas fa-times"></i>
-              取消
-            </button>
-          </div>
-        </div>
+        <AccessKeyEditor
+          actionId={actionId}
+          description="secret 由服务端自动生成；这里只修改名称和绑定凭证。"
+          form={form}
+          title="编辑 API Key"
+          validCredentials={validCredentials}
+          onResetAccessKeyForm={onResetAccessKeyForm}
+          onSaveAccessKey={onSaveAccessKey}
+          onToggleCredentialSelection={onToggleCredentialSelection}
+          onUpdateAccessKeyName={onUpdateAccessKeyName}
+        />
       ) : null}
+    </div>
+  );
+};
+
+const AccessKeyEditor = ({
+  actionId,
+  form,
+  title,
+  description,
+  validCredentials,
+  onResetAccessKeyForm,
+  onSaveAccessKey,
+  onToggleCredentialSelection,
+  onUpdateAccessKeyName,
+}: {
+  actionId: string | null;
+  description: string;
+  form: CredentialsState['accessKeyForm'];
+  title: string;
+  validCredentials: CredentialSummary[];
+  onResetAccessKeyForm: () => void;
+  onSaveAccessKey: () => void;
+  onToggleCredentialSelection: (filename: string) => void;
+  onUpdateAccessKeyName: (value: string) => void;
+}) => {
+  const isBusy = actionId === (form.editingId ?? '__new__');
+
+  return (
+    <div className="mt-4 border-t border-border-light dark:border-border-dark pt-4">
+      <div className="font-medium text-text-light dark:text-text-dark">
+        {title}
+      </div>
+      <div className="text-sm text-secondary mt-2">{description}</div>
+      <div className="mt-4">
+        <label
+          className="block mb-2 font-medium text-text-light dark:text-text-dark"
+          htmlFor="accessKeyName"
+        >
+          API Key 名称
+        </label>
+        <input
+          id="accessKeyName"
+          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+          placeholder="例如：Claude Team / CI Runner"
+          type="text"
+          value={form.name}
+          onChange={(event) => {
+            onUpdateAccessKeyName(event.target.value);
+          }}
+        />
+      </div>
+      <div className="mt-4">
+        <div className="block mb-2 font-medium text-text-light dark:text-text-dark">
+          绑定凭证
+        </div>
+        <div className="grid gap-2 max-h-72 overflow-y-auto pr-1">
+          {validCredentials.length ? (
+            validCredentials.map((credential) => {
+              const selected = form.credentialFilenames.includes(
+                credential.filename,
+              );
+
+              return (
+                <label
+                  key={credential.filename}
+                  className="flex items-center justify-between gap-4 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium text-text-light dark:text-text-dark">
+                      {credential.filename}
+                    </div>
+                    <div className="text-sm text-secondary">
+                      {credential.email || credential.user_id}
+                    </div>
+                  </div>
+                  <input
+                    checked={selected}
+                    type="checkbox"
+                    onChange={() => {
+                      onToggleCredentialSelection(credential.filename);
+                    }}
+                  />
+                </label>
+              );
+            })
+          ) : (
+            <div className="text-sm text-secondary">
+              还没有可绑定的有效凭证。
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+        <button
+          className="inline-flex w-full items-center justify-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success sm:w-auto"
+          disabled={isBusy}
+          onClick={onSaveAccessKey}
+        >
+          <i className="fas fa-save"></i>
+          保存 API Key
+        </button>
+        <button
+          className="inline-flex w-full items-center justify-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary sm:w-auto"
+          onClick={onResetAccessKeyForm}
+        >
+          <i className="fas fa-times"></i>
+          取消
+        </button>
+      </div>
     </div>
   );
 };
@@ -1487,6 +1524,7 @@ export const CredentialsSection = ({
   auth,
   credentials,
   onAddCredential,
+  onAddAccessKey,
   onAuthAction,
   onCallbackUrlChange,
   onCopyAuthUrl,
@@ -1743,13 +1781,20 @@ export const CredentialsSection = ({
         </div>
       ) : null}
       <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+        <div className="mb-4 flex flex-col gap-3 border-b border-border-light pb-4 dark:border-border-dark sm:flex-row sm:items-center sm:justify-between">
           <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
             API Key
           </h3>
-          <div>
+          <div className="flex flex-col gap-2 sm:flex-row">
             <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+              className="inline-flex w-full items-center justify-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success sm:w-auto"
+              onClick={onAddAccessKey}
+            >
+              <i className="fas fa-plus"></i>
+              创建 API Key
+            </button>
+            <button
+              className="inline-flex w-full items-center justify-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark sm:w-auto"
               onClick={onRefreshCredentials}
             >
               <i className="fas fa-sync-alt"></i>
@@ -1757,6 +1802,21 @@ export const CredentialsSection = ({
             </button>
           </div>
         </div>
+        {credentials.accessKeyCreating ? (
+          <div className="mb-4 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark p-4">
+            <AccessKeyEditor
+              actionId={credentials.accessKeyActionId}
+              description="创建后会立即显示一次完整 secret，请及时保存。"
+              form={credentials.accessKeyForm}
+              title="创建 API Key"
+              validCredentials={validCredentials}
+              onResetAccessKeyForm={onResetAccessKeyForm}
+              onSaveAccessKey={onSaveAccessKey}
+              onToggleCredentialSelection={onToggleCredentialSelection}
+              onUpdateAccessKeyName={onUpdateAccessKeyName}
+            />
+          </div>
+        ) : null}
         <div id="accessKeysList">
           {credentials.accessKeysLoading ? (
             <div className="text-center py-8 text-secondary">
@@ -1793,6 +1853,15 @@ export const CredentialsSection = ({
             <div className="text-center py-8 text-secondary">
               <i className="fas fa-key"></i>
               <div>还没有 API Key，创建后即可按 key 绑定凭证。</div>
+              <div className="mt-4">
+                <button
+                  className="inline-flex w-full items-center justify-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success sm:w-auto"
+                  onClick={onAddAccessKey}
+                >
+                  <i className="fas fa-plus"></i>
+                  立即创建 API Key
+                </button>
+              </div>
             </div>
           )}
         </div>

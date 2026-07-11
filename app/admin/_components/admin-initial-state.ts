@@ -108,6 +108,7 @@ export const createCredentialsState = (
     },
     accessKeys: initialData.accessKeys,
     accessKeysLoading: false,
+    accessKeyCreating: false,
     actionIndex: null,
     current: initialData.currentCredential,
     currentLoading: false,

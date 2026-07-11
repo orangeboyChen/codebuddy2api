@@ -210,18 +210,34 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           IMAGE_NAME: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          RELEASE_TITLE: ${{ needs.prepare.outputs.version }}
+          RELEASE_TITLE: ${{ needs.prepare.outputs.release_tag }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
 
-          release_notes="Docker image: \`${IMAGE_NAME}\`"
+          latest_tag="$(git tag --list 'v*' --sort=-v:refname | grep -Fxv "${RELEASE_TAG}" | head -n 1 || true)"
+          commit_range="${GITHUB_SHA}"
+
+          if [[ -n "${latest_tag}" ]]; then
+            commit_range="${latest_tag}..${GITHUB_SHA}"
+          fi
+
+          commit_notes="$(git log "${commit_range}" --pretty=format:'- %s (%h)' || true)"
+
+          if [[ -z "${commit_notes}" ]]; then
+            commit_notes='- No commit summary available.'
+          fi
+
+          release_notes="## Images"$'\n'"- Docker image: \`${IMAGE_NAME}\`"
 
           if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
-            release_notes="${release_notes}"$'\n'"Docker Hub image: \`docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${RELEASE_TITLE}\`"
+            release_notes="${release_notes}"$'\n'"- Docker Hub image: \`docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${RELEASE_VERSION}\`"
           fi
+
+          release_notes="${release_notes}"$'\n\n'"## Commits"$'\n'"${commit_notes}"
 
           gh release create "$RELEASE_TAG" \
             --target "$GITHUB_SHA" \

@@ -18,6 +18,38 @@ docker run -d \
 
 Once running, open `http://127.0.0.1:8001/` in your browser.
 
+## Run Locally
+
+### Requirements
+
+- Bun 1.3.14+
+- Node.js 20+
+
+### Development Mode
+
+```bash
+bun install
+mkdir -p config .codebuddy_creds
+cp config/config.example.json config/config.json
+bun run dev
+```
+
+Then open `http://127.0.0.1:3000/`.
+
+Use the admin console to complete the CodeBuddy OAuth flow or add credentials manually. Runtime data is stored under `.codebuddy_creds/`, and local settings are read from `config/config.json`.
+
+### Production-like Local Run
+
+```bash
+bun install
+mkdir -p config .codebuddy_creds
+cp config/config.example.json config/config.json
+bun run build
+bun start
+```
+
+Then open `http://127.0.0.1:8001/`.
+
 ## Admin Console
 
 The built-in console is available at the root path:

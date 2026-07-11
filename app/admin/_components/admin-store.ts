@@ -108,6 +108,7 @@ export interface CredentialsState {
   accessKeyForm: AccessKeyFormState;
   accessKeys: AccessKeySummary[];
   accessKeysLoading: boolean;
+  accessKeyCreating: boolean;
   actionIndex: number | null;
   current: CurrentCredentialInfo | null;
   currentLoading: boolean;
@@ -320,6 +321,7 @@ export const defaultCredentialsState: CredentialsState = {
   },
   accessKeys: [],
   accessKeysLoading: true,
+  accessKeyCreating: false,
   actionIndex: null,
   current: null,
   currentLoading: true,
