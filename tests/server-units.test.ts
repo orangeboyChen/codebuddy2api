@@ -28,8 +28,11 @@ import {
   startCodeBuddyAuth,
 } from '@/lib/server/codebuddy-auth';
 import {
+  createProxyContextFromCredential,
+  getModelsResponse,
   proxyChatCompletions,
   proxyResponsesUpstream,
+  resolveProxyContextByCredentialFilename,
 } from '@/lib/server/codebuddy';
 import {
   addCredential,
@@ -1856,6 +1859,224 @@ describe('server units', () => {
     ]);
   });
 
+  it('covers responses passthrough header fallback, raw body passthrough, and upstream errors', async () => {
+    const createdCredential = addCredential({
+      bearer_token: 'token-responses',
+      enterprise_id: 'tenant-header',
+      responses_passthrough: true,
+      user_id: 'responses@example.com',
+    });
+
+    const context = resolveProxyContextByCredentialFilename(
+      createdCredential.filename,
+    );
+    expect(context.auth.bearerToken).toBe('token-responses');
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response('not-json', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'x-codebuddy-usage':
+              '{"total_tokens":9,"input_tokens":4,"output_tokens":5}',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('plain body', {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'x-codebuddy-usage':
+              '{"total_tokens":11,"input_tokens":5,"output_tokens":6}',
+          },
+        }),
+      )
+      .mockRejectedValueOnce('string failure');
+
+    const request = makeNextRequest('http://localhost/v1/responses', {
+      method: 'POST',
+    });
+
+    const jsonFallback = await proxyResponsesUpstream(
+      request,
+      {
+        input: 'header usage',
+      },
+      context,
+    );
+    expect(await jsonFallback.text()).toBe('not-json');
+
+    const rawResponse = await proxyResponsesUpstream(
+      request,
+      {
+        input: 'plain body',
+        model: 'gpt-5.5',
+      },
+      context,
+    );
+    expect(await rawResponse.text()).toBe('plain body');
+
+    const failedResponse = await proxyResponsesUpstream(
+      request,
+      {
+        input: 'boom',
+        model: 'gpt-5.5',
+      },
+      context,
+    );
+    expect(failedResponse.status).toBe(500);
+    expect(await failedResponse.text()).toContain('Unexpected upstream error');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(getUsageAnalytics({ range: 'today' }).tableRows).toEqual([
+      {
+        callCount: 1,
+        cacheHitTokens: 0,
+        model: 'gpt-5.5',
+        totalTokens: 11,
+      },
+      {
+        callCount: 1,
+        cacheHitTokens: 0,
+        model: 'glm-5.1',
+        totalTokens: 9,
+      },
+    ]);
+  });
+
+  it('covers responses passthrough upstream non-ok and empty stream body branches', async () => {
+    const createdCredential = addCredential({
+      bearer_token: 'token-branches',
+      responses_passthrough: true,
+      user_id: 'branches@example.com',
+    });
+    const context = resolveProxyContextByCredentialFilename(
+      createdCredential.filename,
+    );
+
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response('upstream denied', {
+          status: 429,
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 204,
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'x-codebuddy-usage':
+              '{"total_tokens":3,"input_tokens":1,"output_tokens":2}',
+          },
+        }),
+      );
+
+    const request = makeNextRequest('http://localhost/v1/responses', {
+      method: 'POST',
+    });
+
+    const denied = await proxyResponsesUpstream(
+      request,
+      { input: 'deny me', model: 'gpt-5.5' },
+      context,
+    );
+    expect(denied.status).toBe(429);
+    expect(await denied.text()).toContain('upstream denied');
+
+    const emptyStream = await proxyResponsesUpstream(
+      request,
+      { input: 'empty stream', model: 'gpt-5.5', stream: true },
+      context,
+    );
+    expect(emptyStream.status).toBe(204);
+    expect(await emptyStream.text()).toBe('');
+
+    expect(getUsageAnalytics({ range: 'today' }).tableRows).toEqual([
+      {
+        callCount: 1,
+        cacheHitTokens: 0,
+        model: 'gpt-5.5',
+        totalTokens: 3,
+      },
+    ]);
+  });
+
+  it('covers proxy context helpers for saved credentials', () => {
+    const createdCredential = addCredential({
+      bearer_token: 'token-from-bearer-token',
+      first_message_role_to_system: true,
+      user_id: 'helper@example.com',
+    });
+
+    const credentialRecord = resolveCredentialForRequest({
+      allowedCredentialFilenames: [createdCredential.filename],
+    });
+    expect(credentialRecord?.filename).toBe(createdCredential.filename);
+
+    if (!credentialRecord) {
+      throw new Error('Expected saved credential record');
+    }
+
+    const created = createProxyContextFromCredential(credentialRecord);
+    expect(created.auth.bearerToken).toBe('token-from-bearer-token');
+    expect(created.preferences.firstMessageRoleToSystem).toBe(true);
+    expect(created.accessKeyId).toBeNull();
+
+    const resolved = resolveProxyContextByCredentialFilename(
+      createdCredential.filename,
+    );
+    expect(resolved.credentialFilename).toBe(createdCredential.filename);
+    expect(resolved.auth.userId).toBe('helper@example.com');
+    expect(
+      createProxyContextFromCredential({
+        data: {
+          access_token: 'token-from-access-token',
+          user_id: 'access-token@example.com',
+        },
+        filePath: '/tmp/access-token.json',
+        filename: 'access-token.json',
+      }).auth.bearerToken,
+    ).toBe('token-from-access-token');
+
+    expect(() =>
+      createProxyContextFromCredential({
+        ...credentialRecord,
+        data: {
+          user_id: 'missing-token@example.com',
+        },
+      }),
+    ).toThrow('Saved credential does not include a bearer token');
+    expect(() =>
+      resolveProxyContextByCredentialFilename('missing.json'),
+    ).toThrow('Selected credential was not found');
+  });
+
+  it('returns models in both OpenAI-compatible and admin-friendly shapes', async () => {
+    const payload = (await getModelsResponse().json()) as {
+      data: Array<Record<string, unknown>>;
+      models: Array<Record<string, unknown>>;
+    };
+
+    expect(payload.data.length).toBeGreaterThan(0);
+    expect(payload.models).toEqual(payload.data);
+    expect(payload.data[0]).toEqual(
+      expect.objectContaining({
+        created: 0,
+        display_name: expect.any(String),
+        id: expect.any(String),
+        object: 'model',
+        owned_by: 'codebuddy',
+        slug: expect.any(String),
+      }),
+    );
+  });
+
   it('keeps empty streamed assistant content for previous_response_id follow-ups', async () => {
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';
@@ -2319,6 +2540,90 @@ describe('server units', () => {
         },
       },
     });
+  });
+
+  it('translates children namespaces and custom tools into chat function tools', () => {
+    const result = translateResponsesToolsToChat([
+      {
+        type: 'namespace',
+        name: 'workspace',
+        children: [
+          {
+            type: 'custom',
+            name: 'raw_lookup',
+            description: '',
+          },
+          {
+            type: 'function',
+            name: 'inspect',
+            parameters: {
+              type: 'object',
+              properties: { id: { type: 'string' } },
+            },
+          },
+        ],
+      },
+      {
+        type: 'custom',
+        name: 'top_level_custom',
+      },
+      {
+        type: 'custom',
+        name: '   ',
+      },
+      {
+        type: 'namespace',
+        name: '   ',
+        children: [{ type: 'function', name: 'ignored' }],
+      },
+    ]);
+
+    expect(result).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'raw_lookup',
+          description: 'Custom tool raw_lookup',
+          parameters: {
+            type: 'object',
+            properties: {
+              input: {
+                type: 'string',
+                description: 'Raw string input for the original custom tool.',
+              },
+            },
+            required: ['input'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'workspace__inspect',
+          parameters: {
+            type: 'object',
+            properties: { id: { type: 'string' } },
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'top_level_custom',
+          description: 'Custom tool top_level_custom',
+          parameters: {
+            type: 'object',
+            properties: {
+              input: {
+                type: 'string',
+                description: 'Raw string input for the original custom tool.',
+              },
+            },
+            required: ['input'],
+          },
+        },
+      },
+    ]);
   });
 
   it('returns undefined when only unsupported tool types are provided', () => {
