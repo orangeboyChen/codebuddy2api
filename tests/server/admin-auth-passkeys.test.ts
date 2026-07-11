@@ -51,7 +51,7 @@ describe('admin auth passkeys', () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
-    process.env.CODEBUDDY_CONFIG_PATH = 'config/config.json';
+    process.env.CODEBUDDY_CONFIG_PATH = '.codebuddy_data/runtime.json';
     delete process.env.CODEBUDDY_ADMIN_PASSKEY_RP_ID;
   });
 

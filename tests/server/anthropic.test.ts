@@ -46,7 +46,7 @@ describe('anthropic messages api', () => {
     cleanupTempState();
     vi.restoreAllMocks();
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
-    process.env.CODEBUDDY_CONFIG_PATH = 'config/config.json';
+    process.env.CODEBUDDY_CONFIG_PATH = '.codebuddy_data/runtime.json';
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
     addCredential({
       bearer_token: 'anthropic-test-token',

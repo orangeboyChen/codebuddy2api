@@ -92,10 +92,11 @@ Then open `http://127.0.0.1:8001/`.
 
 ## Admin Console
 
-The admin console lives at the root path and supports English, Japanese, and Simplified Chinese.
+The admin console uses stable routes and supports English, Japanese, and Simplified Chinese.
 
-- root path: `http://<host>:8001/`
-- locale routing: `/<locale>` with `zh-CN`, `ja-JP`, `en-US`
+- console route: `http://<host>:8001/admin`
+- login route: `http://<host>:8001/login`
+- locale persistence: cookie-based, no locale path prefixes
 - mobile tab bar supports horizontal scrolling
 - authenticated admins can log out from the top-right action
 

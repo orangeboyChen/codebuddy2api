@@ -20,7 +20,3 @@ export type AdminLoginMessages = AdminMessages['loginPage'];
 export const getMessages = (locale: AppLocale) => {
   return messages[locale];
 };
-
-export const createAdminTranslations = (messages: AdminMessages) => {
-  return messages;
-};
