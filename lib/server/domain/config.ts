@@ -27,6 +27,7 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_MODELS:
     'glm-5.1,glm-5.0,glm-5.0-turbo,glm-5v-turbo,glm-4.7,minimax-m3-play,minimax-m2.7,minimax-m2.5,kimi-k2.6,kimi-k2.5,hy3-preview-agent,deepseek-v4-pro,deepseek-v4-flash,deepseek-v3-2-volc,claude-sonnet-4.6,claude-opus-4.8,claude-opus-4.8-1m,claude-opus-4.7,claude-opus-4.7-1m,claude-opus-4.6,claude-opus-4.6-1m,claude-haiku-4.5,gemini-3.1-pro,gemini-3.5-flash,gemini-2.5-pro,gpt-5.5,gpt-5.4,gpt-5.3-codex,gpt-5.1-codex,gpt-5.1-codex-mini,glm-5.2-ioa,glm-5v-turbo-ioa,glm-5.0-ioa,glm-4.7-ioa,minimax-m3-ioa,minimax-m2.7-ioa,minimax-m2.5-ioa,kimi-k2.6-ioa,hy3-preview-agent-ioa,deepseek-v4-pro-ioa,deepseek-v4-flash-ioa,deepseek-v3-2-volc-ioa',
 };
+let configMutationQueue: Promise<void> = Promise.resolve();
 
 export const SETTING_LABELS: Record<keyof RuntimeConfig, string> = {
   CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方API端点',
@@ -42,6 +43,18 @@ const loadPersistedConfig = async (): Promise<Partial<RuntimeConfig>> => {
   return (
     (await readStorageJson<PersistedConfigFile>('config', 'runtime')) ?? {}
   );
+};
+
+const enqueueConfigMutation = async <T>(
+  mutation: () => Promise<T>,
+): Promise<T> => {
+  const operation = configMutationQueue.then(mutation, mutation);
+  configMutationQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return operation;
 };
 
 const normalizeValue = <K extends keyof RuntimeConfig>(
@@ -97,27 +110,29 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
 export const updateSettings = async (
   nextSettings: Partial<Record<keyof RuntimeConfig, unknown>>,
 ): Promise<RuntimeConfig> => {
-  const current = await getActiveConfig();
-  const normalizedUpdates = (
-    Object.keys(DEFAULT_CONFIG) as Array<keyof RuntimeConfig>
-  ).reduce<Partial<RuntimeConfig>>((result, key) => {
-    if (!(key in nextSettings)) {
-      return result;
-    }
+  return enqueueConfigMutation(async () => {
+    const current = await getActiveConfig();
+    const normalizedUpdates = (
+      Object.keys(DEFAULT_CONFIG) as Array<keyof RuntimeConfig>
+    ).reduce<Partial<RuntimeConfig>>((result, key) => {
+      if (!(key in nextSettings)) {
+        return result;
+      }
 
-    return {
-      ...result,
-      [key]: normalizeValue(key, nextSettings[key]),
+      return {
+        ...result,
+        [key]: normalizeValue(key, nextSettings[key]),
+      };
+    }, {});
+    const merged: RuntimeConfig = {
+      ...current,
+      ...normalizedUpdates,
     };
-  }, {});
-  const merged: RuntimeConfig = {
-    ...current,
-    ...normalizedUpdates,
-  };
 
-  await writeStorageJson('config', 'runtime', merged);
+    await writeStorageJson('config', 'runtime', merged);
 
-  return merged;
+    return merged;
+  });
 };
 
 export const getCodeBuddyApiEndpoint = async (): Promise<string> => {

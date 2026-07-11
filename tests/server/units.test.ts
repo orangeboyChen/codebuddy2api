@@ -3008,4 +3008,16 @@ describe('server units', () => {
 
     expect(config.CODEBUDDY_LOG_LEVEL).toBe('true');
   });
+
+  it('preserves settings from concurrent updates', async () => {
+    await Promise.all([
+      updateSettings({ CODEBUDDY_AUTH_MODE: 'token' }),
+      updateSettings({ CODEBUDDY_ADMIN_PASSKEY_RP_ID: 'admin.example.com' }),
+    ]);
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_ADMIN_PASSKEY_RP_ID: 'admin.example.com',
+      CODEBUDDY_AUTH_MODE: 'token',
+    });
+  });
 });
