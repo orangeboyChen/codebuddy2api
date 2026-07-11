@@ -1,6 +1,6 @@
 # CodeBuddy2API
 
-Wrap CodeBuddy APIs with an OpenAI-compatible proxy so any standard OpenAI client can talk to CodeBuddy through a unified interface.
+Wrap CodeBuddy APIs with a proxy that supports both OpenAI-compatible and Anthropic-compatible request formats, so standard OpenAI and Claude clients can talk to CodeBuddy through one unified interface.
 
 > Forked from [Sliverkiss/CodeBuddy2api](https://github.com/Sliverkiss/CodeBuddy2api).
 
@@ -35,13 +35,19 @@ From here you can:
 
 ## Using the API
 
-The OpenAI-compatible API is available at `/v1`:
+The proxy supports both OpenAI-style and Anthropic-style inference requests:
 
 ```
 http://<your-host>:8001/v1
 ```
 
-Both **Chat Completions** (`POST /v1/chat/completions`) and **Responses** (`POST /v1/responses`) endpoints are supported, so you can use it directly with Codex, the OpenAI SDK, or any OpenAI-compatible client.
+Supported endpoints include:
+
+- **Chat Completions**: `POST /v1/chat/completions`
+- **Responses**: `POST /v1/responses`
+- **Anthropic Messages**: `POST /v1/messages`
+
+This means you can use the proxy directly with Codex, the OpenAI SDK, Claude Code, Anthropic SDK clients, or other OpenAI/Anthropic-compatible tooling.
 
 ### Codex
 

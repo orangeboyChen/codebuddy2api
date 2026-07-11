@@ -163,7 +163,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IMAGE_NAME: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          RELEASE_TITLE: ${{ needs.prepare.outputs.version }}
+          RELEASE_TITLE: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail
 
