@@ -959,6 +959,8 @@ describe('server units', () => {
     expect(missingMessages.status).toBe(400);
 
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    fs.rmSync(tempAccessKeysPath, { force: true });
+    expect(hasAccessKeys()).toBe(false);
     const missingApiKey = await proxyChatCompletions(
       makeNextRequest('http://localhost/v1/chat/completions', {
         method: 'POST',
