@@ -236,6 +236,49 @@ const getDocumentPath = (namespace: string, key: string): string => {
   throw new Error(`Unsupported storage document: ${namespace}/${key}`);
 };
 
+const getLegacyDocumentPath = (
+  namespace: string,
+  key: string,
+): string | null => {
+  if (namespace !== 'access-keys' || key !== 'store') {
+    return null;
+  }
+
+  const legacyPath = path.resolve(
+    /* turbopackIgnore: true */ process.cwd(),
+    'config/access-keys.json',
+  );
+
+  return legacyPath === getDocumentPath(namespace, key) ? null : legacyPath;
+};
+
+const readFileStorageDocument = <T>(
+  namespace: string,
+  key: string,
+): StorageJsonReadResult<T> => {
+  const documentPath = getDocumentPath(namespace, key);
+  const current = readJsonFileDetailed<T>(documentPath);
+
+  if (current.exists) {
+    return current;
+  }
+
+  const legacyPath = getLegacyDocumentPath(namespace, key);
+
+  if (!legacyPath) {
+    return current;
+  }
+
+  const legacy = readJsonFileDetailed<T>(legacyPath);
+
+  if (!legacy.exists || legacy.value === null) {
+    return legacy.exists ? legacy : current;
+  }
+
+  writeJsonFile(documentPath, legacy.value);
+  return legacy;
+};
+
 const listCredentialFiles = (): string[] => {
   if (!fs.existsSync(getCredsDir())) {
     return [];
@@ -315,7 +358,7 @@ class FileStorageBackend implements StorageBackend {
   public async initialize(): Promise<void> {}
 
   public async getJson<T>(namespace: string, key: string): Promise<T | null> {
-    return readJsonFile<T>(getDocumentPath(namespace, key));
+    return readFileStorageDocument<T>(namespace, key).value;
   }
 
   public async listJson<T>(namespace: string): Promise<Array<JsonDocument<T>>> {
@@ -554,7 +597,7 @@ export const readStorageJsonResult = async <T>(
   await ensureStorageReady();
 
   if (getStorageBackendKind() === 'file') {
-    return readJsonFileDetailed<T>(getDocumentPath(namespace, key));
+    return readFileStorageDocument<T>(namespace, key);
   }
 
   return {

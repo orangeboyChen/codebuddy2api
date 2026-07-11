@@ -14,6 +14,11 @@ import type { AdminConsoleInitialData } from '@/features/admin/admin-initial-sta
 import { TAB_ITEMS } from '@/features/admin/admin-store';
 import zhCnMessages from '@/messages/zh-CN.json';
 
+const mockRouter = vi.hoisted(() => ({
+  refresh: vi.fn(),
+  replace: vi.fn(),
+}));
+
 vi.mock('next-intl', async () => {
   const actual = await vi.importActual<typeof import('next-intl')>('next-intl');
 
@@ -25,10 +30,7 @@ vi.mock('next-intl', async () => {
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/admin',
-  useRouter: () => ({
-    refresh: vi.fn(),
-    replace: vi.fn(),
-  }),
+  useRouter: () => mockRouter,
 }));
 
 const makeJsonResponse = (payload: unknown, status = 200) => {
@@ -151,6 +153,8 @@ describe('AdminConsole', () => {
   };
 
   beforeEach(() => {
+    mockRouter.refresh.mockClear();
+    mockRouter.replace.mockClear();
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn().mockImplementation((query: string) => ({
@@ -216,6 +220,10 @@ describe('AdminConsole', () => {
         });
       }
 
+      if (input === '/admin-api/auth/session') {
+        return makeJsonResponse({ success: true });
+      }
+
       if (input === '/codebuddy/auth/start') {
         return makeJsonResponse({
           auth_state: 'state-1',
@@ -269,6 +277,22 @@ describe('AdminConsole', () => {
       expect(
         document.getElementById('authUrlSection')?.classList.contains('hidden'),
       ).toBe(false);
+    });
+  });
+
+  it('ends the admin session before returning to the login page', async () => {
+    renderConsole(initialData);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: translations.logoutLabel }),
+    );
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith('/admin-api/auth/session', {
+        method: 'DELETE',
+      });
+      expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+      expect(mockRouter.refresh).toHaveBeenCalled();
     });
   });
 

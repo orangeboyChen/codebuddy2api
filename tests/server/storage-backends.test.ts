@@ -67,6 +67,30 @@ describe('storage backends', () => {
     });
   });
 
+  it('migrates legacy access keys into the default file storage directory', async () => {
+    const legacyConfigDir = path.join(tempRootDir, 'config');
+    const accessKeyStore = {
+      accessKeys: [{ id: 'access-key-1', secret: 'secret' }],
+    };
+
+    fs.mkdirSync(legacyConfigDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyConfigDir, 'access-keys.json'),
+      JSON.stringify(accessKeyStore),
+    );
+
+    const storage = await import('@/lib/server/storage');
+
+    await expect(
+      storage.readStorageJson('access-keys', 'store'),
+    ).resolves.toEqual(accessKeyStore);
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(tempDataDir, 'access-keys.json'), 'utf8'),
+      ),
+    ).toEqual(accessKeyStore);
+  });
+
   it('imports legacy files into the database backend and encrypts sensitive documents', async () => {
     process.env.CODEBUDDY_STORAGE_BACKEND = 'pg';
     process.env.CODEBUDDY_STORAGE_PG_URL = 'postgres://example.test/codebuddy';

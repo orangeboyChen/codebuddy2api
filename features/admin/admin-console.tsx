@@ -621,6 +621,21 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     await loadUsage();
   };
 
+  const logout = async () => {
+    const result = await requestJson<{ error?: { message?: string } }>(
+      '/admin-api/auth/session',
+      { method: 'DELETE' },
+    );
+
+    if (!result.ok) {
+      showNotification('error', getErrorMessage(result.data, '退出登录失败。'));
+      return;
+    }
+
+    router.replace('/login');
+    router.refresh();
+  };
+
   const pollAuth = async (overrideState?: string) => {
     const authState = overrideState ?? auth.authState;
 
@@ -1358,7 +1373,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
           currentLocale={locale}
           onLocaleChange={switchLocale}
           onLogout={() => {
-            showNotification('warning', translations.logoutUnavailable);
+            void logout();
           }}
           onThemeChange={setTheme}
           theme={theme}

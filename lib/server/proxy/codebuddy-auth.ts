@@ -1,5 +1,6 @@
 import { getCodeBuddyApiEndpoint } from '../domain/config';
 import { addCredential, type CredentialData } from '../domain/credentials';
+import { getAdminSessionErrorResponse } from '../admin/session';
 
 const getAuthStateEndpoint = async (): Promise<string> =>
   `${await getCodeBuddyApiEndpoint()}/v2/plugin/auth/state`;
@@ -198,6 +199,7 @@ const buildCredentialDataFromToken = (
 
 export const pollCodeBuddyAuth = async (
   authState: string,
+  request: Request = new Request('http://localhost/codebuddy/auth/poll'),
 ): Promise<Response> => {
   if (!authState.trim()) {
     return Response.json(
@@ -207,6 +209,12 @@ export const pollCodeBuddyAuth = async (
       },
       { status: 400 },
     );
+  }
+
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
   }
 
   try {
