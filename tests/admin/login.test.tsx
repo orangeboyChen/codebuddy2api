@@ -96,6 +96,9 @@ describe('LoginClient', () => {
       />,
     );
 
+    fireEvent.change(screen.getByLabelText('Admin username'), {
+      target: { value: 'admin' },
+    });
     fireEvent.change(screen.getByLabelText('Create admin password'), {
       target: { value: 'correct horse battery staple' },
     });
@@ -143,6 +146,9 @@ describe('LoginClient', () => {
       />,
     );
 
+    fireEvent.change(screen.getByLabelText('Admin username'), {
+      target: { value: 'admin' },
+    });
     fireEvent.change(screen.getByLabelText('Admin password'), {
       target: { value: 'secret-password' },
     });

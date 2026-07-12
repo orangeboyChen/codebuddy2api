@@ -69,21 +69,19 @@ In `pg` mode, local files are not used for normal runtime persistence. They are 
 
 ```bash
 bun install
-mkdir -p config .codebuddy_creds
-cp config/config.example.json config/config.json
+mkdir -p .codebuddy_data .codebuddy_creds
 bun run dev
 ```
 
 Then open `http://127.0.0.1:3000/`.
 
-Use the admin console to complete the CodeBuddy OAuth flow or add credentials manually. Runtime data is stored under `.codebuddy_creds/`, and local settings are read from `config/config.json`.
+Use the admin console to complete the CodeBuddy OAuth flow or add credentials manually. Local settings and console data are stored under `.codebuddy_data/`; credentials are stored under `.codebuddy_creds/`.
 
 ### Production-like Local Run
 
 ```bash
 bun install
-mkdir -p config .codebuddy_creds
-cp config/config.example.json config/config.json
+mkdir -p .codebuddy_data .codebuddy_creds
 bun run build
 bun start
 ```
