@@ -485,6 +485,10 @@ const buildUpstreamHeaders = async (
     'x-stainless-runtime-version': process.version,
   });
 
+  for (const [name, value] of Object.entries(incoming)) {
+    headers.set(name, value);
+  }
+
   const domain = getCredentialValue(auth.credentialData, ['domain']);
   const enterpriseId = getCredentialValue(auth.credentialData, [
     'enterprise_id',

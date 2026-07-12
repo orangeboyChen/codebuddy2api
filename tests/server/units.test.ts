@@ -1091,6 +1091,11 @@ describe('server units', () => {
         headers: {
           authorization: `Bearer ${tokenAccessKey.secret}`,
           'X-Conversation-ID': 'conv-1',
+          originator: 'codex',
+          session_id: 'session-1',
+          traceparent:
+            '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+          tracestate: 'vendor=value',
         },
       }),
       {
@@ -1110,6 +1115,15 @@ describe('server units', () => {
         'X-Tenant-Id',
       ),
     ).toBe('tenant-a');
+    const upstreamHeaders = (fetchMock.mock.calls[2]?.[1] as RequestInit)
+      .headers as Headers;
+    expect(upstreamHeaders.get('X-Conversation-ID')).toBe('conv-1');
+    expect(upstreamHeaders.get('X-Originator')).toBe('codex');
+    expect(upstreamHeaders.get('X-Session-ID')).toBe('session-1');
+    expect(upstreamHeaders.get('traceparent')).toBe(
+      '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+    );
+    expect(upstreamHeaders.get('tracestate')).toBe('vendor=value');
     expect(
       JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body))
         .max_tokens,
