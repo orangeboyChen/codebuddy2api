@@ -1,7 +1,9 @@
 'use client';
 
 import { startRegistration } from '@simplewebauthn/browser';
-import { useEffect, useState } from 'react';
+import { Block, Button, Checkbox, Flexbox, Input } from '@lobehub/ui';
+import { ShieldCheck } from 'lucide-react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 
 import type { AppLocale } from '@/lib/i18n/routing';
@@ -28,6 +30,20 @@ const getResponseMessage = async (response: Response, fallback: string) => {
   return payload.error?.message ?? fallback;
 };
 
+const subscribeToPasskeyOrigin = () => () => undefined;
+
+const getPasskeyOriginSupport = () => {
+  const hostname = window.location.hostname.toLowerCase();
+
+  return (
+    window.location.protocol === 'https:' &&
+    hostname !== 'localhost' &&
+    !hostname.endsWith('.localhost')
+  );
+};
+
+const getServerPasskeyOriginSupport = () => false;
+
 const AdminAuthSettings = () => {
   const locale = useLocale() as AppLocale;
   const translations = useTranslations('Admin.securityPanel');
@@ -39,6 +55,11 @@ const AdminAuthSettings = () => {
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [status, setStatus] = useState('');
   const [username, setUsername] = useState('');
+  const passkeysSupported = useSyncExternalStore(
+    subscribeToPasskeyOrigin,
+    getPasskeyOriginSupport,
+    getServerPasskeyOriginSupport,
+  );
 
   const localeText = {
     'en-US': {
@@ -49,6 +70,7 @@ const AdminAuthSettings = () => {
       disableFailed: 'Failed to disable administrator authentication.',
       passkeyAdded: 'Passkey added.',
       passkeyAddFailed: 'Failed to add passkey.',
+      passkeyUnavailable: 'Passkeys require an HTTPS, non-localhost origin.',
       passkeyDeleted: 'Passkey deleted.',
       passkeyDeleteFailed: 'Failed to delete passkey.',
       passkeyOptionsFailed: 'Unable to create a passkey registration request.',
@@ -63,6 +85,8 @@ const AdminAuthSettings = () => {
       disableFailed: '管理者認証を無効化できませんでした。',
       passkeyAdded: 'Passkey を追加しました。',
       passkeyAddFailed: 'Passkey の追加に失敗しました。',
+      passkeyUnavailable:
+        'Passkey には HTTPS かつ localhost 以外のオリジンが必要です。',
       passkeyDeleted: 'Passkey を削除しました。',
       passkeyDeleteFailed: 'Passkey の削除に失敗しました。',
       passkeyOptionsFailed: 'Passkey 登録リクエストを作成できませんでした。',
@@ -76,6 +100,7 @@ const AdminAuthSettings = () => {
       disableFailed: '关闭管理员鉴权失败。',
       passkeyAdded: 'Passkey 已添加。',
       passkeyAddFailed: 'Passkey 添加失败。',
+      passkeyUnavailable: 'Passkey 仅可在 HTTPS 的非 localhost 域名上添加。',
       passkeyDeleted: 'Passkey 已删除。',
       passkeyDeleteFailed: 'Passkey 删除失败。',
       passkeyOptionsFailed: '无法创建 Passkey 注册请求。',
@@ -157,6 +182,11 @@ const AdminAuthSettings = () => {
   };
 
   const addPasskey = async () => {
+    if (!passkeysSupported) {
+      setStatus(localeText.passkeyUnavailable);
+      return;
+    }
+
     const optionsResponse = await fetch(
       '/admin-api/auth/passkeys/registration/options',
       {
@@ -245,18 +275,25 @@ const AdminAuthSettings = () => {
   const authEnabled = Boolean(session?.authEnabled);
 
   return (
-    <section className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-      <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+    <Block
+      className="mb-6"
+      direction="vertical"
+      gap={16}
+      padding={24}
+      variant="outlined"
+    >
+      <Flexbox distribution="space-between" horizontal>
         <div>
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            {translations('title')}
-          </h3>
+          <Flexbox align="center" gap={8} horizontal>
+            <ShieldCheck aria-hidden="true" size={18} strokeWidth={2} />
+            <h3 className="section-title">{translations('title')}</h3>
+          </Flexbox>
           <p className="mt-1 text-sm text-secondary">
             {authEnabled ? translations('enabled') : translations('disabled')}
           </p>
         </div>
         <label className="flex items-center gap-2 text-sm text-text-light dark:text-text-dark">
-          <input
+          <Checkbox
             checked={authEnabled}
             onChange={() => {
               if (authEnabled) {
@@ -266,17 +303,15 @@ const AdminAuthSettings = () => {
 
               void saveAccount();
             }}
-            type="checkbox"
           />
           {translations('enable')}
         </label>
-      </div>
+      </Flexbox>
 
       <div className="grid gap-4">
         <label className="grid gap-2 text-sm text-text-light dark:text-text-dark">
           {translations('username')}
-          <input
-            className="p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark text-text-light dark:text-text-dark"
+          <Input
             onChange={(event) => setUsername(event.target.value)}
             value={username}
           />
@@ -284,8 +319,7 @@ const AdminAuthSettings = () => {
         {authEnabled ? (
           <label className="grid gap-2 text-sm text-text-light dark:text-text-dark">
             {translations('currentPassword')}
-            <input
-              className="p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark text-text-light dark:text-text-dark"
+            <Input
               onChange={(event) => setCurrentPassword(event.target.value)}
               type="password"
               value={currentPassword}
@@ -294,8 +328,7 @@ const AdminAuthSettings = () => {
         ) : null}
         <label className="grid gap-2 text-sm text-text-light dark:text-text-dark">
           {authEnabled ? translations('newPassword') : translations('password')}
-          <input
-            className="p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark text-text-light dark:text-text-dark"
+          <Input
             onChange={(event) => setNextPassword(event.target.value)}
             placeholder={translations('minimumPassword')}
             type="password"
@@ -304,69 +337,74 @@ const AdminAuthSettings = () => {
         </label>
         <label className="grid gap-2 text-sm text-text-light dark:text-text-dark">
           {translations('confirmPassword')}
-          <input
-            className="p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark text-text-light dark:text-text-dark"
+          <Input
             onChange={(event) => setConfirmPassword(event.target.value)}
             type="password"
             value={confirmPassword}
           />
         </label>
         <div className="flex flex-wrap gap-3">
-          <button
-            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+          <Button
+            icon={ShieldCheck}
             onClick={() => void saveAccount()}
-            type="button"
+            htmlType="button"
           >
-            <i className="fas fa-shield-alt"></i>
             {authEnabled
               ? translations('update')
               : translations('saveAndEnable')}
-          </button>
+          </Button>
           {authEnabled ? (
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border border-error font-medium cursor-pointer transition-all text-sm text-error"
-              onClick={() => void disableAuth()}
-              type="button"
-            >
+            <Button danger onClick={() => void disableAuth()} htmlType="button">
               {translations('disable')}
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
 
       {authEnabled ? (
-        <div className="mt-6 pt-6 border-t border-border-light dark:border-border-dark">
-          <h4 className="text-primary mb-4">{localeText.passkeyHeading}</h4>
-          <div className="flex flex-wrap gap-3">
-            <input
-              className="flex-1 min-w-48 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark text-text-light dark:text-text-dark"
+        <div className="mt-6">
+          <Flexbox align="center" gap={8} horizontal>
+            <ShieldCheck aria-hidden="true" size={18} strokeWidth={2} />
+            <h4 className="dashboard-data-title">
+              {localeText.passkeyHeading}
+            </h4>
+          </Flexbox>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <Input
+              className="flex-1 min-w-48"
+              disabled={!passkeysSupported}
               onChange={(event) => setPasskeyName(event.target.value)}
               placeholder={translations('passkeyName')}
               value={passkeyName}
             />
-            <button
-              className="px-4 py-2 bg-secondary text-white"
+            <Button
+              disabled={!passkeysSupported}
               onClick={() => void addPasskey()}
-              type="button"
+              htmlType="button"
             >
               {translations('addPasskey')}
-            </button>
+            </Button>
           </div>
+          {!passkeysSupported ? (
+            <p className="mt-3 text-sm text-secondary">
+              {localeText.passkeyUnavailable}
+            </p>
+          ) : null}
           {passkeys.length ? (
             <ul className="mt-4 grid gap-2">
               {passkeys.map((passkey) => (
                 <li
-                  className="flex items-center justify-between gap-3 p-3 border border-border-light dark:border-border-dark"
+                  className="flex items-center justify-between gap-3"
                   key={passkey.id}
                 >
                   <span>{passkey.name}</span>
-                  <button
-                    className="text-sm text-error"
+                  <Button
+                    danger
                     onClick={() => void deletePasskey(passkey.id)}
-                    type="button"
+                    htmlType="button"
                   >
                     {translations('delete')}
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -378,7 +416,7 @@ const AdminAuthSettings = () => {
         </div>
       ) : null}
       {status ? <p className="mt-4 text-sm text-secondary">{status}</p> : null}
-    </section>
+    </Block>
   );
 };
 

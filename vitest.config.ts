@@ -8,9 +8,18 @@ const vitestConfig = defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname),
+      '@lobehub/fluent-emoji': path.resolve(
+        __dirname,
+        'tests/mocks/lobehub-fluent-emoji.tsx',
+      ),
     },
   },
   test: {
+    server: {
+      deps: {
+        inline: ['@lobehub/fluent-emoji', '@lobehub/ui'],
+      },
+    },
     environment: 'node',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],

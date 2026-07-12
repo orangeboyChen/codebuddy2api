@@ -3,22 +3,22 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --color-primary: #d97757;
-  --color-primary-dark: #c4623f;
-  --color-secondary: #8b8175;
-  --color-success: #5a8a5a;
-  --color-warning: #c4923a;
-  --color-error: #b85450;
-  --color-bg-light: #f9f7f1;
-  --color-bg-dark: #2a2620;
+  --color-primary: #1677ff;
+  --color-primary-dark: #0958d9;
+  --color-secondary: #6b7280;
+  --color-success: #22a06b;
+  --color-warning: #d97706;
+  --color-error: #d92d20;
+  --color-bg-light: #f7f7f8;
+  --color-bg-dark: #111318;
   --color-card-light: #ffffff;
-  --color-card-dark: #3a352e;
-  --color-text-light: #3d3929;
-  --color-text-dark: #f0ede5;
-  --color-border-light: #e5dfd3;
-  --color-border-dark: #5a5247;
+  --color-card-dark: #1c1f26;
+  --color-text-light: #1f2329;
+  --color-text-dark: #f7f8fa;
+  --color-border-light: #e5e7eb;
+  --color-border-dark: #30343b;
 
-  --font-serif: 'Georgia', 'Times New Roman', serif;
+  --font-serif: Inter, ui-sans-serif, system-ui, sans-serif;
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
     sans-serif;
@@ -56,204 +56,219 @@ textarea {
   font: inherit;
 }
 
-.login-page {
-  align-items: center;
-  background: var(--color-bg-light);
-  display: flex;
-  justify-content: center;
+.console-workspace {
   min-height: 100vh;
-  padding: 32px;
+  background: var(--lobe-color-bg-layout);
+  color: var(--lobe-color-text);
 }
 
-.login-header {
-  align-items: center;
-  background: var(--color-bg-light);
-  border-bottom: 1px solid var(--color-border-light);
-  display: flex;
-  justify-content: space-between;
-  left: 0;
-  padding: 16px 32px;
-  position: fixed;
-  right: 0;
+.admin-header {
+  --bg-color: color-mix(
+    in srgb,
+    var(--ant-color-bg-container) 72%,
+    transparent
+  );
+
+  z-index: 20;
+  height: 56px;
+  padding: 0 12px 0 24px !important;
+  border-bottom: 1px solid var(--ant-color-border) !important;
+  background-image: radial-gradient(
+    transparent 1px,
+    var(--bg-color) 1px
+  ) !important;
+  background-size: 4px 4px;
+  backdrop-filter: saturate(50%) blur(4px) !important;
+  -webkit-backdrop-filter: saturate(50%) blur(4px) !important;
+}
+
+.console-header {
+  position: sticky !important;
   top: 0;
 }
 
-.login-header-brand {
-  color: var(--color-text-light);
-  font-family: var(--font-serif);
-  font-size: 20px;
+.admin-header-brand {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.admin-header-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-secondary);
+}
+
+.admin-header-select > *:last-child {
+  min-width: 116px;
+}
+
+.console-logout {
+  box-shadow: none !important;
+}
+
+.console-main {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+}
+
+.console-tabs {
+  margin-bottom: 24px;
+}
+
+.console-tabs [role='tablist'] {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.dashboard-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.dashboard-metric-card {
+  min-width: 0;
+}
+
+.dashboard-metric-card-clickable {
+  cursor: pointer;
+}
+
+.dashboard-metric-header {
+  min-height: 48px;
+}
+
+.dashboard-metric-card :is(#credentialTrend, #uptimeTrend, #apiCallsTrend) {
+  color: var(--color-secondary);
+  font-size: 12px;
+}
+
+.dashboard-metric-label {
+  color: var(--color-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dashboard-data-block {
+  min-width: 0;
+}
+
+.dashboard-data-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.section-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 24px;
+}
+
+.code-sample-title {
+  margin: 0;
+  font-size: 14px;
   font-weight: 600;
 }
 
-.login-header-controls {
-  display: flex;
-  gap: 12px;
+.code-sample {
+  margin: 0 !important;
 }
 
-.login-header select {
-  background: var(--color-card-light);
-  border: 1px solid var(--color-border-light);
-  color: var(--color-text-light);
-  padding: 8px 12px;
-}
-
-.login-card {
-  background: var(--color-card-light);
-  border: 1px solid var(--color-border-light);
-  display: grid;
-  gap: 24px;
-  max-width: 480px;
-  padding: 28px;
-  width: 100%;
-}
-
-.login-hero {
-  display: grid;
-  gap: 10px;
-}
-
-.login-eyebrow {
-  color: var(--color-secondary);
-  font-size: 13px;
-  letter-spacing: 0.08em;
-  margin: 0 0 12px;
-  text-transform: uppercase;
-}
-
-.login-title {
-  color: var(--color-text-light);
-  font-family: var(--font-serif);
-  font-size: 26px;
-  line-height: 1.1;
-  margin: 0 0 12px;
-}
-
-.login-description {
-  color: var(--color-secondary);
-  font-size: 15px;
-  line-height: 1.6;
+.code-sample pre {
   margin: 0;
 }
 
-.login-surface,
-.login-form {
+.dashboard-refresh {
+  min-width: auto;
+}
+
+#api-test,
+#credentials,
+#settings {
   display: grid;
+  gap: 24px;
 }
 
-.login-surface {
-  gap: 18px;
+@media (max-width: 960px) {
+  .dashboard-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
-.login-form {
-  gap: 14px;
+@media (max-width: 640px) {
+  .admin-header {
+    display: grid !important;
+    gap: 8px;
+    height: auto;
+    min-height: 56px;
+    padding: 8px 12px !important;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-header-brand {
+    width: 100%;
+    white-space: nowrap;
+  }
+
+  .admin-header-controls {
+    display: grid !important;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 8px !important;
+  }
+
+  .console-main {
+    padding: 20px 16px 32px;
+  }
+
+  .dashboard-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-header-select {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    min-width: 0;
+  }
+
+  .admin-header-select > *:last-child {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
-.login-label {
-  color: var(--color-text-light);
-  font-size: 14px;
-  font-weight: 600;
+.login-page {
+  min-height: 100vh;
+  padding: 24px;
 }
 
-.login-input {
-  appearance: none;
-  background: var(--color-bg-light);
-  border: 1px solid var(--color-border-light);
-  color: var(--color-text-light);
-  min-height: 48px;
-  outline: none;
-  padding: 0 16px;
-  transition:
-    border-color 160ms ease,
-    box-shadow 160ms ease,
-    background-color 160ms ease;
+.login-header {
+  left: 0;
+  padding: 0 12px 0 24px !important;
+  position: fixed !important;
+  right: 0;
+  top: 0;
+  z-index: 20;
 }
 
-.login-input:focus {
-  background: var(--color-card-light);
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 4px rgba(217, 119, 87, 0.14);
+.login-card {
+  max-width: 480px;
+  width: 100%;
 }
 
-.login-primary-button,
-.login-secondary-button {
-  border: 1px solid var(--color-border-light);
-  cursor: pointer;
-  min-height: 48px;
-  padding: 0 18px;
-  transition:
-    transform 160ms ease,
-    box-shadow 160ms ease,
-    opacity 160ms ease,
-    background-color 160ms ease;
-}
-
-.login-primary-button {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-  color: #ffffff;
-  font-weight: 600;
-}
-
-.login-secondary-button {
-  background: var(--color-card-light);
-  color: var(--color-text-light);
-  font-weight: 600;
-}
-
-.login-primary-button:hover,
-.login-secondary-button:hover {
-  border-color: var(--color-primary);
-}
-
-.login-primary-button:disabled,
-.login-secondary-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-  transform: none;
-}
-
-.login-meta-row {
-  display: grid;
-  gap: 6px;
-  min-height: 44px;
-}
-
-.login-status,
-.login-error {
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.login-status {
-  color: var(--color-secondary);
-}
-
-.login-error {
-  color: #b85450;
-}
-
-html.dark .login-page,
-html.dark .login-header {
-  background: var(--color-bg-dark);
-}
-
-html.dark .login-header {
-  border-color: var(--color-border-dark);
-}
-
-html.dark .login-card,
-html.dark .login-input,
-html.dark .login-secondary-button,
-html.dark .login-header select {
-  background: var(--color-card-dark);
-  border-color: var(--color-border-dark);
-  color: var(--color-text-dark);
-}
-
-html.dark .login-title,
-html.dark .login-label,
-html.dark .login-header-brand {
-  color: var(--color-text-dark);
+.login-title {
+  margin: 0;
+  font-size: 24px;
+  line-height: 32px;
 }
 
 @media (max-width: 640px) {
@@ -262,11 +277,6 @@ html.dark .login-header-brand {
   }
 
   .login-card {
-    gap: 24px;
-    padding: 24px;
-  }
-
-  .login-title {
-    font-size: 26px;
+    margin-top: 48px;
   }
 }

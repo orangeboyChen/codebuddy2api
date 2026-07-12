@@ -18,11 +18,16 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.3.0",
+    "@lobehub/fluent-emoji": "^4.1.0",
+    "@lobehub/icons": "^5.10.0",
+    "@lobehub/ui": "^5.20.2",
     "@simplewebauthn/browser": "^13.3.0",
     "@simplewebauthn/server": "^13.3.2",
+    "antd": "^6.4.3",
     "drizzle-orm": "^0.45.2",
     "jotai": "^2.20.1",
+    "lucide-react": "^0.562.0",
+    "motion": "^12.40.0",
     "next": "^16.2.10",
     "next-intl": "^4.13.2",
     "pg": "^8.22.0",

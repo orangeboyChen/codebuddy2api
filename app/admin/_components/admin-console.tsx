@@ -1,9 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useAtom } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
 import { useLocale, useTranslations } from 'next-intl';
+import { Button } from '@lobehub/ui';
+import { ToastHost, toast } from '@lobehub/ui/base-ui';
+import { LogOut } from 'lucide-react';
 
 import {
   createCredentialsState,
@@ -18,13 +21,13 @@ import {
   CredentialsSection,
   DebugSection,
   DashboardSection,
-  NotificationBar,
   SettingsSection,
   TabNav,
   UsageSection,
 } from '@/app/admin/_components/admin-sections';
 import {
   activeTabAtom,
+  adminSessionAtom,
   apiTestStateAtom,
   authStateAtom,
   type AccessKeySummary,
@@ -32,12 +35,12 @@ import {
   credentialsStateAtom,
   debugStateAtom,
   dashboardStateAtom,
+  DEFAULT_TEST_MODELS,
   defaultCredentialsState,
   defaultDebugState,
   defaultDashboardState,
   defaultSettingsState,
   defaultUsageState,
-  notificationAtom,
   settingsStateAtom,
   themeAtom,
   type ThemeMode,
@@ -47,16 +50,17 @@ import {
   type UsageRange,
   usageStateAtom,
 } from '@/app/admin/_components/admin-store';
-import { resolvedThemeCookieName, themeCookieName } from '@/lib/theme';
-import { localeCookieName, locales } from '@/lib/i18n/routing';
+import { AdminHeader } from '@/app/_components/admin-header';
+import {
+  resolvedThemeCookieName,
+  themeChangeEventName,
+  themeCookieName,
+} from '@/lib/theme';
+import { localeCookieName } from '@/lib/i18n/routing';
 
 interface HealthResponse {
   status?: string;
   timestamp?: string;
-}
-
-interface AdminSessionSummary {
-  authenticated: boolean;
 }
 
 interface CredentialsResponse {
@@ -261,7 +265,6 @@ const AdminConsole = ({
 
   const [activeTab, setActiveTab] = useAtom(activeTabAtom);
   const [theme, setTheme] = useAtom(themeAtom);
-  const [notification, setNotification] = useAtom(notificationAtom);
   const [dashboard, setDashboard] = useAtom(dashboardStateAtom);
   const [credentials, setCredentials] = useAtom(credentialsStateAtom);
   const [debug, setDebug] = useAtom(debugStateAtom);
@@ -269,9 +272,7 @@ const AdminConsole = ({
   const [auth, setAuth] = useAtom(authStateAtom);
   const [apiTest, setApiTest] = useAtom(apiTestStateAtom);
   const [settings, setSettings] = useAtom(settingsStateAtom);
-  const [adminSession, setAdminSession] = useState<AdminSessionSummary | null>(
-    null,
-  );
+  const [adminSession, setAdminSession] = useAtom(adminSessionAtom);
   const locale = useLocale();
   const translations = useTranslations('Admin');
   const consoleText = {
@@ -496,12 +497,9 @@ const AdminConsole = ({
 
   const showNotification = useCallback(
     (type: 'success' | 'error' | 'warning' | 'info', message: string) => {
-      setNotification({
-        message,
-        type,
-      });
+      toast[type]({ description: message, duration: 3000 });
     },
-    [setNotification],
+    [],
   );
 
   const clearAuthTimer = () => {
@@ -635,6 +633,68 @@ const AdminConsole = ({
         ...current,
         credentialFilename: validCredentials[0]?.filename ?? '',
       };
+    });
+  }, [setApiTest, setCredentials]);
+
+  const refreshAccessKeys = useCallback(async () => {
+    setCredentials((current) => ({ ...current, accessKeysLoading: true }));
+    const result = await requestJson<AccessKeysResponse>(
+      '/admin-api/access-keys',
+    );
+
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: null,
+      accessKeys: result.data?.access_keys ?? [],
+      accessKeysLoading: false,
+    }));
+  }, [setCredentials]);
+
+  const refreshCredentialList = useCallback(async () => {
+    setCredentials((current) => ({
+      ...current,
+      currentLoading: true,
+      loading: true,
+    }));
+
+    const [listResult, currentResult] = await Promise.all([
+      requestJson<CredentialsResponse>('/admin-api/credentials'),
+      requestJson<CurrentCredentialResponse>('/admin-api/credentials/current'),
+    ]);
+
+    setCredentials((current) => ({
+      ...current,
+      actionIndex: null,
+      current: currentResult.data
+        ? {
+            available_credential_count:
+              currentResult.data.available_credential_count,
+            filename: currentResult.data.filename,
+            index: currentResult.data.index,
+            next_filename: currentResult.data.next_filename,
+            status: currentResult.data.status ?? 'no_credentials',
+            user_id: currentResult.data.user_id,
+          }
+        : { status: 'no_credentials' },
+      currentLoading: false,
+      items: listResult.data?.credentials ?? [],
+      loading: false,
+    }));
+
+    setApiTest((current) => {
+      const validCredentials = (listResult.data?.credentials ?? []).filter(
+        (item) => !item.is_expired,
+      );
+
+      return current.credentialFilename &&
+        validCredentials.some(
+          (credential) => credential.filename === current.credentialFilename,
+        )
+        ? current
+        : {
+            ...current,
+            credentialFilename: validCredentials[0]?.filename ?? '',
+          };
     });
   }, [setApiTest, setCredentials]);
 
@@ -1223,7 +1283,10 @@ const AdminConsole = ({
             role: 'user',
           },
         ],
-        model: apiTest.model,
+        model:
+          apiTest.model ||
+          getConfiguredModels(settings.values.CODEBUDDY_MODELS)[0] ||
+          DEFAULT_TEST_MODELS[0],
         stream: apiTest.stream,
       }),
       headers: {
@@ -1464,14 +1527,14 @@ const AdminConsole = ({
     void fetch('/admin-api/auth/session')
       .then(async (response) => {
         const payload = (await response.json()) as {
-          session?: AdminSessionSummary;
+          session?: { authenticated: boolean };
         };
         setAdminSession(payload.session ?? null);
       })
       .catch(() => {
         setAdminSession(null);
       });
-  }, []);
+  }, [setAdminSession]);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -1483,6 +1546,11 @@ const AdminConsole = ({
       document.documentElement.classList.toggle('dark', isDark);
       document.body.classList.toggle('dark', isDark);
       document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+      window.dispatchEvent(
+        new CustomEvent(themeChangeEventName, {
+          detail: isDark ? 'dark' : 'light',
+        }),
+      );
       document.cookie = `${resolvedThemeCookieName}=${isDark ? 'dark' : 'light'}; Path=/; Max-Age=31536000; SameSite=Lax`;
     };
 
@@ -1524,20 +1592,6 @@ const AdminConsole = ({
   }, [activeTab]);
 
   useEffect(() => {
-    if (!notification) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      setNotification(null);
-    }, 3000);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [notification, setNotification]);
-
-  useEffect(() => {
     clearDebugAutoRefreshTimer();
 
     if (!debug.enabled || debug.autoRefreshSeconds <= 0) {
@@ -1576,64 +1630,33 @@ const AdminConsole = ({
 
   return (
     <>
-      <div id="dashboardPage">
-        <header className="fixed top-0 left-0 right-0 z-100 flex justify-between items-center px-8 py-4 bg-bg-light dark:bg-bg-dark text-text-light dark:text-text-dark border-b border-border-light dark:border-border-dark">
-          <h1 className="text-xl font-semibold font-serif">
-            <i className="fas fa-robot"></i>
-            {translations('brand')}
-          </h1>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 text-sm text-secondary">
-              <i className="fas fa-language"></i>
-              <select
-                aria-label="Language"
-                className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-3 py-2 cursor-pointer transition-all hover:border-primary focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-                onChange={(event) => changeLocale(event.target.value)}
-                value={locale}
-              >
-                {locales.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-sm text-secondary">
-              <i
-                className={
-                  theme === 'dark'
-                    ? 'fas fa-moon'
-                    : theme === 'light'
-                      ? 'fas fa-sun'
-                      : 'fas fa-desktop'
-                }
-              ></i>
-              <select
-                aria-label="Theme mode"
-                className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-3 py-2 cursor-pointer transition-all hover:border-primary focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-                value={theme}
-                onChange={(event) => {
-                  setTheme(event.target.value as ThemeMode);
-                }}
-              >
-                <option value="light">{translations('themeLight')}</option>
-                <option value="dark">{translations('themeDark')}</option>
-                <option value="system">{translations('themeSystem')}</option>
-              </select>
-            </label>
-            {adminSession?.authenticated ? (
-              <button
-                className="px-4 py-2 border border-border-light dark:border-border-dark text-sm text-text-light dark:text-text-dark hover:border-primary"
+      <div id="dashboardPage" className="console-workspace">
+        <AdminHeader
+          action={
+            adminSession?.authenticated ? (
+              <Button
+                className="console-logout"
+                htmlType="button"
+                icon={LogOut}
                 onClick={() => void logout()}
-                type="button"
               >
-                <i className="fas fa-sign-out-alt mr-2"></i>
                 {translations('logoutLabel')}
-              </button>
-            ) : null}
-          </div>
-        </header>
-        <main className="mt-20 px-8 py-8 max-w-[1400px] mx-auto">
+              </Button>
+            ) : null
+          }
+          brand={translations('brand')}
+          className="console-header"
+          locale={locale}
+          onLocaleChange={changeLocale}
+          onThemeChange={setTheme}
+          theme={theme}
+          themeLabels={{
+            dark: translations('themeDark'),
+            light: translations('themeLight'),
+            system: translations('themeSystem'),
+          }}
+        />
+        <main className="console-main">
           <TabNav activeTab={activeTab} onChange={setActiveTab} />
           {activeTab === 'dashboard' ? (
             <DashboardSection
@@ -1748,8 +1771,11 @@ const AdminConsole = ({
               onPollAuth={() => {
                 void pollAuth();
               }}
-              onRefreshCredentials={() => {
-                void refreshAdminData();
+              onRefreshAccessKeys={() => {
+                void refreshAccessKeys();
+              }}
+              onRefreshCredentialList={() => {
+                void refreshCredentialList();
               }}
               onResetCredentialForm={() => {
                 setCredentials((current) => ({
@@ -1955,7 +1981,7 @@ const AdminConsole = ({
           ) : null}
         </main>
       </div>
-      <NotificationBar notification={notification} />
+      <ToastHost duration={3000} position="top-right" />
     </>
   );
 };

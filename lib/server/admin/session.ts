@@ -406,6 +406,16 @@ const getWebAuthnRpId = async (request: RequestLike): Promise<string> => {
   return getRequestHostname(request);
 };
 
+const canRegisterAdminPasskeys = (request: RequestLike): boolean => {
+  const hostname = getRequestHostname(request).toLowerCase();
+
+  return (
+    getRequestProtocol(request) === 'https' &&
+    hostname !== 'localhost' &&
+    !hostname.endsWith('.localhost')
+  );
+};
+
 const getPasskeyDescriptor = (entry: StoredPasskeyRecord) => {
   return {
     id: entry.id,
@@ -804,6 +814,17 @@ export const beginAdminPasskeyRegistration = async (
 
   if (authError) {
     return authError;
+  }
+
+  if (!canRegisterAdminPasskeys(request)) {
+    return Response.json(
+      {
+        error: {
+          message: 'Passkeys require an HTTPS, non-localhost origin',
+        },
+      },
+      { status: 400 },
+    );
   }
 
   const passkeys = await listAdminPasskeys();

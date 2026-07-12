@@ -3,8 +3,8 @@ import type { ReactNode } from 'react';
 import { NextIntlClientProvider } from 'next-intl';
 import { cookies, headers } from 'next/headers';
 
-import '@fortawesome/fontawesome-free/css/all.min.css';
 import './globals.scss';
+import LobeUiProvider from '@/app/_components/lobe-ui-provider';
 import { resolveThemeMode, resolvedThemeCookieName } from '@/lib/theme';
 import {
   defaultLocale,
@@ -68,9 +68,11 @@ const RootLayout = async ({
       style={{ colorScheme: theme }}
     >
       <body>
-        <NextIntlClientProvider locale={locale} messages={messages}>
-          {children}
-        </NextIntlClientProvider>
+        <LobeUiProvider initialTheme={theme}>
+          <NextIntlClientProvider locale={locale} messages={messages}>
+            {children}
+          </NextIntlClientProvider>
+        </LobeUiProvider>
       </body>
     </html>
   );

@@ -7,12 +7,54 @@ import type {
   CurrentCredentialInfo,
   DebugState,
   DashboardState,
-  NotificationState,
   SettingsState,
   TabKey,
   UsageRange,
   UsageState,
 } from '@/app/admin/_components/admin-store';
+import {
+  Block,
+  Button,
+  Avatar,
+  Checkbox,
+  Flexbox,
+  Input,
+  Select,
+  Tag,
+  TextArea,
+} from '@lobehub/ui';
+import { Switch, Tabs } from '@lobehub/ui/base-ui';
+import {
+  BarChart3,
+  ChartLine,
+  ChartNoAxesCombined,
+  Check,
+  CalendarDays,
+  ExternalLink,
+  Eye,
+  FileCode2,
+  Globe2,
+  Copy,
+  Clock3,
+  Info,
+  KeyRound,
+  Layers3,
+  Link,
+  LoaderCircle,
+  MousePointerClick,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  Save,
+  Server,
+  Send,
+  Trash2,
+  UserRound,
+  WandSparkles,
+  X,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import {
   DEFAULT_TEST_MODELS,
@@ -50,7 +92,8 @@ interface CredentialsSectionProps {
   onEditAccessKey: (accessKey: AccessKeySummary) => void;
   onOpenAuthUrl: () => void;
   onPollAuth: () => void;
-  onRefreshCredentials: () => void;
+  onRefreshAccessKeys: () => void;
+  onRefreshCredentialList: () => void;
   onResetCredentialForm: () => void;
   onResetAccessKeyForm: () => void;
   onRevealAccessKeySecret: (id: string) => void;
@@ -99,10 +142,6 @@ interface DebugSectionProps {
   onRefresh: () => void;
   onSave: () => void;
   state: DebugState;
-}
-
-interface NotificationBarProps {
-  notification: NotificationState | null;
 }
 
 const CHART_COLORS = [
@@ -648,37 +687,22 @@ const getCredentialBadge = (
     current.next_filename === credential.filename
   ) {
     return {
-      className: 'px-3 py-1 text-xs font-medium bg-success/10 text-success',
+      color: 'green',
       label: text.credentialBadgeNext,
     };
   }
 
   if (credential.is_expired) {
     return {
-      className: 'px-3 py-1 text-xs font-medium bg-error/10 text-error',
+      color: 'red',
       label: text.credentialBadgeExpired,
     };
   }
 
   return {
-    className: 'px-3 py-1 text-xs font-medium bg-success/10 text-success',
+    color: 'green',
     label: text.credentialBadgeActive,
   };
-};
-
-const getCredentialAvatarClassName = (credential: CredentialSummary) => {
-  const base =
-    'w-12 h-12 flex items-center justify-center text-xl text-white font-semibold shrink-0';
-
-  if (credential.is_expired) {
-    return `${base} bg-error`;
-  }
-
-  if (!credential.email && !credential.user_id) {
-    return `${base} bg-secondary`;
-  }
-
-  return `${base} bg-success`;
 };
 
 const formatDateTime = (
@@ -713,6 +737,21 @@ const formatCurrentStatus = (
 
 const formatNumber = (locale: AppLocale, value: number) => {
   return new Intl.NumberFormat(locale).format(value);
+};
+
+const SectionTitle = ({
+  icon: Icon,
+  title,
+}: {
+  icon: LucideIcon;
+  title: string;
+}) => {
+  return (
+    <Flexbox align="center" gap={8} horizontal>
+      <Icon aria-hidden="true" size={18} strokeWidth={2} />
+      <h3 className="section-title">{title}</h3>
+    </Flexbox>
+  );
 };
 
 const renderUsageChart = ({
@@ -762,19 +801,51 @@ const renderUsageChart = ({
   };
 
   return (
-    <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 shadow-sm">
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-          {title}
-        </h3>
-      </div>
+    <Block direction="vertical" gap={16} padding={24} variant="outlined">
+      <SectionTitle icon={ChartLine} title={title} />
       {series.length && pointCount ? (
         <div className="relative">
+          <Flexbox className="mb-3" gap={12} wrap="wrap">
+            {series.map((item, seriesIndex) => {
+              const color = CHART_COLORS[seriesIndex % CHART_COLORS.length];
+
+              return (
+                <Flexbox align="center" gap={6} horizontal key={item.model}>
+                  <span
+                    aria-hidden="true"
+                    className="h-2 w-2 rounded-full"
+                    // eslint-disable-next-line react/forbid-dom-props
+                    style={{ background: color }}
+                  />
+                  <span className="text-xs text-secondary">{item.model}</span>
+                </Flexbox>
+              );
+            })}
+          </Flexbox>
           <svg
             aria-label={title}
             className="w-full h-auto overflow-visible"
             viewBox={`0 0 ${width} ${height}`}
           >
+            <defs>
+              {series.map((item, seriesIndex) => {
+                const color = CHART_COLORS[seriesIndex % CHART_COLORS.length];
+
+                return (
+                  <linearGradient
+                    id={`${chart}-${item.model.replaceAll(/[^a-zA-Z0-9]/g, '-')}`}
+                    key={item.model}
+                    x1="0"
+                    x2="0"
+                    y1="0"
+                    y2="1"
+                  >
+                    <stop offset="0%" stopColor={color} stopOpacity="0.2" />
+                    <stop offset="100%" stopColor={color} stopOpacity="0" />
+                  </linearGradient>
+                );
+              })}
+            </defs>
             {Array.from({ length: 4 }, (_, index) => {
               const value = (maxValue / 4) * (index + 1);
               const y = getY(value);
@@ -809,10 +880,27 @@ const renderUsageChart = ({
                   return `${pointIndex === 0 ? 'M' : 'L'} ${x} ${y}`;
                 })
                 .join(' ');
+              const gradientId = `${chart}-${item.model.replaceAll(
+                /[^a-zA-Z0-9]/g,
+                '-',
+              )}`;
+              const areaPath = `${path} L ${getX(pointCount - 1)} ${padding.top + chartHeight} L ${getX(0)} ${padding.top + chartHeight} Z`;
 
               return (
                 <g key={item.model}>
-                  <path d={path} fill="none" stroke={color} strokeWidth="3" />
+                  <path
+                    d={areaPath}
+                    fill={`url(#${gradientId})`}
+                    stroke="none"
+                  />
+                  <path
+                    d={path}
+                    fill="none"
+                    stroke={color}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="3"
+                  />
                   {item.points.map((point, pointIndex) => {
                     const value = point[metric] ?? 0;
                     const x = getX(pointIndex);
@@ -874,35 +962,52 @@ const renderUsageChart = ({
                 className="fill-secondary text-[10px]"
                 textAnchor="middle"
               >
-                {label}
+                {index === 0 ||
+                index === labels.length - 1 ||
+                index % Math.ceil(labels.length / 5) === 0
+                  ? label
+                  : ''}
               </text>
             ))}
           </svg>
           {hoveredPoint?.chart === chart ? (
             <div
-              className="pointer-events-none absolute z-10 min-w-44 -translate-x-1/2 -translate-y-full border border-primary/30 bg-card-light dark:bg-card-dark px-3 py-2 text-xs text-text-light dark:text-text-dark shadow-lg"
+              className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full"
               // eslint-disable-next-line react/forbid-dom-props
               style={{
                 left: `${(hoveredPoint.x / width) * 100}%`,
                 top: `${(hoveredPoint.y / height) * 100}%`,
               }}
             >
-              <div className="font-semibold">{hoveredPoint.model}</div>
-              <div className="mt-1 text-secondary">{hoveredPoint.label}</div>
-              <div className="mt-1">
-                {hoveredPoint.metricLabel}:{' '}
-                <span className="font-semibold">
-                  {formatNumber(locale, hoveredPoint.value)}
-                </span>
-              </div>
+              <Block
+                className="min-w-44 text-xs"
+                direction="vertical"
+                gap={4}
+                padding={12}
+                variant="outlined"
+              >
+                <div className="font-semibold">{hoveredPoint.model}</div>
+                <div className="mt-1 text-secondary">{hoveredPoint.label}</div>
+                <div className="mt-1">
+                  {hoveredPoint.metricLabel}:{' '}
+                  <span className="font-semibold">
+                    {formatNumber(locale, hoveredPoint.value)}
+                  </span>
+                </div>
+              </Block>
             </div>
           ) : null}
         </div>
       ) : (
-        <div className="text-center py-12 text-secondary">
-          <i className="fas fa-chart-line"></i>
+        <Flexbox
+          align="center"
+          className="py-12 text-secondary"
+          direction="vertical"
+          gap={8}
+        >
+          <ChartLine aria-hidden="true" size={18} strokeWidth={2} />
           <div className="mt-2">{emptyLabel}</div>
-        </div>
+        </Flexbox>
       )}
       {series.length ? (
         <div className="flex flex-wrap gap-3 mt-4">
@@ -922,7 +1027,7 @@ const renderUsageChart = ({
           ))}
         </div>
       ) : null}
-    </div>
+    </Block>
   );
 };
 
@@ -946,17 +1051,16 @@ const SettingsInput = ({
         >
           {label}
         </label>
-        <select
+        <Select
           id={settingKey}
-          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+          className="w-full"
           value={value}
-          onChange={(event) => {
-            onChange(event.target.value);
-          }}
-        >
-          <option value="auto">auto</option>
-          <option value="token">token</option>
-        </select>
+          onChange={onChange}
+          options={[
+            { label: 'auto', value: 'auto' },
+            { label: 'token', value: 'token' },
+          ]}
+        />
       </div>
     );
   }
@@ -970,18 +1074,17 @@ const SettingsInput = ({
         >
           {label}
         </label>
-        <select
+        <Select
           id={settingKey}
-          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+          className="w-full"
           value={value}
-          onChange={(event) => {
-            onChange(event.target.value);
-          }}
-        >
-          <option value="ioa">ioa</option>
-          <option value="internal">internal</option>
-          <option value="public">public</option>
-        </select>
+          onChange={onChange}
+          options={[
+            { label: 'ioa', value: 'ioa' },
+            { label: 'internal', value: 'internal' },
+            { label: 'public', value: 'public' },
+          ]}
+        />
       </div>
     );
   }
@@ -995,19 +1098,18 @@ const SettingsInput = ({
         >
           {label}
         </label>
-        <select
+        <Select
           id={settingKey}
-          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+          className="w-full"
           value={value}
-          onChange={(event) => {
-            onChange(event.target.value);
-          }}
-        >
-          <option value="DEBUG">DEBUG</option>
-          <option value="INFO">INFO</option>
-          <option value="WARNING">WARNING</option>
-          <option value="ERROR">ERROR</option>
-        </select>
+          onChange={onChange}
+          options={[
+            { label: 'DEBUG', value: 'DEBUG' },
+            { label: 'INFO', value: 'INFO' },
+            { label: 'WARNING', value: 'WARNING' },
+            { label: 'ERROR', value: 'ERROR' },
+          ]}
+        />
       </div>
     );
   }
@@ -1021,15 +1123,14 @@ const SettingsInput = ({
         >
           {label}
         </label>
-        <textarea
+        <TextArea
           id={settingKey}
-          className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10 resize-y min-h-[120px] whitespace-pre-wrap break-words"
           rows={6}
           value={value}
           onChange={(event) => {
             onChange(event.target.value);
           }}
-        ></textarea>
+        />
       </div>
     );
   }
@@ -1042,9 +1143,8 @@ const SettingsInput = ({
       >
         {label}
       </label>
-      <input
+      <Input
         id={settingKey}
-        className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
         type="text"
         value={value}
         onChange={(event) => {
@@ -1052,6 +1152,45 @@ const SettingsInput = ({
         }}
       />
     </div>
+  );
+};
+
+const ToggleOption = ({
+  checked,
+  description,
+  onChange,
+  title,
+}: {
+  checked: boolean;
+  description: string;
+  onChange: (checked: boolean) => void;
+  title: string;
+}) => {
+  return (
+    <Block
+      align="center"
+      clickable
+      distribution="space-between"
+      gap={16}
+      horizontal
+      onClick={(event) => {
+        if ((event.target as Element).closest('[role="switch"]')) {
+          return;
+        }
+
+        onChange(!checked);
+      }}
+      padding={12}
+      variant="outlined"
+    >
+      <div>
+        <div className="font-medium text-text-light dark:text-text-dark">
+          {title}
+        </div>
+        <div className="text-sm text-secondary">{description}</div>
+      </div>
+      <Switch checked={checked} onChange={onChange} />
+    </Block>
   );
 };
 
@@ -1087,128 +1226,86 @@ const CredentialCard = ({
   const isEditing = form.editingIndex === credential.index;
 
   return (
-    <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-5 transition-all relative hover:-translate-y-px hover:shadow-md hover:border-primary">
+    <Block direction="vertical" gap={16} padding={20} variant="outlined">
       <div className="flex items-center gap-4">
-        <div className={getCredentialAvatarClassName(credential)}>
-          {avatarText || 'C'}
-        </div>
+        <Avatar avatar={avatarText || 'C'} size={48} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-2">
             <div className="font-semibold text-text-light dark:text-text-dark">
               {credential.filename}
             </div>
-            <span className={badge.className}>{badge.label}</span>
+            <Tag color={badge.color}>{badge.label}</Tag>
           </div>
           <div className="flex flex-wrap gap-4 text-sm text-secondary">
             <span className="flex items-center gap-1">
-              <i className="fas fa-user"></i>
+              <UserRound aria-hidden="true" size={14} />
               {credential.email || credential.user_id}
             </span>
             <span className="flex items-center gap-1">
-              <i className="fas fa-globe"></i>
+              <Globe2 aria-hidden="true" size={14} />
               {credential.domain}
             </span>
             <span className="flex items-center gap-1">
-              <i className="fas fa-clock"></i>
+              <Clock3 aria-hidden="true" size={14} />
               {credential.time_remaining_str}
             </span>
             <span className="flex items-center gap-1">
-              <i className="fas fa-calendar"></i>
+              <CalendarDays aria-hidden="true" size={14} />
               {formatDateTime(locale, credential.created_at)}
             </span>
           </div>
-          <div className="flex flex-wrap gap-2 mt-3">
-            <span className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark">
+          <Flexbox gap={8} wrap="wrap">
+            <Tag>
               {credential.responses_passthrough
                 ? text.credentialResponsesDirect
                 : text.credentialResponsesProxy}
-            </span>
-            <span className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark">
+            </Tag>
+            <Tag>
               {credential.first_message_role_to_system
                 ? text.credentialRoleAsSystem
                 : text.credentialRoleKeepDeveloper}
-            </span>
-          </div>
+            </Tag>
+          </Flexbox>
         </div>
         <div className="flex gap-2 shrink-0">
-          <button
-            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-            onClick={onEdit}
-          >
-            <i className="fas fa-pen"></i>
+          <Button icon={Pencil} onClick={onEdit} type="primary">
             {text.edit}
-          </button>
-          <button
-            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
-            onClick={onDelete}
-          >
-            <i className="fas fa-trash"></i>
+          </Button>
+          <Button danger icon={Trash2} onClick={onDelete}>
             {text.delete}
-          </button>
+          </Button>
         </div>
       </div>
       {isEditing ? (
-        <div className="mt-4 border-t border-border-light dark:border-border-dark pt-4">
+        <Flexbox direction="vertical" gap={12}>
           <div className="mb-3 font-medium text-text-light dark:text-text-dark">
             {text.credentialEditTitle}
           </div>
           <div className="mb-4 grid gap-3">
-            <label className="flex items-start gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
-              <input
-                checked={form.responsesPassthrough}
-                type="checkbox"
-                onChange={(event) => {
-                  onCredentialResponsesPassthroughChange(event.target.checked);
-                }}
-              />
-              <div>
-                <div className="font-medium text-text-light dark:text-text-dark">
-                  {text.credentialResponsesDirect}
-                </div>
-                <div className="text-sm text-secondary">
-                  {text.credentialResponsesDirectHelp}
-                </div>
-              </div>
-            </label>
-            <label className="flex items-start gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
-              <input
-                checked={form.firstMessageRoleToSystem}
-                type="checkbox"
-                onChange={(event) => {
-                  onCredentialFirstMessageRoleToSystemChange(
-                    event.target.checked,
-                  );
-                }}
-              />
-              <div>
-                <div className="font-medium text-text-light dark:text-text-dark">
-                  {text.credentialRoleAsSystem}
-                </div>
-                <div className="text-sm text-secondary">
-                  {text.credentialRoleAsSystemHelp}
-                </div>
-              </div>
-            </label>
+            <ToggleOption
+              checked={form.responsesPassthrough}
+              description={text.credentialResponsesDirectHelp}
+              onChange={onCredentialResponsesPassthroughChange}
+              title={text.credentialResponsesDirect}
+            />
+            <ToggleOption
+              checked={form.firstMessageRoleToSystem}
+              description={text.credentialRoleAsSystemHelp}
+              onChange={onCredentialFirstMessageRoleToSystemChange}
+              title={text.credentialRoleAsSystem}
+            />
           </div>
-          <div className="flex gap-2">
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
-              onClick={onSaveCredential}
-            >
-              <i className="fas fa-save"></i>
+          <Flexbox gap={8} horizontal>
+            <Button icon={Save} onClick={onSaveCredential} type="primary">
               {text.credentialSave}
-            </button>
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
-              onClick={onResetCredentialForm}
-            >
-              <i className="fas fa-times"></i>
+            </Button>
+            <Button icon={X} onClick={onResetCredentialForm}>
               {common('cancel')}
-            </button>
-          </div>
-        </div>
+            </Button>
+          </Flexbox>
+        </Flexbox>
       ) : null}
-    </div>
+    </Block>
   );
 };
 
@@ -1243,16 +1340,14 @@ const CredentialGroup = ({
 
   return (
     <div className="mb-6">
-      <div className="flex items-center justify-between px-4 py-3 bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark mb-0">
-        <div className="font-semibold text-text-light dark:text-text-dark flex items-center gap-2">
-          <i className="fas fa-layer-group"></i>
-          {title}
-        </div>
-        <span className="bg-primary text-white text-xs px-2 py-1 font-medium">
-          {items.length}
-        </span>
-      </div>
-      <div className="border border-border-light dark:border-border-dark border-t-0 bg-card-light dark:bg-card-dark p-3">
+      <Block direction="vertical" gap={16} padding={24} variant="outlined">
+        <Flexbox align="center" distribution="space-between" horizontal>
+          <Flexbox align="center" gap={8} horizontal>
+            <Layers3 aria-hidden="true" size={16} />
+            {title}
+          </Flexbox>
+          <Tag>{items.length}</Tag>
+        </Flexbox>
         <div className="grid gap-3">
           {items.map((credential) => (
             <CredentialCard
@@ -1278,7 +1373,7 @@ const CredentialGroup = ({
             />
           ))}
         </div>
-      </div>
+      </Block>
     </div>
   );
 };
@@ -1319,83 +1414,68 @@ const AccessKeyCard = ({
   const isBusy = actionId === accessKey.id;
 
   return (
-    <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-5 transition-all relative hover:-translate-y-px hover:shadow-md hover:border-primary">
+    <Block direction="vertical" gap={16} padding={20} variant="outlined">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-2">
             <div className="font-semibold text-text-light dark:text-text-dark">
               {accessKey.name}
             </div>
-            <span className="px-3 py-1 text-xs font-medium bg-primary/10 text-primary">
+            <Tag color="blue">
               {text.accessKeyCount(accessKey.credentialFilenames.length)}
-            </span>
+            </Tag>
           </div>
           <div className="font-mono text-sm text-secondary break-all">
             {accessKey.maskedSecret}
           </div>
           <div className="flex flex-wrap gap-4 text-sm text-secondary mt-3">
             <span className="flex items-center gap-1">
-              <i className="fas fa-calendar"></i>
+              <CalendarDays aria-hidden="true" size={14} />
               {text.accessKeyCreatedAt(
                 new Date(accessKey.createdAt).toLocaleString(locale),
               )}
             </span>
             <span className="flex items-center gap-1">
-              <i className="fas fa-pen"></i>
+              <Pencil aria-hidden="true" size={14} />
               {text.accessKeyUpdatedAt(
                 new Date(accessKey.updatedAt).toLocaleString(locale),
               )}
             </span>
           </div>
-          <div className="flex flex-wrap gap-2 mt-3">
+          <Flexbox gap={8} wrap="wrap">
             {accessKey.credentialFilenames.map((filename) => (
-              <span
-                key={filename}
-                className="px-2 py-1 text-xs bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark font-mono"
-              >
-                {filename}
-              </span>
+              <Tag key={filename}>{filename}</Tag>
             ))}
-          </div>
+          </Flexbox>
         </div>
         <div className="flex gap-2 shrink-0">
-          <button
-            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
-            disabled={isBusy}
-            onClick={onRevealSecret}
-          >
-            <i className="fas fa-eye"></i>
+          <Button disabled={isBusy} icon={Eye} onClick={onRevealSecret}>
             {text.viewKey}
-          </button>
-          <button
-            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-            onClick={onEdit}
-          >
-            <i className="fas fa-pen"></i>
+          </Button>
+          <Button icon={Pencil} onClick={onEdit} type="primary">
             {text.edit}
-          </button>
-          <button
-            className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
-            disabled={isBusy}
-            onClick={onDelete}
-          >
-            <i className="fas fa-trash"></i>
+          </Button>
+          <Button danger disabled={isBusy} icon={Trash2} onClick={onDelete}>
             {text.delete}
-          </button>
+          </Button>
         </div>
       </div>
       {isRevealed ? (
-        <div className="mt-4 border-t border-border-light dark:border-border-dark pt-4">
+        <Flexbox direction="vertical" gap={8}>
           <div className="mb-2 font-medium text-text-light dark:text-text-dark">
             {text.accessKeyCurrent}
           </div>
-          <div className="p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark font-mono text-sm break-all">
+          <Block
+            className="font-mono text-sm break-all"
+            padding={12}
+            variant="outlined"
+          >
             {revealedSecret?.secret.replace(/^Bearer\s+/i, '')}
-          </div>
-        </div>
+          </Block>
+        </Flexbox>
       ) : null}
       {isEditing ? (
-        <div className="mt-4 border-t border-border-light dark:border-border-dark pt-4">
+        <Flexbox direction="vertical" gap={16}>
           <div className="font-medium text-text-light dark:text-text-dark">
             {text.accessKeyEdit}
           </div>
@@ -1409,9 +1489,8 @@ const AccessKeyCard = ({
             >
               {text.accessKeyName}
             </label>
-            <input
+            <Input
               id={`accessKeyName-${accessKey.id}`}
-              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
               placeholder={text.accessKeyExampleName}
               type="text"
               value={form.name}
@@ -1432,9 +1511,16 @@ const AccessKeyCard = ({
                   );
 
                   return (
-                    <label
+                    <Block
+                      as="label"
                       key={credential.filename}
-                      className="flex items-center justify-between gap-4 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer"
+                      align="center"
+                      clickable
+                      distribution="space-between"
+                      gap={16}
+                      horizontal
+                      padding={12}
+                      variant="outlined"
                     >
                       <div className="min-w-0">
                         <div className="font-medium text-text-light dark:text-text-dark">
@@ -1444,14 +1530,13 @@ const AccessKeyCard = ({
                           {credential.email || credential.user_id}
                         </div>
                       </div>
-                      <input
+                      <Checkbox
                         checked={selected}
-                        type="checkbox"
                         onChange={() => {
                           onToggleCredentialSelection(credential.filename);
                         }}
                       />
-                    </label>
+                    </Block>
                   );
                 })
               ) : (
@@ -1462,25 +1547,21 @@ const AccessKeyCard = ({
             </div>
           </div>
           <div className="mt-4 flex gap-2">
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
+            <Button
               disabled={isBusy}
+              icon={Save}
               onClick={onSaveAccessKey}
+              type="primary"
             >
-              <i className="fas fa-save"></i>
               {text.save}
-            </button>
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
-              onClick={onResetAccessKeyForm}
-            >
-              <i className="fas fa-times"></i>
+            </Button>
+            <Button icon={X} onClick={onResetAccessKeyForm}>
               {common('cancel')}
-            </button>
+            </Button>
           </div>
-        </div>
+        </Flexbox>
       ) : null}
-    </div>
+    </Block>
   );
 };
 
@@ -1488,24 +1569,18 @@ export const TabNav = ({ activeTab, onChange }: TabNavProps) => {
   const translations = useTranslations('Admin.tabs');
 
   return (
-    <div className="flex gap-2 mb-8 overflow-x-auto border-b-2 border-border-light dark:border-border-dark">
-      {TAB_ITEMS.map((tab) => (
-        <button
-          key={tab.key}
-          className={
-            tab.key === activeTab
-              ? 'inline-flex items-center gap-2 px-6 py-3 bg-none border-none text-primary cursor-pointer border-b-2 border-primary transition-all font-medium hover:text-primary'
-              : 'inline-flex items-center gap-2 px-6 py-3 bg-none border-none text-secondary cursor-pointer border-b-2 border-transparent transition-all font-medium hover:text-primary'
-          }
-          onClick={() => {
-            onChange(tab.key);
-          }}
-        >
-          <i className={tab.icon}></i>
-          {translations(tab.key === 'api-test' ? 'apiTest' : tab.key)}
-        </button>
-      ))}
-    </div>
+    <Tabs
+      activeKey={activeTab}
+      className="console-tabs"
+      items={TAB_ITEMS.map((tab) => ({
+        key: tab.key,
+        label: translations(tab.key === 'api-test' ? 'apiTest' : tab.key),
+      }))}
+      onChange={(key) => {
+        onChange(key as TabKey);
+      }}
+      variant="point"
+    />
   );
 };
 
@@ -1518,25 +1593,43 @@ export const DashboardSection = ({
   const text = getLocalizedAdminText(locale);
 
   return (
-    <div id="dashboard" className="block">
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-6 mb-8">
-        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 transition-all relative overflow-hidden hover:-translate-y-1 hover:shadow-lg">
-          <div className="flex items-center justify-between mb-4">
-            <div className="w-12 h-12 flex items-center justify-center text-xl text-white bg-primary">
-              <i className="fas fa-key"></i>
+    <Flexbox direction="vertical" gap={24} id="dashboard">
+      <div className="dashboard-metric-grid">
+        <Block
+          className="dashboard-metric-card"
+          direction="vertical"
+          gap={12}
+          padding={16}
+          variant="outlined"
+        >
+          <Flexbox align="center" gap={8} horizontal>
+            <KeyRound aria-hidden="true" size={18} strokeWidth={2} />
+            <div className="dashboard-metric-label">
+              {text.dashboardCredentials}
             </div>
-            <div className="relative w-15 h-15" id="credentialUsageRing">
-              <svg width="60" height="60">
+          </Flexbox>
+          <Flexbox align="center" distribution="space-between" horizontal>
+            <div
+              className="text-2xl font-bold text-text-light dark:text-text-dark leading-none"
+              id="totalCredentials"
+            >
+              {state.totalCredentials}
+            </div>
+            <div
+              className="relative h-14 w-14 shrink-0"
+              id="credentialUsageRing"
+            >
+              <svg height="56" width="56">
                 <circle
-                  cx="30"
-                  cy="30"
-                  r="26"
+                  cx="28"
+                  cy="28"
+                  r="20"
                   className="fill-none stroke-border-light dark:stroke-border-dark stroke-4"
                 />
                 <circle
-                  cx="30"
-                  cy="30"
-                  r="26"
+                  cx="28"
+                  cy="28"
+                  r="20"
                   className="fill-none stroke-primary stroke-4 transition-all"
                   id="credentialRingProgress"
                   // eslint-disable-next-line react/forbid-dom-props
@@ -1544,115 +1637,134 @@ export const DashboardSection = ({
                 />
               </svg>
               <div
-                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-xs font-semibold text-text-light dark:text-text-dark"
+                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[11px] font-semibold text-text-light dark:text-text-dark"
                 id="credentialUsagePercent"
               >
                 {Math.round(state.credentialUsagePercent)}%
               </div>
             </div>
-          </div>
-          <div
-            className="text-2xl font-bold mb-1 text-text-light dark:text-text-dark leading-none"
-            id="totalCredentials"
-          >
-            {state.totalCredentials}
-          </div>
-          <div className="text-sm text-secondary font-medium">
-            {text.dashboardCredentials}
-          </div>
-          <div
-            className="text-xs mt-2 flex items-center gap-1"
-            id="credentialTrend"
-          >
-            <i className="fas fa-check"></i>
+          </Flexbox>
+          <Flexbox align="center" gap={4} horizontal id="credentialTrend">
+            <Check aria-hidden="true" size={14} strokeWidth={2} />
             <span id="validCredentials">
               {text.dashboardActive(state.validCredentials)}
             </span>
-          </div>
-        </div>
-        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 transition-all relative overflow-hidden hover:-translate-y-1 hover:shadow-lg">
-          <div className="flex items-center justify-between mb-4">
-            <div
-              className="w-12 h-12 flex items-center justify-center text-xl text-white bg-success"
-              id="serviceStatusIcon"
-            >
-              <i className="fas fa-server"></i>
-            </div>
-            <div className="inline-flex items-center gap-2" id="serviceStatus">
-              <span
-                className={`w-2 h-2 rounded-full animate-pulse ${
-                  state.serviceStatus === 'online'
-                    ? 'bg-success'
-                    : state.serviceStatus === 'offline'
-                      ? 'bg-error'
-                      : 'bg-warning'
-                }`}
-                id="statusDot"
-              ></span>
-            </div>
-          </div>
-          <div
-            className="text-2xl font-bold mb-1 text-text-light dark:text-text-dark leading-none"
-            id="statusText"
-          >
-            {state.statusText}
-          </div>
-          <div className="text-sm text-secondary font-medium">
-            {text.dashboardServiceStatus}
-          </div>
-          <div
-            className="text-xs mt-2 flex items-center gap-1"
-            id="uptimeTrend"
-          >
-            <i className="fas fa-clock"></i>
-            <span id="uptime">{state.uptimeText}</span>
-          </div>
-        </div>
-        <button
-          className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 transition-all relative overflow-hidden hover:-translate-y-1 hover:shadow-lg cursor-pointer text-left"
-          onClick={onCopyEndpoint}
-          title={text.apiEndpointTooltip}
-          type="button"
+          </Flexbox>
+        </Block>
+        <Block
+          className="dashboard-metric-card"
+          direction="vertical"
+          gap={12}
+          padding={16}
+          variant="outlined"
         >
-          <div className="flex items-center justify-between mb-4">
-            <div className="w-12 h-12 flex items-center justify-center text-xl text-white bg-warning">
-              <i className="fas fa-link"></i>
+          <Flexbox align="center" gap={8} horizontal>
+            <Server
+              aria-hidden="true"
+              id="serviceStatusIcon"
+              size={18}
+              strokeWidth={2}
+            />
+            <div className="dashboard-metric-label">
+              {text.dashboardServiceStatus}
             </div>
-            <div className="opacity-60">
-              <i className="fas fa-copy"></i>
+          </Flexbox>
+          <Flexbox align="center" distribution="space-between" horizontal>
+            <div
+              className="text-2xl font-bold text-text-light dark:text-text-dark leading-none"
+              id="statusText"
+            >
+              {state.statusText}
             </div>
-          </div>
-          <div
-            className="text-2xl font-bold mb-1 text-text-light dark:text-text-dark leading-none text-lg break-all"
-            id="apiEndpoint"
-          >
-            {state.apiEndpoint || '-'}
-          </div>
-          <div className="text-sm text-secondary font-medium">
-            {text.apiEndpointTitle}
-          </div>
-          <div className="text-xs mt-2 flex items-center gap-1">
-            <i className="fas fa-info-circle"></i>
+            <Tag
+              color={
+                state.serviceStatus === 'online'
+                  ? 'success'
+                  : state.serviceStatus === 'offline'
+                    ? 'error'
+                    : 'warning'
+              }
+              id="serviceStatus"
+              variant="borderless"
+            >
+              <span id="statusDot" />
+            </Tag>
+          </Flexbox>
+          <Flexbox align="center" gap={4} horizontal id="uptimeTrend">
+            <Clock3 aria-hidden="true" size={14} strokeWidth={2} />
+            <span id="uptime">{state.uptimeText}</span>
+          </Flexbox>
+        </Block>
+        <Block
+          clickable
+          className="dashboard-metric-card dashboard-metric-card-clickable"
+          direction="vertical"
+          gap={12}
+          onClick={onCopyEndpoint}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onCopyEndpoint();
+            }
+          }}
+          padding={16}
+          role="button"
+          tabIndex={0}
+          title={text.apiEndpointTooltip}
+          variant="outlined"
+        >
+          <Flexbox align="center" gap={8} horizontal>
+            <Link aria-hidden="true" size={18} strokeWidth={2} />
+            <div className="dashboard-metric-label">
+              {text.apiEndpointTitle}
+            </div>
+          </Flexbox>
+          <Flexbox align="center" distribution="space-between" horizontal>
+            <div
+              className="text-lg font-bold text-text-light dark:text-text-dark leading-none break-all"
+              id="apiEndpoint"
+            >
+              {state.apiEndpoint || '-'}
+            </div>
+            <Copy aria-hidden="true" size={16} strokeWidth={2} />
+          </Flexbox>
+          <Flexbox align="center" gap={4} horizontal>
+            <Info aria-hidden="true" size={14} strokeWidth={2} />
             {text.copyLinkHint}
-          </div>
-        </button>
-        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 transition-all relative overflow-hidden hover:-translate-y-1 hover:shadow-lg">
-          <div className="flex items-center justify-between mb-4">
-            <div className="w-12 h-12 flex items-center justify-center text-xl text-white bg-primary">
-              <i className="fas fa-chart-line"></i>
+          </Flexbox>
+        </Block>
+        <Block
+          className="dashboard-metric-card"
+          direction="vertical"
+          gap={12}
+          padding={16}
+          variant="outlined"
+        >
+          <Flexbox align="center" gap={8} horizontal>
+            <ChartNoAxesCombined aria-hidden="true" size={18} strokeWidth={2} />
+            <div className="dashboard-metric-label">
+              {text.dashboardApiCalls}
             </div>
-            <div className="relative w-15 h-15" id="totalUsageRing">
-              <svg width="60" height="60">
+          </Flexbox>
+          <Flexbox align="center" distribution="space-between" horizontal>
+            <div
+              className="text-2xl font-bold text-text-light dark:text-text-dark leading-none"
+              id="totalApiCalls"
+            >
+              {state.totalApiCalls}
+            </div>
+            <div className="relative h-12 w-12" id="totalUsageRing">
+              <svg height="48" width="48">
                 <circle
-                  cx="30"
-                  cy="30"
-                  r="26"
+                  cx="24"
+                  cy="24"
+                  r="20"
                   className="fill-none stroke-border-light dark:stroke-border-dark stroke-4"
                 />
                 <circle
-                  cx="30"
-                  cy="30"
-                  r="26"
+                  cx="24"
+                  cy="24"
+                  r="20"
                   className="fill-none stroke-primary stroke-4 transition-all"
                   id="usageRingProgress"
                   // eslint-disable-next-line react/forbid-dom-props
@@ -1666,47 +1778,39 @@ export const DashboardSection = ({
                 {state.totalApiCalls}
               </div>
             </div>
-          </div>
-          <div
-            className="text-2xl font-bold mb-1 text-text-light dark:text-text-dark leading-none"
-            id="totalApiCalls"
-          >
-            {state.totalApiCalls}
-          </div>
-          <div className="text-sm text-secondary font-medium">
-            {text.dashboardApiCalls}
-          </div>
-          <div
-            className="text-xs mt-2 flex items-center gap-1"
-            id="apiCallsTrend"
-          >
-            <i className="fas fa-sync-alt"></i>
+          </Flexbox>
+          <Flexbox align="center" gap={4} horizontal id="apiCallsTrend">
+            <RefreshCw aria-hidden="true" size={14} strokeWidth={2} />
             {state.lastCheckedAt || text.dashboardRefreshPending}
-          </div>
-        </div>
+          </Flexbox>
+        </Block>
       </div>
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            <i className="fas fa-chart-bar"></i>
-            {text.dashboardModelUsage}
-          </h3>
-          <button
-            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+      <Block
+        className="dashboard-data-block"
+        direction="vertical"
+        gap={16}
+        padding={16}
+        variant="outlined"
+      >
+        <Flexbox align="center" distribution="space-between" horizontal>
+          <SectionTitle icon={BarChart3} title={text.dashboardModelUsage} />
+          <Button
+            className="dashboard-refresh"
+            icon={RefreshCw}
             onClick={onRefresh}
+            type="primary"
           >
-            <i className="fas fa-sync-alt"></i>
             {text.refresh}
-          </button>
-        </div>
+          </Button>
+        </Flexbox>
         <div className="w-full overflow-x-auto">
           <table className="w-full border-collapse mt-4">
             <thead>
               <tr>
-                <th className="p-3 px-4 text-left font-semibold bg-bg-light dark:bg-bg-dark border-b border-border-light dark:border-border-dark">
+                <th className="p-3 px-4 text-left font-semibold border-b border-border-light dark:border-border-dark">
                   {text.dashboardModelName}
                 </th>
-                <th className="p-3 px-4 text-left font-semibold bg-bg-light dark:bg-bg-dark border-b border-border-light dark:border-border-dark text-right">
+                <th className="p-3 px-4 text-left font-semibold border-b border-border-light dark:border-border-dark text-right">
                   {text.usageTableCalls}
                 </th>
               </tr>
@@ -1736,22 +1840,23 @@ export const DashboardSection = ({
             </tbody>
           </table>
         </div>
-      </div>
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            <i className="fas fa-key"></i>
-            {text.dashboardCredentialUsage}
-          </h3>
-        </div>
+      </Block>
+      <Block
+        className="dashboard-data-block"
+        direction="vertical"
+        gap={16}
+        padding={16}
+        variant="outlined"
+      >
+        <SectionTitle icon={KeyRound} title={text.dashboardCredentialUsage} />
         <div className="w-full overflow-x-auto">
           <table className="w-full border-collapse mt-4">
             <thead>
               <tr>
-                <th className="p-3 px-4 text-left font-semibold bg-bg-light dark:bg-bg-dark border-b border-border-light dark:border-border-dark">
+                <th className="p-3 px-4 text-left font-semibold border-b border-border-light dark:border-border-dark">
                   {text.usageCredential}
                 </th>
-                <th className="p-3 px-4 text-left font-semibold bg-bg-light dark:bg-bg-dark border-b border-border-light dark:border-border-dark text-right">
+                <th className="p-3 px-4 text-left font-semibold border-b border-border-light dark:border-border-dark text-right">
                   {text.usageTableCalls}
                 </th>
               </tr>
@@ -1781,8 +1886,8 @@ export const DashboardSection = ({
             </tbody>
           </table>
         </div>
-      </div>
-    </div>
+      </Block>
+    </Flexbox>
   );
 };
 
@@ -1804,111 +1909,82 @@ export const UsageSection = ({
   return (
     <div id="usage" className="block">
       {state.autoRefreshVisible ? (
-        <div className="mb-6 p-4 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark flex flex-wrap items-center justify-between gap-3">
+        <Block
+          className="mb-6"
+          direction="vertical"
+          gap={12}
+          padding={16}
+          variant="outlined"
+        >
           <div className="flex items-center gap-3 text-sm text-text-light dark:text-text-dark">
             <label className="inline-flex items-center gap-2 text-secondary">
               {text.usageAutoRefresh}
-              <select
+              <Select
                 aria-label={text.usageAutoRefresh}
-                className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-3 py-2 cursor-pointer transition-all hover:border-primary focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
                 value={state.autoRefreshSeconds}
-                onChange={(event) => {
-                  onAutoRefreshSecondsChange(Number(event.target.value));
-                }}
-              >
-                {autoRefreshOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                onChange={(value) => onAutoRefreshSecondsChange(Number(value))}
+                options={autoRefreshOptions}
+              />
             </label>
           </div>
-        </div>
+        </Block>
       ) : null}
 
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm">
+      <Block
+        className="mb-6"
+        direction="vertical"
+        gap={16}
+        padding={24}
+        variant="outlined"
+      >
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-4 flex-1">
             <label className="block">
               <div className="mb-2 text-sm font-medium text-text-light dark:text-text-dark">
                 {text.usageRange}
               </div>
-              <select
+              <Select
                 aria-label={text.usageRange}
-                className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+                className="w-full"
                 value={state.request.range}
-                onChange={(event) => {
-                  onRangeChange(event.target.value as UsageRange);
-                }}
-              >
-                {rangeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                onChange={(value) => onRangeChange(value as UsageRange)}
+                options={rangeOptions}
+              />
             </label>
             <label className="block">
               <div className="mb-2 text-sm font-medium text-text-light dark:text-text-dark">
                 {text.usageCredential}
               </div>
-              <select
+              <Select
                 aria-label={text.usageCredential}
-                className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+                className="w-full"
                 value={state.request.credential}
-                onChange={(event) => {
-                  onCredentialChange(event.target.value);
-                }}
-              >
-                {state.filters.credentials.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                onChange={onCredentialChange}
+                options={state.filters.credentials}
+              />
             </label>
             <label className="block">
               <div className="mb-2 text-sm font-medium text-text-light dark:text-text-dark">
                 {text.usageAccessKey}
               </div>
-              <select
+              <Select
                 aria-label={text.usageAccessKey}
-                className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+                className="w-full"
                 value={state.request.accessKey}
-                onChange={(event) => {
-                  onAccessKeyChange(event.target.value);
-                }}
-              >
-                {state.filters.accessKeys.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                onChange={onAccessKeyChange}
+                options={state.filters.accessKeys}
+              />
             </label>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-              onClick={onRefresh}
-              type="button"
-            >
-              <i
-                className={
-                  state.loading ? 'fas fa-spinner fa-spin' : 'fas fa-sync-alt'
-                }
-              ></i>
+            <Button onClick={onRefresh} htmlType="button" type="primary">
+              {state.loading ? <LoaderCircle /> : <RefreshCw />}
               {text.usageRefresh}
-            </button>
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
-              onClick={onClearHistory}
-              type="button"
-            >
-              <i className="fas fa-trash-alt"></i>
+            </Button>
+            <Button onClick={onClearHistory} danger htmlType="button">
+              <Trash2 />
               {text.usageClearHistory}
-            </button>
+            </Button>
           </div>
         </div>
         <div className="mt-4 text-sm text-secondary">
@@ -1916,33 +1992,33 @@ export const UsageSection = ({
             ? text.usageLastUpdated(state.lastUpdatedAt)
             : text.usageFirstLoad}
         </div>
-      </div>
+      </Block>
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-6 mb-6">
-        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 shadow-sm">
+        <Block direction="vertical" gap={8} padding={24} variant="outlined">
           <div className="text-sm text-secondary mb-2">
             {text.usageCallsToday}
           </div>
           <div className="text-3xl font-bold text-text-light dark:text-text-dark">
             {formatNumber(locale, state.todaySummary.callCount)}
           </div>
-        </div>
-        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 shadow-sm">
+        </Block>
+        <Block direction="vertical" gap={8} padding={24} variant="outlined">
           <div className="text-sm text-secondary mb-2">
             {text.usageTokensToday}
           </div>
           <div className="text-3xl font-bold text-text-light dark:text-text-dark">
             {formatNumber(locale, state.todaySummary.totalTokens)}
           </div>
-        </div>
-        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 shadow-sm">
+        </Block>
+        <Block direction="vertical" gap={8} padding={24} variant="outlined">
           <div className="text-sm text-secondary mb-2">
             {text.usageCacheHitToday}
           </div>
           <div className="text-3xl font-bold text-text-light dark:text-text-dark">
             {formatNumber(locale, state.todaySummary.cacheHitTokens)}
           </div>
-        </div>
+        </Block>
       </div>
 
       <div className="grid gap-6 mb-6">
@@ -1970,13 +2046,11 @@ export const UsageSection = ({
         })}
       </div>
 
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 shadow-sm">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            <i className="fas fa-table"></i>
-            {text.usageModelSummary}
-          </h3>
-        </div>
+      <Block direction="vertical" gap={16} padding={24} variant="outlined">
+        <SectionTitle
+          icon={ChartNoAxesCombined}
+          title={text.usageModelSummary}
+        />
         <div className="w-full overflow-x-auto">
           <table className="w-full border-collapse mt-4">
             <thead>
@@ -2026,7 +2100,7 @@ export const UsageSection = ({
             </tbody>
           </table>
         </div>
-      </div>
+      </Block>
     </div>
   );
 };
@@ -2048,7 +2122,8 @@ export const CredentialsSection = ({
   onEditAccessKey,
   onOpenAuthUrl,
   onPollAuth,
-  onRefreshCredentials,
+  onRefreshAccessKeys,
+  onRefreshCredentialList,
   onResetCredentialForm,
   onResetAccessKeyForm,
   onRevealAccessKeySecret,
@@ -2067,143 +2142,129 @@ export const CredentialsSection = ({
 
   return (
     <div id="credentials" className="block">
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all border-l-4 border-primary pl-4">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            <i className="fas fa-magic"></i>
-            {text.autoAuthTitle}
-          </h3>
-        </div>
+      <Block direction="vertical" gap={16} padding={24} variant="outlined">
+        <Flexbox align="center" gap={8} horizontal>
+          <WandSparkles aria-hidden="true" size={18} strokeWidth={2} />
+          <h3 className="dashboard-data-title">{text.autoAuthTitle}</h3>
+        </Flexbox>
         <p className="text-secondary mb-4">{text.autoAuthDescription}</p>
-        <button
-          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-          id="getAuthBtn"
-          disabled={auth.starting}
-          onClick={onAuthAction}
-        >
-          <i
-            className={auth.starting ? 'fas fa-spinner fa-spin' : 'fas fa-play'}
-          ></i>
-          {text.autoAuthStart}
-        </button>
-        <div
-          id="authUrlSection"
-          className={
-            auth.authUrl
-              ? 'mt-4 p-4 bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark'
-              : 'mt-4 p-4 bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark hidden'
-          }
-        >
-          <h4 className="text-primary mb-4">{text.autoAuthGenerated}</h4>
-          <p className="text-secondary mb-4">
-            {text.autoAuthGeneratedDescription}
-          </p>
-          <input
-            id="authUrlInput"
-            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark font-mono text-sm mb-4 text-text-light dark:text-text-dark"
-            readOnly
-            type="text"
-            value={auth.authUrl}
-          />
-          <div className="flex gap-2 flex-wrap">
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
-              onClick={onOpenAuthUrl}
-            >
-              <i className="fas fa-external-link-alt"></i>
-              {text.autoAuthOpen}
-            </button>
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
-              onClick={onCopyAuthUrl}
-            >
-              <i className="fas fa-copy"></i>
-              {text.copyLink}
-            </button>
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-warning text-white hover:bg-warning"
-              onClick={() => {
-                onToggleCallbackMode(true);
-              }}
-            >
-              <i className="fas fa-hand-pointer"></i>
-              {text.autoAuthManual}
-            </button>
-          </div>
-          <div
-            id="autoCallbackSection"
-            className="mt-4 p-4 bg-primary/8 border border-primary"
+        <Flexbox horizontal>
+          <Button
+            id="getAuthBtn"
+            disabled={auth.starting}
+            icon={Play}
+            loading={auth.starting}
+            onClick={onAuthAction}
+            type="primary"
           >
-            <div className="text-center p-4">
-              <i className="fas fa-clock"></i>
-              <div>{auth.message || text.autoAuthPending}</div>
-              <small className="text-secondary">
-                {text.autoAuthPendingHint}
-              </small>
-            </div>
-            <div className="mt-4 text-center">
-              <button
-                className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
-                onClick={onPollAuth}
-              >
-                <i
-                  className={
-                    auth.polling ? 'fas fa-spinner fa-spin' : 'fas fa-sync-alt'
-                  }
-                ></i>
-                {text.autoAuthPoll}
-              </button>
-            </div>
-          </div>
-          <div
-            id="manualCallbackSection"
-            className={
-              auth.showManualCallback
-                ? 'mt-4 p-4 bg-primary/8 border border-primary'
-                : 'mt-4 p-4 bg-primary/8 border border-primary hidden'
-            }
+            {text.autoAuthStart}
+          </Button>
+        </Flexbox>
+        {auth.authUrl ? (
+          <Block
+            id="authUrlSection"
+            direction="vertical"
+            gap={16}
+            padding={16}
+            variant="outlined"
           >
-            <h5 className="mb-4">{text.autoAuthManualTitle}</h5>
-            <p className="text-secondary text-sm mb-4">
-              {text.autoAuthManualDescription}
+            <h4 className="text-primary mb-4">{text.autoAuthGenerated}</h4>
+            <p className="text-secondary mb-4">
+              {text.autoAuthGeneratedDescription}
             </p>
-            <input
-              id="callbackUrl"
-              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-              placeholder={text.autoAuthManualInput}
+            <Input
+              id="authUrlInput"
+              className="font-mono mb-4"
+              readOnly
               type="text"
-              value={auth.callbackUrl}
-              onChange={(event) => {
-                onCallbackUrlChange(event.target.value);
-              }}
+              value={auth.authUrl}
             />
-            <div className="mt-4 text-right">
-              <button
-                className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary mr-2"
+            <Flexbox gap={8} wrap="wrap">
+              <Button
+                icon={ExternalLink}
+                onClick={onOpenAuthUrl}
+                type="primary"
+              >
+                {text.autoAuthOpen}
+              </Button>
+              <Button icon={Copy} onClick={onCopyAuthUrl}>
+                {text.copyLink}
+              </Button>
+              <Button
+                icon={MousePointerClick}
                 onClick={() => {
-                  onToggleCallbackMode(false);
+                  onToggleCallbackMode(true);
                 }}
               >
-                {text.autoAuthManualBack}
-              </button>
-              <button
-                className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
-                onClick={onSubmitCallbackUrl}
+                {text.autoAuthManual}
+              </Button>
+            </Flexbox>
+            <Block
+              id="autoCallbackSection"
+              direction="vertical"
+              gap={16}
+              padding={16}
+              variant="outlined"
+            >
+              <div className="text-center p-4">
+                <Clock3 />
+                <div>{auth.message || text.autoAuthPending}</div>
+                <small className="text-secondary">
+                  {text.autoAuthPendingHint}
+                </small>
+              </div>
+              <div className="mt-4 text-center">
+                <Button
+                  icon={RefreshCw}
+                  loading={auth.polling}
+                  onClick={onPollAuth}
+                >
+                  {text.autoAuthPoll}
+                </Button>
+              </div>
+            </Block>
+            {auth.showManualCallback ? (
+              <Block
+                id="manualCallbackSection"
+                direction="vertical"
+                gap={16}
+                padding={16}
+                variant="outlined"
               >
-                {text.submit}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+                <h5 className="mb-4">{text.autoAuthManualTitle}</h5>
+                <p className="text-secondary text-sm mb-4">
+                  {text.autoAuthManualDescription}
+                </p>
+                <Input
+                  id="callbackUrl"
+                  className="w-full"
+                  placeholder={text.autoAuthManualInput}
+                  type="text"
+                  value={auth.callbackUrl}
+                  onChange={(event) => {
+                    onCallbackUrlChange(event.target.value);
+                  }}
+                />
+                <div className="mt-4 text-right">
+                  <Button
+                    onClick={() => {
+                      onToggleCallbackMode(false);
+                    }}
+                  >
+                    {text.autoAuthManualBack}
+                  </Button>
+                  <Button onClick={onSubmitCallbackUrl} type="primary">
+                    {text.submit}
+                  </Button>
+                </div>
+              </Block>
+            ) : null}
+          </Block>
+        ) : null}
+      </Block>
       {credentials.form.editingIndex === null ? (
-        <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-          <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-            <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-              <i className="fas fa-edit"></i>
-              {text.manualCredentialTitle}
-            </h3>
-          </div>
+        <Block direction="vertical" gap={16} padding={24} variant="outlined">
+          <SectionTitle icon={Pencil} title={text.manualCredentialTitle} />
           <div className="mb-4">
             <label
               className="block mb-2 font-medium text-text-light dark:text-text-dark"
@@ -2212,16 +2273,16 @@ export const CredentialsSection = ({
               Bearer Token
               <span className="text-error">*</span>
             </label>
-            <textarea
+            <TextArea
               id="bearerToken"
-              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10 resize-y min-h-[100px]"
+              className="w-full"
               placeholder={text.manualCredentialPlaceholder}
               rows={3}
               value={credentials.form.bearerToken}
               onChange={(event) => {
                 onCredentialTokenChange(event.target.value);
               }}
-            ></textarea>
+            />
           </div>
           <div className="mb-4">
             <label
@@ -2230,9 +2291,9 @@ export const CredentialsSection = ({
             >
               {text.credentialUserId}
             </label>
-            <input
+            <Input
               id="userId"
-              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
+              className="w-full"
               placeholder={text.credentialUserIdPlaceholder}
               type="text"
               value={credentials.form.userId}
@@ -2242,71 +2303,37 @@ export const CredentialsSection = ({
             />
           </div>
           <div className="mb-4 grid gap-3">
-            <label className="flex items-start gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
-              <input
-                checked={credentials.form.responsesPassthrough}
-                type="checkbox"
-                onChange={(event) => {
-                  onCredentialResponsesPassthroughChange(event.target.checked);
-                }}
-              />
-              <div>
-                <div className="font-medium text-text-light dark:text-text-dark">
-                  {text.credentialResponsesDirect}
-                </div>
-                <div className="text-sm text-secondary">
-                  {text.credentialResponsesDirectHelp}
-                </div>
-              </div>
-            </label>
-            <label className="flex items-start gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
-              <input
-                checked={credentials.form.firstMessageRoleToSystem}
-                type="checkbox"
-                onChange={(event) => {
-                  onCredentialFirstMessageRoleToSystemChange(
-                    event.target.checked,
-                  );
-                }}
-              />
-              <div>
-                <div className="font-medium text-text-light dark:text-text-dark">
-                  {text.credentialRoleAsSystem}
-                </div>
-                <div className="text-sm text-secondary">
-                  {text.credentialRoleAsSystemHelp}
-                </div>
-              </div>
-            </label>
+            <ToggleOption
+              checked={credentials.form.responsesPassthrough}
+              description={text.credentialResponsesDirectHelp}
+              onChange={onCredentialResponsesPassthroughChange}
+              title={text.credentialResponsesDirect}
+            />
+            <ToggleOption
+              checked={credentials.form.firstMessageRoleToSystem}
+              description={text.credentialRoleAsSystemHelp}
+              onChange={onCredentialFirstMessageRoleToSystemChange}
+              title={text.credentialRoleAsSystem}
+            />
           </div>
-          <button
-            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-success text-white hover:bg-success"
-            onClick={onAddCredential}
-          >
-            <i className="fas fa-plus"></i>
-            {text.save}
-          </button>
-        </div>
+          <Flexbox horizontal>
+            <Button icon={Plus} onClick={onAddCredential} type="primary">
+              {text.save}
+            </Button>
+          </Flexbox>
+        </Block>
       ) : null}
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            {text.accessKeyLabel}
-          </h3>
-          <div>
-            <button
-              className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-              onClick={onRefreshCredentials}
-            >
-              <i className="fas fa-sync-alt"></i>
-              {text.credentialRefreshList}
-            </button>
-          </div>
+      <Block direction="vertical" gap={16} padding={24} variant="outlined">
+        <div className="flex items-center justify-between">
+          <SectionTitle icon={KeyRound} title={text.accessKeyLabel} />
+          <Button icon={RefreshCw} onClick={onRefreshAccessKeys}>
+            {text.credentialRefreshList}
+          </Button>
         </div>
         <div id="accessKeysList">
           {credentials.accessKeysLoading ? (
             <div className="text-center py-8 text-secondary">
-              <i className="fas fa-spinner fa-spin"></i>
+              <LoaderCircle />
               <div>{text.loading}</div>
             </div>
           ) : credentials.accessKeys.length ? (
@@ -2338,32 +2365,31 @@ export const CredentialsSection = ({
             </div>
           ) : (
             <div className="text-center py-8 text-secondary">
-              <i className="fas fa-key"></i>
+              <KeyRound />
               <div>{text.accessKeyEmptyCredentials}</div>
             </div>
           )}
         </div>
-      </div>
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
+      </Block>
+      <Block
+        className="mb-6"
+        direction="vertical"
+        gap={16}
+        padding={24}
+        variant="outlined"
+      >
+        <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
             {text.credentialSectionTitle}
           </h3>
-          <button
-            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-            onClick={onRefreshCredentials}
-          >
-            <i className="fas fa-sync-alt"></i>
+          <Button icon={RefreshCw} onClick={onRefreshCredentialList}>
             {text.credentialRefreshList}
-          </button>
+          </Button>
         </div>
-        <div
-          id="currentCredentialStatus"
-          className="mb-4 pb-4 border-b border-border-light dark:border-border-dark"
-        >
+        <div id="currentCredentialStatus">
           {credentials.currentLoading ? (
             <div className="text-center py-8 text-secondary">
-              <i className="fas fa-spinner fa-spin"></i>
+              <LoaderCircle />
               <div>{text.noCurrentState}</div>
             </div>
           ) : (
@@ -2375,7 +2401,7 @@ export const CredentialsSection = ({
                 <div className="flex flex-wrap gap-4 text-sm text-secondary mt-2">
                   {credentials.current?.next_filename ? (
                     <span className="flex items-center gap-1">
-                      <i className="fas fa-file"></i>
+                      <Info />
                       {text.credentialBadgeNext}{' '}
                       {credentials.current.next_filename}
                     </span>
@@ -2383,7 +2409,7 @@ export const CredentialsSection = ({
                   {credentials.current?.available_credential_count !==
                   undefined ? (
                     <span className="flex items-center gap-1">
-                      <i className="fas fa-layer-group"></i>
+                      <Layers3 />
                       {text.availableCredentials}{' '}
                       {credentials.current.available_credential_count}
                     </span>
@@ -2396,7 +2422,7 @@ export const CredentialsSection = ({
         <div id="credentialsList">
           {credentials.loading ? (
             <div className="text-center py-8 text-secondary">
-              <i className="fas fa-spinner fa-spin"></i>
+              <LoaderCircle />
               <div>{text.loading}</div>
             </div>
           ) : credentials.items.length ? (
@@ -2438,12 +2464,12 @@ export const CredentialsSection = ({
             </>
           ) : (
             <div className="text-center py-8 text-secondary">
-              <i className="fas fa-folder-open"></i>
+              <Layers3 />
               <div>{text.credentialEmpty}</div>
             </div>
           )}
         </div>
-      </div>
+      </Block>
     </div>
   );
 };
@@ -2461,15 +2487,14 @@ export const ApiTestSection = ({
   const locale = useLocale() as AppLocale;
   const text = getLocalizedAdminText(locale);
   const availableModels = models.length ? models : [...DEFAULT_TEST_MODELS];
+  const selectedModel = availableModels.includes(state.model)
+    ? state.model
+    : (availableModels[0] ?? '');
 
   return (
     <div id="api-test" className="block">
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all border-l-4 border-primary pl-4">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            {text.apiTestTitle}
-          </h3>
-        </div>
+      <Block direction="vertical" gap={16} padding={24} variant="outlined">
+        <SectionTitle icon={Send} title={text.apiTestTitle} />
         <div className="mb-4">
           <label
             className="block mb-2 font-medium text-text-light dark:text-text-dark"
@@ -2477,21 +2502,19 @@ export const ApiTestSection = ({
           >
             {text.apiTestCredential}
           </label>
-          <select
+          <Select
+            className="w-full"
             id="testCredential"
-            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
             value={state.credentialFilename}
-            onChange={(event) => {
-              onCredentialChange(event.target.value);
-            }}
-          >
-            <option value="">{text.apiTestFollowCurrent}</option>
-            {credentialOptions.map((credential) => (
-              <option key={credential.filename} value={credential.filename}>
-                {credential.filename} · {credential.email || credential.user_id}
-              </option>
-            ))}
-          </select>
+            onChange={onCredentialChange}
+            options={[
+              { label: text.apiTestFollowCurrent, value: '' },
+              ...credentialOptions.map((credential) => ({
+                label: `${credential.filename} · ${credential.email || credential.user_id}`,
+                value: credential.filename,
+              })),
+            ]}
+          />
         </div>
         <div className="mb-4">
           <label
@@ -2500,20 +2523,16 @@ export const ApiTestSection = ({
           >
             {text.usageModel}
           </label>
-          <select
+          <Select
+            className="w-full"
             id="testModel"
-            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-            value={state.model}
-            onChange={(event) => {
-              onModelChange(event.target.value);
-            }}
-          >
-            {availableModels.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
+            value={selectedModel}
+            onChange={onModelChange}
+            options={availableModels.map((model) => ({
+              label: model,
+              value: model,
+            }))}
+          />
         </div>
         <div className="mb-4">
           <label
@@ -2522,73 +2541,71 @@ export const ApiTestSection = ({
           >
             {text.apiTestMessage}
           </label>
-          <textarea
+          <TextArea
             id="testMessage"
-            className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10 resize-y min-h-[100px]"
             placeholder={text.apiTestPlaceholder}
             rows={3}
             value={state.message}
             onChange={(event) => {
               onMessageChange(event.target.value);
             }}
-          ></textarea>
+          />
         </div>
         <div className="mb-4">
           <label className="block mb-2 font-medium text-text-light dark:text-text-dark">
-            <input
-              id="testStream"
+            <Checkbox
               className="mr-2"
-              type="checkbox"
               checked={state.stream}
-              onChange={(event) => {
-                onStreamChange(event.target.checked);
-              }}
+              onChange={onStreamChange}
             />
             {text.apiTestStream}
           </label>
         </div>
-        <button
-          className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
-          disabled={state.submitting}
-          onClick={onSubmit}
-        >
-          <i
-            className={
-              state.submitting ? 'fas fa-spinner fa-spin' : 'fas fa-paper-plane'
-            }
-          ></i>
-          {text.apiTestSend}
-        </button>
+        <Flexbox horizontal>
+          <Button
+            disabled={state.submitting}
+            icon={Send}
+            loading={state.submitting}
+            onClick={onSubmit}
+            type="primary"
+          >
+            {text.apiTestSend}
+          </Button>
+        </Flexbox>
         <div className="mb-4 mt-6">
           <label className="block mb-2 font-medium text-text-light dark:text-text-dark">
             {text.apiTestResult}
           </label>
-          <div
-            id="testResult"
-            className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4 min-h-[200px]"
-          >
+          <Block id="testResult" padding={16} variant="outlined">
             <pre className="m-0 whitespace-pre-wrap">
               {state.result || text.apiTestIdle}
             </pre>
-          </div>
+          </Block>
         </div>
-      </div>
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            {text.apiExamplesTitle}
-          </h3>
-        </div>
-        <h4 className="text-primary mb-4">{text.apiExampleCurl}</h4>
-        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4">{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
+      </Block>
+      <Block direction="vertical" gap={16} padding={24} variant="outlined">
+        <SectionTitle icon={FileCode2} title={text.apiExamplesTitle} />
+        <h4 className="code-sample-title">{text.apiExampleCurl}</h4>
+        <Block
+          className="code-sample overflow-x-auto font-mono text-sm"
+          padding={16}
+          variant="outlined"
+        >
+          <pre>{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
 -H "Authorization: Bearer YOUR_API_KEY" \\
 -H "Content-Type: application/json" \\
 -d '{
   "model": "glm-5.1",
   "messages": [{ "role": "user", "content": "Hello!" }]
-}'`}</div>
-        <h4 className="text-primary mt-6 mb-4">{text.apiExamplePython}</h4>
-        <div className="bg-bg-light dark:bg-bg-dark border border-border-light dark:border-border-dark p-4 font-mono text-sm text-text-light dark:text-text-dark overflow-x-auto my-4">{`import openai
+}'`}</pre>
+        </Block>
+        <h4 className="code-sample-title">{text.apiExamplePython}</h4>
+        <Block
+          className="code-sample overflow-x-auto font-mono text-sm"
+          padding={16}
+          variant="outlined"
+        >
+          <pre>{`import openai
 
 client = openai.OpenAI(
     api_key="YOUR_API_KEY",
@@ -2598,8 +2615,9 @@ response = client.chat.completions.create(
     model="glm-5.1",
     messages=[{"role": "user", "content": "Hello!"}],
 )
-print(response.choices[0].message.content)`}</div>
-      </div>
+print(response.choices[0].message.content)`}</pre>
+        </Block>
+      </Block>
     </div>
   );
 };
@@ -2613,16 +2631,12 @@ export const SettingsSection = ({
   const text = getLocalizedAdminText(locale);
   return (
     <div id="settings" className="block">
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            {text.settingsTitle}
-          </h3>
-        </div>
+      <Block direction="vertical" gap={16} padding={24} variant="outlined">
+        <SectionTitle icon={Server} title={text.settingsTitle} />
         <div id="settingsForm">
           {state.loading ? (
             <div className="text-center py-8 text-secondary">
-              <i className="fas fa-spinner fa-spin"></i>
+              <LoaderCircle />
               <div>{text.settingsLoading}</div>
             </div>
           ) : (
@@ -2639,21 +2653,18 @@ export const SettingsSection = ({
             ))
           )}
         </div>
-        <div className="mt-6">
-          <button
-            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+        <Flexbox horizontal>
+          <Button
             disabled={state.saving}
+            icon={Save}
+            loading={state.saving}
             onClick={onSave}
+            type="primary"
           >
-            <i
-              className={
-                state.saving ? 'fas fa-spinner fa-spin' : 'fas fa-save'
-              }
-            ></i>
             {text.settingsSave}
-          </button>
-        </div>
-      </div>
+          </Button>
+        </Flexbox>
+      </Block>
       <AdminAuthSettings />
     </div>
   );
@@ -2677,7 +2688,12 @@ export const DebugSection = ({
     const singleLinePreview = content.replace(/\s+/g, ' ').trim() || 'null';
 
     return (
-      <details className="w-full min-w-0 max-w-full overflow-hidden border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark">
+      <Block
+        as="details"
+        className="w-full min-w-0 max-w-full overflow-hidden"
+        padding={12}
+        variant="outlined"
+      >
         <summary className="list-none cursor-pointer p-3 flex items-start justify-between gap-3 w-full min-w-0 max-w-full overflow-hidden">
           <div className="min-w-0 flex-1">
             <div className="font-medium text-text-light dark:text-text-dark mb-1">
@@ -2687,91 +2703,67 @@ export const DebugSection = ({
               {singleLinePreview}
             </div>
           </div>
-          <button
-            className="inline-flex items-center gap-2 px-3 py-2 border-none font-medium cursor-pointer transition-all text-xs bg-secondary text-white hover:bg-secondary shrink-0"
+          <Button
+            size="small"
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
               onCopy(content);
             }}
-            type="button"
+            icon={Copy}
           >
-            <i className="fas fa-copy"></i>
             {text.debugCopy}
-          </button>
+          </Button>
         </summary>
         <pre className="w-full min-w-0 max-w-full overflow-hidden p-3 pt-0 whitespace-pre-wrap break-all text-xs text-text-light dark:text-text-dark">
           {content}
         </pre>
-      </details>
+      </Block>
     );
   };
 
   return (
     <div id="debug" className="block">
-      <div className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark p-6 mb-6 shadow-sm transition-all">
-        <div className="flex justify-between items-center mb-4 pb-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            {text.debugSectionTitle}
-          </h3>
+      <Block direction="vertical" gap={16} padding={24} variant="outlined">
+        <div className="flex items-center justify-between">
+          <SectionTitle icon={Info} title={text.debugSectionTitle} />
           <div className="flex gap-2">
             <div className="min-w-[160px]">
               <label className="sr-only" htmlFor="debugAutoRefreshSeconds">
                 {text.debugRefreshInterval}
               </label>
-              <select
+              <Select
                 id="debugAutoRefreshSeconds"
-                className="w-full p-2 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-sm text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
                 disabled={!state.enabled || state.saving}
-                value={state.autoRefreshSeconds}
-                onChange={(event) => {
+                onChange={(value) => {
                   onAutoRefreshSecondsChange(
-                    Number.parseInt(event.target.value, 10) || 0,
+                    Number.parseInt(String(value), 10) || 0,
                   );
                 }}
-              >
-                {autoRefreshOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                options={autoRefreshOptions}
+                value={state.autoRefreshSeconds}
+              />
             </div>
-            <button
-              className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-secondary text-white hover:bg-secondary"
-              onClick={onRefresh}
-            >
-              <i className="fas fa-sync-alt"></i>
+            <Button icon={RefreshCw} onClick={onRefresh}>
               {text.debugRefresh}
-            </button>
-            <button
-              className="inline-flex items-center gap-2 px-4 py-2 border-none font-medium cursor-pointer transition-all text-sm bg-error text-white hover:bg-error"
+            </Button>
+            <Button
+              danger
               disabled={state.saving}
+              icon={Trash2}
               onClick={onClear}
             >
-              <i className="fas fa-trash"></i>
               {text.debugClear}
-            </button>
+            </Button>
           </div>
         </div>
         <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px_auto] items-end mb-6">
-          <label className="flex items-center gap-3 p-3 border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark cursor-pointer">
-            <input
-              checked={state.enabled}
-              type="checkbox"
-              onChange={(event) => {
-                onEnabledChange(event.target.checked);
-              }}
-            />
-            <div>
-              <div className="font-medium text-text-light dark:text-text-dark">
-                {text.debugEnable}
-              </div>
-              <div className="text-sm text-secondary">
-                {text.debugEnableHelp}
-              </div>
-            </div>
-          </label>
+          <ToggleOption
+            checked={state.enabled}
+            description={text.debugEnableHelp}
+            onChange={onEnabledChange}
+            title={text.debugEnable}
+          />
           <div>
             <label
               className="block mb-2 font-medium text-text-light dark:text-text-dark"
@@ -2779,9 +2771,8 @@ export const DebugSection = ({
             >
               {text.debugMaxEntries}
             </label>
-            <input
+            <Input
               id="debugMaxEntries"
-              className="w-full p-3 border border-border-light dark:border-border-dark bg-card-light dark:bg-card-dark text-text-light dark:text-text-dark focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
               min={1}
               type="number"
               value={state.maxEntries}
@@ -2792,30 +2783,30 @@ export const DebugSection = ({
               }}
             />
           </div>
-          <button
-            className="inline-flex items-center gap-2 px-6 py-3 border-none font-medium cursor-pointer transition-all text-sm bg-primary text-white hover:bg-primary-dark"
+          <Button
             disabled={state.saving}
+            icon={Save}
+            loading={state.saving}
             onClick={onSave}
+            type="primary"
           >
-            <i
-              className={
-                state.saving ? 'fas fa-spinner fa-spin' : 'fas fa-save'
-              }
-            ></i>
             {text.debugSave}
-          </button>
+          </Button>
         </div>
         {state.loading ? (
           <div className="text-center py-8 text-secondary">
-            <i className="fas fa-spinner fa-spin"></i>
+            <LoaderCircle />
             <div>{text.debugLoading}</div>
           </div>
         ) : state.items.length ? (
           <div className="grid gap-4 w-full min-w-0">
             {state.items.map((item) => (
-              <details
+              <Block
+                as="details"
                 key={item.id}
-                className="w-full min-w-0 max-w-full overflow-hidden border border-border-light dark:border-border-dark bg-bg-light dark:bg-bg-dark"
+                className="w-full min-w-0 max-w-full overflow-hidden"
+                padding={16}
+                variant="outlined"
               >
                 <summary className="cursor-pointer list-none p-4 flex flex-wrap items-center justify-between gap-3 w-full min-w-0 max-w-full overflow-hidden">
                   <div className="min-w-0 flex-1">
@@ -2827,21 +2818,17 @@ export const DebugSection = ({
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2 text-xs min-w-0 max-w-full">
-                    <span className="px-2 py-1 bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark">
+                    <Tag>
                       {text.debugUpstreamStatus(
                         item.upstreamResponse?.status ?? '-',
                       )}
-                    </span>
-                    <span className="px-2 py-1 bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark">
+                    </Tag>
+                    <Tag>
                       {text.debugReturnedStatus(
                         item.transformedResponse?.status ?? '-',
                       )}
-                    </span>
-                    {item.error ? (
-                      <span className="px-2 py-1 bg-error/10 text-error">
-                        {item.error}
-                      </span>
-                    ) : null}
+                    </Tag>
+                    {item.error ? <Tag color="red">{item.error}</Tag> : null}
                   </div>
                 </summary>
                 <div className="p-4 pt-0 grid gap-4 w-full min-w-0">
@@ -2859,37 +2846,16 @@ export const DebugSection = ({
                     item.transformedResponse,
                   )}
                 </div>
-              </details>
+              </Block>
             ))}
           </div>
         ) : (
           <div className="text-center py-8 text-secondary">
-            <i className="fas fa-bug"></i>
+            <Info />
             {text.debugEmpty}
           </div>
         )}
-      </div>
-    </div>
-  );
-};
-
-export const NotificationBar = ({ notification }: NotificationBarProps) => {
-  const notificationTypeBg: Record<string, string> = {
-    success: 'bg-success',
-    error: 'bg-error',
-    warning: 'bg-warning',
-    info: 'bg-primary',
-  };
-  const base =
-    'fixed top-[100px] right-8 p-4 px-6 text-white font-medium z-1000 max-w-[400px] transition-transform';
-  const positionClass = notification ? 'translate-x-0' : 'translate-x-full';
-  const typeClass = notification
-    ? (notificationTypeBg[notification.type] ?? '')
-    : '';
-
-  return (
-    <div id="notification" className={`${base} ${positionClass} ${typeClass}`}>
-      {notification?.message ?? ''}
+      </Block>
     </div>
   );
 };

@@ -3,13 +3,10 @@ import { atom } from 'jotai';
 export type TabKey =
   'dashboard' | 'usage' | 'credentials' | 'api-test' | 'debug' | 'settings';
 
-export type NotificationType = 'success' | 'error' | 'warning' | 'info';
-
 export type ThemeMode = 'light' | 'dark' | 'system';
 
-export interface NotificationState {
-  message: string;
-  type: NotificationType;
+export interface AdminSessionState {
+  authenticated: boolean;
 }
 
 export interface CredentialSummary {
@@ -272,7 +269,7 @@ export const DEFAULT_TEST_MODELS = [
   'deepseek-v3-2-volc-ioa',
 ] as const;
 
-export const USAGE_RING_CIRCUMFERENCE = 2 * Math.PI * 26;
+export const USAGE_RING_CIRCUMFERENCE = 2 * Math.PI * 20;
 
 export const defaultDashboardState: DashboardState = {
   apiEndpoint: '',
@@ -295,7 +292,7 @@ export const activeTabAtom = atom<TabKey>('dashboard');
 
 export const themeAtom = atom<ThemeMode>('system');
 
-export const notificationAtom = atom<NotificationState | null>(null);
+export const adminSessionAtom = atom<AdminSessionState | null>(null);
 
 export const defaultAuthState: AuthState = {
   authState: '',

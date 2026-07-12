@@ -4,12 +4,25 @@ import {
   browserSupportsWebAuthnAutofill,
   startAuthentication,
 } from '@simplewebauthn/browser';
+import {
+  Block,
+  Button,
+  Flexbox,
+  Input,
+  InputPassword,
+  Text,
+} from '@lobehub/ui';
+import { useAtom } from 'jotai';
+import { useHydrateAtoms } from 'jotai/utils';
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 
+import { themeAtom } from '@/app/admin/_components/admin-store';
+import { AdminHeader } from '@/app/_components/admin-header';
 import type { AdminLoginMessages } from '@/lib/i18n/messages';
-import { localeCookieName, locales } from '@/lib/i18n/routing';
+import { localeCookieName } from '@/lib/i18n/routing';
 import {
   resolvedThemeCookieName,
+  themeChangeEventName,
   themeCookieName,
   type ThemeMode,
 } from '@/lib/theme';
@@ -61,7 +74,8 @@ const LoginClient = ({
 }: LoginClientProps) => {
   const [session, setSession] = useState(initialSession);
   const [password, setPassword] = useState('');
-  const [theme, setTheme] = useState<ThemeMode>(initialTheme);
+  useHydrateAtoms([[themeAtom, initialTheme]]);
+  const [theme, setTheme] = useAtom(themeAtom);
   const [username, setUsername] = useState(initialSession.username ?? 'admin');
   const [error, setError] = useState('');
   const [isPasskeyPending, setIsPasskeyPending] = useState(false);
@@ -96,6 +110,11 @@ const LoginClient = ({
     setTheme(nextTheme);
     document.documentElement.classList.toggle('dark', isDark);
     document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    window.dispatchEvent(
+      new CustomEvent(themeChangeEventName, {
+        detail: isDark ? 'dark' : 'light',
+      }),
+    );
     document.cookie = `${themeCookieName}=${nextTheme}; Path=/; Max-Age=31536000; SameSite=Lax`;
     document.cookie = `${resolvedThemeCookieName}=${isDark ? 'dark' : 'light'}; Path=/; Max-Age=31536000; SameSite=Lax`;
   };
@@ -251,45 +270,45 @@ const LoginClient = ({
   }, [session.accountConfigured, session.passkeyCount, submitPasskey]);
 
   return (
-    <main className="login-page">
-      <header className="login-header">
-        <div className="login-header-brand">CodeBuddy2API</div>
-        <div className="login-header-controls">
-          <select
-            aria-label="Language"
-            onChange={(event) => changeLocale(event.target.value)}
-            value={locale}
-          >
-            {locales.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label="Theme mode"
-            onChange={(event) => changeTheme(event.target.value as ThemeMode)}
-            value={theme}
-          >
-            <option value="light">{themeLabels.light}</option>
-            <option value="dark">{themeLabels.dark}</option>
-            <option value="system">{themeLabels.system}</option>
-          </select>
-        </div>
-      </header>
-      <section className="login-card">
-        <div className="login-hero">
-          <p className="login-eyebrow">CodeBuddy2API Admin</p>
-          <h1 className="login-title">
+    <Flexbox
+      as="main"
+      className="login-page"
+      distribution="center"
+      align="center"
+    >
+      <AdminHeader
+        brand="CodeBuddy2API"
+        className="login-header"
+        locale={locale}
+        onLocaleChange={changeLocale}
+        onThemeChange={changeTheme}
+        theme={theme}
+        themeLabels={themeLabels}
+      />
+      <Block
+        as="section"
+        className="login-card"
+        direction="vertical"
+        gap={24}
+        padding={24}
+        variant="outlined"
+      >
+        <Flexbox direction="vertical" gap={8}>
+          <Text as="div" fontSize={13} type="secondary" weight={500}>
+            CodeBuddy2API Admin
+          </Text>
+          <Text as="h1" className="login-title" weight={650}>
             {passwordMode === 'setup'
               ? translations.headingSetup
               : translations.headingLogin}
-          </h1>
-        </div>
+          </Text>
+        </Flexbox>
 
-        <div className="login-surface">
-          <form
-            className="login-form"
+        <Flexbox direction="vertical" gap={16}>
+          <Flexbox
+            as="form"
+            direction="vertical"
+            gap={12}
             onSubmit={(event) => {
               event.preventDefault();
               startTransition(() => {
@@ -297,13 +316,14 @@ const LoginClient = ({
               });
             }}
           >
-            <label className="login-label" htmlFor="admin-username">
-              {translations.usernameLabel ?? 'Admin username'}
+            <label htmlFor="admin-username">
+              <Text weight={500}>
+                {translations.usernameLabel ?? 'Admin username'}
+              </Text>
             </label>
-            <input
+            <Input
               autoCapitalize="none"
               autoComplete="username webauthn"
-              className="login-input"
               id="admin-username"
               name="username"
               onChange={(event) => {
@@ -311,17 +331,16 @@ const LoginClient = ({
               }}
               value={username}
             />
-            <label className="login-label" htmlFor="admin-password">
-              {passwordLabel}
+            <label htmlFor="admin-password">
+              <Text weight={500}>{passwordLabel}</Text>
             </label>
-            <input
+            <InputPassword
               autoCapitalize="none"
               autoComplete={
                 canUsePasskeys
                   ? 'webauthn current-password'
                   : 'current-password'
               }
-              className="login-input"
               id="admin-password"
               name="password"
               onChange={(event) => {
@@ -335,43 +354,48 @@ const LoginClient = ({
               type="password"
               value={password}
             />
-            <button
-              className="login-primary-button"
+            <Button
               disabled={
                 isPending ||
                 password.trim().length === 0 ||
                 username.trim().length === 0
               }
-              type="submit"
+              htmlType="submit"
+              type="primary"
             >
               {passwordMode === 'setup'
                 ? translations.createPasswordSubmit
                 : translations.continueWithPassword}
-            </button>
-          </form>
+            </Button>
+          </Flexbox>
 
-          <div className="login-meta-row" aria-live="polite">
-            <span className="login-status">{status}</span>
-            {error ? <span className="login-error">{error}</span> : null}
-          </div>
+          <Flexbox aria-live="polite" direction="vertical" gap={4}>
+            <Text fontSize={14} type="secondary">
+              {status}
+            </Text>
+            {error ? (
+              <Text fontSize={14} type="danger">
+                {error}
+              </Text>
+            ) : null}
+          </Flexbox>
 
           {canUsePasskeys ? (
-            <button
-              className="login-secondary-button"
+            <Button
               disabled={isPasskeyPending}
               onClick={() => {
                 startTransition(() => {
                   void submitPasskey(false);
                 });
               }}
-              type="button"
+              htmlType="button"
             >
               {translations.continueWithPasskey}
-            </button>
+            </Button>
           ) : null}
-        </div>
-      </section>
-    </main>
+        </Flexbox>
+      </Block>
+    </Flexbox>
   );
 };
 
