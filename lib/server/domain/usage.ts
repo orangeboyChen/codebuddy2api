@@ -263,8 +263,7 @@ const flushPendingUsageEvents = async (): Promise<void> => {
     usageFlushTimer = null;
   }
 
-  const events = pendingUsageEvents;
-  pendingUsageEvents = [];
+  const events = pendingUsageEvents.splice(0, MAX_PENDING_EVENTS);
 
   if (!events.length) return;
 
@@ -284,6 +283,9 @@ const flushPendingUsageEvents = async (): Promise<void> => {
           await trimStorageUsageEvents(new Date(nowMs - MAX_RETENTION_MS));
           lastUsageRetentionPruneAt = nowMs;
         }
+        if (pendingUsageEvents.length) {
+          scheduleUsageFlush();
+        }
         return;
       }
 
@@ -291,6 +293,9 @@ const flushPendingUsageEvents = async (): Promise<void> => {
       await writeUsageStore({
         events: trimExpiredEvents([...store.events, ...events], nowMs),
       });
+      if (pendingUsageEvents.length) {
+        scheduleUsageFlush();
+      }
     });
   } catch (error) {
     pendingUsageEvents = [...events, ...pendingUsageEvents];

@@ -470,8 +470,7 @@ const flushPendingDebugLogs = async (): Promise<void> => {
     debugFlushTimer = null;
   }
 
-  const entries = pendingDebugLogs;
-  pendingDebugLogs = [];
+  const entries = pendingDebugLogs.splice(0, MAX_PENDING_LOGS);
 
   if (!entries.length) return;
 
@@ -487,15 +486,21 @@ const flushPendingDebugLogs = async (): Promise<void> => {
           })),
         );
         await trimStorageDebugLogs(settings.maxEntries);
+        if (pendingDebugLogs.length) {
+          scheduleDebugFlush();
+        }
         return;
       }
       const settings = await getDebugSettings();
       const currentLogs = await readDebugLogs();
-      const nextLogs = [...entries.reverse(), ...currentLogs].slice(
-        0,
-        settings.maxEntries,
-      );
+      const nextLogs = [...entries]
+        .reverse()
+        .concat(currentLogs)
+        .slice(0, settings.maxEntries);
       await writeStorageJson('debug', 'logs', nextLogs);
+      if (pendingDebugLogs.length) {
+        scheduleDebugFlush();
+      }
     });
   } catch (error) {
     pendingDebugLogs = [...entries, ...pendingDebugLogs];
