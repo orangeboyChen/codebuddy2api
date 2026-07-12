@@ -1,7 +1,7 @@
 'use client';
 
 import { startRegistration } from '@simplewebauthn/browser';
-import { Block, Button, Checkbox, Flexbox, Input } from '@lobehub/ui';
+import { Block, Button, Flexbox, Input } from '@lobehub/ui';
 import { ShieldCheck } from 'lucide-react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
@@ -282,7 +282,7 @@ const AdminAuthSettings = () => {
       padding={24}
       variant="outlined"
     >
-      <Flexbox distribution="space-between" horizontal>
+      <Flexbox align="center" distribution="space-between" horizontal>
         <div>
           <Flexbox align="center" gap={8} horizontal>
             <ShieldCheck aria-hidden="true" size={18} strokeWidth={2} />
@@ -292,20 +292,6 @@ const AdminAuthSettings = () => {
             {authEnabled ? translations('enabled') : translations('disabled')}
           </p>
         </div>
-        <label className="flex items-center gap-2 text-sm text-text-light dark:text-text-dark">
-          <Checkbox
-            checked={authEnabled}
-            onChange={() => {
-              if (authEnabled) {
-                void disableAuth();
-                return;
-              }
-
-              void saveAccount();
-            }}
-          />
-          {translations('enable')}
-        </label>
       </Flexbox>
 
       <div className="grid gap-4">

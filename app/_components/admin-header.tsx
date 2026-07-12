@@ -7,6 +7,12 @@ import type { ReactNode } from 'react';
 import type { ThemeMode } from '@/app/admin/_components/admin-store';
 import { locales } from '@/lib/i18n/routing';
 
+const localeLabels: Record<string, string> = {
+  'en-US': 'English',
+  'ja-JP': '日本語',
+  'zh-CN': '简体中文',
+};
+
 interface AdminHeaderProps {
   action?: ReactNode;
   brand: string;
@@ -53,7 +59,10 @@ export const AdminHeader = ({
           <Select
             aria-label="Language"
             onChange={onLocaleChange}
-            options={locales.map((item) => ({ label: item, value: item }))}
+            options={locales.map((item) => ({
+              label: localeLabels[item] ?? item,
+              value: item,
+            }))}
             value={locale}
           />
         </label>

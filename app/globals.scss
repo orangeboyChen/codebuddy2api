@@ -117,7 +117,7 @@ textarea {
 }
 
 .console-tabs {
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
 .console-tabs [role='tablist'] {
@@ -135,7 +135,15 @@ textarea {
   min-width: 0;
 }
 
+.dashboard-metric-card [id='credentialUsagePercent'] {
+  white-space: nowrap;
+}
+
 .dashboard-metric-card-clickable {
+  cursor: pointer;
+}
+
+.toggle-option {
   cursor: pointer;
 }
 

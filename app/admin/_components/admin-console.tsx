@@ -36,6 +36,8 @@ import {
   debugStateAtom,
   dashboardStateAtom,
   DEFAULT_TEST_MODELS,
+  defaultApiTestState,
+  defaultAuthState,
   defaultCredentialsState,
   defaultDebugState,
   defaultDashboardState,
@@ -260,6 +262,8 @@ const AdminConsole = ({
     [debugStateAtom, initialDebugState],
     [usageStateAtom, initialUsageState],
     [settingsStateAtom, initialSettingsState],
+    [authStateAtom, defaultAuthState],
+    [apiTestStateAtom, defaultApiTestState],
     [themeAtom, initialTheme],
   ]);
 
@@ -565,14 +569,13 @@ const AdminConsole = ({
         ? `${consoleText.serviceCheckedAt} ${new Date(
             healthResult.data.timestamp,
           ).toLocaleString(locale)}`
-        : consoleText.uptimeRefreshed,
+        : `${consoleText.serviceCheckedAt} ${new Date().toLocaleString(locale)}`,
       validCredentials,
     });
   }, [
     consoleText.serviceCheckedAt,
     consoleText.serviceRunning,
     consoleText.serviceUnavailable,
-    consoleText.uptimeRefreshed,
     locale,
     setDashboard,
   ]);

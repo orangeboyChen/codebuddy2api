@@ -1009,24 +1009,6 @@ const renderUsageChart = ({
           <div className="mt-2">{emptyLabel}</div>
         </Flexbox>
       )}
-      {series.length ? (
-        <div className="flex flex-wrap gap-3 mt-4">
-          {series.map((item, index) => (
-            <div key={item.model} className="flex items-center gap-2 text-sm">
-              <span
-                className="w-3 h-3"
-                // eslint-disable-next-line react/forbid-dom-props
-                style={{
-                  backgroundColor: CHART_COLORS[index % CHART_COLORS.length],
-                }}
-              ></span>
-              <span className="text-text-light dark:text-text-dark">
-                {item.model}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : null}
     </Block>
   );
 };
@@ -1169,12 +1151,12 @@ const ToggleOption = ({
   return (
     <Block
       align="center"
-      clickable
+      className="toggle-option"
       distribution="space-between"
       gap={16}
       horizontal
       onClick={(event) => {
-        if ((event.target as Element).closest('[role="switch"]')) {
+        if ((event.target as Element).closest('button')) {
           return;
         }
 
@@ -1254,7 +1236,7 @@ const CredentialCard = ({
               {formatDateTime(locale, credential.created_at)}
             </span>
           </div>
-          <Flexbox gap={8} wrap="wrap">
+          <Flexbox className="pt-2" gap={8} wrap="wrap">
             <Tag>
               {credential.responses_passthrough
                 ? text.credentialResponsesDirect
@@ -1342,13 +1324,10 @@ const CredentialGroup = ({
     <div className="mb-6">
       <Block direction="vertical" gap={16} padding={24} variant="outlined">
         <Flexbox align="center" distribution="space-between" horizontal>
-          <Flexbox align="center" gap={8} horizontal>
-            <Layers3 aria-hidden="true" size={16} />
-            {title}
-          </Flexbox>
+          <SectionTitle icon={Layers3} title={title} />
           <Tag>{items.length}</Tag>
         </Flexbox>
-        <div className="grid gap-3">
+        <div className="grid gap-4">
           {items.map((credential) => (
             <CredentialCard
               key={credential.filename}
@@ -1599,7 +1578,7 @@ export const DashboardSection = ({
           className="dashboard-metric-card"
           direction="vertical"
           gap={12}
-          padding={16}
+          padding={20}
           variant="outlined"
         >
           <Flexbox align="center" gap={8} horizontal>
@@ -1610,7 +1589,7 @@ export const DashboardSection = ({
           </Flexbox>
           <Flexbox align="center" distribution="space-between" horizontal>
             <div
-              className="text-2xl font-bold text-text-light dark:text-text-dark leading-none"
+              className="whitespace-nowrap text-2xl font-bold text-text-light dark:text-text-dark leading-none"
               id="totalCredentials"
             >
               {state.totalCredentials}
@@ -1655,7 +1634,7 @@ export const DashboardSection = ({
           className="dashboard-metric-card"
           direction="vertical"
           gap={12}
-          padding={16}
+          padding={20}
           variant="outlined"
         >
           <Flexbox align="center" gap={8} horizontal>
@@ -1696,7 +1675,6 @@ export const DashboardSection = ({
           </Flexbox>
         </Block>
         <Block
-          clickable
           className="dashboard-metric-card dashboard-metric-card-clickable"
           direction="vertical"
           gap={12}
@@ -1707,7 +1685,7 @@ export const DashboardSection = ({
               onCopyEndpoint();
             }
           }}
-          padding={16}
+          padding={20}
           role="button"
           tabIndex={0}
           title={text.apiEndpointTooltip}
@@ -1737,7 +1715,7 @@ export const DashboardSection = ({
           className="dashboard-metric-card"
           direction="vertical"
           gap={12}
-          padding={16}
+          padding={20}
           variant="outlined"
         >
           <Flexbox align="center" gap={8} horizontal>
@@ -1789,7 +1767,7 @@ export const DashboardSection = ({
         className="dashboard-data-block"
         direction="vertical"
         gap={16}
-        padding={16}
+        padding={24}
         variant="outlined"
       >
         <Flexbox align="center" distribution="space-between" horizontal>
@@ -1845,7 +1823,7 @@ export const DashboardSection = ({
         className="dashboard-data-block"
         direction="vertical"
         gap={16}
-        padding={16}
+        padding={24}
         variant="outlined"
       >
         <SectionTitle icon={KeyRound} title={text.dashboardCredentialUsage} />
@@ -2168,7 +2146,7 @@ export const CredentialsSection = ({
             padding={16}
             variant="outlined"
           >
-            <h4 className="text-primary mb-4">{text.autoAuthGenerated}</h4>
+            <SectionTitle icon={Link} title={text.autoAuthGenerated} />
             <p className="text-secondary mb-4">
               {text.autoAuthGeneratedDescription}
             </p>
@@ -2365,8 +2343,7 @@ export const CredentialsSection = ({
             </div>
           ) : (
             <div className="text-center py-8 text-secondary">
-              <KeyRound />
-              <div>{text.accessKeyEmptyCredentials}</div>
+              {text.accessKeyEmptyCredentials}
             </div>
           )}
         </div>
@@ -2379,9 +2356,7 @@ export const CredentialsSection = ({
         variant="outlined"
       >
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold font-serif text-text-light dark:text-text-dark">
-            {text.credentialSectionTitle}
-          </h3>
+          <SectionTitle icon={KeyRound} title={text.credentialSectionTitle} />
           <Button icon={RefreshCw} onClick={onRefreshCredentialList}>
             {text.credentialRefreshList}
           </Button>
@@ -2551,16 +2526,12 @@ export const ApiTestSection = ({
             }}
           />
         </div>
-        <div className="mb-4">
-          <label className="block mb-2 font-medium text-text-light dark:text-text-dark">
-            <Checkbox
-              className="mr-2"
-              checked={state.stream}
-              onChange={onStreamChange}
-            />
-            {text.apiTestStream}
+        <Flexbox align="center" className="mb-4" gap={8} horizontal>
+          <label className="font-medium text-text-light dark:text-text-dark">
+            <Checkbox checked={state.stream} onChange={onStreamChange} />
           </label>
-        </div>
+          <span>{text.apiTestStream}</span>
+        </Flexbox>
         <Flexbox horizontal>
           <Button
             disabled={state.submitting}
@@ -2588,7 +2559,7 @@ export const ApiTestSection = ({
         <h4 className="code-sample-title">{text.apiExampleCurl}</h4>
         <Block
           className="code-sample overflow-x-auto font-mono text-sm"
-          padding={16}
+          padding={12}
           variant="outlined"
         >
           <pre>{`curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \\
@@ -2602,7 +2573,7 @@ export const ApiTestSection = ({
         <h4 className="code-sample-title">{text.apiExamplePython}</h4>
         <Block
           className="code-sample overflow-x-auto font-mono text-sm"
-          padding={16}
+          padding={12}
           variant="outlined"
         >
           <pre>{`import openai
@@ -2851,7 +2822,6 @@ export const DebugSection = ({
           </div>
         ) : (
           <div className="text-center py-8 text-secondary">
-            <Info />
             {text.debugEmpty}
           </div>
         )}

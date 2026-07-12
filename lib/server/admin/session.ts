@@ -863,6 +863,17 @@ export const finishAdminPasskeyRegistration = async (
     return authError;
   }
 
+  if (!canRegisterAdminPasskeys(request)) {
+    return Response.json(
+      {
+        error: {
+          message: 'Passkeys require an HTTPS, non-localhost origin',
+        },
+      },
+      { status: 400 },
+    );
+  }
+
   const expectedChallenge = await consumePendingChallenge('registration');
 
   if (!expectedChallenge) {
