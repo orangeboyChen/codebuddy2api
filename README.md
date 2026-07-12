@@ -42,6 +42,11 @@ The file backend now writes into a dedicated data directory instead of a `config
 - `.codebuddy_data/admin-auth.json`
 - `.codebuddy_creds/*.json`
 
+Usage records, debug records, and credential rotation checkpoints are flushed in
+batches (at most once per second or after 100 pending records). File storage is
+therefore intended for a single application instance; multiple instances can
+overwrite each other's JSON documents.
+
 Optional overrides:
 
 - `CODEBUDDY_STORAGE_FILE_DIR` changes the file-backend data directory
@@ -53,10 +58,30 @@ When `pg` storage is active, runtime persistence is stored in PostgreSQL instead
 
 - `DATABASE_URL` or `CODEBUDDY_STORAGE_PG_URL` provides the connection string
 - `CODEBUDDY_STORAGE_PG_SCHEMA` overrides the default schema `codebuddy2api`
-- `CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES=false` disables one-time import of old local files
-- `CODEBUDDY_STORAGE_ENCRYPTION_KEY` enables encryption for sensitive stored documents
+- `CODEBUDDY_STORAGE_ENCRYPTION_KEY` is required and encrypts sensitive stored documents
 
-In `pg` mode, local files are not used for normal runtime persistence. They are only read as an optional one-time legacy import source during initialization.
+In `pg` mode, local files are not used for normal runtime persistence. Runtime
+configuration, credentials, access keys, and debug settings can be read as an
+optional one-time legacy import source during initialization. Historical usage
+and debug log JSON files are not imported.
+
+Usage and debug records are stored as append-only PostgreSQL event rows with
+retention pruning. This makes their writes safe across application instances.
+Credential rotation checkpoints remain eventually consistent, so replicas can
+occasionally select the same credential.
+
+Before switching an existing file-backed deployment to PostgreSQL, keep the
+legacy files available and run the idempotent import once:
+
+```bash
+CODEBUDDY_STORAGE_BACKEND=pg \
+CODEBUDDY_STORAGE_PG_URL='postgres://...' \
+CODEBUDDY_STORAGE_ENCRYPTION_KEY='a stable secret' \
+bun run storage:migrate
+```
+
+Only route traffic to PostgreSQL after the command succeeds. Do not set
+`CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES=false` until the import has completed.
 
 ## Run Locally
 

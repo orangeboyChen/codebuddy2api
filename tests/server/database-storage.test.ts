@@ -6,6 +6,7 @@ const selectOrderBy = vi.fn<() => Promise<Record<string, unknown>[]>>(
   async () => [],
 );
 const insertOnConflictDoUpdate = vi.fn(async () => undefined);
+const insertOnConflictDoNothing = vi.fn(async () => undefined);
 const deleteWhere = vi.fn(async () => undefined);
 
 const selectWhere = vi.fn(() => ({
@@ -18,6 +19,7 @@ const selectFrom = vi.fn(() => ({
 }));
 
 const insertValues = vi.fn(() => ({
+  onConflictDoNothing: insertOnConflictDoNothing,
   onConflictDoUpdate: insertOnConflictDoUpdate,
 }));
 
@@ -68,12 +70,12 @@ describe('drizzle pg storage adapter', () => {
       schemaName: 'codebuddy_test',
     });
 
-    await adapter.ensureSchema();
+    await adapter.migrateSchema();
 
     expect(poolConstructor).toHaveBeenCalledWith({
       connectionString: 'postgres://example.test/codebuddy',
     });
-    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute).toHaveBeenCalledTimes(9);
 
     selectLimit.mockResolvedValueOnce([
       {
@@ -145,9 +147,18 @@ describe('drizzle pg storage adapter', () => {
     });
     expect(insertValues).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        payload: JSON.stringify({ enabled: true }),
+        payload: { enabled: true },
       }),
     );
+
+    await adapter.appendUsageEvents([
+      {
+        id: 'usage-1',
+        payload: { totalTokens: 1 },
+        timestamp: '2026-07-12T00:00:00.000Z',
+      },
+    ]);
+    expect(insertOnConflictDoNothing).toHaveBeenCalledTimes(1);
 
     await adapter.deleteDocument('config', 'runtime');
     expect(deleteFrom).toHaveBeenCalledTimes(1);

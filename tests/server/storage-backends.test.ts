@@ -68,6 +68,19 @@ describe('storage backends', () => {
     });
   });
 
+  it('requires an encryption key before initializing PostgreSQL storage', async () => {
+    process.env.CODEBUDDY_STORAGE_BACKEND = 'pg';
+    process.env.CODEBUDDY_STORAGE_PG_URL = 'postgres://example.test/codebuddy';
+
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+
+    await expect(storage.ensureStorageReady()).rejects.toThrow(
+      'CODEBUDDY_STORAGE_ENCRYPTION_KEY is required when storage backend is pg',
+    );
+    storage.resetStorageRuntime();
+  });
+
   it('migrates legacy config documents into the default file storage directory', async () => {
     const legacyConfigDir = path.join(tempRootDir, 'config');
     const legacyRuntimeConfig = { CODEBUDDY_AUTH_MODE: 'token' };

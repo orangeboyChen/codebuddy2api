@@ -5,8 +5,8 @@ import { NextIntlClientProvider } from 'next-intl';
 import { cookies, headers } from 'next/headers';
 
 import './globals.scss';
-import LobeUiProvider from '@/app/_components/lobe-ui-provider';
-import LobeStyleRegistry from '@/app/_components/lobe-style-registry';
+import LobeUiProvider from '@/app/lobe-ui-provider';
+import LobeStyleRegistry from '@/app/lobe-style-registry';
 import { resolveThemeMode, resolvedThemeCookieName } from '@/lib/theme';
 import {
   localeCookieName,

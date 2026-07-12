@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   type DatabaseStorageAdapter,
   DrizzlePgDatabaseStorageAdapter,
+  type StorageEvent,
 } from './database';
 
 export type StorageBackendKind = 'file' | 'pg';
@@ -21,11 +22,20 @@ export interface StorageJsonReadResult<T> {
 }
 
 interface StorageBackend {
+  appendDebugLogs?(entries: StorageEvent[]): Promise<void>;
+  appendUsageEvents?(entries: StorageEvent[]): Promise<void>;
+  clearDebugLogs?(): Promise<void>;
+  clearUsageEvents?(): Promise<void>;
   deleteJson(namespace: string, key: string): Promise<void>;
   getJson<T>(namespace: string, key: string): Promise<T | null>;
   initialize(): Promise<void>;
   listJson<T>(namespace: string): Promise<Array<JsonDocument<T>>>;
+  listDebugLogs?(limit: number): Promise<StorageEvent[]>;
+  listUsageEvents?(since: Date): Promise<StorageEvent[]>;
+  migrate?(): Promise<void>;
   putJson<T>(namespace: string, key: string, value: T): Promise<void>;
+  trimDebugLogs?(maxEntries: number): Promise<void>;
+  trimUsageEvents?(before: Date): Promise<void>;
 }
 
 interface DatabaseBackendFactory {
@@ -475,11 +485,27 @@ class DatabaseStorageBackend implements StorageBackend {
   }
 
   public async initialize(): Promise<void> {
+    if (!process.env[STORAGE_ENCRYPTION_KEY_ENV]?.trim()) {
+      throw new Error(
+        `${STORAGE_ENCRYPTION_KEY_ENV} is required when storage backend is pg`,
+      );
+    }
+
     await this.adapter.ensureSchema();
 
     if (shouldImportLegacyFiles()) {
       await this.importLegacyFiles();
     }
+  }
+
+  public async migrate(): Promise<void> {
+    if (!process.env[STORAGE_ENCRYPTION_KEY_ENV]?.trim()) {
+      throw new Error(
+        `${STORAGE_ENCRYPTION_KEY_ENV} is required when storage backend is pg`,
+      );
+    }
+
+    await this.adapter.migrateSchema();
   }
 
   public async getJson<T>(namespace: string, key: string): Promise<T | null> {
@@ -548,6 +574,38 @@ class DatabaseStorageBackend implements StorageBackend {
     await this.adapter.deleteDocument(namespace, key);
   }
 
+  public appendUsageEvents(entries: StorageEvent[]): Promise<void> {
+    return this.adapter.appendUsageEvents(entries);
+  }
+
+  public listUsageEvents(since: Date): Promise<StorageEvent[]> {
+    return this.adapter.listUsageEvents(since);
+  }
+
+  public clearUsageEvents(): Promise<void> {
+    return this.adapter.clearUsageEvents();
+  }
+
+  public trimUsageEvents(before: Date): Promise<void> {
+    return this.adapter.trimUsageEvents(before);
+  }
+
+  public appendDebugLogs(entries: StorageEvent[]): Promise<void> {
+    return this.adapter.appendDebugLogs(entries);
+  }
+
+  public listDebugLogs(limit: number): Promise<StorageEvent[]> {
+    return this.adapter.listDebugLogs(limit);
+  }
+
+  public clearDebugLogs(): Promise<void> {
+    return this.adapter.clearDebugLogs();
+  }
+
+  public trimDebugLogs(maxEntries: number): Promise<void> {
+    return this.adapter.trimDebugLogs(maxEntries);
+  }
+
   private async importLegacyDocument(
     namespace: string,
     key: string,
@@ -568,8 +626,6 @@ class DatabaseStorageBackend implements StorageBackend {
       { namespace: 'admin-auth', key: 'state' },
       { namespace: 'access-keys', key: 'store' },
       { namespace: 'debug', key: 'settings' },
-      { namespace: 'debug', key: 'logs' },
-      { namespace: 'usage', key: 'history' },
       { namespace: 'credentials', key: CREDENTIAL_MANAGER_STATE_FILENAME },
     ];
 
@@ -695,6 +751,80 @@ export const deleteStorageJson = async (
 ): Promise<void> => {
   await ensureStorageReady();
   await getRuntime().backend.deleteJson(namespace, key);
+};
+
+const getEventBackend = async (): Promise<StorageBackend> => {
+  await ensureStorageReady();
+  const backend = getRuntime().backend;
+
+  if (getStorageBackendKind() !== 'pg') {
+    throw new Error('Event storage is only available for the pg backend');
+  }
+
+  return backend;
+};
+
+export const appendStorageUsageEvents = async (
+  entries: StorageEvent[],
+): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.appendUsageEvents?.(entries);
+};
+
+export const listStorageUsageEvents = async (
+  since: Date,
+): Promise<StorageEvent[]> => {
+  const backend = await getEventBackend();
+  return (await backend.listUsageEvents?.(since)) ?? [];
+};
+
+export const clearStorageUsageEvents = async (): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.clearUsageEvents?.();
+};
+
+export const trimStorageUsageEvents = async (before: Date): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.trimUsageEvents?.(before);
+};
+
+export const appendStorageDebugLogs = async (
+  entries: StorageEvent[],
+): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.appendDebugLogs?.(entries);
+};
+
+export const listStorageDebugLogs = async (
+  limit: number,
+): Promise<StorageEvent[]> => {
+  const backend = await getEventBackend();
+  return (await backend.listDebugLogs?.(limit)) ?? [];
+};
+
+export const clearStorageDebugLogs = async (): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.clearDebugLogs?.();
+};
+
+export const trimStorageDebugLogs = async (
+  maxEntries: number,
+): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.trimDebugLogs?.(maxEntries);
+};
+
+export const migrateStorageSchema = async (): Promise<void> => {
+  const runtime = getRuntime();
+
+  if (getStorageBackendKind() !== 'pg' || !runtime.backend.migrate) {
+    throw new Error('Schema migration is only available for the pg backend');
+  }
+
+  await runtime.backend.migrate();
+  runtime.initialized = false;
+  runtime.initializing = null;
+  await ensureStorageReady();
 };
 
 export const resetStorageRuntime = (): void => {

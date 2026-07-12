@@ -1,6 +1,16 @@
+import crypto from 'node:crypto';
+
 import { listAccessKeys } from './access-keys';
 import { listCredentialFilenames } from './credentials';
-import { readStorageJson, writeStorageJson } from '../storage';
+import {
+  appendStorageUsageEvents,
+  clearStorageUsageEvents,
+  getStorageBackendMeta,
+  listStorageUsageEvents,
+  readStorageJson,
+  trimStorageUsageEvents,
+  writeStorageJson,
+} from '../storage';
 
 export type UsageRange =
   '1h' | '3h' | '6h' | '12h' | '24h' | '3d' | '7d' | 'today' | 'yesterday';
@@ -82,7 +92,13 @@ const MAX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+const FLUSH_INTERVAL_MS = 1000;
+const MAX_PENDING_EVENTS = 100;
+const RETENTION_PRUNE_INTERVAL_MS = HOUR_MS;
 let usageMutationQueue: Promise<void> = Promise.resolve();
+let pendingUsageEvents: UsageEventRecord[] = [];
+let usageFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let lastUsageRetentionPruneAt = 0;
 
 const enqueueUsageMutation = async <T>(
   mutation: () => Promise<T>,
@@ -201,6 +217,17 @@ const trimExpiredEvents = (
 };
 
 const readUsageStore = async (): Promise<UsageStore> => {
+  if (getStorageBackendMeta().backend === 'pg') {
+    const events = await listStorageUsageEvents(
+      new Date(Date.now() - MAX_RETENTION_MS),
+    );
+    return {
+      events: events
+        .map((event) => normalizeStoredEvent(event.payload))
+        .filter((event): event is UsageEventRecord => event !== null),
+    };
+  }
+
   const store = await readStorageJson<UsageStore>(
     USAGE_NAMESPACE,
     USAGE_STORE_KEY,
@@ -216,7 +243,10 @@ const persistTrimmedStore = async (nowMs: number): Promise<UsageStore> => {
   const store = await readUsageStore();
   const trimmedEvents = trimExpiredEvents(store.events, nowMs);
 
-  if (trimmedEvents.length !== store.events.length) {
+  if (
+    getStorageBackendMeta().backend === 'file' &&
+    trimmedEvents.length !== store.events.length
+  ) {
     await writeUsageStore({
       events: trimmedEvents,
     });
@@ -225,6 +255,56 @@ const persistTrimmedStore = async (nowMs: number): Promise<UsageStore> => {
   return {
     events: trimmedEvents,
   };
+};
+
+const flushPendingUsageEvents = async (): Promise<void> => {
+  if (usageFlushTimer) {
+    clearTimeout(usageFlushTimer);
+    usageFlushTimer = null;
+  }
+
+  const events = pendingUsageEvents;
+  pendingUsageEvents = [];
+
+  if (!events.length) return;
+
+  try {
+    await enqueueUsageMutation(async () => {
+      const nowMs = Date.now();
+
+      if (getStorageBackendMeta().backend === 'pg') {
+        await appendStorageUsageEvents(
+          events.map((event) => ({
+            id: crypto.randomUUID(),
+            payload: event,
+            timestamp: event.timestamp,
+          })),
+        );
+        if (nowMs - lastUsageRetentionPruneAt >= RETENTION_PRUNE_INTERVAL_MS) {
+          await trimStorageUsageEvents(new Date(nowMs - MAX_RETENTION_MS));
+          lastUsageRetentionPruneAt = nowMs;
+        }
+        return;
+      }
+
+      const store = await persistTrimmedStore(nowMs);
+      await writeUsageStore({
+        events: trimExpiredEvents([...store.events, ...events], nowMs),
+      });
+    });
+  } catch (error) {
+    pendingUsageEvents = [...events, ...pendingUsageEvents];
+    scheduleUsageFlush();
+    throw error;
+  }
+};
+
+const scheduleUsageFlush = (): void => {
+  if (usageFlushTimer) return;
+  usageFlushTimer = setTimeout(() => {
+    void flushPendingUsageEvents().catch(() => undefined);
+  }, FLUSH_INTERVAL_MS);
+  usageFlushTimer.unref?.();
 };
 
 const getRangeWindow = (
@@ -441,29 +521,36 @@ export const recordUsageEvent = async ({
     return;
   }
 
-  await enqueueUsageMutation(async () => {
-    const base = normalizeUsage(usage);
-    const event: UsageEventRecord = {
-      ...base,
-      accessKeyId: accessKeyId ?? null,
-      accessKeyName: accessKeyName ?? null,
-      credentialFilename: credentialFilename ?? null,
-      model: model.trim() || 'unknown',
-      route,
-      timestamp: timestamp ?? new Date().toISOString(),
-    };
-
-    const nowMs = Date.now();
-    const store = await persistTrimmedStore(nowMs);
-    const events = trimExpiredEvents([...store.events, event], nowMs);
-    await writeUsageStore({
-      events,
-    });
+  const base = normalizeUsage(usage);
+  pendingUsageEvents.push({
+    ...base,
+    accessKeyId: accessKeyId ?? null,
+    accessKeyName: accessKeyName ?? null,
+    credentialFilename: credentialFilename ?? null,
+    model: model.trim() || 'unknown',
+    route,
+    timestamp: timestamp ?? new Date().toISOString(),
   });
+
+  if (pendingUsageEvents.length >= MAX_PENDING_EVENTS) {
+    void flushPendingUsageEvents().catch(() => undefined);
+    return;
+  }
+
+  scheduleUsageFlush();
 };
 
 export const clearUsageHistory = async (): Promise<void> => {
+  pendingUsageEvents = [];
+  if (usageFlushTimer) {
+    clearTimeout(usageFlushTimer);
+    usageFlushTimer = null;
+  }
   await enqueueUsageMutation(async () => {
+    if (getStorageBackendMeta().backend === 'pg') {
+      await clearStorageUsageEvents();
+      return;
+    }
     await writeUsageStore({
       events: [],
     });
@@ -481,6 +568,7 @@ export const getUsageAnalytics = async ({
   now?: Date;
   range: UsageRange;
 }): Promise<UsageAnalyticsResponse> => {
+  await flushPendingUsageEvents();
   return enqueueUsageMutation(async () => {
     const nowMs = now.getTime();
     const store = await persistTrimmedStore(nowMs);

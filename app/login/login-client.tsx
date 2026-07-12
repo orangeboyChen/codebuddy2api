@@ -4,34 +4,24 @@ import {
   browserSupportsWebAuthnAutofill,
   startAuthentication,
 } from '@simplewebauthn/browser';
-import {
-  Block,
-  Button,
-  Flexbox,
-  Input,
-  InputPassword,
-  Text,
-} from '@lobehub/ui';
+import { Block, Flexbox, Input, InputPassword, Text } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { useAtom } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 
-import { themeAtom } from '@/app/admin/_components/admin-store';
-import { AdminHeader } from '@/app/_components/admin-header';
+import { themeAtom } from '@/lib/client/console';
+import { AdminHeader } from '@/app/header';
 import type { AdminLoginMessages } from '@/lib/i18n/messages';
 import {
-  localeCookieName,
-  localePreferenceCookieName,
   type LocalePreference,
   parseLocalePreference,
-  systemLocalePreference,
 } from '@/lib/i18n/routing';
+import { themeChangeEventName, type ThemeMode } from '@/lib/theme';
 import {
-  resolvedThemeCookieName,
-  themeChangeEventName,
-  themeCookieName,
-  type ThemeMode,
-} from '@/lib/theme';
+  saveLocalePreference,
+  saveThemePreference,
+} from '@/lib/client/preferences';
 
 interface SessionSummary {
   accountConfigured: boolean;
@@ -62,8 +52,6 @@ interface LoginClientProps {
   initialSession: SessionSummary;
   locale: string;
   localePreference?: LocalePreference;
-  systemLocaleLabel?: string;
-  themeLabels?: Record<ThemeMode, string>;
   translations: Omit<AdminLoginMessages, 'usernameLabel'> & {
     usernameLabel?: string;
   };
@@ -78,8 +66,6 @@ const LoginClient = ({
   initialTheme = 'system',
   locale,
   localePreference = parseLocalePreference(locale),
-  systemLocaleLabel = 'Follow system',
-  themeLabels = { dark: 'Dark', light: 'Light', system: 'System' },
   translations,
 }: LoginClientProps) => {
   const [session, setSession] = useState(initialSession);
@@ -108,12 +94,9 @@ const LoginClient = ({
   );
 
   const changeLocale = (nextLocale: string) => {
-    document.cookie = `${localePreferenceCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    document.cookie =
-      nextLocale === systemLocalePreference
-        ? `${localeCookieName}=; Path=/; Max-Age=0; SameSite=Lax`
-        : `${localeCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    window.location.reload();
+    void saveLocalePreference(nextLocale as LocalePreference).finally(() => {
+      window.location.reload();
+    });
   };
 
   const changeTheme = (nextTheme: ThemeMode) => {
@@ -129,8 +112,7 @@ const LoginClient = ({
         detail: isDark ? 'dark' : 'light',
       }),
     );
-    document.cookie = `${themeCookieName}=${nextTheme}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    document.cookie = `${resolvedThemeCookieName}=${isDark ? 'dark' : 'light'}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    void saveThemePreference(nextTheme, isDark ? 'dark' : 'light');
   };
 
   const applySuccess = useCallback((nextSession?: SessionSummary) => {
@@ -291,15 +273,11 @@ const LoginClient = ({
       align="center"
     >
       <AdminHeader
-        brand="CodeBuddy2API"
         className="login-header"
-        locale={locale}
         localePreference={localePreference}
         onLocaleChange={changeLocale}
         onThemeChange={changeTheme}
         theme={theme}
-        themeLabels={themeLabels}
-        systemLocaleLabel={systemLocaleLabel}
       />
       <Block
         as="section"

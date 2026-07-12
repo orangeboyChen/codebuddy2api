@@ -49,6 +49,10 @@ const globalCredentialState = globalThis as typeof globalThis & {
 };
 
 const MANAGER_STATE_FILENAME = 'manager_state.json';
+const RUNTIME_STATE_FLUSH_INTERVAL_MS = 1000;
+const MAX_PENDING_ROTATIONS = 100;
+let pendingRotationCount = 0;
+let runtimeStateFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 const loadPersistedManagerState = async (): Promise<Partial<ManagerState>> => {
   return (
@@ -80,6 +84,48 @@ const saveRuntimeState = async (): Promise<void> => {
     savedAt: Math.floor(Date.now() / 1000),
   });
 };
+
+export const flushCredentialRuntimeState = async (): Promise<void> => {
+  if (runtimeStateFlushTimer) {
+    clearTimeout(runtimeStateFlushTimer);
+    runtimeStateFlushTimer = null;
+  }
+
+  if (!pendingRotationCount) return;
+  const pendingCount = pendingRotationCount;
+  pendingRotationCount = 0;
+
+  try {
+    await saveRuntimeState();
+  } catch (error) {
+    pendingRotationCount += pendingCount;
+    scheduleRuntimeStateSave();
+    throw error;
+  }
+};
+
+const scheduleRuntimeStateSave = (): void => {
+  pendingRotationCount += 1;
+
+  if (pendingRotationCount >= MAX_PENDING_ROTATIONS) {
+    void flushCredentialRuntimeState().catch(() => undefined);
+    return;
+  }
+
+  if (runtimeStateFlushTimer) return;
+  runtimeStateFlushTimer = setTimeout(() => {
+    void flushCredentialRuntimeState().catch(() => undefined);
+  }, RUNTIME_STATE_FLUSH_INTERVAL_MS);
+  runtimeStateFlushTimer.unref?.();
+};
+
+process.once('SIGTERM', () => {
+  void flushCredentialRuntimeState();
+});
+
+process.once('SIGINT', () => {
+  void flushCredentialRuntimeState();
+});
 
 const getNestedValue = (
   value: unknown,
@@ -546,12 +592,17 @@ export const resolveCredentialForRequest = async ({
     state.globalNextFilename = nextFilename;
   }
 
-  await saveRuntimeState();
+  scheduleRuntimeStateSave();
 
   return current;
 };
 
 export const resetCredentialRuntimeState = (): void => {
+  pendingRotationCount = 0;
+  if (runtimeStateFlushTimer) {
+    clearTimeout(runtimeStateFlushTimer);
+    runtimeStateFlushTimer = null;
+  }
   delete globalCredentialState.__codebuddy2apiCredentialState__;
 };
 

@@ -4,7 +4,7 @@ import {
   createApiTestState,
   createDashboardState,
   type AdminConsoleInitialData,
-} from '@/app/admin/_components/admin-initial-state';
+} from '@/lib/client/console';
 
 const createInitialData = (): AdminConsoleInitialData => {
   return {

@@ -1,14 +1,15 @@
 import { headers } from 'next/headers';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import type { ReactNode } from 'react';
 
-import AdminConsole from '@/app/admin/_components/admin-console';
-import type { AdminConsoleInitialData } from '@/app/admin/_components/admin-initial-state';
+import AdminPageLayout from '@/app/dashboard/console-layout';
+import type { AdminConsoleInitialData } from '@/lib/client/console';
 import type {
   AccessKeySummary,
   CredentialSummary,
   TabKey,
-} from '@/app/admin/_components/admin-store';
+} from '@/lib/client/console';
 import { listAccessKeys } from '@/lib/server/domain/access-keys';
 import {
   getAdminSessionSummary,
@@ -30,6 +31,7 @@ import {
   systemLocalePreference,
   type AppLocale,
 } from '@/lib/i18n/routing';
+import { getMessages } from '@/lib/i18n/messages';
 import { parseThemeMode, themeCookieName } from '@/lib/theme';
 
 export const dynamic = 'force-dynamic';
@@ -47,15 +49,9 @@ const buildApiEndpoint = async () => {
 
 const formatInitialHealthLabel = (locale: AppLocale, timestamp: string) => {
   const checkedAt = new Date(timestamp).toLocaleString(locale);
+  const { serviceCheckedAt } = getMessages(locale).Admin.console;
 
-  switch (locale) {
-    case 'en-US':
-      return `Last checked ${checkedAt}`;
-    case 'ja-JP':
-      return `最終確認 ${checkedAt}`;
-    default:
-      return `最后检查 ${checkedAt}`;
-  }
+  return `${serviceCheckedAt} ${checkedAt}`;
 };
 
 const getInitialData = async (
@@ -114,7 +110,13 @@ const getInitialData = async (
   };
 };
 
-export const renderAdminConsole = async (initialTab: TabKey) => {
+export const AdminPage = async ({
+  children,
+  initialTab,
+}: {
+  children: ReactNode;
+  initialTab: TabKey;
+}) => {
   const cookieStore = await cookies();
   const headerStore = await headers();
   const protocol = headerStore.get('x-forwarded-proto') ?? 'http';
@@ -146,12 +148,14 @@ export const renderAdminConsole = async (initialTab: TabKey) => {
   );
 
   return (
-    <AdminConsole
+    <AdminPageLayout
       initialData={await getInitialData(locale)}
       initialLocalePreference={localePreference}
       initialTab={initialTab}
       initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
-    />
+    >
+      {children}
+    </AdminPageLayout>
   );
 };
 

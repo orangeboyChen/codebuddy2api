@@ -1,14 +1,22 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createStore, Provider, useAtom } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
 import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import type { Route } from 'next';
-import { Button } from '@lobehub/ui';
-import { ToastHost, toast } from '@lobehub/ui/base-ui';
-import { LogOut } from 'lucide-react';
+import { Button, ToastHost, toast } from '@lobehub/ui/base-ui';
+import { Tabs } from '@lobehub/ui/base-ui';
+import {
+  Bug,
+  ChartLine,
+  KeyRound,
+  LayoutDashboard,
+  LogOut,
+  Send,
+  Settings2,
+} from 'lucide-react';
 
 import {
   createApiTestState,
@@ -18,18 +26,16 @@ import {
   createSettingsState,
   createUsageState,
   type AdminConsoleInitialData,
-} from '@/app/admin/_components/admin-initial-state';
+} from '@/lib/client/console';
 import {
-  ApiTestSection,
-  CredentialsSection,
-  DebugSection,
-  DashboardSection,
-  SettingsSection,
-  TabNav,
-  UsageSection,
-} from '@/app/admin/_components/admin-sections';
+  ApiTestTabProvider,
+  CredentialsTabProvider,
+  DashboardTabProvider,
+  DebugTabProvider,
+  SettingsTabProvider,
+  UsageTabProvider,
+} from '@/lib/client/console';
 import {
-  adminTabPaths,
   adminSessionAtom,
   apiTestStateAtom,
   authStateAtom,
@@ -55,19 +61,32 @@ import {
   type UsageFiltersState,
   type UsageRange,
   usageStateAtom,
-} from '@/app/admin/_components/admin-store';
-import { AdminHeader } from '@/app/_components/admin-header';
+} from '@/lib/client/console';
+import { AdminHeader } from '@/app/header';
+import { themeChangeEventName } from '@/lib/theme';
+import { type LocalePreference } from '@/lib/i18n/routing';
 import {
-  resolvedThemeCookieName,
-  themeChangeEventName,
-  themeCookieName,
-} from '@/lib/theme';
-import {
-  localeCookieName,
-  localePreferenceCookieName,
-  type LocalePreference,
-  systemLocalePreference,
-} from '@/lib/i18n/routing';
+  saveLocalePreference,
+  saveThemePreference,
+} from '@/lib/client/preferences';
+
+const tabIcons = {
+  'api-test': Send,
+  credentials: KeyRound,
+  dashboard: LayoutDashboard,
+  debug: Bug,
+  settings: Settings2,
+  usage: ChartLine,
+};
+
+const tabLabelKeys = {
+  'api-test': 'apiTest',
+  credentials: 'credentials',
+  dashboard: 'dashboard',
+  debug: 'debug',
+  settings: 'settings',
+  usage: 'usage',
+} as const;
 
 interface HealthResponse {
   status?: string;
@@ -266,19 +285,21 @@ const getSseEventContent = (event: string) => {
   }
 };
 
-interface AdminConsoleProps {
+interface AdminPageLayoutProps {
+  children: ReactNode;
   initialData?: AdminConsoleInitialData;
   initialLocalePreference: LocalePreference;
   initialTab: TabKey;
   initialTheme?: ThemeMode;
 }
 
-const AdminConsoleContent = ({
+const AdminPageLayoutContent = ({
+  children,
   initialData,
   initialLocalePreference,
   initialTab,
   initialTheme = 'system',
-}: AdminConsoleProps) => {
+}: AdminPageLayoutProps) => {
   const router = useRouter();
   const initialDashboardState = initialData
     ? createDashboardState(initialData)
@@ -322,218 +343,38 @@ const AdminConsoleContent = ({
   const activeTab = initialTab;
   const locale = useLocale();
   const translations = useTranslations('Admin');
-  const consoleText = {
-    'en-US': {
-      apiKeyCreated: 'API key created.',
-      apiKeyDeleted: 'API key deleted.',
-      apiKeyDeleteFailed: 'Failed to delete API key.',
-      apiKeyDisplayed: 'API key revealed.',
-      apiKeyReadFailed: 'Failed to read API key.',
-      apiKeyUpdated: 'API key updated.',
-      authCheckMissing: 'Missing auth state; cannot continue polling.',
-      authChecking: 'Checking authentication status...',
-      authCopy: 'Authorization link copied.',
-      authCreated: 'Authorization link created.',
-      authInvalidCallback: 'The callback URL is invalid.',
-      authLinkMissing: 'The authorization link has not been created yet.',
-      authPending: 'Waiting for authentication...',
-      authPollFailed: 'Authentication polling failed.',
-      authSaved: 'Authentication succeeded and the credential was saved.',
-      authStarted: 'Complete sign-in and the console will keep polling.',
-      authStartFailed: 'Failed to start authentication.',
-      authSuccess: 'Authentication succeeded.',
-      clipboardEmpty: 'Nothing to copy.',
-      clipboardUnsupported: 'Clipboard is not available in this environment.',
-      copyContent: 'Content copied.',
-      copyEndpoint: 'API endpoint copied.',
-      credentialDeleteFailed: 'Failed to delete credential.',
-      credentialDeleted: 'Credential deleted.',
-      credentialRequired: 'Bearer token is required.',
-      credentialSaveFailed: 'Failed to save credential.',
-      credentialSaved: (name: string) => `Credential saved: ${name}`,
-      debugClearFailed: 'Failed to clear debug records.',
-      debugCleared: 'Debug records cleared.',
-      debugLoadFailed: 'Failed to load debug records.',
-      debugSaveFailed: 'Failed to save debug settings.',
-      debugSaved: 'Debug settings saved.',
-      requestSending: 'Sending request...',
-      requestIdle: 'Click "Send test" to view the API response...',
-      requestFailed: 'API test failed.',
-      settingsSaveFailed: 'Failed to save settings.',
-      settingsSaved: 'Settings saved.',
-      serviceCheckedAt: 'Last checked',
-      serviceRunning: 'Running',
-      serviceUnavailable: 'Unavailable',
-      usageCleared: 'Usage history cleared.',
-      usageClearFailed: 'Failed to clear usage history.',
-      usageLoadFailed: 'Failed to load usage data.',
-      uptimeRefreshed: 'Status refreshed',
-    },
-    'ja-JP': {
-      apiKeyCreated: 'API key を作成しました。',
-      apiKeyDeleted: 'API key を削除しました。',
-      apiKeyDeleteFailed: 'API key の削除に失敗しました。',
-      apiKeyDisplayed: 'API key を表示しました。',
-      apiKeyReadFailed: 'API key の読み取りに失敗しました。',
-      apiKeyUpdated: 'API key を更新しました。',
-      authCheckMissing: '認証状態がないため、ポーリングを続行できません。',
-      authChecking: '認証状態を確認しています...',
-      authCopy: '認証リンクをコピーしました。',
-      authCreated: '認証リンクを生成しました。',
-      authInvalidCallback: 'コールバック URL の形式が正しくありません。',
-      authLinkMissing: '認証リンクはまだ生成されていません。',
-      authPending: '認証完了を待っています...',
-      authPollFailed: '認証ポーリングに失敗しました。',
-      authSaved: '認証に成功し、認証情報を保存しました。',
-      authStarted:
-        'サインインを完了するとコンソールが自動的に結果を確認します。',
-      authStartFailed: '認証開始に失敗しました。',
-      authSuccess: '認証に成功しました。',
-      clipboardEmpty: 'コピーできる内容がありません。',
-      clipboardUnsupported: 'この環境ではクリップボードを利用できません。',
-      copyContent: '内容をコピーしました。',
-      copyEndpoint: 'API エンドポイントをコピーしました。',
-      credentialDeleteFailed: '認証情報の削除に失敗しました。',
-      credentialDeleted: '認証情報を削除しました。',
-      credentialRequired: 'Bearer Token を入力してください。',
-      credentialSaveFailed: '認証情報の保存に失敗しました。',
-      credentialSaved: (name: string) => `認証情報を保存しました: ${name}`,
-      debugClearFailed: 'Debug 記録の削除に失敗しました。',
-      debugCleared: 'Debug 記録を削除しました。',
-      debugLoadFailed: 'Debug 記録の読み込みに失敗しました。',
-      debugSaveFailed: 'Debug 設定の保存に失敗しました。',
-      debugSaved: 'Debug 設定を保存しました。',
-      requestSending: 'リクエスト送信中...',
-      requestIdle: '「送信テスト」をクリックすると API 応答を表示します...',
-      requestFailed: 'API テストに失敗しました。',
-      settingsSaveFailed: '設定の保存に失敗しました。',
-      settingsSaved: '設定を保存しました。',
-      serviceCheckedAt: '最終確認',
-      serviceRunning: '稼働中',
-      serviceUnavailable: '利用不可',
-      usageCleared: '使用量履歴を削除しました。',
-      usageClearFailed: '使用量履歴の削除に失敗しました。',
-      usageLoadFailed: '使用量データの読み込みに失敗しました。',
-      uptimeRefreshed: '状態を更新しました',
-    },
-    'zh-CN': {
-      apiKeyCreated: 'API Key 已生成。',
-      apiKeyDeleted: 'API Key 已删除。',
-      apiKeyDeleteFailed: '删除 API Key 失败。',
-      apiKeyDisplayed: 'API Key 已显示。',
-      apiKeyReadFailed: '读取 API Key 失败。',
-      apiKeyUpdated: 'API Key 已更新。',
-      authCheckMissing: '缺少认证状态，无法继续轮询。',
-      authChecking: '正在检查认证状态...',
-      authCopy: '认证链接已复制。',
-      authCreated: '认证链接已生成。',
-      authInvalidCallback: '回调链接格式不正确。',
-      authLinkMissing: '认证链接还未生成。',
-      authPending: '等待认证完成...',
-      authPollFailed: '认证轮询失败。',
-      authSaved: '认证成功，凭证已保存。',
-      authStarted: '请完成登录，系统会自动轮询结果。',
-      authStartFailed: '启动认证失败。',
-      authSuccess: '认证成功！',
-      clipboardEmpty: '没有可复制的内容。',
-      clipboardUnsupported: '当前环境不支持剪贴板。',
-      copyContent: '内容已复制。',
-      copyEndpoint: 'API 端点已复制。',
-      credentialDeleteFailed: '删除凭证失败。',
-      credentialDeleted: '凭证已删除。',
-      credentialRequired: 'Bearer Token 不能为空。',
-      credentialSaveFailed: '添加凭证失败。',
-      credentialSaved: (name: string) => `凭证已保存：${name}`,
-      debugClearFailed: '清空 Debug 记录失败。',
-      debugCleared: 'Debug 记录已清空。',
-      debugLoadFailed: '加载 Debug 记录失败。',
-      debugSaveFailed: '保存 Debug 设置失败。',
-      debugSaved: 'Debug 设置已保存。',
-      requestSending: '请求发送中...',
-      requestIdle: '点击“发送测试”查看 API 响应...',
-      requestFailed: 'API 测试失败。',
-      settingsSaveFailed: '保存设置失败。',
-      settingsSaved: '设置已保存。',
-      serviceCheckedAt: '最后检查',
-      serviceRunning: '运行中',
-      serviceUnavailable: '不可用',
-      usageCleared: '用量统计历史已清空。',
-      usageClearFailed: '清空用量统计历史失败。',
-      usageLoadFailed: '加载用量统计数据失败。',
-      uptimeRefreshed: '状态已刷新',
-    },
-  }[locale as 'zh-CN' | 'en-US' | 'ja-JP'];
+  const consoleMessages = translations.raw('console') as Record<string, string>;
   const debugAutoRefreshOptions = [
     {
-      label:
-        locale === 'en-US'
-          ? 'Auto-refresh: off'
-          : locale === 'ja-JP'
-            ? '自動更新: オフ'
-            : '自动刷新：关闭',
+      label: translations('console.debugAutoRefreshOff'),
       value: 0,
     },
     {
-      label:
-        locale === 'en-US'
-          ? 'Auto-refresh: 5 sec'
-          : locale === 'ja-JP'
-            ? '自動更新: 5 秒'
-            : '自动刷新：5 秒',
+      label: translations('console.debugAutoRefresh5Seconds'),
       value: 5,
     },
     {
-      label:
-        locale === 'en-US'
-          ? 'Auto-refresh: 10 sec'
-          : locale === 'ja-JP'
-            ? '自動更新: 10 秒'
-            : '自动刷新：10 秒',
+      label: translations('console.debugAutoRefresh10Seconds'),
       value: 10,
     },
     {
-      label:
-        locale === 'en-US'
-          ? 'Auto-refresh: 15 sec'
-          : locale === 'ja-JP'
-            ? '自動更新: 15 秒'
-            : '自动刷新：15 秒',
+      label: translations('console.debugAutoRefresh15Seconds'),
       value: 15,
     },
     {
-      label:
-        locale === 'en-US'
-          ? 'Auto-refresh: 30 sec'
-          : locale === 'ja-JP'
-            ? '自動更新: 30 秒'
-            : '自动刷新：30 秒',
+      label: translations('console.debugAutoRefresh30Seconds'),
       value: 30,
     },
     {
-      label:
-        locale === 'en-US'
-          ? 'Auto-refresh: 1 min'
-          : locale === 'ja-JP'
-            ? '自動更新: 1 分'
-            : '自动刷新：1 分钟',
+      label: translations('console.debugAutoRefresh1Minute'),
       value: 60,
     },
     {
-      label:
-        locale === 'en-US'
-          ? 'Auto-refresh: 2 min'
-          : locale === 'ja-JP'
-            ? '自動更新: 2 分'
-            : '自动刷新：2 分钟',
+      label: translations('console.debugAutoRefresh2Minutes'),
       value: 120,
     },
     {
-      label:
-        locale === 'en-US'
-          ? 'Auto-refresh: 5 min'
-          : locale === 'ja-JP'
-            ? '自動更新: 5 分'
-            : '自动刷新：5 分钟',
+      label: translations('console.debugAutoRefresh5Minutes'),
       value: 300,
     },
   ] as const;
@@ -590,7 +431,7 @@ const AdminConsoleContent = ({
       ? (validCredentials / items.length) * 100
       : 0;
 
-    const checkedAt = `${consoleText.serviceCheckedAt} ${new Date(
+    const checkedAt = `${consoleMessages.serviceCheckedAt} ${new Date(
       healthResult.data?.timestamp ?? new Date().toISOString(),
     ).toLocaleString(locale)}`;
 
@@ -607,17 +448,17 @@ const AdminConsoleContent = ({
       ),
       serviceStatus: healthResult.ok ? 'online' : 'offline',
       statusText: healthResult.ok
-        ? consoleText.serviceRunning
-        : consoleText.serviceUnavailable,
+        ? consoleMessages.serviceRunning
+        : consoleMessages.serviceUnavailable,
       totalApiCalls,
       totalCredentials: items.length,
       uptimeText: checkedAt,
       validCredentials,
     });
   }, [
-    consoleText.serviceCheckedAt,
-    consoleText.serviceRunning,
-    consoleText.serviceUnavailable,
+    consoleMessages.serviceCheckedAt,
+    consoleMessages.serviceRunning,
+    consoleMessages.serviceUnavailable,
     locale,
     setDashboard,
   ]);
@@ -770,10 +611,10 @@ const AdminConsoleContent = ({
       return {
         ...current,
         model: configuredModels[0] ?? current.model,
-        result: current.result || consoleText.requestIdle,
+        result: current.result || consoleMessages.requestIdle,
       };
     });
-  }, [consoleText.requestIdle, setApiTest, setSettings]);
+  }, [consoleMessages.requestIdle, setApiTest, setSettings]);
 
   const loadDebug = useCallback(
     async ({
@@ -793,7 +634,7 @@ const AdminConsoleContent = ({
         }));
         showNotification(
           'error',
-          getErrorMessage(result.data, consoleText.debugLoadFailed),
+          getErrorMessage(result.data, consoleMessages.debugLoadFailed),
         );
         return;
       }
@@ -817,7 +658,7 @@ const AdminConsoleContent = ({
         saving: false,
       }));
     },
-    [consoleText.debugLoadFailed, setDebug, showNotification],
+    [consoleMessages.debugLoadFailed, setDebug, showNotification],
   );
 
   const loadUsage = useCallback(
@@ -851,7 +692,7 @@ const AdminConsoleContent = ({
         }));
         showNotification(
           'error',
-          getErrorMessage(result.data, consoleText.usageLoadFailed),
+          getErrorMessage(result.data, consoleMessages.usageLoadFailed),
         );
         return;
       }
@@ -888,7 +729,7 @@ const AdminConsoleContent = ({
         tokenSeries: result.data?.tokenSeries ?? [],
       }));
     },
-    [consoleText.usageLoadFailed, locale, setUsage, showNotification],
+    [consoleMessages.usageLoadFailed, locale, setUsage, showNotification],
   );
 
   const refreshAdminData = useCallback(async () => {
@@ -915,12 +756,12 @@ const AdminConsoleContent = ({
       }));
       showNotification(
         'error',
-        getErrorMessage(result.data, consoleText.usageClearFailed),
+        getErrorMessage(result.data, consoleMessages.usageClearFailed),
       );
       return;
     }
 
-    showNotification('success', consoleText.usageCleared);
+    showNotification('success', consoleMessages.usageCleared);
     await loadUsage();
   };
 
@@ -928,14 +769,14 @@ const AdminConsoleContent = ({
     const authState = overrideState ?? auth.authState;
 
     if (!authState.trim()) {
-      showNotification('warning', consoleText.authCheckMissing);
+      showNotification('warning', consoleMessages.authCheckMissing);
       return;
     }
 
     clearAuthTimer();
     setAuth((current) => ({
       ...current,
-      message: consoleText.authChecking,
+      message: consoleMessages.authChecking,
       polling: true,
     }));
 
@@ -953,10 +794,13 @@ const AdminConsoleContent = ({
       setAuth((current) => ({
         ...current,
         completed: true,
-        message: result.data?.message ?? consoleText.authSuccess,
+        message: result.data?.message ?? consoleMessages.authSuccess,
         polling: false,
       }));
-      showNotification('success', result.data.message ?? consoleText.authSaved);
+      showNotification(
+        'success',
+        result.data.message ?? consoleMessages.authSaved,
+      );
       await refreshAdminData();
       return;
     }
@@ -964,7 +808,7 @@ const AdminConsoleContent = ({
     if (result.data?.error === 'authorization_pending') {
       setAuth((current) => ({
         ...current,
-        message: consoleText.authPending,
+        message: consoleMessages.authPending,
         polling: false,
       }));
       authPollTimerRef.current = window.setTimeout(() => {
@@ -973,7 +817,10 @@ const AdminConsoleContent = ({
       return;
     }
 
-    const message = getErrorMessage(result.data, consoleText.authPollFailed);
+    const message = getErrorMessage(
+      result.data,
+      consoleMessages.authPollFailed,
+    );
     setAuth((current) => ({
       ...current,
       message,
@@ -1005,7 +852,10 @@ const AdminConsoleContent = ({
       !result.data?.auth_state ||
       !result.data?.verification_uri_complete
     ) {
-      const message = getErrorMessage(result.data, consoleText.authStartFailed);
+      const message = getErrorMessage(
+        result.data,
+        consoleMessages.authStartFailed,
+      );
       setAuth((current) => ({
         ...current,
         message,
@@ -1021,10 +871,10 @@ const AdminConsoleContent = ({
       authUrl: result.data?.verification_uri_complete ?? '',
       completed: false,
       intervalSeconds: result.data?.interval ?? 5,
-      message: consoleText.authStarted,
+      message: consoleMessages.authStarted,
       starting: false,
     }));
-    showNotification('success', consoleText.authCreated);
+    showNotification('success', consoleMessages.authCreated);
     authPollTimerRef.current = window.setTimeout(
       () => {
         void pollAuth(result.data?.auth_state);
@@ -1037,7 +887,7 @@ const AdminConsoleContent = ({
     const isEditing = credentials.form.editingIndex !== null;
 
     if (!isEditing && !credentials.form.bearerToken.trim()) {
-      showNotification('warning', consoleText.credentialRequired);
+      showNotification('warning', consoleMessages.credentialRequired);
       return;
     }
 
@@ -1076,7 +926,7 @@ const AdminConsoleContent = ({
     if (!result.ok || !result.data?.success) {
       showNotification(
         'error',
-        getErrorMessage(result.data, consoleText.credentialSaveFailed),
+        getErrorMessage(result.data, consoleMessages.credentialSaveFailed),
       );
       setCredentials((current) => ({
         ...current,
@@ -1098,7 +948,9 @@ const AdminConsoleContent = ({
     }));
     showNotification(
       'success',
-      consoleText.credentialSaved(result.data.filename ?? 'unknown'),
+      translations('console.credentialSaved', {
+        name: result.data.filename ?? 'unknown',
+      }),
     );
     await refreshAdminData();
   };
@@ -1123,7 +975,7 @@ const AdminConsoleContent = ({
     if (!result.ok || !result.data?.success) {
       showNotification(
         'error',
-        getErrorMessage(result.data, consoleText.credentialDeleteFailed),
+        getErrorMessage(result.data, consoleMessages.credentialDeleteFailed),
       );
       setCredentials((current) => ({
         ...current,
@@ -1132,7 +984,7 @@ const AdminConsoleContent = ({
       return;
     }
 
-    showNotification('success', consoleText.credentialDeleted);
+    showNotification('success', consoleMessages.credentialDeleted);
     await refreshAdminData();
   };
 
@@ -1167,7 +1019,9 @@ const AdminConsoleContent = ({
         'error',
         getErrorMessage(
           result.data,
-          editingId ? consoleText.apiKeyUpdated : consoleText.apiKeyCreated,
+          editingId
+            ? consoleMessages.apiKeyUpdated
+            : consoleMessages.apiKeyCreated,
         ),
       );
       setCredentials((current) => ({
@@ -1196,7 +1050,7 @@ const AdminConsoleContent = ({
     }));
     showNotification(
       'success',
-      editingId ? consoleText.apiKeyUpdated : consoleText.apiKeyCreated,
+      editingId ? consoleMessages.apiKeyUpdated : consoleMessages.apiKeyCreated,
     );
     await loadCredentials();
   };
@@ -1217,7 +1071,7 @@ const AdminConsoleContent = ({
     if (!result.ok || !result.data?.success) {
       showNotification(
         'error',
-        getErrorMessage(result.data, consoleText.apiKeyDeleteFailed),
+        getErrorMessage(result.data, consoleMessages.apiKeyDeleteFailed),
       );
       setCredentials((current) => ({
         ...current,
@@ -1232,7 +1086,7 @@ const AdminConsoleContent = ({
       revealedSecret:
         current.revealedSecret?.id === id ? null : current.revealedSecret,
     }));
-    showNotification('success', consoleText.apiKeyDeleted);
+    showNotification('success', consoleMessages.apiKeyDeleted);
     await loadCredentials();
   };
 
@@ -1249,7 +1103,7 @@ const AdminConsoleContent = ({
     if (!result.ok || !result.data?.secret || !result.data?.name) {
       showNotification(
         'error',
-        getErrorMessage(result.data, consoleText.apiKeyReadFailed),
+        getErrorMessage(result.data, consoleMessages.apiKeyReadFailed),
       );
       setCredentials((current) => ({
         ...current,
@@ -1273,17 +1127,17 @@ const AdminConsoleContent = ({
         secret: secretPayload.secret,
       },
     }));
-    showNotification('success', consoleText.apiKeyDisplayed);
+    showNotification('success', consoleMessages.apiKeyDisplayed);
   };
 
   const copyText = async (value: string, successMessage: string) => {
     if (!value.trim()) {
-      showNotification('warning', consoleText.clipboardEmpty);
+      showNotification('warning', consoleMessages.clipboardEmpty);
       return;
     }
 
     if (!navigator.clipboard) {
-      showNotification('warning', consoleText.clipboardUnsupported);
+      showNotification('warning', consoleMessages.clipboardUnsupported);
       return;
     }
 
@@ -1293,7 +1147,7 @@ const AdminConsoleContent = ({
 
   const submitCallbackUrl = async () => {
     if (!auth.callbackUrl.trim()) {
-      showNotification('warning', consoleText.authPending);
+      showNotification('warning', consoleMessages.authPending);
       return;
     }
 
@@ -1308,14 +1162,14 @@ const AdminConsoleContent = ({
       }));
       await pollAuth(state);
     } catch {
-      showNotification('error', consoleText.authInvalidCallback);
+      showNotification('error', consoleMessages.authInvalidCallback);
     }
   };
 
   const testApi = async () => {
     setApiTest((current) => ({
       ...current,
-      result: consoleText.requestSending,
+      result: consoleMessages.requestSending,
       submitting: true,
     }));
 
@@ -1352,16 +1206,16 @@ const AdminConsoleContent = ({
         }));
         showNotification(
           'error',
-          getErrorMessage(payload, consoleText.requestFailed),
+          getErrorMessage(payload, consoleMessages.requestFailed),
         );
         return;
       } catch {
         setApiTest((current) => ({
           ...current,
-          result: text || consoleText.requestFailed,
+          result: text || consoleMessages.requestFailed,
           submitting: false,
         }));
-        showNotification('error', consoleText.requestFailed);
+        showNotification('error', consoleMessages.requestFailed);
         return;
       }
     }
@@ -1398,7 +1252,7 @@ const AdminConsoleContent = ({
 
       setApiTest((current) => ({
         ...current,
-        result: streamedResult || consoleText.requestIdle,
+        result: streamedResult || consoleMessages.requestIdle,
         submitting: false,
       }));
       return;
@@ -1451,7 +1305,7 @@ const AdminConsoleContent = ({
       }));
       showNotification(
         'error',
-        getErrorMessage(result.data, consoleText.settingsSaveFailed),
+        getErrorMessage(result.data, consoleMessages.settingsSaveFailed),
       );
       return;
     }
@@ -1481,7 +1335,7 @@ const AdminConsoleContent = ({
     });
     showNotification(
       'success',
-      result.data?.message ?? consoleText.settingsSaved,
+      result.data?.message ?? consoleMessages.settingsSaved,
     );
   };
 
@@ -1510,7 +1364,7 @@ const AdminConsoleContent = ({
       }));
       showNotification(
         'error',
-        getErrorMessage(result.data, consoleText.debugSaveFailed),
+        getErrorMessage(result.data, consoleMessages.debugSaveFailed),
       );
       return;
     }
@@ -1529,7 +1383,10 @@ const AdminConsoleContent = ({
           : debug.maxEntries,
       saving: false,
     });
-    showNotification('success', result.data?.message ?? consoleText.debugSaved);
+    showNotification(
+      'success',
+      result.data?.message ?? consoleMessages.debugSaved,
+    );
   };
 
   const clearDebugItems = async () => {
@@ -1549,7 +1406,7 @@ const AdminConsoleContent = ({
       }));
       showNotification(
         'error',
-        getErrorMessage(result.data, consoleText.debugClearFailed),
+        getErrorMessage(result.data, consoleMessages.debugClearFailed),
       );
       return;
     }
@@ -1561,7 +1418,7 @@ const AdminConsoleContent = ({
     }));
     showNotification(
       'success',
-      result.data?.message ?? consoleText.debugCleared,
+      result.data?.message ?? consoleMessages.debugCleared,
     );
   };
 
@@ -1620,11 +1477,10 @@ const AdminConsoleContent = ({
           detail: isDark ? 'dark' : 'light',
         }),
       );
-      document.cookie = `${resolvedThemeCookieName}=${isDark ? 'dark' : 'light'}; Path=/; Max-Age=31536000; SameSite=Lax`;
+      void saveThemePreference(theme, isDark ? 'dark' : 'light');
     };
 
     applyTheme();
-    document.cookie = `${themeCookieName}=${theme}; Path=/; Max-Age=31536000; SameSite=Lax`;
 
     if (theme !== 'system') {
       return;
@@ -1639,12 +1495,9 @@ const AdminConsoleContent = ({
   }, [theme]);
 
   const changeLocale = (nextLocale: string) => {
-    document.cookie = `${localePreferenceCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    document.cookie =
-      nextLocale === systemLocalePreference
-        ? `${localeCookieName}=; Path=/; Max-Age=0; SameSite=Lax`
-        : `${localeCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    window.location.reload();
+    void saveLocalePreference(nextLocale as LocalePreference).finally(() => {
+      window.location.reload();
+    });
   };
 
   const logout = async () => {
@@ -1713,347 +1566,358 @@ const AdminConsoleContent = ({
               </Button>
             ) : null
           }
-          brand={translations('brand')}
           className="console-header"
-          locale={locale}
           localePreference={initialLocalePreference}
           onLocaleChange={changeLocale}
           onThemeChange={setTheme}
           theme={theme}
-          themeLabels={{
-            dark: translations('themeDark'),
-            light: translations('themeLight'),
-            system: translations('themeSystem'),
-          }}
-          systemLocaleLabel={translations('languageSystem')}
         />
         <main className="console-main">
-          <TabNav
-            activeTab={activeTab}
-            onChange={(nextTab) => {
-              router.push(adminTabPaths[nextTab] as Route);
+          <Tabs
+            activeKey={activeTab}
+            className="console-tabs"
+            classNames={{ indicator: 'console-tabs-indicator' }}
+            items={Object.entries(tabLabelKeys).map(([key, labelKey]) => {
+              const tab = key as TabKey;
+              const Icon = tabIcons[tab];
+
+              return {
+                icon: <Icon aria-hidden="true" size={16} strokeWidth={2} />,
+                key: tab,
+                label: translations(`tabs.${labelKey}`),
+              };
+            })}
+            onChange={(key) => {
+              router.push(`/${key}` as Route);
             }}
+            variant="square"
           />
           {activeTab === 'dashboard' ? (
-            <DashboardSection
-              onCopyEndpoint={() => {
-                void copyText(dashboard.apiEndpoint, 'API 端点已复制。');
+            <DashboardTabProvider
+              value={{
+                dashboard,
+                onCopyEndpoint: () => {
+                  void copyText(
+                    dashboard.apiEndpoint,
+                    consoleMessages.copyEndpoint,
+                  );
+                },
+                onRefresh: () => {
+                  void loadDashboard();
+                },
               }}
-              onRefresh={() => {
-                void loadDashboard();
-              }}
-              state={dashboard}
-            />
+            >
+              {children}
+            </DashboardTabProvider>
           ) : null}
           {activeTab === 'credentials' ? (
-            <CredentialsSection
-              auth={auth}
-              credentials={credentials}
-              onAddCredential={() => {
-                void addCredential();
-              }}
-              onAuthAction={() => {
-                void startAuth();
-              }}
-              onCallbackUrlChange={(value) => {
-                setAuth((current) => ({
-                  ...current,
-                  callbackUrl: value,
-                }));
-              }}
-              onCopyAuthUrl={() => {
-                void copyText(auth.authUrl, '认证链接已复制。');
-              }}
-              onCredentialFirstMessageRoleToSystemChange={(value) => {
-                setCredentials((current) => ({
-                  ...current,
-                  form: {
-                    ...current.form,
-                    firstMessageRoleToSystem: value,
-                  },
-                }));
-              }}
-              onCredentialResponsesPassthroughChange={(value) => {
-                setCredentials((current) => ({
-                  ...current,
-                  form: {
-                    ...current.form,
-                    responsesPassthrough: value,
-                  },
-                }));
-              }}
-              onCredentialTokenChange={(value) => {
-                setCredentials((current) => ({
-                  ...current,
-                  form: {
-                    ...current.form,
-                    bearerToken: value,
-                  },
-                }));
-              }}
-              onCredentialUserIdChange={(value) => {
-                setCredentials((current) => ({
-                  ...current,
-                  form: {
-                    ...current.form,
-                    userId: value,
-                  },
-                }));
-              }}
-              onDeleteCredential={(index) => {
-                void deleteCredential(index);
-              }}
-              onEditCredential={(credential) => {
-                setCredentials((current) => ({
-                  ...current,
-                  form: {
-                    bearerToken: '',
-                    editingIndex: credential.index,
-                    firstMessageRoleToSystem:
-                      credential.first_message_role_to_system,
-                    responsesPassthrough: credential.responses_passthrough,
-                    userId: credential.user_id ?? '',
-                  },
-                }));
-              }}
-              onDeleteAccessKey={(id) => {
-                void deleteAccessKey(id);
-              }}
-              onEditAccessKey={(accessKey) => {
-                setCredentials((current) => ({
-                  ...current,
-                  accessKeyForm: {
-                    credentialFilenames: accessKey.credentialFilenames.filter(
-                      (filename) =>
-                        current.items.some(
-                          (credential) =>
-                            !credential.is_expired &&
-                            credential.filename === filename,
-                        ),
-                    ),
-                    editingId: accessKey.id,
-                    name: accessKey.name,
-                  },
-                }));
-              }}
-              onOpenAuthUrl={() => {
-                if (!auth.authUrl) {
-                  showNotification('warning', consoleText.authLinkMissing);
-                  return;
-                }
-
-                window.open(auth.authUrl, '_blank', 'noopener,noreferrer');
-              }}
-              onPollAuth={() => {
-                void pollAuth();
-              }}
-              onRefreshAccessKeys={() => {
-                void refreshAccessKeys();
-              }}
-              onRefreshCredentialList={() => {
-                void refreshCredentialList();
-              }}
-              onResetCredentialForm={() => {
-                setCredentials((current) => ({
-                  ...current,
-                  form: {
-                    bearerToken: '',
-                    editingIndex: null,
-                    firstMessageRoleToSystem: false,
-                    responsesPassthrough: false,
-                    userId: '',
-                  },
-                }));
-              }}
-              onRevealAccessKeySecret={(id) => {
-                void revealAccessKeySecret(id);
-              }}
-              onSaveAccessKey={() => {
-                void saveAccessKey();
-              }}
-              onSubmitCallbackUrl={() => {
-                void submitCallbackUrl();
-              }}
-              onToggleCallbackMode={(showManual) => {
-                setAuth((current) => ({
-                  ...current,
-                  showManualCallback: showManual,
-                }));
-              }}
-              onToggleCredentialSelection={(filename) => {
-                setCredentials((current) => {
-                  const selected =
-                    current.accessKeyForm.credentialFilenames.includes(
-                      filename,
+            <CredentialsTabProvider
+              value={{
+                auth,
+                credentials,
+                onAddCredential: () => {
+                  void addCredential();
+                },
+                onAuthAction: () => {
+                  void startAuth();
+                },
+                onCallbackUrlChange: (value) => {
+                  setAuth((current) => ({
+                    ...current,
+                    callbackUrl: value,
+                  }));
+                },
+                onCopyAuthUrl: () => {
+                  void copyText(auth.authUrl, '认证链接已复制。');
+                },
+                onCredentialFirstMessageRoleToSystemChange: (value) => {
+                  setCredentials((current) => ({
+                    ...current,
+                    form: {
+                      ...current.form,
+                      firstMessageRoleToSystem: value,
+                    },
+                  }));
+                },
+                onCredentialResponsesPassthroughChange: (value) => {
+                  setCredentials((current) => ({
+                    ...current,
+                    form: {
+                      ...current.form,
+                      responsesPassthrough: value,
+                    },
+                  }));
+                },
+                onCredentialTokenChange: (value) => {
+                  setCredentials((current) => ({
+                    ...current,
+                    form: {
+                      ...current.form,
+                      bearerToken: value,
+                    },
+                  }));
+                },
+                onCredentialUserIdChange: (value) => {
+                  setCredentials((current) => ({
+                    ...current,
+                    form: {
+                      ...current.form,
+                      userId: value,
+                    },
+                  }));
+                },
+                onDeleteCredential: (index) => {
+                  void deleteCredential(index);
+                },
+                onEditCredential: (credential) => {
+                  setCredentials((current) => ({
+                    ...current,
+                    form: {
+                      bearerToken: '',
+                      editingIndex: credential.index,
+                      firstMessageRoleToSystem:
+                        credential.first_message_role_to_system,
+                      responsesPassthrough: credential.responses_passthrough,
+                      userId: credential.user_id ?? '',
+                    },
+                  }));
+                },
+                onDeleteAccessKey: (id) => {
+                  void deleteAccessKey(id);
+                },
+                onEditAccessKey: (accessKey) => {
+                  setCredentials((current) => ({
+                    ...current,
+                    accessKeyForm: {
+                      credentialFilenames: accessKey.credentialFilenames.filter(
+                        (filename) =>
+                          current.items.some(
+                            (credential) =>
+                              !credential.is_expired &&
+                              credential.filename === filename,
+                          ),
+                      ),
+                      editingId: accessKey.id,
+                      name: accessKey.name,
+                    },
+                  }));
+                },
+                onOpenAuthUrl: () => {
+                  if (!auth.authUrl) {
+                    showNotification(
+                      'warning',
+                      consoleMessages.authLinkMissing,
                     );
+                    return;
+                  }
 
-                  return {
+                  window.open(auth.authUrl, '_blank', 'noopener,noreferrer');
+                },
+                onPollAuth: () => {
+                  void pollAuth();
+                },
+                onRefreshAccessKeys: () => {
+                  void refreshAccessKeys();
+                },
+                onRefreshCredentialList: () => {
+                  void refreshCredentialList();
+                },
+                onResetCredentialForm: () => {
+                  setCredentials((current) => ({
+                    ...current,
+                    form: {
+                      bearerToken: '',
+                      editingIndex: null,
+                      firstMessageRoleToSystem: false,
+                      responsesPassthrough: false,
+                      userId: '',
+                    },
+                  }));
+                },
+                onRevealAccessKeySecret: (id) => {
+                  void revealAccessKeySecret(id);
+                },
+                onSaveAccessKey: () => {
+                  void saveAccessKey();
+                },
+                onSubmitCallbackUrl: () => {
+                  void submitCallbackUrl();
+                },
+                onToggleCallbackMode: (showManual) => {
+                  setAuth((current) => ({
+                    ...current,
+                    showManualCallback: showManual,
+                  }));
+                },
+                onToggleCredentialSelection: (filename) => {
+                  setCredentials((current) => {
+                    const selected =
+                      current.accessKeyForm.credentialFilenames.includes(
+                        filename,
+                      );
+
+                    return {
+                      ...current,
+                      accessKeyForm: {
+                        ...current.accessKeyForm,
+                        credentialFilenames: selected
+                          ? current.accessKeyForm.credentialFilenames.filter(
+                              (item) => item !== filename,
+                            )
+                          : [
+                              ...current.accessKeyForm.credentialFilenames,
+                              filename,
+                            ],
+                      },
+                    };
+                  });
+                },
+                onUpdateAccessKeyName: (value) => {
+                  setCredentials((current) => ({
                     ...current,
                     accessKeyForm: {
                       ...current.accessKeyForm,
-                      credentialFilenames: selected
-                        ? current.accessKeyForm.credentialFilenames.filter(
-                            (item) => item !== filename,
-                          )
-                        : [
-                            ...current.accessKeyForm.credentialFilenames,
-                            filename,
-                          ],
+                      name: value,
                     },
-                  };
-                });
+                  }));
+                },
+                onResetAccessKeyForm: () => {
+                  setCredentials((current) => ({
+                    ...current,
+                    accessKeyForm: {
+                      credentialFilenames: [],
+                      editingId: null,
+                      name: '',
+                    },
+                  }));
+                },
               }}
-              onUpdateAccessKeyName={(value) => {
-                setCredentials((current) => ({
-                  ...current,
-                  accessKeyForm: {
-                    ...current.accessKeyForm,
-                    name: value,
-                  },
-                }));
-              }}
-              onResetAccessKeyForm={() => {
-                setCredentials((current) => ({
-                  ...current,
-                  accessKeyForm: {
-                    credentialFilenames: [],
-                    editingId: null,
-                    name: '',
-                  },
-                }));
-              }}
-            />
+            >
+              {children}
+            </CredentialsTabProvider>
           ) : null}
           {activeTab === 'usage' ? (
-            <UsageSection
-              onAccessKeyChange={(value) => {
-                void loadUsage({
-                  accessKey: value,
-                });
+            <UsageTabProvider
+              value={{
+                onAccessKeyChange: (value) => {
+                  void loadUsage({ accessKey: value });
+                },
+                onAutoRefreshSecondsChange: (value) => {
+                  setUsage((current) => ({
+                    ...current,
+                    autoRefreshSeconds: value,
+                    autoRefreshVisible: true,
+                  }));
+                },
+                onClearHistory: () => {
+                  void clearUsageHistory();
+                },
+                onCredentialChange: (value) => {
+                  void loadUsage({ credential: value });
+                },
+                onHoverPoint: (point) => {
+                  setUsage((current) => ({ ...current, hoveredPoint: point }));
+                },
+                onRangeChange: (value) => {
+                  void loadUsage({ range: value });
+                },
+                onRefresh: () => {
+                  void loadUsage();
+                },
+                usage,
               }}
-              onClearHistory={() => {
-                void clearUsageHistory();
-              }}
-              onCredentialChange={(value) => {
-                void loadUsage({
-                  credential: value,
-                });
-              }}
-              onHoverPoint={(point) => {
-                setUsage((current) => ({
-                  ...current,
-                  hoveredPoint: point,
-                }));
-              }}
-              onRangeChange={(value) => {
-                void loadUsage({
-                  range: value,
-                });
-              }}
-              onRefresh={() => {
-                void loadUsage();
-              }}
-              onAutoRefreshSecondsChange={(value) => {
-                setUsage((current) => ({
-                  ...current,
-                  autoRefreshSeconds: value,
-                  autoRefreshVisible: true,
-                }));
-              }}
-              state={usage}
-            />
+            >
+              {children}
+            </UsageTabProvider>
           ) : null}
           {activeTab === 'api-test' ? (
-            <ApiTestSection
-              credentialOptions={credentials.items.filter(
-                (item) => !item.is_expired,
-              )}
-              onCredentialChange={(value) => {
-                setApiTest((current) => ({
-                  ...current,
-                  credentialFilename: value,
-                }));
+            <ApiTestTabProvider
+              value={{
+                apiTest,
+                credentialOptions: credentials.items.filter(
+                  (item) => !item.is_expired,
+                ),
+                models: String(settings.values.CODEBUDDY_MODELS ?? '')
+                  .split(',')
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+                onCredentialChange: (value) => {
+                  setApiTest((current) => ({
+                    ...current,
+                    credentialFilename: value,
+                  }));
+                },
+                onMessageChange: (value) => {
+                  setApiTest((current) => ({ ...current, message: value }));
+                },
+                onModelChange: (value) => {
+                  setApiTest((current) => ({ ...current, model: value }));
+                },
+                onStreamChange: (value) => {
+                  setApiTest((current) => ({ ...current, stream: value }));
+                },
+                onSubmit: () => {
+                  void testApi();
+                },
               }}
-              models={String(settings.values.CODEBUDDY_MODELS ?? '')
-                .split(',')
-                .map((item) => item.trim())
-                .filter(Boolean)}
-              onMessageChange={(value) => {
-                setApiTest((current) => ({
-                  ...current,
-                  message: value,
-                }));
-              }}
-              onModelChange={(value) => {
-                setApiTest((current) => ({
-                  ...current,
-                  model: value,
-                }));
-              }}
-              onStreamChange={(checked) => {
-                setApiTest((current) => ({
-                  ...current,
-                  stream: checked,
-                }));
-              }}
-              onSubmit={() => {
-                void testApi();
-              }}
-              state={apiTest}
-            />
+            >
+              {children}
+            </ApiTestTabProvider>
           ) : null}
           {activeTab === 'debug' ? (
-            <DebugSection
-              autoRefreshOptions={[...debugAutoRefreshOptions]}
-              onClear={() => {
-                void clearDebugItems();
+            <DebugTabProvider
+              value={{
+                autoRefreshOptions: [...debugAutoRefreshOptions],
+                debug,
+                onAutoRefreshSecondsChange: (value) => {
+                  setDebug((current) => ({
+                    ...current,
+                    autoRefreshSeconds: value,
+                  }));
+                },
+                onClear: () => {
+                  void clearDebugItems();
+                },
+                onCopy: (value) => {
+                  void copyText(value, consoleMessages.copyContent);
+                },
+                onEnabledChange: (value) => {
+                  setDebug((current) => ({ ...current, enabled: value }));
+                },
+                onMaxEntriesChange: (value) => {
+                  setDebug((current) => ({
+                    ...current,
+                    maxEntries: value,
+                  }));
+                },
+                onRefresh: () => {
+                  void loadDebug({ preserveSettings: true });
+                },
+                onSave: () => {
+                  void saveDebugSettings();
+                },
               }}
-              onCopy={(value) => {
-                void copyText(value, consoleText.copyContent);
-              }}
-              onAutoRefreshSecondsChange={(value) => {
-                setDebug((current) => ({
-                  ...current,
-                  autoRefreshSeconds: value,
-                }));
-              }}
-              onEnabledChange={(value) => {
-                setDebug((current) => ({
-                  ...current,
-                  enabled: value,
-                }));
-              }}
-              onMaxEntriesChange={(value) => {
-                setDebug((current) => ({
-                  ...current,
-                  maxEntries: value,
-                }));
-              }}
-              onRefresh={() => {
-                void loadDebug({ preserveSettings: true });
-              }}
-              onSave={() => {
-                void saveDebugSettings();
-              }}
-              state={debug}
-            />
+            >
+              {children}
+            </DebugTabProvider>
           ) : null}
           {activeTab === 'settings' ? (
-            <SettingsSection
-              onChange={(key, value) => {
-                setSettings((current) => ({
-                  ...current,
-                  values: {
-                    ...current.values,
-                    [key]: value,
-                  },
-                }));
+            <SettingsTabProvider
+              value={{
+                onChange: (key, value) => {
+                  setSettings((current) => ({
+                    ...current,
+                    values: { ...current.values, [key]: value },
+                  }));
+                },
+                onSave: () => {
+                  void saveSettings();
+                },
+                settings,
               }}
-              onSave={() => {
-                void saveSettings();
-              }}
-              state={settings}
-            />
+            >
+              {children}
+            </SettingsTabProvider>
           ) : null}
         </main>
       </div>
@@ -2062,14 +1926,14 @@ const AdminConsoleContent = ({
   );
 };
 
-const AdminConsole = (props: AdminConsoleProps) => {
+const AdminPageLayout = (props: AdminPageLayoutProps) => {
   const store = useMemo(() => createStore(), []);
 
   return (
     <Provider store={store}>
-      <AdminConsoleContent {...props} />
+      <AdminPageLayoutContent {...props} />
     </Provider>
   );
 };
 
-export default AdminConsole;
+export default AdminPageLayout;

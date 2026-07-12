@@ -1,11 +1,13 @@
 'use client';
 
-import { Block, Button, Flexbox, Text } from '@lobehub/ui';
+import { Block, Flexbox, Text } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { DropdownMenu, Select } from '@lobehub/ui/base-ui';
 import { Languages, Menu, SunMoon } from 'lucide-react';
+import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
 
-import type { ThemeMode } from '@/app/admin/_components/admin-store';
+import type { ThemeMode } from '@/lib/client/console';
 import {
   locales,
   type LocalePreference,
@@ -20,48 +22,49 @@ const localeLabels: Record<string, string> = {
 
 interface AdminHeaderProps {
   action?: ReactNode;
-  brand: string;
-  className: string;
-  locale: string;
+  className?: string;
   localePreference: LocalePreference;
   onLocaleChange: (locale: string) => void;
   onThemeChange: (theme: ThemeMode) => void;
-  systemLocaleLabel: string;
   theme: ThemeMode;
-  themeLabels: Record<ThemeMode, string>;
 }
 
 export const AdminHeader = ({
   action,
-  brand,
   className,
-  locale,
   onLocaleChange,
   onThemeChange,
   theme,
-  themeLabels,
   localePreference,
-  systemLocaleLabel,
 }: AdminHeaderProps) => {
+  const locale = useLocale();
+  const translations = useTranslations('Admin');
+  const systemLocaleLabel = translations('languageSystem');
+  const themeLabels: Record<ThemeMode, string> = {
+    dark: translations('themeDark'),
+    light: translations('themeLight'),
+    system: translations('themeSystem'),
+  };
+
   return (
     <Block
       as="header"
       align="center"
-      className={`admin-header ${className}`}
+      className={`console-header ${className}`}
       distribution="space-between"
       horizontal
       variant="borderless"
     >
-      <Text as="div" className="admin-header-brand" strong>
-        {brand}
+      <Text as="div" className="console-header-brand" strong>
+        {translations('brand')}
       </Text>
       <Flexbox
         align="center"
-        className="admin-header-controls"
+        className="console-header-controls"
         gap={8}
         horizontal
       >
-        <label className="admin-header-select">
+        <label className="console-header-select">
           <Languages aria-hidden="true" size={16} strokeWidth={2} />
           <Select
             aria-label="Language"
@@ -76,7 +79,7 @@ export const AdminHeader = ({
             value={localePreference}
           />
         </label>
-        <label className="admin-header-select">
+        <label className="console-header-select">
           <SunMoon aria-hidden="true" size={16} strokeWidth={2} />
           <Select
             aria-label="Theme mode"
@@ -91,7 +94,7 @@ export const AdminHeader = ({
         </label>
         {action}
       </Flexbox>
-      <div className="admin-header-mobile-menu">
+      <div className="console-header-mobile-menu">
         <DropdownMenu
           items={[
             {

@@ -527,6 +527,8 @@ describe('server units', () => {
     });
 
     const usagePath = path.join(tempDataDir, 'usage-history.json');
+    await getUsageAnalytics({ now, range: '24h' });
+
     expect(fs.existsSync(usagePath)).toBe(true);
     expect(fs.existsSync(`${usagePath}.tmp`)).toBe(false);
 

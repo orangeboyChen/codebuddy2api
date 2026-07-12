@@ -29,6 +29,7 @@ import { listDebugLogs, updateDebugSettings } from '@/lib/server/domain/debug';
 import { resetResponseSessions } from '@/lib/server/proxy/responses';
 import { resetUsageStats } from '@/lib/server/domain/stats';
 import { recordUsageEvent } from '@/lib/server/domain/usage';
+import { resetStorageRuntime } from '@/lib/server/storage';
 
 const repoRoot = process.cwd();
 const tempRootDir = path.join(repoRoot, '.tmp-test-runtime-root');
@@ -78,13 +79,19 @@ const makeSseResponse = (frames: string[]): Response => {
 describe('server runtime', () => {
   beforeEach(async () => {
     cleanupTempState();
+    delete process.env.CODEBUDDY_STORAGE_FILE_DIR;
+    delete process.env.CODEBUDDY_CONFIG_PATH;
+    delete process.env.CODEBUDDY_STORAGE_BACKEND;
+    delete process.env.CODEBUDDY_STORAGE_PERSISTENCE;
+    delete process.env.CODEBUDDY_STORAGE_PG_URL;
+    delete process.env.CODEBUDDY_STORAGE_ENCRYPTION_KEY;
+    delete process.env.DATABASE_URL;
+    resetStorageRuntime();
     resetCredentialRuntimeState();
     resetResponseSessions();
     await resetUsageStats();
     vi.restoreAllMocks();
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
-    delete process.env.CODEBUDDY_STORAGE_FILE_DIR;
-    delete process.env.CODEBUDDY_CONFIG_PATH;
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
     process.env.CODEBUDDY_API_KEY = '';
   });
@@ -100,10 +107,22 @@ describe('server runtime', () => {
     ).json();
 
     expect(healthPayload.status).toBe('healthy');
+    expect(healthPayload.storage).toBe('file');
     expect(healthPayload.active_credential).toBeUndefined();
     expect(modelsPayload.object).toBe('list');
     expect(Array.isArray(modelsPayload.data)).toBe(true);
     expect(modelsPayload.data[0].id).toBeTruthy();
+  });
+
+  it('reports unhealthy when storage initialization fails', async () => {
+    process.env.CODEBUDDY_STORAGE_BACKEND = 'pg';
+    process.env.CODEBUDDY_STORAGE_PG_URL = 'postgres://example.test/codebuddy';
+    resetStorageRuntime();
+
+    const response = await HealthRoute.GET();
+
+    expect(response.status).toBe(503);
+    expect((await response.json()).status).toBe('unhealthy');
   });
 
   it('manages settings and credentials through admin routes', async () => {

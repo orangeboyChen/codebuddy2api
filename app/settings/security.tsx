@@ -5,9 +5,7 @@ import { Block, Flexbox, Input } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { Save, ShieldCheck } from 'lucide-react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { useLocale, useTranslations } from 'next-intl';
-
-import type { AppLocale } from '@/lib/i18n/routing';
+import { useTranslations } from 'next-intl';
 
 interface Passkey {
   id: string;
@@ -47,8 +45,7 @@ const getPasskeyOriginSupport = () => {
 
 const getServerPasskeyOriginSupport = () => false;
 
-const AdminAuthSettings = () => {
-  const locale = useLocale() as AppLocale;
+const Security = () => {
   const translations = useTranslations('Admin.securityPanel');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -63,54 +60,6 @@ const AdminAuthSettings = () => {
     getPasskeyOriginSupport,
     getServerPasskeyOriginSupport,
   );
-
-  const localeText = {
-    'en-US': {
-      accountUpdated: 'Administrator account updated.',
-      authEnabled: 'Administrator authentication enabled.',
-      confirmDisable:
-        'Disabling authentication will remove the admin password and all passkeys. Continue?',
-      disableFailed: 'Failed to disable administrator authentication.',
-      passkeyAdded: 'Passkey added.',
-      passkeyAddFailed: 'Failed to add passkey.',
-      passkeyUnavailable: 'Passkeys require HTTPS or a localhost origin.',
-      passkeyDeleted: 'Passkey deleted.',
-      passkeyDeleteFailed: 'Failed to delete passkey.',
-      passkeyOptionsFailed: 'Unable to create a passkey registration request.',
-      passwordMismatch: 'The passwords do not match.',
-      passkeyHeading: 'Passkeys',
-    },
-    'ja-JP': {
-      accountUpdated: '管理者アカウントを更新しました。',
-      authEnabled: '管理者認証を有効化しました。',
-      confirmDisable:
-        '認証を無効にすると、管理者パスワードとすべての passkey が削除されます。続行しますか？',
-      disableFailed: '管理者認証を無効化できませんでした。',
-      passkeyAdded: 'Passkey を追加しました。',
-      passkeyAddFailed: 'Passkey の追加に失敗しました。',
-      passkeyUnavailable:
-        'Passkey には HTTPS または localhost のオリジンが必要です。',
-      passkeyDeleted: 'Passkey を削除しました。',
-      passkeyDeleteFailed: 'Passkey の削除に失敗しました。',
-      passkeyOptionsFailed: 'Passkey 登録リクエストを作成できませんでした。',
-      passwordMismatch: '入力したパスワードが一致しません。',
-      passkeyHeading: 'Passkeys',
-    },
-    'zh-CN': {
-      accountUpdated: '管理员账户已更新。',
-      authEnabled: '管理员鉴权已启用。',
-      confirmDisable: '关闭后将删除管理员密码和所有 Passkey。是否继续？',
-      disableFailed: '关闭管理员鉴权失败。',
-      passkeyAdded: 'Passkey 已添加。',
-      passkeyAddFailed: 'Passkey 添加失败。',
-      passkeyUnavailable: 'Passkey 仅可在 HTTPS 或 localhost 域名上添加。',
-      passkeyDeleted: 'Passkey 已删除。',
-      passkeyDeleteFailed: 'Passkey 删除失败。',
-      passkeyOptionsFailed: '无法创建 Passkey 注册请求。',
-      passwordMismatch: '两次输入的密码不一致。',
-      passkeyHeading: 'Passkey',
-    },
-  }[locale];
 
   const loadState = async () => {
     const response = await fetch('/admin-api/auth/session');
@@ -147,7 +96,7 @@ const AdminAuthSettings = () => {
 
   const saveAccount = async () => {
     if (nextPassword !== confirmPassword) {
-      setStatus(localeText.passwordMismatch);
+      setStatus(translations('passwordMismatch'));
       return;
     }
 
@@ -168,11 +117,13 @@ const AdminAuthSettings = () => {
     setStatus(
       response.ok
         ? isSetup
-          ? localeText.authEnabled
-          : localeText.accountUpdated
+          ? translations('authEnabled')
+          : translations('accountUpdated')
         : await getResponseMessage(
             response,
-            isSetup ? localeText.authEnabled : localeText.accountUpdated,
+            isSetup
+              ? translations('authEnabled')
+              : translations('accountUpdated'),
           ),
     );
 
@@ -186,7 +137,7 @@ const AdminAuthSettings = () => {
 
   const addPasskey = async () => {
     if (!passkeysSupported) {
-      setStatus(localeText.passkeyUnavailable);
+      setStatus(translations('passkeyUnavailable'));
       return;
     }
 
@@ -206,7 +157,7 @@ const AdminAuthSettings = () => {
 
     if (!optionsResponse.ok || !optionsPayload.options) {
       setStatus(
-        optionsPayload.error?.message ?? localeText.passkeyOptionsFailed,
+        optionsPayload.error?.message ?? translations('passkeyOptionsFailed'),
       );
       return;
     }
@@ -228,10 +179,10 @@ const AdminAuthSettings = () => {
       );
       setStatus(
         verifyResponse.ok
-          ? localeText.passkeyAdded
+          ? translations('passkeyAdded')
           : await getResponseMessage(
               verifyResponse,
-              localeText.passkeyAddFailed,
+              translations('passkeyAddFailed'),
             ),
       );
       if (verifyResponse.ok) {
@@ -240,7 +191,9 @@ const AdminAuthSettings = () => {
       }
     } catch (error) {
       setStatus(
-        error instanceof Error ? error.message : localeText.passkeyAddFailed,
+        error instanceof Error
+          ? error.message
+          : translations('passkeyAddFailed'),
       );
     }
   };
@@ -251,8 +204,11 @@ const AdminAuthSettings = () => {
     });
     setStatus(
       response.ok
-        ? localeText.passkeyDeleted
-        : await getResponseMessage(response, localeText.passkeyDeleteFailed),
+        ? translations('passkeyDeleted')
+        : await getResponseMessage(
+            response,
+            translations('passkeyDeleteFailed'),
+          ),
     );
     if (response.ok) {
       await loadState();
@@ -260,7 +216,7 @@ const AdminAuthSettings = () => {
   };
 
   const disableAuth = async () => {
-    if (!window.confirm(localeText.confirmDisable)) {
+    if (!window.confirm(translations('confirmDisable'))) {
       return;
     }
 
@@ -272,7 +228,9 @@ const AdminAuthSettings = () => {
       return;
     }
 
-    setStatus(await getResponseMessage(response, localeText.disableFailed));
+    setStatus(
+      await getResponseMessage(response, translations('disableFailed')),
+    );
   };
 
   const authEnabled = Boolean(session?.authEnabled);
@@ -356,7 +314,7 @@ const AdminAuthSettings = () => {
           <Flexbox align="center" gap={8} horizontal>
             <ShieldCheck aria-hidden="true" size={18} strokeWidth={2} />
             <h4 className="dashboard-data-title">
-              {localeText.passkeyHeading}
+              {translations('passkeyHeading')}
             </h4>
           </Flexbox>
           <div className="mt-4 flex flex-wrap gap-3">
@@ -377,7 +335,7 @@ const AdminAuthSettings = () => {
           </div>
           {!passkeysSupported ? (
             <p className="mt-3 text-sm text-secondary">
-              {localeText.passkeyUnavailable}
+              {translations('passkeyUnavailable')}
             </p>
           ) : null}
           {passkeys.length ? (
@@ -410,4 +368,4 @@ const AdminAuthSettings = () => {
   );
 };
 
-export default AdminAuthSettings;
+export default Security;
