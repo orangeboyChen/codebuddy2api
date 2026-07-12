@@ -40,6 +40,8 @@ const drizzleMock = vi.fn(() => ({
 }));
 
 const poolConstructor = vi.fn();
+const poolQuery = vi.fn(async () => undefined);
+const poolRelease = vi.fn();
 const migrate = vi.fn(async () => undefined);
 
 vi.mock('drizzle-orm/node-postgres', () => ({
@@ -54,6 +56,13 @@ vi.mock('pg', () => ({
   Pool: class MockPool {
     public constructor(options: unknown) {
       poolConstructor(options);
+    }
+
+    public async connect() {
+      return {
+        query: poolQuery,
+        release: poolRelease,
+      };
     }
   },
 }));
@@ -162,6 +171,17 @@ describe('drizzle pg storage adapter', () => {
 
     await adapter.ensureSchema();
     expect(migrate).toHaveBeenCalledTimes(1);
+    expect(poolQuery).toHaveBeenNthCalledWith(
+      1,
+      'SELECT pg_advisory_lock($1)',
+      [1_873_289_124],
+    );
+    expect(poolQuery).toHaveBeenNthCalledWith(
+      2,
+      'SELECT pg_advisory_unlock($1)',
+      [1_873_289_124],
+    );
+    expect(poolRelease).toHaveBeenCalledTimes(1);
     expect(selectLimit).toHaveBeenCalledTimes(4);
 
     await adapter.deleteDocument('config', 'runtime');

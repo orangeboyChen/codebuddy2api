@@ -13,6 +13,8 @@ import type {
 
 export type { DatabaseStorageAdapter, DatabaseDocumentRecord, StorageEvent };
 
+const MIGRATION_LOCK_ID = 1_873_289_124;
+
 interface PgDatabaseStorageAdapterOptions {
   connectionString: string;
   schemaName: string;
@@ -47,9 +49,25 @@ export class DrizzlePgDatabaseStorageAdapter implements DatabaseStorageAdapter {
   }
 
   public async ensureSchema(): Promise<void> {
-    await migrate(this.db, {
-      migrationsFolder: path.resolve('lib/server/storage/migrations/postgres'),
-    });
+    const client = await this.pool.connect();
+    let migrationLockAcquired = false;
+
+    try {
+      await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
+      migrationLockAcquired = true;
+      await migrate(this.db, {
+        migrationsFolder: path.resolve(
+          'lib/server/storage/migrations/postgres',
+        ),
+      });
+    } finally {
+      if (migrationLockAcquired) {
+        await client.query('SELECT pg_advisory_unlock($1)', [
+          MIGRATION_LOCK_ID,
+        ]);
+      }
+      client.release();
+    }
 
     await Promise.all([
       this.db
