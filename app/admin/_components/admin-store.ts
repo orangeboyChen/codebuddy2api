@@ -3,13 +3,23 @@ import { atom } from 'jotai';
 export type TabKey =
   'dashboard' | 'usage' | 'credentials' | 'api-test' | 'debug' | 'settings';
 
-export type NotificationType = 'success' | 'error' | 'warning' | 'info';
+export const adminTabPaths: Record<TabKey, string> = {
+  'api-test': '/api-test',
+  credentials: '/credentials',
+  dashboard: '/dashboard',
+  debug: '/debug',
+  settings: '/settings',
+  usage: '/usage',
+};
+
+export const isTabKey = (value: string): value is TabKey => {
+  return value in adminTabPaths;
+};
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 
-export interface NotificationState {
-  message: string;
-  type: NotificationType;
+export interface AdminSessionState {
+  authenticated: boolean;
 }
 
 export interface CredentialSummary {
@@ -108,7 +118,6 @@ export interface CredentialsState {
   accessKeyForm: AccessKeyFormState;
   accessKeys: AccessKeySummary[];
   accessKeysLoading: boolean;
-  accessKeyCreating: boolean;
   actionIndex: number | null;
   current: CurrentCredentialInfo | null;
   currentLoading: boolean;
@@ -128,6 +137,7 @@ export interface ApiTestState {
 }
 
 export interface DebugLogEntry {
+  credentialFilename: string | null;
   createdAt: string;
   error: string | null;
   id: string;
@@ -273,7 +283,7 @@ export const DEFAULT_TEST_MODELS = [
   'deepseek-v3-2-volc-ioa',
 ] as const;
 
-export const USAGE_RING_CIRCUMFERENCE = 2 * Math.PI * 26;
+export const USAGE_RING_CIRCUMFERENCE = 2 * Math.PI * 20;
 
 export const defaultDashboardState: DashboardState = {
   apiEndpoint: '',
@@ -296,7 +306,7 @@ export const activeTabAtom = atom<TabKey>('dashboard');
 
 export const themeAtom = atom<ThemeMode>('system');
 
-export const notificationAtom = atom<NotificationState | null>(null);
+export const adminSessionAtom = atom<AdminSessionState | null>(null);
 
 export const defaultAuthState: AuthState = {
   authState: '',
@@ -321,7 +331,6 @@ export const defaultCredentialsState: CredentialsState = {
   },
   accessKeys: [],
   accessKeysLoading: true,
-  accessKeyCreating: false,
   actionIndex: null,
   current: null,
   currentLoading: true,
@@ -345,7 +354,7 @@ export const defaultApiTestState: ApiTestState = {
   credentialFilename: '',
   message: 'Hello, what is 2+2?',
   model: '',
-  result: '点击"发送测试"查看API响应...',
+  result: '',
   stream: false,
   submitting: false,
 };

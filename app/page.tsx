@@ -1,19 +1,36 @@
 import { headers } from 'next/headers';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 
 import AdminConsole from '@/app/admin/_components/admin-console';
 import type { AdminConsoleInitialData } from '@/app/admin/_components/admin-initial-state';
 import type {
   AccessKeySummary,
   CredentialSummary,
+  TabKey,
 } from '@/app/admin/_components/admin-store';
-import { listAccessKeys } from '@/lib/server/access-keys';
-import { SETTING_LABELS, getActiveConfig } from '@/lib/server/config';
-import { getDebugSettings, listDebugLogs } from '@/lib/server/debug';
+import { listAccessKeys } from '@/lib/server/domain/access-keys';
+import {
+  getAdminSessionSummary,
+  isAdminSessionAuthenticated,
+} from '@/lib/server/admin/session';
+import { getActiveConfig, getSettingLabels } from '@/lib/server/domain/config';
+import { getDebugSettings, listDebugLogs } from '@/lib/server/domain/debug';
 import {
   getCurrentCredentialInfo,
   listCredentials,
-} from '@/lib/server/credentials';
-import { getUsageStats } from '@/lib/server/stats';
+} from '@/lib/server/domain/credentials';
+import { getUsageStats } from '@/lib/server/domain/stats';
+import { getUsageAnalytics } from '@/lib/server/domain/usage';
+import {
+  localeCookieName,
+  localePreferenceCookieName,
+  parseLocalePreference,
+  resolveAppLocale,
+  systemLocalePreference,
+  type AppLocale,
+} from '@/lib/i18n/routing';
+import { parseThemeMode, themeCookieName } from '@/lib/theme';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,39 +45,118 @@ const buildApiEndpoint = async () => {
   return `${protocol}://${host}/v1`;
 };
 
-const getInitialData = async (): Promise<AdminConsoleInitialData> => {
+const formatInitialHealthLabel = (locale: AppLocale, timestamp: string) => {
+  const checkedAt = new Date(timestamp).toLocaleString(locale);
+
+  switch (locale) {
+    case 'en-US':
+      return `Last checked ${checkedAt}`;
+    case 'ja-JP':
+      return `最終確認 ${checkedAt}`;
+    default:
+      return `最后检查 ${checkedAt}`;
+  }
+};
+
+const getInitialData = async (
+  locale: AppLocale,
+): Promise<AdminConsoleInitialData> => {
   const timestamp = new Date().toISOString();
-  const debugSettings = getDebugSettings();
+  const [
+    accessKeys,
+    apiEndpoint,
+    credentials,
+    currentCredential,
+    debugSettings,
+    debugItems,
+    activeConfig,
+    stats,
+    usage,
+  ] = await Promise.all([
+    listAccessKeys(),
+    buildApiEndpoint(),
+    listCredentials(),
+    getCurrentCredentialInfo(),
+    getDebugSettings(),
+    listDebugLogs(),
+    getActiveConfig(),
+    getUsageStats(),
+    getUsageAnalytics({ range: '24h' }),
+  ]);
 
   return {
-    accessKeys: listAccessKeys().access_keys as unknown as AccessKeySummary[],
-    apiEndpoint: await buildApiEndpoint(),
-    credentials: listCredentials()
-      .credentials as unknown as CredentialSummary[],
+    accessKeys: accessKeys.access_keys as unknown as AccessKeySummary[],
+    apiEndpoint,
+    credentials: credentials.credentials as unknown as CredentialSummary[],
     currentCredential:
-      getCurrentCredentialInfo() as unknown as AdminConsoleInitialData['currentCredential'],
+      currentCredential as unknown as AdminConsoleInitialData['currentCredential'],
     debug: {
       autoRefreshSeconds: debugSettings.autoRefreshSeconds,
       enabled: debugSettings.enabled,
-      items: listDebugLogs(),
+      items: debugItems,
       maxEntries: debugSettings.maxEntries,
     },
     health: {
-      checkedAtLabel: '',
+      checkedAtLabel: formatInitialHealthLabel(locale, timestamp),
       status: 'healthy',
       timestamp,
-      uptimeText: '',
+      uptimeText: formatInitialHealthLabel(locale, timestamp),
     },
     settings: {
-      labels: SETTING_LABELS,
-      values: { ...getActiveConfig() },
+      labels: getSettingLabels(locale),
+      values: { ...activeConfig },
     },
-    stats: getUsageStats(),
+    stats,
+    usage: {
+      ...usage,
+      updatedAtLabel: new Date(timestamp).toLocaleTimeString(locale),
+    },
   };
 };
 
-const HomePage = async () => {
-  return <AdminConsole initialData={await getInitialData()} />;
+export const renderAdminConsole = async (initialTab: TabKey) => {
+  const cookieStore = await cookies();
+  const headerStore = await headers();
+  const protocol = headerStore.get('x-forwarded-proto') ?? 'http';
+  const host =
+    headerStore.get('x-forwarded-host') ??
+    headerStore.get('host') ??
+    'localhost';
+  const cookieHeader = headerStore.get('cookie') ?? '';
+  const request = new Request(`${protocol}://${host}/`, {
+    headers: cookieHeader ? { cookie: cookieHeader } : {},
+  });
+  const session = await getAdminSessionSummary(request);
+
+  if (
+    session.accountConfigured &&
+    !(await isAdminSessionAuthenticated(request))
+  ) {
+    redirect('/login');
+  }
+
+  const localePreference = parseLocalePreference(
+    cookieStore.get(localePreferenceCookieName)?.value ??
+      cookieStore.get(localeCookieName)?.value,
+  );
+  const locale = resolveAppLocale(
+    localePreference === systemLocalePreference
+      ? (headerStore.get('accept-language') ?? undefined)
+      : localePreference,
+  );
+
+  return (
+    <AdminConsole
+      initialData={await getInitialData(locale)}
+      initialLocalePreference={localePreference}
+      initialTab={initialTab}
+      initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
+    />
+  );
 };
 
-export default HomePage;
+const RootPage = () => {
+  redirect('/dashboard');
+};
+
+export default RootPage;

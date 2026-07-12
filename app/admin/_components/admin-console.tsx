@@ -1,10 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
-import { useAtom } from 'jotai';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { createStore, Provider, useAtom } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
+import { useLocale, useTranslations } from 'next-intl';
+import { useRouter } from 'next/navigation';
+import type { Route } from 'next';
+import { Button } from '@lobehub/ui';
+import { ToastHost, toast } from '@lobehub/ui/base-ui';
+import { LogOut } from 'lucide-react';
 
 import {
+  createApiTestState,
   createCredentialsState,
   createDebugState,
   createDashboardState,
@@ -17,13 +24,13 @@ import {
   CredentialsSection,
   DebugSection,
   DashboardSection,
-  NotificationBar,
   SettingsSection,
   TabNav,
   UsageSection,
 } from '@/app/admin/_components/admin-sections';
 import {
-  activeTabAtom,
+  adminTabPaths,
+  adminSessionAtom,
   apiTestStateAtom,
   authStateAtom,
   type AccessKeySummary,
@@ -31,12 +38,15 @@ import {
   credentialsStateAtom,
   debugStateAtom,
   dashboardStateAtom,
+  DEFAULT_TEST_MODELS,
+  defaultApiTestState,
+  defaultAuthState,
   defaultCredentialsState,
   defaultDebugState,
   defaultDashboardState,
   defaultSettingsState,
   defaultUsageState,
-  notificationAtom,
+  type TabKey,
   settingsStateAtom,
   themeAtom,
   type ThemeMode,
@@ -46,6 +56,18 @@ import {
   type UsageRange,
   usageStateAtom,
 } from '@/app/admin/_components/admin-store';
+import { AdminHeader } from '@/app/_components/admin-header';
+import {
+  resolvedThemeCookieName,
+  themeChangeEventName,
+  themeCookieName,
+} from '@/lib/theme';
+import {
+  localeCookieName,
+  localePreferenceCookieName,
+  type LocalePreference,
+  systemLocalePreference,
+} from '@/lib/i18n/routing';
 
 interface HealthResponse {
   status?: string;
@@ -134,19 +156,11 @@ interface DebugResponse {
   message?: string;
 }
 
-const DEBUG_AUTO_REFRESH_OPTIONS = [
-  { label: '自动刷新：关闭', value: 0 },
-  { label: '自动刷新：5 秒', value: 5 },
-  { label: '自动刷新：10 秒', value: 10 },
-  { label: '自动刷新：15 秒', value: 15 },
-  { label: '自动刷新：30 秒', value: 30 },
-  { label: '自动刷新：1 分钟', value: 60 },
-  { label: '自动刷新：2 分钟', value: 120 },
-  { label: '自动刷新：5 分钟', value: 300 },
-] as const;
-
 interface ApiTestSuccess {
   choices?: Array<{
+    delta?: {
+      content?: unknown;
+    };
     message?: {
       content?: unknown;
     };
@@ -217,22 +231,6 @@ const getConfiguredModels = (rawValue: string | number | null | undefined) => {
     .filter(Boolean);
 };
 
-const resolveSystemDark = () => {
-  if (typeof window === 'undefined' || !window.matchMedia) {
-    return false;
-  }
-
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
-};
-
-const resolveDarkMode = (theme: ThemeMode) => {
-  if (theme === 'system') {
-    return resolveSystemDark();
-  }
-
-  return theme === 'dark';
-};
-
 const formatResult = (payload: unknown) => {
   if (typeof payload === 'string') {
     return payload;
@@ -245,11 +243,43 @@ const formatResult = (payload: unknown) => {
   }
 };
 
+const getSseEventContent = (event: string) => {
+  const data = event
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trim())
+    .join('\n');
+
+  if (!data || data === '[DONE]') {
+    return '';
+  }
+
+  try {
+    const payload = JSON.parse(data) as ApiTestSuccess;
+    const content =
+      payload.choices?.[0]?.delta?.content ??
+      payload.choices?.[0]?.message?.content;
+
+    return typeof content === 'string' ? content : '';
+  } catch {
+    return data;
+  }
+};
+
 interface AdminConsoleProps {
   initialData?: AdminConsoleInitialData;
+  initialLocalePreference: LocalePreference;
+  initialTab: TabKey;
+  initialTheme?: ThemeMode;
 }
 
-const AdminConsole = ({ initialData }: AdminConsoleProps) => {
+const AdminConsoleContent = ({
+  initialData,
+  initialLocalePreference,
+  initialTab,
+  initialTheme = 'system',
+}: AdminConsoleProps) => {
+  const router = useRouter();
   const initialDashboardState = initialData
     ? createDashboardState(initialData)
     : defaultDashboardState;
@@ -265,6 +295,9 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   const initialSettingsState = initialData
     ? createSettingsState(initialData)
     : defaultSettingsState;
+  const initialApiTestState = initialData
+    ? createApiTestState(initialData)
+    : defaultApiTestState;
 
   useHydrateAtoms([
     [dashboardStateAtom, initialDashboardState],
@@ -272,11 +305,12 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     [debugStateAtom, initialDebugState],
     [usageStateAtom, initialUsageState],
     [settingsStateAtom, initialSettingsState],
+    [authStateAtom, defaultAuthState],
+    [apiTestStateAtom, initialApiTestState],
+    [themeAtom, initialTheme],
   ]);
 
-  const [activeTab, setActiveTab] = useAtom(activeTabAtom);
   const [theme, setTheme] = useAtom(themeAtom);
-  const [notification, setNotification] = useAtom(notificationAtom);
   const [dashboard, setDashboard] = useAtom(dashboardStateAtom);
   const [credentials, setCredentials] = useAtom(credentialsStateAtom);
   const [debug, setDebug] = useAtom(debugStateAtom);
@@ -284,19 +318,234 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   const [auth, setAuth] = useAtom(authStateAtom);
   const [apiTest, setApiTest] = useAtom(apiTestStateAtom);
   const [settings, setSettings] = useAtom(settingsStateAtom);
+  const [adminSession, setAdminSession] = useAtom(adminSessionAtom);
+  const activeTab = initialTab;
+  const locale = useLocale();
+  const translations = useTranslations('Admin');
+  const consoleText = {
+    'en-US': {
+      apiKeyCreated: 'API key created.',
+      apiKeyDeleted: 'API key deleted.',
+      apiKeyDeleteFailed: 'Failed to delete API key.',
+      apiKeyDisplayed: 'API key revealed.',
+      apiKeyReadFailed: 'Failed to read API key.',
+      apiKeyUpdated: 'API key updated.',
+      authCheckMissing: 'Missing auth state; cannot continue polling.',
+      authChecking: 'Checking authentication status...',
+      authCopy: 'Authorization link copied.',
+      authCreated: 'Authorization link created.',
+      authInvalidCallback: 'The callback URL is invalid.',
+      authLinkMissing: 'The authorization link has not been created yet.',
+      authPending: 'Waiting for authentication...',
+      authPollFailed: 'Authentication polling failed.',
+      authSaved: 'Authentication succeeded and the credential was saved.',
+      authStarted: 'Complete sign-in and the console will keep polling.',
+      authStartFailed: 'Failed to start authentication.',
+      authSuccess: 'Authentication succeeded.',
+      clipboardEmpty: 'Nothing to copy.',
+      clipboardUnsupported: 'Clipboard is not available in this environment.',
+      copyContent: 'Content copied.',
+      copyEndpoint: 'API endpoint copied.',
+      credentialDeleteFailed: 'Failed to delete credential.',
+      credentialDeleted: 'Credential deleted.',
+      credentialRequired: 'Bearer token is required.',
+      credentialSaveFailed: 'Failed to save credential.',
+      credentialSaved: (name: string) => `Credential saved: ${name}`,
+      debugClearFailed: 'Failed to clear debug records.',
+      debugCleared: 'Debug records cleared.',
+      debugLoadFailed: 'Failed to load debug records.',
+      debugSaveFailed: 'Failed to save debug settings.',
+      debugSaved: 'Debug settings saved.',
+      requestSending: 'Sending request...',
+      requestIdle: 'Click "Send test" to view the API response...',
+      requestFailed: 'API test failed.',
+      settingsSaveFailed: 'Failed to save settings.',
+      settingsSaved: 'Settings saved.',
+      serviceCheckedAt: 'Last checked',
+      serviceRunning: 'Running',
+      serviceUnavailable: 'Unavailable',
+      usageCleared: 'Usage history cleared.',
+      usageClearFailed: 'Failed to clear usage history.',
+      usageLoadFailed: 'Failed to load usage data.',
+      uptimeRefreshed: 'Status refreshed',
+    },
+    'ja-JP': {
+      apiKeyCreated: 'API key を作成しました。',
+      apiKeyDeleted: 'API key を削除しました。',
+      apiKeyDeleteFailed: 'API key の削除に失敗しました。',
+      apiKeyDisplayed: 'API key を表示しました。',
+      apiKeyReadFailed: 'API key の読み取りに失敗しました。',
+      apiKeyUpdated: 'API key を更新しました。',
+      authCheckMissing: '認証状態がないため、ポーリングを続行できません。',
+      authChecking: '認証状態を確認しています...',
+      authCopy: '認証リンクをコピーしました。',
+      authCreated: '認証リンクを生成しました。',
+      authInvalidCallback: 'コールバック URL の形式が正しくありません。',
+      authLinkMissing: '認証リンクはまだ生成されていません。',
+      authPending: '認証完了を待っています...',
+      authPollFailed: '認証ポーリングに失敗しました。',
+      authSaved: '認証に成功し、認証情報を保存しました。',
+      authStarted:
+        'サインインを完了するとコンソールが自動的に結果を確認します。',
+      authStartFailed: '認証開始に失敗しました。',
+      authSuccess: '認証に成功しました。',
+      clipboardEmpty: 'コピーできる内容がありません。',
+      clipboardUnsupported: 'この環境ではクリップボードを利用できません。',
+      copyContent: '内容をコピーしました。',
+      copyEndpoint: 'API エンドポイントをコピーしました。',
+      credentialDeleteFailed: '認証情報の削除に失敗しました。',
+      credentialDeleted: '認証情報を削除しました。',
+      credentialRequired: 'Bearer Token を入力してください。',
+      credentialSaveFailed: '認証情報の保存に失敗しました。',
+      credentialSaved: (name: string) => `認証情報を保存しました: ${name}`,
+      debugClearFailed: 'Debug 記録の削除に失敗しました。',
+      debugCleared: 'Debug 記録を削除しました。',
+      debugLoadFailed: 'Debug 記録の読み込みに失敗しました。',
+      debugSaveFailed: 'Debug 設定の保存に失敗しました。',
+      debugSaved: 'Debug 設定を保存しました。',
+      requestSending: 'リクエスト送信中...',
+      requestIdle: '「送信テスト」をクリックすると API 応答を表示します...',
+      requestFailed: 'API テストに失敗しました。',
+      settingsSaveFailed: '設定の保存に失敗しました。',
+      settingsSaved: '設定を保存しました。',
+      serviceCheckedAt: '最終確認',
+      serviceRunning: '稼働中',
+      serviceUnavailable: '利用不可',
+      usageCleared: '使用量履歴を削除しました。',
+      usageClearFailed: '使用量履歴の削除に失敗しました。',
+      usageLoadFailed: '使用量データの読み込みに失敗しました。',
+      uptimeRefreshed: '状態を更新しました',
+    },
+    'zh-CN': {
+      apiKeyCreated: 'API Key 已生成。',
+      apiKeyDeleted: 'API Key 已删除。',
+      apiKeyDeleteFailed: '删除 API Key 失败。',
+      apiKeyDisplayed: 'API Key 已显示。',
+      apiKeyReadFailed: '读取 API Key 失败。',
+      apiKeyUpdated: 'API Key 已更新。',
+      authCheckMissing: '缺少认证状态，无法继续轮询。',
+      authChecking: '正在检查认证状态...',
+      authCopy: '认证链接已复制。',
+      authCreated: '认证链接已生成。',
+      authInvalidCallback: '回调链接格式不正确。',
+      authLinkMissing: '认证链接还未生成。',
+      authPending: '等待认证完成...',
+      authPollFailed: '认证轮询失败。',
+      authSaved: '认证成功，凭证已保存。',
+      authStarted: '请完成登录，系统会自动轮询结果。',
+      authStartFailed: '启动认证失败。',
+      authSuccess: '认证成功！',
+      clipboardEmpty: '没有可复制的内容。',
+      clipboardUnsupported: '当前环境不支持剪贴板。',
+      copyContent: '内容已复制。',
+      copyEndpoint: 'API 端点已复制。',
+      credentialDeleteFailed: '删除凭证失败。',
+      credentialDeleted: '凭证已删除。',
+      credentialRequired: 'Bearer Token 不能为空。',
+      credentialSaveFailed: '添加凭证失败。',
+      credentialSaved: (name: string) => `凭证已保存：${name}`,
+      debugClearFailed: '清空 Debug 记录失败。',
+      debugCleared: 'Debug 记录已清空。',
+      debugLoadFailed: '加载 Debug 记录失败。',
+      debugSaveFailed: '保存 Debug 设置失败。',
+      debugSaved: 'Debug 设置已保存。',
+      requestSending: '请求发送中...',
+      requestIdle: '点击“发送测试”查看 API 响应...',
+      requestFailed: 'API 测试失败。',
+      settingsSaveFailed: '保存设置失败。',
+      settingsSaved: '设置已保存。',
+      serviceCheckedAt: '最后检查',
+      serviceRunning: '运行中',
+      serviceUnavailable: '不可用',
+      usageCleared: '用量统计历史已清空。',
+      usageClearFailed: '清空用量统计历史失败。',
+      usageLoadFailed: '加载用量统计数据失败。',
+      uptimeRefreshed: '状态已刷新',
+    },
+  }[locale as 'zh-CN' | 'en-US' | 'ja-JP'];
+  const debugAutoRefreshOptions = [
+    {
+      label:
+        locale === 'en-US'
+          ? 'Auto-refresh: off'
+          : locale === 'ja-JP'
+            ? '自動更新: オフ'
+            : '自动刷新：关闭',
+      value: 0,
+    },
+    {
+      label:
+        locale === 'en-US'
+          ? 'Auto-refresh: 5 sec'
+          : locale === 'ja-JP'
+            ? '自動更新: 5 秒'
+            : '自动刷新：5 秒',
+      value: 5,
+    },
+    {
+      label:
+        locale === 'en-US'
+          ? 'Auto-refresh: 10 sec'
+          : locale === 'ja-JP'
+            ? '自動更新: 10 秒'
+            : '自动刷新：10 秒',
+      value: 10,
+    },
+    {
+      label:
+        locale === 'en-US'
+          ? 'Auto-refresh: 15 sec'
+          : locale === 'ja-JP'
+            ? '自動更新: 15 秒'
+            : '自动刷新：15 秒',
+      value: 15,
+    },
+    {
+      label:
+        locale === 'en-US'
+          ? 'Auto-refresh: 30 sec'
+          : locale === 'ja-JP'
+            ? '自動更新: 30 秒'
+            : '自动刷新：30 秒',
+      value: 30,
+    },
+    {
+      label:
+        locale === 'en-US'
+          ? 'Auto-refresh: 1 min'
+          : locale === 'ja-JP'
+            ? '自動更新: 1 分'
+            : '自动刷新：1 分钟',
+      value: 60,
+    },
+    {
+      label:
+        locale === 'en-US'
+          ? 'Auto-refresh: 2 min'
+          : locale === 'ja-JP'
+            ? '自動更新: 2 分'
+            : '自动刷新：2 分钟',
+      value: 120,
+    },
+    {
+      label:
+        locale === 'en-US'
+          ? 'Auto-refresh: 5 min'
+          : locale === 'ja-JP'
+            ? '自動更新: 5 分'
+            : '自动刷新：5 分钟',
+      value: 300,
+    },
+  ] as const;
   const authPollTimerRef = useRef<number | null>(null);
   const debugAutoRefreshTimerRef = useRef<number | null>(null);
   const usageAutoRefreshTimerRef = useRef<number | null>(null);
   const usageRequestRef = useRef(usage.request);
-
   const showNotification = useCallback(
     (type: 'success' | 'error' | 'warning' | 'info', message: string) => {
-      setNotification({
-        message,
-        type,
-      });
+      toast[type]({ description: message, duration: 3000 });
     },
-    [setNotification],
+    [],
   );
 
   const clearAuthTimer = () => {
@@ -341,27 +590,37 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       ? (validCredentials / items.length) * 100
       : 0;
 
+    const checkedAt = `${consoleText.serviceCheckedAt} ${new Date(
+      healthResult.data?.timestamp ?? new Date().toISOString(),
+    ).toLocaleString(locale)}`;
+
     setDashboard({
       apiEndpoint: buildApiEndpoint(),
       credentialUsage: Object.entries(
         statsResult.data?.credential_usage ?? {},
       ).sort((left, right) => right[1] - left[1]),
       credentialUsagePercent,
-      lastCheckedAt: new Date().toLocaleTimeString('zh-CN'),
+      lastCheckedAt: checkedAt,
       loading: false,
       modelUsage: Object.entries(statsResult.data?.model_usage ?? {}).sort(
         (left, right) => right[1] - left[1],
       ),
       serviceStatus: healthResult.ok ? 'online' : 'offline',
-      statusText: healthResult.ok ? '运行中' : '不可用',
+      statusText: healthResult.ok
+        ? consoleText.serviceRunning
+        : consoleText.serviceUnavailable,
       totalApiCalls,
       totalCredentials: items.length,
-      uptimeText: healthResult.data?.timestamp
-        ? `最后检查 ${new Date(healthResult.data.timestamp).toLocaleString('zh-CN')}`
-        : '状态已刷新',
+      uptimeText: checkedAt,
       validCredentials,
     });
-  }, [setDashboard]);
+  }, [
+    consoleText.serviceCheckedAt,
+    consoleText.serviceRunning,
+    consoleText.serviceUnavailable,
+    locale,
+    setDashboard,
+  ]);
 
   const loadCredentials = useCallback(async () => {
     setCredentials((current) => ({
@@ -422,6 +681,68 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     });
   }, [setApiTest, setCredentials]);
 
+  const refreshAccessKeys = useCallback(async () => {
+    setCredentials((current) => ({ ...current, accessKeysLoading: true }));
+    const result = await requestJson<AccessKeysResponse>(
+      '/admin-api/access-keys',
+    );
+
+    setCredentials((current) => ({
+      ...current,
+      accessKeyActionId: null,
+      accessKeys: result.data?.access_keys ?? [],
+      accessKeysLoading: false,
+    }));
+  }, [setCredentials]);
+
+  const refreshCredentialList = useCallback(async () => {
+    setCredentials((current) => ({
+      ...current,
+      currentLoading: true,
+      loading: true,
+    }));
+
+    const [listResult, currentResult] = await Promise.all([
+      requestJson<CredentialsResponse>('/admin-api/credentials'),
+      requestJson<CurrentCredentialResponse>('/admin-api/credentials/current'),
+    ]);
+
+    setCredentials((current) => ({
+      ...current,
+      actionIndex: null,
+      current: currentResult.data
+        ? {
+            available_credential_count:
+              currentResult.data.available_credential_count,
+            filename: currentResult.data.filename,
+            index: currentResult.data.index,
+            next_filename: currentResult.data.next_filename,
+            status: currentResult.data.status ?? 'no_credentials',
+            user_id: currentResult.data.user_id,
+          }
+        : { status: 'no_credentials' },
+      currentLoading: false,
+      items: listResult.data?.credentials ?? [],
+      loading: false,
+    }));
+
+    setApiTest((current) => {
+      const validCredentials = (listResult.data?.credentials ?? []).filter(
+        (item) => !item.is_expired,
+      );
+
+      return current.credentialFilename &&
+        validCredentials.some(
+          (credential) => credential.filename === current.credentialFilename,
+        )
+        ? current
+        : {
+            ...current,
+            credentialFilename: validCredentials[0]?.filename ?? '',
+          };
+    });
+  }, [setApiTest, setCredentials]);
+
   const loadSettings = useCallback(async () => {
     setSettings((current) => ({
       ...current,
@@ -449,9 +770,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       return {
         ...current,
         model: configuredModels[0] ?? current.model,
+        result: current.result || consoleText.requestIdle,
       };
     });
-  }, [setApiTest, setSettings]);
+  }, [consoleText.requestIdle, setApiTest, setSettings]);
 
   const loadDebug = useCallback(
     async ({
@@ -471,7 +793,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         }));
         showNotification(
           'error',
-          getErrorMessage(result.data, '加载 Debug 记录失败。'),
+          getErrorMessage(result.data, consoleText.debugLoadFailed),
         );
         return;
       }
@@ -495,7 +817,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         saving: false,
       }));
     },
-    [setDebug, showNotification],
+    [consoleText.debugLoadFailed, setDebug, showNotification],
   );
 
   const loadUsage = useCallback(
@@ -529,7 +851,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         }));
         showNotification(
           'error',
-          getErrorMessage(result.data, '加载用量统计数据失败。'),
+          getErrorMessage(result.data, consoleText.usageLoadFailed),
         );
         return;
       }
@@ -549,7 +871,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
           credentials: result.data?.filters?.credentials ?? [],
         },
         hoveredPoint: null,
-        lastUpdatedAt: new Date().toLocaleTimeString('zh-CN'),
+        lastUpdatedAt: new Date().toLocaleTimeString(locale),
         loading: false,
         request: resolvedRequest,
         tableRows: (result.data?.tableRows ?? []).map((row) => ({
@@ -566,7 +888,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         tokenSeries: result.data?.tokenSeries ?? [],
       }));
     },
-    [setUsage, showNotification],
+    [consoleText.usageLoadFailed, locale, setUsage, showNotification],
   );
 
   const refreshAdminData = useCallback(async () => {
@@ -593,12 +915,12 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       }));
       showNotification(
         'error',
-        getErrorMessage(result.data, '清空用量统计历史失败。'),
+        getErrorMessage(result.data, consoleText.usageClearFailed),
       );
       return;
     }
 
-    showNotification('success', '用量统计历史已清空。');
+    showNotification('success', consoleText.usageCleared);
     await loadUsage();
   };
 
@@ -606,14 +928,14 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     const authState = overrideState ?? auth.authState;
 
     if (!authState.trim()) {
-      showNotification('warning', '缺少认证状态，无法继续轮询。');
+      showNotification('warning', consoleText.authCheckMissing);
       return;
     }
 
     clearAuthTimer();
     setAuth((current) => ({
       ...current,
-      message: '正在检查认证状态...',
+      message: consoleText.authChecking,
       polling: true,
     }));
 
@@ -631,13 +953,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       setAuth((current) => ({
         ...current,
         completed: true,
-        message: result.data?.message ?? '认证成功！',
+        message: result.data?.message ?? consoleText.authSuccess,
         polling: false,
       }));
-      showNotification(
-        'success',
-        result.data.message ?? '认证成功，凭证已保存。',
-      );
+      showNotification('success', result.data.message ?? consoleText.authSaved);
       await refreshAdminData();
       return;
     }
@@ -645,7 +964,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     if (result.data?.error === 'authorization_pending') {
       setAuth((current) => ({
         ...current,
-        message: result.data?.error_description ?? '等待认证完成...',
+        message: consoleText.authPending,
         polling: false,
       }));
       authPollTimerRef.current = window.setTimeout(() => {
@@ -654,7 +973,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       return;
     }
 
-    const message = getErrorMessage(result.data, '认证轮询失败。');
+    const message = getErrorMessage(result.data, consoleText.authPollFailed);
     setAuth((current) => ({
       ...current,
       message,
@@ -686,7 +1005,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       !result.data?.auth_state ||
       !result.data?.verification_uri_complete
     ) {
-      const message = getErrorMessage(result.data, '启动认证失败。');
+      const message = getErrorMessage(result.data, consoleText.authStartFailed);
       setAuth((current) => ({
         ...current,
         message,
@@ -702,10 +1021,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       authUrl: result.data?.verification_uri_complete ?? '',
       completed: false,
       intervalSeconds: result.data?.interval ?? 5,
-      message: result.data?.message ?? '请完成登录，系统会自动轮询结果。',
+      message: consoleText.authStarted,
       starting: false,
     }));
-    showNotification('success', '认证链接已生成。');
+    showNotification('success', consoleText.authCreated);
     authPollTimerRef.current = window.setTimeout(
       () => {
         void pollAuth(result.data?.auth_state);
@@ -718,7 +1037,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     const isEditing = credentials.form.editingIndex !== null;
 
     if (!isEditing && !credentials.form.bearerToken.trim()) {
-      showNotification('warning', 'Bearer Token 不能为空。');
+      showNotification('warning', consoleText.credentialRequired);
       return;
     }
 
@@ -755,7 +1074,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     );
 
     if (!result.ok || !result.data?.success) {
-      showNotification('error', getErrorMessage(result.data, '添加凭证失败。'));
+      showNotification(
+        'error',
+        getErrorMessage(result.data, consoleText.credentialSaveFailed),
+      );
       setCredentials((current) => ({
         ...current,
         actionIndex: null,
@@ -776,7 +1098,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     }));
     showNotification(
       'success',
-      `凭证已保存：${result.data.filename ?? 'unknown'}`,
+      consoleText.credentialSaved(result.data.filename ?? 'unknown'),
     );
     await refreshAdminData();
   };
@@ -799,7 +1121,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     );
 
     if (!result.ok || !result.data?.success) {
-      showNotification('error', getErrorMessage(result.data, '删除凭证失败。'));
+      showNotification(
+        'error',
+        getErrorMessage(result.data, consoleText.credentialDeleteFailed),
+      );
       setCredentials((current) => ({
         ...current,
         actionIndex: null,
@@ -807,7 +1132,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       return;
     }
 
-    showNotification('success', '凭证已删除。');
+    showNotification('success', consoleText.credentialDeleted);
     await refreshAdminData();
   };
 
@@ -842,7 +1167,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         'error',
         getErrorMessage(
           result.data,
-          editingId ? '更新 API Key 失败。' : '创建 API Key 失败。',
+          editingId ? consoleText.apiKeyUpdated : consoleText.apiKeyCreated,
         ),
       );
       setCredentials((current) => ({
@@ -855,7 +1180,6 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     setCredentials((current) => ({
       ...current,
       accessKeyActionId: null,
-      accessKeyCreating: false,
       accessKeyForm: {
         credentialFilenames: [],
         editingId: null,
@@ -872,7 +1196,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     }));
     showNotification(
       'success',
-      editingId ? 'API Key 已更新。' : 'API Key 已生成。',
+      editingId ? consoleText.apiKeyUpdated : consoleText.apiKeyCreated,
     );
     await loadCredentials();
   };
@@ -893,7 +1217,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     if (!result.ok || !result.data?.success) {
       showNotification(
         'error',
-        getErrorMessage(result.data, '删除 API Key 失败。'),
+        getErrorMessage(result.data, consoleText.apiKeyDeleteFailed),
       );
       setCredentials((current) => ({
         ...current,
@@ -908,7 +1232,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       revealedSecret:
         current.revealedSecret?.id === id ? null : current.revealedSecret,
     }));
-    showNotification('success', 'API Key 已删除。');
+    showNotification('success', consoleText.apiKeyDeleted);
     await loadCredentials();
   };
 
@@ -925,7 +1249,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
     if (!result.ok || !result.data?.secret || !result.data?.name) {
       showNotification(
         'error',
-        getErrorMessage(result.data, '读取 API Key 失败。'),
+        getErrorMessage(result.data, consoleText.apiKeyReadFailed),
       );
       setCredentials((current) => ({
         ...current,
@@ -949,17 +1273,17 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         secret: secretPayload.secret,
       },
     }));
-    showNotification('success', 'API Key 已显示。');
+    showNotification('success', consoleText.apiKeyDisplayed);
   };
 
   const copyText = async (value: string, successMessage: string) => {
     if (!value.trim()) {
-      showNotification('warning', '没有可复制的内容。');
+      showNotification('warning', consoleText.clipboardEmpty);
       return;
     }
 
     if (!navigator.clipboard) {
-      showNotification('warning', '当前环境不支持剪贴板。');
+      showNotification('warning', consoleText.clipboardUnsupported);
       return;
     }
 
@@ -969,7 +1293,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
 
   const submitCallbackUrl = async () => {
     if (!auth.callbackUrl.trim()) {
-      showNotification('warning', '请先粘贴回调链接。');
+      showNotification('warning', consoleText.authPending);
       return;
     }
 
@@ -984,14 +1308,14 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       }));
       await pollAuth(state);
     } catch {
-      showNotification('error', '回调链接格式不正确。');
+      showNotification('error', consoleText.authInvalidCallback);
     }
   };
 
   const testApi = async () => {
     setApiTest((current) => ({
       ...current,
-      result: '请求发送中...',
+      result: consoleText.requestSending,
       submitting: true,
     }));
 
@@ -1004,7 +1328,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
             role: 'user',
           },
         ],
-        model: apiTest.model,
+        model:
+          apiTest.model ||
+          getConfiguredModels(settings.values.CODEBUDDY_MODELS)[0] ||
+          DEFAULT_TEST_MODELS[0],
         stream: apiTest.stream,
       }),
       headers: {
@@ -1012,9 +1339,9 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       },
       method: 'POST',
     });
-    const text = await response.text();
-
     if (!response.ok) {
+      const text = await response.text();
+
       try {
         const payload = JSON.parse(text) as Record<string, unknown>;
 
@@ -1023,18 +1350,61 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
           result: formatResult(payload),
           submitting: false,
         }));
-        showNotification('error', getErrorMessage(payload, 'API 测试失败。'));
+        showNotification(
+          'error',
+          getErrorMessage(payload, consoleText.requestFailed),
+        );
         return;
       } catch {
         setApiTest((current) => ({
           ...current,
-          result: text || 'API 测试失败。',
+          result: text || consoleText.requestFailed,
           submitting: false,
         }));
-        showNotification('error', 'API 测试失败。');
+        showNotification('error', consoleText.requestFailed);
         return;
       }
     }
+
+    if (apiTest.stream && response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = '';
+      let streamedResult = '';
+      let done = false;
+
+      while (!done) {
+        const next = await reader.read();
+        done = next.done;
+        buffered += decoder.decode(next.value, { stream: !done });
+        const events = buffered.split(/\r?\n\r?\n/);
+        buffered = events.pop() ?? '';
+        const nextContent = events.map(getSseEventContent).join('');
+
+        if (nextContent) {
+          streamedResult += nextContent;
+          setApiTest((current) => ({
+            ...current,
+            result: streamedResult,
+          }));
+        }
+      }
+
+      const finalContent = getSseEventContent(buffered);
+
+      if (finalContent) {
+        streamedResult += finalContent;
+      }
+
+      setApiTest((current) => ({
+        ...current,
+        result: streamedResult || consoleText.requestIdle,
+        submitting: false,
+      }));
+      return;
+    }
+
+    const text = await response.text();
 
     try {
       const payload = JSON.parse(text) as ApiTestSuccess;
@@ -1079,7 +1449,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         ...current,
         saving: false,
       }));
-      showNotification('error', getErrorMessage(result.data, '保存设置失败。'));
+      showNotification(
+        'error',
+        getErrorMessage(result.data, consoleText.settingsSaveFailed),
+      );
       return;
     }
 
@@ -1106,7 +1479,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         model: nextModel,
       };
     });
-    showNotification('success', result.data?.message ?? '设置已保存。');
+    showNotification(
+      'success',
+      result.data?.message ?? consoleText.settingsSaved,
+    );
   };
 
   const saveDebugSettings = async () => {
@@ -1134,7 +1510,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       }));
       showNotification(
         'error',
-        getErrorMessage(result.data, '保存 Debug 设置失败。'),
+        getErrorMessage(result.data, consoleText.debugSaveFailed),
       );
       return;
     }
@@ -1153,7 +1529,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
           : debug.maxEntries,
       saving: false,
     });
-    showNotification('success', result.data?.message ?? 'Debug 设置已保存。');
+    showNotification('success', result.data?.message ?? consoleText.debugSaved);
   };
 
   const clearDebugItems = async () => {
@@ -1173,7 +1549,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       }));
       showNotification(
         'error',
-        getErrorMessage(result.data, '清空 Debug 记录失败。'),
+        getErrorMessage(result.data, consoleText.debugClearFailed),
       );
       return;
     }
@@ -1183,7 +1559,10 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       items: [],
       saving: false,
     }));
-    showNotification('success', result.data?.message ?? 'Debug 记录已清空。');
+    showNotification(
+      'success',
+      result.data?.message ?? consoleText.debugCleared,
+    );
   };
 
   useEffect(() => {
@@ -1195,8 +1574,6 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
         loadUsage(),
         loadSettings(),
       ]);
-    } else if (!initialData.usage) {
-      void loadUsage();
     }
 
     return () => {
@@ -1205,6 +1582,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
       clearUsageTimer();
     };
   }, [
+    activeTab,
     clearDebugAutoRefreshTimer,
     initialData,
     loadCredentials,
@@ -1215,76 +1593,72 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
   ]);
 
   useEffect(() => {
-    const storedTheme = window.localStorage.getItem(
-      'codebuddy2api-admin-theme',
-    );
-    const storedTab = window.localStorage.getItem('codebuddy2api-admin-tab');
-
-    if (
-      storedTheme === 'dark' ||
-      storedTheme === 'light' ||
-      storedTheme === 'system'
-    ) {
-      setTheme(storedTheme);
-    }
-
-    if (
-      storedTab === 'dashboard' ||
-      storedTab === 'usage' ||
-      storedTab === 'credentials' ||
-      storedTab === 'api-test' ||
-      storedTab === 'debug' ||
-      storedTab === 'settings'
-    ) {
-      setActiveTab(storedTab);
-    }
-  }, [setActiveTab, setTheme]);
+    void fetch('/admin-api/auth/session')
+      .then(async (response) => {
+        const payload = (await response.json()) as {
+          session?: { authenticated: boolean };
+        };
+        setAdminSession(payload.session ?? null);
+      })
+      .catch(() => {
+        setAdminSession(null);
+      });
+  }, [setAdminSession]);
 
   useEffect(() => {
     const applyTheme = () => {
-      const isDark = resolveDarkMode(theme);
+      const isDark =
+        theme === 'dark' ||
+        (theme === 'system' &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches);
 
       document.documentElement.classList.toggle('dark', isDark);
       document.body.classList.toggle('dark', isDark);
       document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+      window.dispatchEvent(
+        new CustomEvent(themeChangeEventName, {
+          detail: isDark ? 'dark' : 'light',
+        }),
+      );
+      document.cookie = `${resolvedThemeCookieName}=${isDark ? 'dark' : 'light'}; Path=/; Max-Age=31536000; SameSite=Lax`;
     };
 
     applyTheme();
-    window.localStorage.setItem('codebuddy2api-admin-theme', theme);
+    document.cookie = `${themeCookieName}=${theme}; Path=/; Max-Age=31536000; SameSite=Lax`;
 
-    if (theme !== 'system' || !window.matchMedia) {
+    if (theme !== 'system') {
       return;
     }
 
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleChange = () => {
-      applyTheme();
-    };
-
-    mediaQuery.addEventListener('change', handleChange);
+    mediaQuery.addEventListener('change', applyTheme);
 
     return () => {
-      mediaQuery.removeEventListener('change', handleChange);
+      mediaQuery.removeEventListener('change', applyTheme);
     };
   }, [theme]);
 
-  useEffect(() => {
-    window.localStorage.setItem('codebuddy2api-admin-tab', activeTab);
-  }, [activeTab]);
+  const changeLocale = (nextLocale: string) => {
+    document.cookie = `${localePreferenceCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    document.cookie =
+      nextLocale === systemLocalePreference
+        ? `${localeCookieName}=; Path=/; Max-Age=0; SameSite=Lax`
+        : `${localeCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    window.location.reload();
+  };
 
-  useEffect(() => {
-    if (!notification) {
+  const logout = async () => {
+    const response = await fetch('/admin-api/auth/session', {
+      method: 'DELETE',
+    });
+
+    if (response.ok) {
+      window.location.assign('/login');
       return;
     }
 
-    const timeoutId = window.setTimeout(() => {
-      setNotification(null);
-    }, 3000);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [notification, setNotification]);
+    showNotification('error', translations('logoutUnavailable'));
+  };
 
   useEffect(() => {
     clearDebugAutoRefreshTimer();
@@ -1325,40 +1699,41 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
 
   return (
     <>
-      <div id="dashboardPage">
-        <header className="fixed top-0 left-0 right-0 z-100 flex justify-between items-center px-8 py-4 bg-bg-light dark:bg-bg-dark text-text-light dark:text-text-dark border-b border-border-light dark:border-border-dark">
-          <h1 className="text-xl font-semibold font-serif">
-            <i className="fas fa-robot"></i>
-            CodeBuddy2API 管理面板
-          </h1>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 text-sm text-secondary">
-              <i
-                className={
-                  theme === 'dark'
-                    ? 'fas fa-moon'
-                    : theme === 'light'
-                      ? 'fas fa-sun'
-                      : 'fas fa-desktop'
-                }
-              ></i>
-              <select
-                aria-label="Theme mode"
-                className="bg-card-light dark:bg-card-dark border border-border-light dark:border-border-dark text-text-light dark:text-text-dark px-3 py-2 cursor-pointer transition-all hover:border-primary focus:outline-none focus:border-primary focus:ring-3 focus:ring-primary/10"
-                value={theme}
-                onChange={(event) => {
-                  setTheme(event.target.value as ThemeMode);
-                }}
+      <div id="dashboardPage" className="console-workspace">
+        <AdminHeader
+          action={
+            adminSession?.authenticated ? (
+              <Button
+                className="console-logout"
+                htmlType="button"
+                icon={LogOut}
+                onClick={() => void logout()}
               >
-                <option value="system">跟随系统</option>
-                <option value="light">浅色模式</option>
-                <option value="dark">暗黑模式</option>
-              </select>
-            </label>
-          </div>
-        </header>
-        <main className="mt-20 px-8 py-8 max-w-[1400px] mx-auto">
-          <TabNav activeTab={activeTab} onChange={setActiveTab} />
+                {translations('logoutLabel')}
+              </Button>
+            ) : null
+          }
+          brand={translations('brand')}
+          className="console-header"
+          locale={locale}
+          localePreference={initialLocalePreference}
+          onLocaleChange={changeLocale}
+          onThemeChange={setTheme}
+          theme={theme}
+          themeLabels={{
+            dark: translations('themeDark'),
+            light: translations('themeLight'),
+            system: translations('themeSystem'),
+          }}
+          systemLocaleLabel={translations('languageSystem')}
+        />
+        <main className="console-main">
+          <TabNav
+            activeTab={activeTab}
+            onChange={(nextTab) => {
+              router.push(adminTabPaths[nextTab] as Route);
+            }}
+          />
           {activeTab === 'dashboard' ? (
             <DashboardSection
               onCopyEndpoint={() => {
@@ -1444,22 +1819,9 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onDeleteAccessKey={(id) => {
                 void deleteAccessKey(id);
               }}
-              onAddAccessKey={() => {
-                setCredentials((current) => ({
-                  ...current,
-                  accessKeyCreating: true,
-                  accessKeyForm: {
-                    credentialFilenames: [],
-                    editingId: null,
-                    name: '',
-                  },
-                  revealedSecret: null,
-                }));
-              }}
               onEditAccessKey={(accessKey) => {
                 setCredentials((current) => ({
                   ...current,
-                  accessKeyCreating: false,
                   accessKeyForm: {
                     credentialFilenames: accessKey.credentialFilenames.filter(
                       (filename) =>
@@ -1476,7 +1838,7 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               }}
               onOpenAuthUrl={() => {
                 if (!auth.authUrl) {
-                  showNotification('warning', '认证链接还未生成。');
+                  showNotification('warning', consoleText.authLinkMissing);
                   return;
                 }
 
@@ -1485,8 +1847,11 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onPollAuth={() => {
                 void pollAuth();
               }}
-              onRefreshCredentials={() => {
-                void refreshAdminData();
+              onRefreshAccessKeys={() => {
+                void refreshAccessKeys();
+              }}
+              onRefreshCredentialList={() => {
+                void refreshCredentialList();
               }}
               onResetCredentialForm={() => {
                 setCredentials((current) => ({
@@ -1550,7 +1915,6 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
               onResetAccessKeyForm={() => {
                 setCredentials((current) => ({
                   ...current,
-                  accessKeyCreating: false,
                   accessKeyForm: {
                     credentialFilenames: [],
                     editingId: null,
@@ -1640,12 +2004,12 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
           ) : null}
           {activeTab === 'debug' ? (
             <DebugSection
-              autoRefreshOptions={[...DEBUG_AUTO_REFRESH_OPTIONS]}
+              autoRefreshOptions={[...debugAutoRefreshOptions]}
               onClear={() => {
                 void clearDebugItems();
               }}
               onCopy={(value) => {
-                void copyText(value, '内容已复制。');
+                void copyText(value, consoleText.copyContent);
               }}
               onAutoRefreshSecondsChange={(value) => {
                 setDebug((current) => ({
@@ -1693,8 +2057,18 @@ const AdminConsole = ({ initialData }: AdminConsoleProps) => {
           ) : null}
         </main>
       </div>
-      <NotificationBar notification={notification} />
+      <ToastHost duration={3000} position="top-right" />
     </>
+  );
+};
+
+const AdminConsole = (props: AdminConsoleProps) => {
+  const store = useMemo(() => createStore(), []);
+
+  return (
+    <Provider store={store}>
+      <AdminConsoleContent {...props} />
+    </Provider>
   );
 };
 

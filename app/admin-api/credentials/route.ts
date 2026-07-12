@@ -2,26 +2,39 @@ import {
   addCredential,
   listCredentials,
   updateCredentialByIndex,
-} from '@/lib/server/credentials';
-import { getJsonBody } from '@/lib/server/http';
+} from '@/lib/server/domain/credentials';
+import { getAdminSessionErrorResponse } from '@/lib/server/admin/session';
+import { getJsonBody } from '@/lib/server/shared/http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export const GET = async (): Promise<Response> => {
-  return Response.json(listCredentials());
+export const GET = async (request: Request): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
+  return Response.json(await listCredentials());
 };
 
 export const POST = async (request: Request): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
   const body = await getJsonBody<Record<string, unknown>>(request);
 
   try {
     if (typeof body.index === 'number' && Number.isInteger(body.index)) {
-      return Response.json(updateCredentialByIndex(body.index, body));
+      return Response.json(await updateCredentialByIndex(body.index, body));
     }
 
     return Response.json(
-      addCredential(
+      await addCredential(
         body,
         typeof body.filename === 'string' ? body.filename : undefined,
       ),

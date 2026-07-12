@@ -1,22 +1,30 @@
 import type { NextRequest } from 'next/server';
 
+import { getAdminSessionErrorResponse } from '@/lib/server/admin/session';
 import {
   createDebugTrace,
   finalizeDebugTrace,
   isDebugEnabled,
-} from '@/lib/server/debug';
+} from '@/lib/server/domain/debug';
 import {
   proxyChatCompletions,
   resolveProxyContextByCredentialFilename,
-} from '@/lib/server/codebuddy';
-import { getJsonBody } from '@/lib/server/http';
+} from '@/lib/server/proxy/codebuddy';
+import { getJsonBody } from '@/lib/server/shared/http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export const POST = async (request: NextRequest): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
   const body = await getJsonBody<Record<string, unknown>>(request);
-  const debugTrace = isDebugEnabled()
+  const debugEnabled = await isDebugEnabled();
+  const debugTrace = debugEnabled
     ? createDebugTrace({
         requestBody: body,
         requestKey:
@@ -34,7 +42,7 @@ export const POST = async (request: NextRequest): Promise<Response> => {
 
   try {
     const context = credentialFilename
-      ? resolveProxyContextByCredentialFilename(credentialFilename)
+      ? await resolveProxyContextByCredentialFilename(credentialFilename)
       : undefined;
     const response = await proxyChatCompletions(
       request,

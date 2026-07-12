@@ -1,6 +1,6 @@
 # CodeBuddy2API
 
-Wrap CodeBuddy APIs with a proxy that supports both OpenAI-compatible and Anthropic-compatible request formats, so standard OpenAI and Claude clients can talk to CodeBuddy through one unified interface.
+Proxy CodeBuddy through OpenAI-compatible and Anthropic-compatible APIs, with a built-in admin console for credentials, access keys, usage, debug traces, and runtime settings.
 
 > Forked from [Sliverkiss/CodeBuddy2api](https://github.com/Sliverkiss/CodeBuddy2api).
 
@@ -11,12 +11,52 @@ docker run -d \
   --name codebuddy2api \
   --restart unless-stopped \
   -p 8001:8001 \
-  -v "$(pwd)/config:/app/config" \
+  -v "$(pwd)/.codebuddy_data:/app/.codebuddy_data" \
   -v "$(pwd)/.codebuddy_creds:/app/.codebuddy_creds" \
   ghcr.io/orangeboychen/codebuddy2api:latest
 ```
 
-Once running, open `http://127.0.0.1:8001/` in your browser.
+Open `http://127.0.0.1:8001/` after startup.
+
+## Storage Backends
+
+Persistence is now routed through a storage abstraction layer. Business modules do not read or write files directly.
+
+- Default backend: `file`
+- Optional backend: `pg`
+- Backend selection:
+  - explicit `CODEBUDDY_STORAGE_BACKEND=file|pg`
+  - explicit `CODEBUDDY_STORAGE_PERSISTENCE=file|pg`
+  - otherwise auto-switch to `pg` when `CODEBUDDY_STORAGE_PG_URL` or `DATABASE_URL` is set
+  - otherwise fall back to `file`
+
+### File Backend
+
+The file backend now writes into a dedicated data directory instead of a `config/` tree:
+
+- `.codebuddy_data/runtime.json`
+- `.codebuddy_data/access-keys.json`
+- `.codebuddy_data/debug-settings.json`
+- `.codebuddy_data/debug-logs.json`
+- `.codebuddy_data/usage-history.json`
+- `.codebuddy_data/admin-auth.json`
+- `.codebuddy_creds/*.json`
+
+Optional overrides:
+
+- `CODEBUDDY_STORAGE_FILE_DIR` changes the file-backend data directory
+- `CODEBUDDY_CONFIG_PATH` is kept only for legacy compatibility with the old runtime config file path
+
+### PostgreSQL Backend
+
+When `pg` storage is active, runtime persistence is stored in PostgreSQL instead of local files.
+
+- `DATABASE_URL` or `CODEBUDDY_STORAGE_PG_URL` provides the connection string
+- `CODEBUDDY_STORAGE_PG_SCHEMA` overrides the default schema `codebuddy2api`
+- `CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES=false` disables one-time import of old local files
+- `CODEBUDDY_STORAGE_ENCRYPTION_KEY` enables encryption for sensitive stored documents
+
+In `pg` mode, local files are not used for normal runtime persistence. They are only read as an optional one-time legacy import source during initialization.
 
 ## Run Locally
 
@@ -29,21 +69,19 @@ Once running, open `http://127.0.0.1:8001/` in your browser.
 
 ```bash
 bun install
-mkdir -p config .codebuddy_creds
-cp config/config.example.json config/config.json
+mkdir -p .codebuddy_data .codebuddy_creds
 bun run dev
 ```
 
 Then open `http://127.0.0.1:3000/`.
 
-Use the admin console to complete the CodeBuddy OAuth flow or add credentials manually. Runtime data is stored under `.codebuddy_creds/`, and local settings are read from `config/config.json`.
+Use the admin console to complete the CodeBuddy OAuth flow or add credentials manually. Local settings and console data are stored under `.codebuddy_data/`; credentials are stored under `.codebuddy_creds/`.
 
 ### Production-like Local Run
 
 ```bash
 bun install
-mkdir -p config .codebuddy_creds
-cp config/config.example.json config/config.json
+mkdir -p .codebuddy_data .codebuddy_creds
 bun run build
 bun start
 ```
@@ -52,136 +90,122 @@ Then open `http://127.0.0.1:8001/`.
 
 ## Admin Console
 
-The built-in console is available at the root path:
+The admin console uses stable routes and supports English, Japanese, and Simplified Chinese.
 
-```
-http://<your-host>:8001/
-```
+- console route: `http://<host>:8001/dashboard`
+- login route: `http://<host>:8001/login`
+- locale persistence: cookie-based, no locale path prefixes
+- mobile tab bar supports horizontal scrolling
+- authenticated admins can log out from the top-right action
 
-From here you can:
+### Admin Authentication
 
-- Log in to CodeBuddy via the OAuth flow and save credentials.
-- Switch between saved credentials.
-- View usage stats and service health.
-- Adjust runtime settings.
+Admin authentication is optional.
 
-## Using the API
+- If no admin password and no passkey are configured, the admin console remains open.
+- Once an admin password or passkey is configured, `/admin-api/*` requires the admin session cookie.
+- Session transport: HTTP-only cookie
+- Session TTL: 8 hours
 
-The proxy supports both OpenAI-style and Anthropic-style inference requests:
+### Password Login
 
-```
-http://<your-host>:8001/v1
-```
+- first-time bootstrap: `POST /admin-api/auth/setup`
+- sign-in: `POST /admin-api/auth/session`
+- sign-out: `DELETE /admin-api/auth/session`
 
-Supported endpoints include:
+### Passkey Login
 
-- **Chat Completions**: `POST /v1/chat/completions`
-- **Responses**: `POST /v1/responses`
-- **Anthropic Messages**: `POST /v1/messages`
+Passkey endpoints are available under `/admin-api/auth/passkeys/*`.
 
-This means you can use the proxy directly with Codex, the OpenAI SDK, Claude Code, Anthropic SDK clients, or other OpenAI/Anthropic-compatible tooling.
+- registration options: `POST /admin-api/auth/passkeys/registration/options`
+- registration verify: `POST /admin-api/auth/passkeys/registration/verify`
+- authentication options: `POST /admin-api/auth/passkeys/authentication/options`
+- authentication verify: `POST /admin-api/auth/passkeys/authentication/verify`
 
-### Codex
+Passkeys use WebAuthn and therefore depend on both a valid origin and a valid RP ID.
 
-Point Codex at the proxy by setting the base URL and API key:
+- `expectedOrigin` is derived from the live request protocol and host, including `x-forwarded-proto` and `x-forwarded-host` when present.
+- `CODEBUDDY_ADMIN_PASSKEY_RP_ID` optionally overrides the WebAuthn RP ID used for admin passkey registration and authentication.
+- If `CODEBUDDY_ADMIN_PASSKEY_RP_ID` is empty, the server falls back to the current request hostname with the port removed.
+- The RP ID must be a hostname only, with no scheme, port, or path. Typical values are `example.com`, `admin.example.com`, or `localhost`.
+- The RP ID must match the browser-visible origin domain or be a registrable parent-domain suffix accepted by the browser for that origin. If it does not match, passkey registration or authentication will fail.
+- Production deployments should use HTTPS on the hostname the browser actually visits. If TLS terminates at a reverse proxy or ingress, forwarded host/protocol headers must reflect that public origin.
+- `http://localhost` remains usable for local browser testing because browsers treat localhost as a secure-context exception. Plain HTTP on non-localhost hosts is not sufficient for WebAuthn.
 
-```bash
-export OPENAI_BASE_URL=http://127.0.0.1:8001/v1
-export OPENAI_API_KEY=any
-codex
-```
+## Public APIs
 
-### Chat Completions
+Base path:
 
-```bash
-curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "glm-5.1",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### Responses API
-
-```bash
-curl -X POST "http://127.0.0.1:8001/v1/responses" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "glm-5.1",
-    "input": "Hello!"
-  }'
+```text
+http://<host>:8001/v1
 ```
 
-### Anthropic Messages API (Claude Code)
+Supported endpoints:
 
-The Anthropic-compatible Messages API is available at `/v1/messages`, so you can use the proxy directly with **Claude Code** or any Anthropic SDK client. Tools, streaming, extended thinking, and MCP tool calls are all supported. Token usage (including cache creation/read tokens) is returned just like the chat completions API.
-
-```bash
-curl -X POST "http://127.0.0.1:8001/v1/messages" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: any" \
-  -d '{
-    "model": "claude-sonnet-4.6",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-#### Claude Code
-
-Point Claude Code at the proxy by setting the API base URL:
-
-```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8001
-export ANTHROPIC_API_KEY=any
-claude
-```
-
-### OpenAI SDK (TypeScript)
-
-```ts
-import OpenAI from 'openai';
-
-const client = new OpenAI({
-  apiKey: 'any',
-  baseURL: 'http://127.0.0.1:8001/v1',
-});
-
-const response = await client.chat.completions.create({
-  model: 'glm-5.1',
-  messages: [{ role: 'user', content: 'Hello!' }],
-});
-
-console.log(response.choices[0]?.message?.content);
-```
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/messages`
+- `GET /v1/models`
 
 ### Authentication
 
-- Client inference routes (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/models`) accept managed access keys. Send them as `Authorization: Bearer <access-key>` or `x-api-key: <access-key>`.
-- Global credential management routes under `/v1/credentials*` and `/api/settings` use the same managed access keys.
-- The built-in web admin console continues to use its existing `/admin-api/*` routes without introducing a password prompt.
+- inference routes accept managed access keys
+- send either `Authorization: Bearer <access-key>` or `x-api-key: <access-key>`
+- `/admin-api/*` is controlled separately by the admin session cookie when admin auth is configured
 
-## Configuration
+## Runtime Settings
 
-Settings resolve in this order: `config/config.json` > environment variables > built-in defaults.
+Settings resolve in this order:
 
-| Key                   | Default | Description                                         |
-| --------------------- | ------- | --------------------------------------------------- |
-| `CODEBUDDY_AUTH_MODE` | `auto`  | `auto` or `token`, both based on saved credentials. |
-| `CODEBUDDY_LOG_LEVEL` | `INFO`  | Runtime log level.                                  |
+1. persisted admin settings
+2. environment variables
+3. built-in defaults
 
-See `.env.example` and `config/config.example.json` for all options.
+Current persisted runtime settings:
 
-## Deployment
+- `CODEBUDDY_ADMIN_PASSKEY_RP_ID`
+- `CODEBUDDY_API_ENDPOINT`
+- `CODEBUDDY_AUTH_MODE`
+- `CODEBUDDY_INTERNET_ENVIRONMENT`
+- `CODEBUDDY_LOG_LEVEL`
+- `CODEBUDDY_MODELS`
+
+## Logging
+
+The server now includes key runtime and security logging for upstream failures and admin-sensitive flows.
+
+- debug snapshots redact tokens, cookies, API keys, auth headers, and user identifiers
+- unreadable access-key storage is surfaced as a 503 instead of silently degrading
+
+## Development
+
+Primary quality gates:
+
+```bash
+bun run lint
+bun run format:check
+bun run typecheck
+bun run test
+bun run build
+```
+
+Targeted suites used during this refactor:
+
+```bash
+bun run test -- tests/admin/console.test.tsx
+bun run test -- tests/server/runtime.test.ts
+bun run test -- tests/server/debug-usage.test.ts
+bun run test -- tests/server/access-keys-credentials.test.ts
+bun run test -- tests/server/units.test.ts
+```
+
+## Deployment Notes
 
 ### Docker Compose
 
 ```bash
 cp .env.example .env
-mkdir -p config .codebuddy_creds
+mkdir -p .codebuddy_data .codebuddy_creds
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
@@ -194,4 +218,4 @@ kubectl port-forward service/codebuddy2api 8001:8001
 
 ## License
 
-See [LICENSE](./LICENSE) for details.
+See [LICENSE](./LICENSE).

@@ -1,5 +1,6 @@
 import type {
   AccessKeySummary,
+  ApiTestState,
   CredentialsState,
   CredentialSummary,
   CurrentCredentialInfo,
@@ -47,6 +48,7 @@ export interface AdminUsageSnapshot {
   tableRows: UsageTableRow[];
   todaySummary: UsageState['todaySummary'];
   tokenSeries: UsageChartSeries[];
+  updatedAtLabel: string;
 }
 
 export interface AdminConsoleInitialData {
@@ -88,10 +90,13 @@ export const createDashboardState = (
     ),
     serviceStatus:
       initialData.health.status === 'healthy' ? 'online' : 'offline',
-    statusText: initialData.health.status === 'healthy' ? '运行中' : '不可用',
+    statusText: initialData.health.status === 'healthy' ? 'online' : 'offline',
     totalApiCalls,
     totalCredentials: initialData.credentials.length,
-    uptimeText: initialData.health.uptimeText,
+    uptimeText:
+      initialData.health.uptimeText ||
+      initialData.health.checkedAtLabel ||
+      initialData.health.timestamp,
     validCredentials,
   };
 };
@@ -108,7 +113,6 @@ export const createCredentialsState = (
     },
     accessKeys: initialData.accessKeys,
     accessKeysLoading: false,
-    accessKeyCreating: false,
     actionIndex: null,
     current: initialData.currentCredential,
     currentLoading: false,
@@ -161,7 +165,7 @@ export const createUsageState = (
       credentials: [],
     },
     hoveredPoint: null,
-    lastUpdatedAt: '',
+    lastUpdatedAt: initialData.usage?.updatedAtLabel ?? '',
     loading: false,
     request: {
       accessKey: 'all',
@@ -175,5 +179,27 @@ export const createUsageState = (
       totalTokens: 0,
     },
     tokenSeries: initialData.usage?.tokenSeries ?? [],
+  };
+};
+
+export const createApiTestState = (
+  initialData: AdminConsoleInitialData,
+): ApiTestState => {
+  const validCredentials = initialData.credentials.filter(
+    (credential) => !credential.is_expired,
+  );
+  const currentCredential = validCredentials.find(
+    (credential) =>
+      credential.filename === initialData.currentCredential.filename,
+  );
+
+  return {
+    credentialFilename:
+      currentCredential?.filename ?? validCredentials[0]?.filename ?? '',
+    message: 'Hello, what is 2+2?',
+    model: '',
+    result: '',
+    stream: false,
+    submitting: false,
   };
 };

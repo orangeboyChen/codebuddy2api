@@ -1,13 +1,13 @@
 import type { NextRequest } from 'next/server';
 
-import { getClientAuthErrorResponse } from '@/lib/server/auth';
-import { getModelsResponse } from '@/lib/server/codebuddy';
+import { getClientAuthErrorResponse } from '@/lib/server/proxy/auth';
+import { getModelsResponse } from '@/lib/server/proxy/codebuddy';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export const GET = async (request: NextRequest): Promise<Response> => {
-  const authError = getClientAuthErrorResponse(request);
+  const authError = await getClientAuthErrorResponse(request);
 
   if (authError) {
     return authError;

@@ -1,32 +1,45 @@
+import { getAdminSessionErrorResponse } from '@/lib/server/admin/session';
 import {
   clearDebugLogs,
   getDebugSettings,
   listDebugLogs,
   updateDebugSettings,
-} from '@/lib/server/debug';
-import { getJsonBody } from '@/lib/server/http';
+} from '@/lib/server/domain/debug';
+import { getJsonBody } from '@/lib/server/shared/http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export const GET = async (): Promise<Response> => {
-  const settings = getDebugSettings();
+export const GET = async (request: Request): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
+  const settings = await getDebugSettings();
 
   return Response.json({
     autoRefreshSeconds: settings.autoRefreshSeconds,
     enabled: settings.enabled,
-    items: listDebugLogs(),
+    items: await listDebugLogs(),
     maxEntries: settings.maxEntries,
   });
 };
 
 export const POST = async (request: Request): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
   const body = await getJsonBody<{
     autoRefreshSeconds?: number;
     enabled?: boolean;
     maxEntries?: number;
   }>(request);
-  const settings = updateDebugSettings({
+  const settings = await updateDebugSettings({
     autoRefreshSeconds: body.autoRefreshSeconds,
     enabled: body.enabled,
     maxEntries: body.maxEntries,
@@ -35,20 +48,27 @@ export const POST = async (request: Request): Promise<Response> => {
   return Response.json({
     autoRefreshSeconds: settings.autoRefreshSeconds,
     enabled: settings.enabled,
-    items: listDebugLogs(),
+    items: await listDebugLogs(),
     maxEntries: settings.maxEntries,
     message: 'Debug 设置已保存。',
   });
 };
 
-export const DELETE = async (): Promise<Response> => {
-  clearDebugLogs();
+export const DELETE = async (request: Request): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
+  await clearDebugLogs();
+  const settings = await getDebugSettings();
 
   return Response.json({
-    autoRefreshSeconds: getDebugSettings().autoRefreshSeconds,
-    enabled: getDebugSettings().enabled,
+    autoRefreshSeconds: settings.autoRefreshSeconds,
+    enabled: settings.enabled,
     items: [],
-    maxEntries: getDebugSettings().maxEntries,
+    maxEntries: settings.maxEntries,
     message: 'Debug 记录已清空。',
   });
 };

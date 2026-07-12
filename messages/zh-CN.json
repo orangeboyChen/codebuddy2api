@@ -1,0 +1,121 @@
+{
+  "Admin": {
+    "common": {
+      "cancel": "取消",
+      "copy": "复制",
+      "loading": "加载中...",
+      "refresh": "刷新",
+      "save": "保存"
+    },
+    "brand": "CodeBuddy2API 管理台",
+    "description": "统一管理凭证、用量、Debug 追踪与运行时设置。",
+    "localeLabel": "语言",
+    "logoutLabel": "退出登录",
+    "logoutUnavailable": "当前环境暂时无法退出登录。",
+    "statusLabel": "凭证状态",
+    "statusValue": "{count} 个有效",
+    "tabsLabel": "管理导航",
+    "themeLabel": "主题",
+    "languageSystem": "跟随系统",
+    "themeSystem": "跟随系统",
+    "themeLight": "浅色",
+    "themeDark": "深色",
+    "topbarHint": "语言通过 Cookie 持久化，无需使用带 locale 的路径。",
+    "tabs": {
+      "dashboard": "仪表板",
+      "usage": "用量统计",
+      "credentials": "凭证管理",
+      "apiTest": "API 测试",
+      "debug": "Debug",
+      "settings": "设置"
+    },
+    "sections": {
+      "dashboard": {
+        "eyebrow": "运行概览",
+        "title": "快速确认代理服务健康度与凭证池可用性。"
+      },
+      "usage": {
+        "eyebrow": "流量分析",
+        "title": "查看请求量、Token 消耗与模型分布趋势。"
+      },
+      "credentials": {
+        "eyebrow": "凭证工作区",
+        "title": "管理 CodeBuddy 凭证、Access Key 与 OAuth 刷新流程。"
+      },
+      "apiTest": {
+        "eyebrow": "请求沙箱",
+        "title": "通过当前 `/v1` 代理链路发起针对性测试请求。"
+      },
+      "debug": {
+        "eyebrow": "追踪记录",
+        "title": "查看已脱敏的上游请求与响应调试数据。"
+      },
+      "settings": {
+        "eyebrow": "运行时配置",
+        "title": "直接在控制台调整环境相关配置。"
+      }
+    },
+    "authHooks": {
+      "loginTitle": "管理员登录",
+      "loginDescription": "使用内置管理员登录建立 session cookie，然后在控制台里管理凭证、Access Key 与 passkey。"
+    },
+    "settingsPanel": {
+      "helper": "Passkey RP ID 通常应与最终访问域名一致。HTTPS 站点可直接使用；localhost 在现代浏览器中通常可用于本地调试，其它非 HTTPS 域名通常无法使用 passkey。",
+      "loading": "加载配置中...",
+      "saveSuccess": "设置已保存。",
+      "title": "服务配置"
+    },
+    "securityPanel": {
+      "title": "控制台安全",
+      "enabled": "鉴权已启用。",
+      "disabled": "鉴权未启用，控制台可直接访问。",
+      "enable": "启用管理员鉴权",
+      "username": "管理员用户名",
+      "currentPassword": "当前密码",
+      "newPassword": "新密码",
+      "password": "管理员密码",
+      "confirmPassword": "确认密码",
+      "minimumPassword": "至少 8 位",
+      "update": "更新管理员账户",
+      "saveAndEnable": "保存",
+      "disable": "关闭管理员鉴权",
+      "passkeyName": "Passkey 名称（可选）",
+      "addPasskey": "添加 Passkey",
+      "noPasskeys": "尚未添加 Passkey。",
+      "delete": "删除"
+    },
+    "loginPage": {
+      "autofillAvailable": "当前浏览器支持 passkey 条件式自动填充，页面会自动尝试登录。",
+      "autofillUnavailable": "已配置 passkey，但当前浏览器不支持条件式自动填充，请使用 passkey 按钮登录。",
+      "continueWithPasskey": "使用 passkey 继续",
+      "continueWithPassword": "使用密码继续",
+      "createAccountRedirecting": "管理员账户已创建，正在跳转...",
+      "createPasswordLabel": "创建管理员密码",
+      "createPasswordPlaceholder": "请输入高强度密码",
+      "createPasswordStatus": "创建首个管理员密码以解锁控制台。",
+      "createPasswordSubmit": "创建密码",
+      "description": "使用管理员密码或 passkey 登录。",
+      "descriptionLogin": "使用现有管理员密码或已注册的 passkey 登录。若浏览器支持条件式 passkey，页面会自动尝试。",
+      "descriptionSetup": "创建首个管理员密码。设置成功后，后端会立即写入管理员 session cookie。",
+      "errorPasskeyFailed": "Passkey 登录失败，请重试或改用密码。",
+      "errorPasskeyUnavailable": "当前无法使用 passkey 登录。",
+      "errorPasswordStatus": "请输入管理员密码继续。",
+      "headingLogin": "登录管理控制台",
+      "headingSetup": "设置管理员账户",
+      "noPasskeysConfigured": "当前管理员账户还没有配置 passkey。",
+      "orLabel": "或",
+      "passkeyAccepted": "Passkey 已验证，正在跳转...",
+      "passkeyHintLogin": "首个账户配置完成后使用该接口。",
+      "passkeyHintSetup": "设置成功后会立即为你登录。",
+      "passkeyStatusManual": "正在打开 passkey 验证窗口...",
+      "passwordAccepted": "密码验证通过，正在跳转...",
+      "passwordLabel": "管理员密码",
+      "passwordSignInHint": "请输入密码或使用已保存的 passkey 继续。",
+      "signInWithPassword": "正在创建管理员账户...",
+      "signingInPassword": "正在使用密码登录...",
+      "title": "管理员登录",
+      "waitingForPasskey": "正在等待已保存的 passkey...",
+      "usernameLabel": "管理员用户名"
+    }
+  }
+}

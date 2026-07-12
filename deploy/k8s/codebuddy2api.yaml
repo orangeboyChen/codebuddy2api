@@ -15,7 +15,7 @@ data:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: codebuddy2api-config
+  name: codebuddy2api-data
 spec:
   accessModes:
     - ReadWriteOnce
@@ -70,14 +70,14 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           volumeMounts:
-            - name: config
-              mountPath: /app/config
+            - name: data
+              mountPath: /app/.codebuddy_data
             - name: creds
               mountPath: /app/.codebuddy_creds
       volumes:
-        - name: config
+        - name: data
           persistentVolumeClaim:
-            claimName: codebuddy2api-config
+            claimName: codebuddy2api-data
         - name: creds
           persistentVolumeClaim:
             claimName: codebuddy2api-creds
