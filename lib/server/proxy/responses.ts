@@ -6,8 +6,10 @@ import {
   proxyChatCompletions,
   proxyResponsesUpstream,
   resolveProxyContext,
+  resolveProxyContextByCredentialFilename,
   type ProxyContext,
 } from './codebuddy';
+import { resolveRequestAccessKey } from './auth';
 import { createErrorResponse } from '../shared/http';
 
 interface ResponsesInputItem {
@@ -52,6 +54,7 @@ type ResponseSessionDefaults = Pick<
 
 interface ResponseSession {
   accessKeyId: string | null;
+  credentialFilename: string | null;
   createdAt: number;
   id: string;
   model: string;
@@ -151,6 +154,24 @@ const pruneResponseSessions = (): void => {
 const getResponseSession = (id: string): ResponseSession | undefined => {
   pruneResponseSessions();
   return getSessionStore().get(id);
+};
+
+const getValidatedPreviousSession = (
+  previousResponseId: string | null,
+  accessKeyId: string | null,
+): ResponseSession | undefined => {
+  const previousSession = previousResponseId
+    ? getResponseSession(previousResponseId)
+    : undefined;
+
+  if (
+    previousResponseId &&
+    (!previousSession || previousSession.accessKeyId !== accessKeyId)
+  ) {
+    throw new Error('Unknown or expired previous_response_id');
+  }
+
+  return previousSession;
 };
 
 const storeResponseSession = (session: ResponseSession): void => {
@@ -774,6 +795,7 @@ const getStreamingToolCallLookupKeys = (
 const prepareTranscript = async (
   body: ResponsesRequestBody,
   accessKeyId: string | null,
+  previousSession?: ResponseSession,
 ): Promise<{
   defaults: ResponseSessionDefaults;
   model: string;
@@ -781,29 +803,27 @@ const prepareTranscript = async (
   previousResponseId: string | null;
 }> => {
   const previousResponseId = body.previous_response_id ?? null;
-  const previousSession = previousResponseId
-    ? getResponseSession(previousResponseId)
-    : undefined;
+  const resolvedPreviousSession =
+    previousSession ??
+    getValidatedPreviousSession(previousResponseId, accessKeyId);
 
-  if (
-    previousResponseId &&
-    (!previousSession || previousSession.accessKeyId !== accessKeyId)
-  ) {
-    throw new Error('Unknown or expired previous_response_id');
-  }
-
-  const transcript = [...(previousSession?.transcript ?? [])];
+  const transcript = [...(resolvedPreviousSession?.transcript ?? [])];
   const model =
     typeof body.model === 'string' && body.model.trim()
       ? body.model
-      : (previousSession?.model ?? (await getDefaultModel()));
+      : (resolvedPreviousSession?.model ?? (await getDefaultModel()));
   const defaults = {
     instructions:
-      body.instructions ?? previousSession?.defaults.instructions ?? undefined,
-    metadata: body.metadata ?? previousSession?.defaults.metadata ?? undefined,
-    tools: body.tools ?? previousSession?.defaults.tools ?? undefined,
+      body.instructions ??
+      resolvedPreviousSession?.defaults.instructions ??
+      undefined,
+    metadata:
+      body.metadata ?? resolvedPreviousSession?.defaults.metadata ?? undefined,
+    tools: body.tools ?? resolvedPreviousSession?.defaults.tools ?? undefined,
     tool_choice:
-      body.tool_choice ?? previousSession?.defaults.tool_choice ?? undefined,
+      body.tool_choice ??
+      resolvedPreviousSession?.defaults.tool_choice ??
+      undefined,
   };
 
   if (body.messages?.length) {
@@ -860,6 +880,7 @@ const normalizeTranscriptMessageToolNames = (
 
 const mapChatResponseToResponsesPayload = (
   accessKeyId: string | null,
+  credentialFilename: string | null,
   defaults: ResponseSessionDefaults,
   transcript: TranscriptMessage[],
   model: string,
@@ -914,6 +935,7 @@ const mapChatResponseToResponsesPayload = (
 
   storeResponseSession({
     accessKeyId,
+    credentialFilename,
     createdAt: Date.now(),
     id: responseId,
     model,
@@ -1117,6 +1139,7 @@ const createResponsesEventStream = async (
             );
           storeResponseSession({
             accessKeyId: proxyContext?.accessKeyId ?? null,
+            credentialFilename: proxyContext?.credentialFilename ?? null,
             createdAt: Date.now(),
             id: responseId,
             model,
@@ -1348,7 +1371,34 @@ export const handleResponsesRequest = async (
   debugTrace?: DebugTrace,
 ): Promise<Response> => {
   try {
-    const proxyContext = await resolveProxyContext(request);
+    const previousResponseId = body.previous_response_id ?? null;
+    const accessKey = await resolveRequestAccessKey(request);
+    const previousSession = getValidatedPreviousSession(
+      previousResponseId,
+      accessKey?.id ?? null,
+    );
+
+    if (
+      previousSession?.credentialFilename &&
+      accessKey?.credentialFilenames?.length &&
+      !accessKey.credentialFilenames.includes(
+        previousSession.credentialFilename,
+      )
+    ) {
+      throw new Error('Unknown or expired previous_response_id');
+    }
+
+    const proxyContext = previousSession?.credentialFilename
+      ? await resolveProxyContextByCredentialFilename(
+          previousSession.credentialFilename,
+          accessKey
+            ? {
+                id: accessKey.id,
+                name: accessKey.name,
+              }
+            : undefined,
+        )
+      : await resolveProxyContext(request);
 
     if (proxyContext.preferences.responsesPassthrough) {
       return proxyResponsesUpstream(
@@ -1359,7 +1409,11 @@ export const handleResponsesRequest = async (
       );
     }
 
-    const prepared = await prepareTranscript(body, proxyContext.accessKeyId);
+    const prepared = await prepareTranscript(
+      body,
+      proxyContext.accessKeyId,
+      previousSession,
+    );
     const compatibilityError = getResponsesCompatibilityError(
       prepared.defaults.tools,
       prepared.defaults.tool_choice,
@@ -1422,6 +1476,7 @@ export const handleResponsesRequest = async (
     return Response.json(
       mapChatResponseToResponsesPayload(
         proxyContext.accessKeyId,
+        proxyContext.credentialFilename,
         prepared.defaults,
         prepared.transcript,
         prepared.model,

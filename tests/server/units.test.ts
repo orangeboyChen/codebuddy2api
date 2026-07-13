@@ -1251,6 +1251,115 @@ describe('server units', () => {
     ]);
   });
 
+  it('keeps the same credential for one conversation id across chat requests', async () => {
+    await addCredential({
+      bearer_token: 'token-conv-a',
+      created_at: Math.floor(Date.now() / 1000),
+      first_message_role_to_system: false,
+      user_id: 'conversation-a@example.com',
+    });
+    await addCredential({
+      bearer_token: 'token-conv-b',
+      created_at: Math.floor(Date.now() / 1000),
+      first_message_role_to_system: true,
+      user_id: 'conversation-b@example.com',
+    });
+
+    const conversationCredentials = (
+      await listCredentials()
+    ).credentials.filter(
+      (credential) =>
+        credential.user_id === 'conversation-a@example.com' ||
+        credential.user_id === 'conversation-b@example.com',
+    );
+    const roleAccessKey = await createAccessKey({
+      credentialFilenames: conversationCredentials.map((credential) =>
+        String(credential.filename),
+      ),
+      name: 'Conversation Affinity Key',
+    });
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      return Promise.resolve(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+    });
+
+    const firstResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${roleAccessKey.secret}`,
+          'X-Conversation-ID': 'conversation-a',
+        },
+      }),
+      {
+        messages: [{ role: 'developer', content: 'keep role stable' }],
+        stream: false,
+      },
+    );
+    const secondResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${roleAccessKey.secret}`,
+          'X-Conversation-ID': 'conversation-a',
+        },
+      }),
+      {
+        messages: [{ role: 'developer', content: 'same conversation' }],
+        stream: false,
+      },
+    );
+    const thirdResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${roleAccessKey.secret}`,
+          'X-Conversation-ID': 'conversation-b',
+        },
+      }),
+      {
+        messages: [{ role: 'developer', content: 'different conversation' }],
+        stream: false,
+      },
+    );
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(thirdResponse.status).toBe(200);
+
+    const firstBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        content: string;
+        role: string;
+      }>;
+    };
+    const secondBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        content: string;
+        role: string;
+      }>;
+    };
+    const thirdBody = JSON.parse(
+      String((fetchMock.mock.calls[2]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        content: string;
+        role: string;
+      }>;
+    };
+
+    expect(firstBody.messages[0]?.role).toBe('developer');
+    expect(secondBody.messages[0]?.role).toBe('developer');
+    expect(thirdBody.messages[0]?.role).toBe('system');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('aggregates forced upstream streaming responses for non-stream clients', async () => {
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';

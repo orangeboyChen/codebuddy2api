@@ -106,6 +106,24 @@ export interface ProxyContext {
   };
 }
 
+const getCredentialAffinityKey = (
+  request: NextRequest,
+  accessKeyId: string | null,
+): string | undefined => {
+  const incoming = getRequestHeaderMap(request.headers);
+  const conversationId = incoming['x-conversation-id']?.trim();
+
+  if (!conversationId) {
+    return undefined;
+  }
+
+  if (accessKeyId) {
+    return `access-key:${accessKeyId}:conversation:${conversationId}`;
+  }
+
+  return `global:conversation:${conversationId}`;
+};
+
 const toUsageSnapshot = (usage: unknown): UsageSnapshot | null => {
   if (!usage || typeof usage !== 'object') {
     return null;
@@ -341,6 +359,7 @@ export const resolveProxyContext = async (
   const accessKey = await resolveRequestAccessKey(request);
   const credential = await resolveCredentialForRequest({
     accessKeyId: accessKey?.id,
+    affinityKey: getCredentialAffinityKey(request, accessKey?.id ?? null),
     allowedCredentialFilenames: accessKey?.credentialFilenames,
   });
 
@@ -397,6 +416,10 @@ export const createProxyContextFromCredential = (
 
 export const resolveProxyContextByCredentialFilename = async (
   filename: string,
+  accessKey?: {
+    id?: string | null;
+    name?: string | null;
+  },
 ): Promise<ProxyContext> => {
   const credential = await findCredentialRecordByFilename(filename);
 
@@ -404,7 +427,11 @@ export const resolveProxyContextByCredentialFilename = async (
     throw new Error('Selected credential was not found');
   }
 
-  return createProxyContextFromCredential(credential);
+  return {
+    ...createProxyContextFromCredential(credential),
+    accessKeyId: accessKey?.id ?? null,
+    accessKeyName: accessKey?.name ?? null,
+  };
 };
 
 const getCredentialValue = (
