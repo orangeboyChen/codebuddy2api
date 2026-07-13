@@ -496,6 +496,54 @@ describe('server units', () => {
     expect((await getUsageStats()).credential_usage['cred-a']).toBeUndefined();
   });
 
+  it('keeps affinity assignments stable and clears them when credentials disappear', async () => {
+    while ((await deleteCredentialByIndex(0)).success) {
+      // clear seeded credentials to make affinity selection deterministic
+    }
+
+    const firstCredential = await addCredential({
+      bearer_token: 'token-affinity-1',
+      created_at: Math.floor(Date.now() / 1000),
+      expires_in: 3600,
+      user_id: 'affinity-one@example.com',
+    });
+    const secondCredential = await addCredential({
+      bearer_token: 'token-affinity-2',
+      created_at: Math.floor(Date.now() / 1000),
+      expires_in: 3600,
+      user_id: 'affinity-two@example.com',
+    });
+    const allowedCredentialFilenames = [
+      firstCredential.filename,
+      secondCredential.filename,
+    ];
+
+    const firstResolved = await resolveCredentialForRequest({
+      affinityKey: 'conversation:stable',
+      allowedCredentialFilenames,
+    });
+    const secondResolved = await resolveCredentialForRequest({
+      affinityKey: 'conversation:stable',
+      allowedCredentialFilenames,
+    });
+
+    expect(firstResolved?.filename).toBe(firstCredential.filename);
+    expect(secondResolved?.filename).toBe(firstCredential.filename);
+
+    const listed = await listCredentials();
+    const firstIndex = listed.credentials.findIndex(
+      (credential) => credential.filename === firstCredential.filename,
+    );
+    expect(firstIndex).toBeGreaterThanOrEqual(0);
+    expect((await deleteCredentialByIndex(firstIndex)).success).toBe(true);
+
+    const reassigned = await resolveCredentialForRequest({
+      affinityKey: 'conversation:stable',
+      allowedCredentialFilenames,
+    });
+    expect(reassigned?.filename).toBe(secondCredential.filename);
+  });
+
   it('persists usage history under file storage and preserves historical filters', async () => {
     const now = new Date('2026-07-11T12:30:00.000Z');
 
@@ -1249,6 +1297,115 @@ describe('server units', () => {
       { role: 'system', content: 'existing system' },
       { role: 'user', content: 'after system developer' },
     ]);
+  });
+
+  it('keeps the same credential for one conversation id across chat requests', async () => {
+    await addCredential({
+      bearer_token: 'token-conv-a',
+      created_at: Math.floor(Date.now() / 1000),
+      first_message_role_to_system: false,
+      user_id: 'conversation-a@example.com',
+    });
+    await addCredential({
+      bearer_token: 'token-conv-b',
+      created_at: Math.floor(Date.now() / 1000),
+      first_message_role_to_system: true,
+      user_id: 'conversation-b@example.com',
+    });
+
+    const conversationCredentials = (
+      await listCredentials()
+    ).credentials.filter(
+      (credential) =>
+        credential.user_id === 'conversation-a@example.com' ||
+        credential.user_id === 'conversation-b@example.com',
+    );
+    const roleAccessKey = await createAccessKey({
+      credentialFilenames: conversationCredentials.map((credential) =>
+        String(credential.filename),
+      ),
+      name: 'Conversation Affinity Key',
+    });
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      return Promise.resolve(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+    });
+
+    const firstResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${roleAccessKey.secret}`,
+          'X-Conversation-ID': 'conversation-a',
+        },
+      }),
+      {
+        messages: [{ role: 'developer', content: 'keep role stable' }],
+        stream: false,
+      },
+    );
+    const secondResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${roleAccessKey.secret}`,
+          'X-Conversation-ID': 'conversation-a',
+        },
+      }),
+      {
+        messages: [{ role: 'developer', content: 'same conversation' }],
+        stream: false,
+      },
+    );
+    const thirdResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${roleAccessKey.secret}`,
+          'X-Conversation-ID': 'conversation-b',
+        },
+      }),
+      {
+        messages: [{ role: 'developer', content: 'different conversation' }],
+        stream: false,
+      },
+    );
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(thirdResponse.status).toBe(200);
+
+    const firstBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        content: string;
+        role: string;
+      }>;
+    };
+    const secondBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        content: string;
+        role: string;
+      }>;
+    };
+    const thirdBody = JSON.parse(
+      String((fetchMock.mock.calls[2]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{
+        content: string;
+        role: string;
+      }>;
+    };
+
+    expect(firstBody.messages[0]?.role).toBe('developer');
+    expect(secondBody.messages[0]?.role).toBe('developer');
+    expect(thirdBody.messages[0]?.role).toBe('system');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('aggregates forced upstream streaming responses for non-stream clients', async () => {
@@ -2137,6 +2294,46 @@ describe('server units', () => {
     });
   });
 
+  it('does not locally reject previous_response_id for passthrough responses', async () => {
+    const createdCredential = await addCredential({
+      bearer_token: 'token-passthrough-follow-up',
+      responses_passthrough: true,
+      user_id: 'passthrough-follow-up@example.com',
+    });
+    const accessKey = await createAccessKey({
+      credentialFilenames: [createdCredential.filename],
+      name: 'Passthrough Follow-up Key',
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeJsonResponse({
+        id: 'resp_upstream',
+        object: 'response',
+        output_text: 'continued upstream',
+      }),
+    );
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessKey.secret}`,
+        },
+      }),
+      {
+        input: 'continue remotely',
+        model: 'gpt-5.5',
+        previous_response_id: 'resp_from_upstream',
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
+        .previous_response_id,
+    ).toBe('resp_from_upstream');
+  });
+
   it('covers proxy context helpers for saved credentials', async () => {
     const createdCredential = await addCredential({
       bearer_token: 'token-from-bearer-token',
@@ -2163,6 +2360,19 @@ describe('server units', () => {
     );
     expect(resolved.credentialFilename).toBe(createdCredential.filename);
     expect(resolved.auth.userId).toBe('helper@example.com');
+
+    const expiredCredential = await addCredential({
+      bearer_token: 'token-expired-helper',
+      created_at: 1,
+      expires_in: 1,
+      user_id: 'expired-helper@example.com',
+    });
+    await expect(
+      resolveProxyContextByCredentialFilename(expiredCredential.filename, {
+        requireEligible: true,
+      }),
+    ).rejects.toThrow('Selected credential was not found');
+
     expect(
       createProxyContextFromCredential({
         data: {
@@ -2185,6 +2395,69 @@ describe('server units', () => {
     await expect(
       resolveProxyContextByCredentialFilename('missing.json'),
     ).rejects.toThrow('Selected credential was not found');
+  });
+
+  it('stops local responses follow-ups when the pinned credential is no longer eligible', async () => {
+    const createdCredential = await addCredential({
+      bearer_token: 'token-local-follow-up',
+      responses_passthrough: false,
+      user_id: 'local-follow-up@example.com',
+    });
+    const listedBefore = await listCredentials();
+    const targetIndex = listedBefore.credentials.findIndex(
+      (credential) => credential.filename === createdCredential.filename,
+    );
+    const accessKey = await createAccessKey({
+      credentialFilenames: [createdCredential.filename],
+      name: 'Local Follow-up Key',
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        choices: [{ message: { content: 'stored locally' } }],
+        model: 'gpt-5.5',
+      }),
+    );
+
+    const firstResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessKey.secret}`,
+        },
+      }),
+      {
+        input: 'start local session',
+        model: 'gpt-5.5',
+      },
+    );
+    const firstPayload = (await firstResponse.json()) as { id: string };
+
+    await updateCredentialByIndex(targetIndex, {
+      bearer_token: 'token-local-follow-up',
+      expires_in: -1,
+      responses_passthrough: false,
+      user_id: 'local-follow-up@example.com',
+    });
+
+    const followUpResponse = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessKey.secret}`,
+        },
+      }),
+      {
+        input: 'continue local session',
+        previous_response_id: firstPayload.id,
+      },
+    );
+
+    expect(firstResponse.status).toBe(200);
+    expect(followUpResponse.status).toBe(500);
+    expect(await followUpResponse.text()).toContain(
+      'Selected credential was not found',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('updates saved credentials by index and normalizes string boolean flags', async () => {

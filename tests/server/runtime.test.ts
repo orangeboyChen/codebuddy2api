@@ -785,6 +785,106 @@ describe('server runtime', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps one responses session on the original credential within a pooled access key', async () => {
+    const firstCredential = await (
+      await AdminCredentialsRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/credentials', {
+          bearer_token: 'responses-affinity-first-token',
+          user_id: 'responses-affinity-first@example.com',
+        }),
+      )
+    ).json();
+    const secondCredential = await (
+      await AdminCredentialsRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/credentials', {
+          bearer_token: 'responses-affinity-second-token',
+          user_id: 'responses-affinity-second@example.com',
+        }),
+      )
+    ).json();
+    const accessKey = await (
+      await AdminAccessKeysRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/access-keys', {
+          credential_filenames: [
+            firstCredential.filename,
+            secondCredential.filename,
+          ],
+          name: 'Responses Affinity Key',
+        }),
+      )
+    ).json();
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeSseResponse([
+          'data: {"choices":[{"delta":{"content":"first"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":" answer"},"finish_reason":"stop"}]}\n\n',
+          'data: [DONE]\n\n',
+        ]),
+      )
+      .mockResolvedValueOnce(
+        makeSseResponse([
+          'data: {"choices":[{"delta":{"content":"second"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":" answer"},"finish_reason":"stop"}]}\n\n',
+          'data: [DONE]\n\n',
+        ]),
+      )
+      .mockResolvedValueOnce(
+        makeSseResponse([
+          'data: {"choices":[{"delta":{"content":"third"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":" answer"},"finish_reason":"stop"}]}\n\n',
+          'data: [DONE]\n\n',
+        ]),
+      );
+
+    const firstResponse = await V1ResponsesRoute.POST(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${accessKey.secret}` },
+        body: JSON.stringify({ input: 'hello', model: 'glm-5.1' }),
+      }),
+    );
+    const firstPayload = await firstResponse.json();
+    const secondResponse = await V1ResponsesRoute.POST(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${accessKey.secret}` },
+        body: JSON.stringify({
+          input: 'continue',
+          previous_response_id: firstPayload.id,
+        }),
+      }),
+    );
+    const thirdResponse = await V1ResponsesRoute.POST(
+      makeNextRequest('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${accessKey.secret}` },
+        body: JSON.stringify({ input: 'new thread', model: 'glm-5.1' }),
+      }),
+    );
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(thirdResponse.status).toBe(200);
+
+    const firstHeaders = (fetchMock.mock.calls[0]?.[1] as RequestInit)
+      .headers as Headers;
+    const secondHeaders = (fetchMock.mock.calls[1]?.[1] as RequestInit)
+      .headers as Headers;
+    const thirdHeaders = (fetchMock.mock.calls[2]?.[1] as RequestInit)
+      .headers as Headers;
+
+    expect(firstHeaders.get('Authorization')).toBe(
+      'Bearer responses-affinity-first-token',
+    );
+    expect(secondHeaders.get('Authorization')).toBe(
+      'Bearer responses-affinity-first-token',
+    );
+    expect(thirdHeaders.get('Authorization')).toBe(
+      'Bearer responses-affinity-second-token',
+    );
+  });
+
   it('supports codebuddy auth start, poll, callback, and protected api settings', async () => {
     const jwtPayload = Buffer.from(
       JSON.stringify({

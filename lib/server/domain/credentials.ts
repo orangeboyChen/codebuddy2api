@@ -42,6 +42,13 @@ export interface CredentialRecord {
 interface ManagerState {
   globalNextFilename: string | null;
   keyNextFilenameByAccessKeyId: Record<string, string | null>;
+  affinityAssignmentsByKey: Record<
+    string,
+    {
+      credentialFilename: string;
+      updatedAt: number;
+    }
+  >;
 }
 
 const globalCredentialState = globalThis as typeof globalThis & {
@@ -51,6 +58,8 @@ const globalCredentialState = globalThis as typeof globalThis & {
 const MANAGER_STATE_FILENAME = 'manager_state.json';
 const RUNTIME_STATE_FLUSH_INTERVAL_MS = 1000;
 const MAX_PENDING_ROTATIONS = 100;
+const AFFINITY_ASSIGNMENT_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_AFFINITY_ASSIGNMENTS = 5_000;
 let pendingRotationCount = 0;
 let runtimeStateFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -63,10 +72,53 @@ const loadPersistedManagerState = async (): Promise<Partial<ManagerState>> => {
   );
 };
 
+const pruneAffinityAssignments = (
+  assignments: unknown,
+): ManagerState['affinityAssignmentsByKey'] => {
+  if (!assignments || typeof assignments !== 'object') {
+    return {};
+  }
+
+  const expiresBefore = Date.now() - AFFINITY_ASSIGNMENT_TTL_MS;
+  const normalizedEntries = Object.entries(
+    assignments as Record<string, unknown>,
+  ).flatMap(([key, value]) => {
+    if (!value || typeof value !== 'object') {
+      return [];
+    }
+
+    const credentialFilename = String(
+      (value as Record<string, unknown>).credentialFilename ?? '',
+    ).trim();
+    const updatedAt = Number((value as Record<string, unknown>).updatedAt);
+
+    if (!credentialFilename || !Number.isFinite(updatedAt)) {
+      return [];
+    }
+
+    if (updatedAt <= expiresBefore) {
+      return [];
+    }
+
+    return [[key, { credentialFilename, updatedAt }] as const];
+  });
+
+  normalizedEntries.sort(
+    (left, right) => right[1].updatedAt - left[1].updatedAt,
+  );
+
+  return Object.fromEntries(
+    normalizedEntries.slice(0, MAX_AFFINITY_ASSIGNMENTS),
+  );
+};
+
 const getRuntimeState = async (): Promise<ManagerState> => {
   if (!globalCredentialState.__codebuddy2apiCredentialState__) {
     const persisted = await loadPersistedManagerState();
     globalCredentialState.__codebuddy2apiCredentialState__ = {
+      affinityAssignmentsByKey: pruneAffinityAssignments(
+        persisted.affinityAssignmentsByKey,
+      ),
       globalNextFilename: persisted.globalNextFilename ?? null,
       keyNextFilenameByAccessKeyId:
         persisted.keyNextFilenameByAccessKeyId ?? {},
@@ -78,7 +130,11 @@ const getRuntimeState = async (): Promise<ManagerState> => {
 
 const saveRuntimeState = async (): Promise<void> => {
   const state = await getRuntimeState();
+  state.affinityAssignmentsByKey = pruneAffinityAssignments(
+    state.affinityAssignmentsByKey,
+  );
   await writeStorageJson('credentials', 'manager_state.json', {
+    affinityAssignmentsByKey: state.affinityAssignmentsByKey,
     globalNextFilename: state.globalNextFilename,
     keyNextFilenameByAccessKeyId: state.keyNextFilenameByAccessKeyId,
     savedAt: Math.floor(Date.now() / 1000),
@@ -231,6 +287,18 @@ export const findCredentialRecordByFilename = async (
     (await readCredentialRecords()).find(
       (record) => record.filename === filename,
     ) ?? null
+  );
+};
+
+export const findEligibleCredentialRecordByFilename = async (
+  filename: string,
+  allowedCredentialFilenames?: string[],
+): Promise<CredentialRecord | null> => {
+  return (
+    getEligibleRecords(
+      await readCredentialRecords(),
+      allowedCredentialFilenames,
+    ).find((record) => record.filename === filename) ?? null
   );
 };
 
@@ -514,6 +582,11 @@ export const deleteCredentialByIndex = async (
       state.keyNextFilenameByAccessKeyId[key] = null;
     }
   });
+  Object.entries(state.affinityAssignmentsByKey).forEach(([key, value]) => {
+    if (value.credentialFilename === deletedFilename) {
+      delete state.affinityAssignmentsByKey[key];
+    }
+  });
   await saveRuntimeState();
 
   return { message: 'Credential deleted', success: true };
@@ -570,9 +643,11 @@ export const toggleAutoRotation = (): {
 
 export const resolveCredentialForRequest = async ({
   accessKeyId,
+  affinityKey,
   allowedCredentialFilenames,
 }: {
   accessKeyId?: string;
+  affinityKey?: string;
   allowedCredentialFilenames?: string[];
 } = {}): Promise<CredentialRecord | null> => {
   const records = await readCredentialRecords();
@@ -586,6 +661,30 @@ export const resolveCredentialForRequest = async ({
   }
 
   const state = await getRuntimeState();
+  state.affinityAssignmentsByKey = pruneAffinityAssignments(
+    state.affinityAssignmentsByKey,
+  );
+
+  if (affinityKey) {
+    const assignment = state.affinityAssignmentsByKey[affinityKey];
+    const assignedRecord = eligibleRecords.find(
+      (record) => record.filename === assignment?.credentialFilename,
+    );
+
+    if (assignedRecord) {
+      state.affinityAssignmentsByKey[affinityKey] = {
+        credentialFilename: assignedRecord.filename,
+        updatedAt: Date.now(),
+      };
+      scheduleRuntimeStateSave();
+      return assignedRecord;
+    }
+
+    if (assignment) {
+      delete state.affinityAssignmentsByKey[affinityKey];
+    }
+  }
+
   const currentNextFilename = accessKeyId
     ? (state.keyNextFilenameByAccessKeyId[accessKeyId] ?? null)
     : state.globalNextFilename;
@@ -598,6 +697,13 @@ export const resolveCredentialForRequest = async ({
     state.keyNextFilenameByAccessKeyId[accessKeyId] = nextFilename;
   } else {
     state.globalNextFilename = nextFilename;
+  }
+
+  if (affinityKey) {
+    state.affinityAssignmentsByKey[affinityKey] = {
+      credentialFilename: current.filename,
+      updatedAt: Date.now(),
+    };
   }
 
   scheduleRuntimeStateSave();

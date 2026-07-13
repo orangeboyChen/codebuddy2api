@@ -8,6 +8,7 @@ import {
 } from '../domain/config';
 import {
   type CredentialRecord,
+  findEligibleCredentialRecordByFilename,
   findCredentialRecordByFilename,
   getCredentialProxySettings,
   resolveCredentialForRequest,
@@ -105,6 +106,24 @@ export interface ProxyContext {
     responsesPassthrough: boolean;
   };
 }
+
+const getCredentialAffinityKey = (
+  request: NextRequest,
+  accessKeyId: string | null,
+): string | undefined => {
+  const incoming = getRequestHeaderMap(request.headers);
+  const conversationId = incoming['x-conversation-id']?.trim();
+
+  if (!conversationId) {
+    return undefined;
+  }
+
+  if (accessKeyId) {
+    return `access-key:${accessKeyId}:conversation:${conversationId}`;
+  }
+
+  return `global:conversation:${conversationId}`;
+};
 
 const toUsageSnapshot = (usage: unknown): UsageSnapshot | null => {
   if (!usage || typeof usage !== 'object') {
@@ -341,6 +360,7 @@ export const resolveProxyContext = async (
   const accessKey = await resolveRequestAccessKey(request);
   const credential = await resolveCredentialForRequest({
     accessKeyId: accessKey?.id,
+    affinityKey: getCredentialAffinityKey(request, accessKey?.id ?? null),
     allowedCredentialFilenames: accessKey?.credentialFilenames,
   });
 
@@ -397,14 +417,31 @@ export const createProxyContextFromCredential = (
 
 export const resolveProxyContextByCredentialFilename = async (
   filename: string,
+  options?: {
+    accessKey?: {
+      id?: string | null;
+      name?: string | null;
+    };
+    allowedCredentialFilenames?: string[];
+    requireEligible?: boolean;
+  },
 ): Promise<ProxyContext> => {
-  const credential = await findCredentialRecordByFilename(filename);
+  const credential = options?.requireEligible
+    ? await findEligibleCredentialRecordByFilename(
+        filename,
+        options.allowedCredentialFilenames,
+      )
+    : await findCredentialRecordByFilename(filename);
 
   if (!credential) {
     throw new Error('Selected credential was not found');
   }
 
-  return createProxyContextFromCredential(credential);
+  return {
+    ...createProxyContextFromCredential(credential),
+    accessKeyId: options?.accessKey?.id ?? null,
+    accessKeyName: options?.accessKey?.name ?? null,
+  };
 };
 
 const getCredentialValue = (
