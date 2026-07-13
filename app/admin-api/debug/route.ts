@@ -50,7 +50,6 @@ export const POST = async (request: Request): Promise<Response> => {
     enabled: settings.enabled,
     items: await listDebugLogs(),
     maxEntries: settings.maxEntries,
-    message: 'Debug 设置已保存。',
   });
 };
 
@@ -69,6 +68,5 @@ export const DELETE = async (request: Request): Promise<Response> => {
     enabled: settings.enabled,
     items: [],
     maxEntries: settings.maxEntries,
-    message: 'Debug 记录已清空。',
   });
 };

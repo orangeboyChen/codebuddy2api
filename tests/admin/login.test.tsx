@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { ConfigProvider } from '@lobehub/ui';
+import { motion } from 'motion/react';
+import { NextIntlClientProvider } from 'next-intl';
 
-import LoginClient from '@/features/admin/login-client';
+import LoginClient from '@/app/login/login-client';
 import type { AdminLoginMessages } from '@/lib/i18n/messages';
+import { getMessages } from '@/lib/i18n/messages';
 
 vi.mock('@simplewebauthn/browser', () => ({
   browserSupportsWebAuthnAutofill: vi.fn(),
@@ -20,6 +24,16 @@ const makeJsonResponse = (payload: unknown, status = 200) => {
     },
     status,
   });
+};
+
+const renderWithMessages = (children: React.ReactNode) => {
+  return render(
+    <ConfigProvider motion={motion}>
+      <NextIntlClientProvider locale="zh-CN" messages={getMessages('zh-CN')}>
+        {children}
+      </NextIntlClientProvider>
+    </ConfigProvider>,
+  );
 };
 
 const loginTranslations: AdminLoginMessages = {
@@ -83,7 +97,7 @@ describe('LoginClient', () => {
       throw new Error(`Unexpected fetch: ${String(input)}`);
     }) as typeof fetch;
 
-    render(
+    renderWithMessages(
       <LoginClient
         initialSession={{
           accountConfigured: false,
@@ -133,7 +147,7 @@ describe('LoginClient', () => {
       throw new Error(`Unexpected fetch: ${String(input)}`);
     }) as typeof fetch;
 
-    render(
+    renderWithMessages(
       <LoginClient
         initialSession={{
           accountConfigured: true,
@@ -208,7 +222,7 @@ describe('LoginClient', () => {
       throw new Error(`Unexpected fetch: ${String(input)}`);
     }) as typeof fetch;
 
-    render(
+    renderWithMessages(
       <LoginClient
         initialSession={{
           accountConfigured: true,

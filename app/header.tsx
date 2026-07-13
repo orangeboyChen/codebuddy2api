@@ -1,11 +1,13 @@
 'use client';
 
-import { Block, Button, Flexbox, Text } from '@lobehub/ui';
+import { Flexbox, Text } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { DropdownMenu, Select } from '@lobehub/ui/base-ui';
 import { Languages, Menu, SunMoon } from 'lucide-react';
+import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
 
-import type { ThemeMode } from '@/app/admin/_components/admin-store';
+import type { ThemeMode } from '@/app/page-state';
 import {
   locales,
   type LocalePreference,
@@ -20,40 +22,36 @@ const localeLabels: Record<string, string> = {
 
 interface AdminHeaderProps {
   action?: ReactNode;
-  brand: string;
-  className: string;
-  locale: string;
+  brand?: string;
+  className?: string;
   localePreference: LocalePreference;
   onLocaleChange: (locale: string) => void;
   onThemeChange: (theme: ThemeMode) => void;
-  systemLocaleLabel: string;
   theme: ThemeMode;
-  themeLabels: Record<ThemeMode, string>;
 }
 
 export const AdminHeader = ({
   action,
   brand,
   className,
-  locale,
   onLocaleChange,
   onThemeChange,
   theme,
-  themeLabels,
   localePreference,
-  systemLocaleLabel,
 }: AdminHeaderProps) => {
+  const locale = useLocale();
+  const translations = useTranslations('Admin');
+  const systemLocaleLabel = translations('languageSystem');
+  const themeLabels: Record<ThemeMode, string> = {
+    dark: translations('themeDark'),
+    light: translations('themeLight'),
+    system: translations('themeSystem'),
+  };
+
   return (
-    <Block
-      as="header"
-      align="center"
-      className={`admin-header ${className}`}
-      distribution="space-between"
-      horizontal
-      variant="borderless"
-    >
+    <header className={`admin-header ${className}`}>
       <Text as="div" className="admin-header-brand" strong>
-        {brand}
+        {brand ?? translations('brand')}
       </Text>
       <Flexbox
         align="center"
@@ -146,6 +144,6 @@ export const AdminHeader = ({
           <Button aria-label="Console menu" icon={Menu} />
         </DropdownMenu>
       </div>
-    </Block>
+    </header>
   );
 };

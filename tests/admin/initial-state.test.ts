@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  createApiTestState,
-  createDashboardState,
-  type AdminConsoleInitialData,
-} from '@/app/admin/_components/admin-initial-state';
+import { type AdminConsoleInitialData } from '@/app/page-data';
+import { createApiTestState } from '@/app/api-test/api-test';
+import { createDashboardState } from '@/app/dashboard/dashboard';
 
 const createInitialData = (): AdminConsoleInitialData => {
   return {

@@ -141,26 +141,37 @@ textarea {
 .admin-header {
   --border-color: var(--lobe-color-border);
   --bg-color: color-mix(in srgb, var(--lobe-color-bg-layout) 72%, transparent);
+  --header-height: 56px;
 
-  position: sticky !important;
-  top: 0;
-  z-index: 20;
-  height: 56px;
-  padding: 0 12px 0 24px !important;
-  border-radius: 0 !important;
+  position: relative !important;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   border-bottom: 1px solid var(--border-color) !important;
+  border-radius: 0 !important;
+  height: var(--header-height) !important;
+  padding: 0 12px 0 24px !important;
   background-color: transparent !important;
   background-image: radial-gradient(
     transparent 1px,
     var(--bg-color) 1px
   ) !important;
-  background-size: 4px 4px;
+  background-size: 4px 4px !important;
   backdrop-filter: saturate(50%) blur(4px) !important;
   -webkit-backdrop-filter: saturate(50%) blur(4px) !important;
+  top: 0 !important;
 }
 
 .console-header {
+  position: sticky !important;
+  top: 0;
   z-index: 30;
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .admin-header {
+    backdrop-filter: saturate(50%) blur(4px) !important;
+  }
 }
 
 .admin-header-brand {

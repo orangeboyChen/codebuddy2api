@@ -1,6 +1,14 @@
 import crypto from 'node:crypto';
 
-import { readStorageJson, writeStorageJson } from '../storage';
+import {
+  appendStorageDebugLogs,
+  clearStorageDebugLogs,
+  getStorageBackendMeta,
+  listStorageDebugLogs,
+  readStorageJson,
+  trimStorageDebugLogs,
+  writeStorageJson,
+} from '../storage';
 
 export interface DebugLogEntry {
   credentialFilename: string | null;
@@ -61,8 +69,12 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 };
 
 const MAX_SNAPSHOT_TEXT_LENGTH = 200_000;
+const FLUSH_INTERVAL_MS = 1000;
+const MAX_PENDING_LOGS = 100;
 const REDACTED_VALUE = '[redacted]';
 let debugWriteQueue: Promise<void> = Promise.resolve();
+let pendingDebugLogs: DebugLogEntry[] = [];
+let debugFlushTimer: ReturnType<typeof setTimeout> | null = null;
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
   'proxy-authorization',
@@ -286,6 +298,21 @@ export const updateDebugSettings = async (
 };
 
 const readDebugLogs = async (): Promise<DebugLogEntry[]> => {
+  if (getStorageBackendMeta().backend !== 'file') {
+    const settings = await getDebugSettings();
+    const events = await listStorageDebugLogs(settings.maxEntries);
+    return events
+      .filter((event): event is typeof event & { payload: DebugLogEntry } => {
+        const entry = event.payload;
+        return Boolean(
+          entry &&
+          typeof entry === 'object' &&
+          typeof (entry as DebugLogEntry).id === 'string',
+        );
+      })
+      .map((event) => event.payload);
+  }
+
   const logs = (await readStorageJson<DebugLogEntry[]>('debug', 'logs')) ?? [];
 
   if (!Array.isArray(logs)) {
@@ -304,12 +331,22 @@ const readDebugLogs = async (): Promise<DebugLogEntry[]> => {
 };
 
 export const listDebugLogs = async (): Promise<DebugLogEntry[]> => {
+  await flushPendingDebugLogs();
   await debugWriteQueue;
   return readDebugLogs();
 };
 
 export const clearDebugLogs = async (): Promise<void> => {
+  pendingDebugLogs = [];
+  if (debugFlushTimer) {
+    clearTimeout(debugFlushTimer);
+    debugFlushTimer = null;
+  }
   await enqueueDebugWrite(async () => {
+    if (getStorageBackendMeta().backend !== 'file') {
+      await clearStorageDebugLogs();
+      return;
+    }
     await writeStorageJson('debug', 'logs', []);
   });
 };
@@ -417,12 +454,67 @@ export const enqueueUpstreamResponseSnapshot = (
 };
 
 const appendDebugLog = async (entry: DebugLogEntry): Promise<void> => {
-  await enqueueDebugWrite(async () => {
-    const settings = await getDebugSettings();
-    const currentLogs = await readDebugLogs();
-    const nextLogs = [entry, ...currentLogs].slice(0, settings.maxEntries);
-    await writeStorageJson('debug', 'logs', nextLogs);
-  });
+  pendingDebugLogs.push(entry);
+
+  if (pendingDebugLogs.length >= MAX_PENDING_LOGS) {
+    void flushPendingDebugLogs().catch(() => undefined);
+    return;
+  }
+
+  scheduleDebugFlush();
+};
+
+const flushPendingDebugLogs = async (): Promise<void> => {
+  if (debugFlushTimer) {
+    clearTimeout(debugFlushTimer);
+    debugFlushTimer = null;
+  }
+
+  const entries = pendingDebugLogs.splice(0, MAX_PENDING_LOGS);
+
+  if (!entries.length) return;
+
+  try {
+    await enqueueDebugWrite(async () => {
+      if (getStorageBackendMeta().backend !== 'file') {
+        const settings = await getDebugSettings();
+        await appendStorageDebugLogs(
+          entries.map((entry) => ({
+            id: entry.id,
+            payload: entry,
+            timestamp: entry.createdAt,
+          })),
+        );
+        await trimStorageDebugLogs(settings.maxEntries);
+        if (pendingDebugLogs.length) {
+          scheduleDebugFlush();
+        }
+        return;
+      }
+      const settings = await getDebugSettings();
+      const currentLogs = await readDebugLogs();
+      const nextLogs = [...entries]
+        .reverse()
+        .concat(currentLogs)
+        .slice(0, settings.maxEntries);
+      await writeStorageJson('debug', 'logs', nextLogs);
+      if (pendingDebugLogs.length) {
+        scheduleDebugFlush();
+      }
+    });
+  } catch (error) {
+    pendingDebugLogs = [...entries, ...pendingDebugLogs];
+    scheduleDebugFlush();
+    throw error;
+  }
+};
+
+const scheduleDebugFlush = (): void => {
+  if (debugFlushTimer) return;
+  debugFlushTimer = setTimeout(() => {
+    void flushPendingDebugLogs().catch(() => undefined);
+  }, FLUSH_INTERVAL_MS);
+  debugFlushTimer.unref?.();
 };
 
 export const finalizeDebugTrace = (

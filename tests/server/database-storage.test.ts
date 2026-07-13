@@ -1,11 +1,14 @@
-const execute = vi.fn(async () => undefined);
 const selectLimit = vi.fn<() => Promise<Record<string, unknown>[]>>(
   async () => [],
 );
 const selectOrderBy = vi.fn<() => Promise<Record<string, unknown>[]>>(
   async () => [],
 );
+const selectOffset = vi.fn<() => Promise<Record<string, unknown>[]>>(
+  async () => [],
+);
 const insertOnConflictDoUpdate = vi.fn(async () => undefined);
+const insertOnConflictDoNothing = vi.fn(async () => undefined);
 const deleteWhere = vi.fn(async () => undefined);
 
 const selectWhere = vi.fn(() => ({
@@ -14,10 +17,13 @@ const selectWhere = vi.fn(() => ({
 }));
 
 const selectFrom = vi.fn(() => ({
+  limit: selectLimit,
+  orderBy: () => ({ limit: selectLimit, offset: selectOffset }),
   where: selectWhere,
 }));
 
 const insertValues = vi.fn(() => ({
+  onConflictDoNothing: insertOnConflictDoNothing,
   onConflictDoUpdate: insertOnConflictDoUpdate,
 }));
 
@@ -31,7 +37,6 @@ const deleteFrom = vi.fn(() => ({
 
 const drizzleMock = vi.fn(() => ({
   delete: deleteFrom,
-  execute,
   insert,
   select: vi.fn(() => ({
     from: selectFrom,
@@ -39,15 +44,29 @@ const drizzleMock = vi.fn(() => ({
 }));
 
 const poolConstructor = vi.fn();
+const poolQuery = vi.fn(async () => undefined);
+const poolRelease = vi.fn();
+const migrate = vi.fn(async () => undefined);
 
 vi.mock('drizzle-orm/node-postgres', () => ({
   drizzle: drizzleMock,
+}));
+
+vi.mock('drizzle-orm/node-postgres/migrator', () => ({
+  migrate,
 }));
 
 vi.mock('pg', () => ({
   Pool: class MockPool {
     public constructor(options: unknown) {
       poolConstructor(options);
+    }
+
+    public async connect() {
+      return {
+        query: poolQuery,
+        release: poolRelease,
+      };
     }
   },
 }));
@@ -61,20 +80,16 @@ describe('drizzle pg storage adapter', () => {
 
   it('creates schema and table objects and forwards CRUD operations through drizzle', async () => {
     const { DrizzlePgDatabaseStorageAdapter } =
-      await import('@/lib/server/storage/database');
+      await import('@/lib/server/storage/backends/postgres');
 
     const adapter = new DrizzlePgDatabaseStorageAdapter({
       connectionString: 'postgres://example.test/codebuddy',
       schemaName: 'codebuddy_test',
     });
 
-    await adapter.ensureSchema();
-
     expect(poolConstructor).toHaveBeenCalledWith({
       connectionString: 'postgres://example.test/codebuddy',
     });
-    expect(execute).toHaveBeenCalledTimes(3);
-
     selectLimit.mockResolvedValueOnce([
       {
         encryptedPayload: null,
@@ -145,18 +160,115 @@ describe('drizzle pg storage adapter', () => {
     });
     expect(insertValues).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        payload: JSON.stringify({ enabled: true }),
+        payload: { enabled: true },
       }),
     );
 
+    await adapter.appendUsageEvents([
+      {
+        id: 'usage-1',
+        payload: {
+          accessKeyId: null,
+          accessKeyName: null,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          callCount: 1,
+          credentialFilename: null,
+          inputTokens: 0,
+          model: 'test',
+          outputTokens: 1,
+          route: '/v1/chat/completions',
+          totalTokens: 1,
+        },
+        timestamp: '2026-07-12T00:00:00.000Z',
+      },
+    ]);
+    expect(insertOnConflictDoNothing).toHaveBeenCalledTimes(1);
+
+    selectOrderBy.mockResolvedValueOnce([
+      {
+        accessKeyId: null,
+        accessKeyName: null,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        callCount: 1,
+        credentialFilename: null,
+        eventId: 'usage-1',
+        inputTokens: 0,
+        model: 'test',
+        occurredAt: new Date('2026-07-12T00:00:00.000Z'),
+        outputTokens: 1,
+        route: '/v1/chat/completions',
+        totalTokens: 1,
+      },
+    ]);
+    expect(
+      await adapter.listUsageEvents(new Date('2026-07-01T00:00:00.000Z')),
+    ).toEqual([expect.objectContaining({ id: 'usage-1' })]);
+    await adapter.clearUsageEvents();
+    await adapter.trimUsageEvents(new Date('2026-07-01T00:00:00.000Z'));
+
+    await adapter.appendDebugLogs([
+      {
+        id: 'debug-1',
+        payload: {
+          credentialFilename: null,
+          error: null,
+          requestBody: null,
+          requestKey: null,
+          route: '/v1/chat/completions',
+          transformedResponse: null,
+          upstreamRequest: null,
+          upstreamResponse: null,
+        },
+        timestamp: '2026-07-12T00:00:00.000Z',
+      },
+    ]);
+    selectLimit.mockResolvedValueOnce([
+      {
+        createdAt: new Date('2026-07-12T00:00:00.000Z'),
+        credentialFilename: null,
+        error: null,
+        eventId: 'debug-1',
+        requestBody: null,
+        requestKey: null,
+        route: '/v1/chat/completions',
+        transformedResponse: null,
+        upstreamRequest: null,
+        upstreamResponse: null,
+      },
+    ]);
+    expect(await adapter.listDebugLogs(1)).toEqual([
+      expect.objectContaining({ id: 'debug-1' }),
+    ]);
+    await adapter.clearDebugLogs();
+    await adapter.trimDebugLogs(100);
+    selectOffset.mockResolvedValueOnce([{ eventId: 'debug-1' }]);
+    await adapter.trimDebugLogs(0);
+
+    await adapter.ensureSchema();
+    expect(migrate).toHaveBeenCalledTimes(1);
+    expect(poolQuery).toHaveBeenNthCalledWith(
+      1,
+      'SELECT pg_advisory_lock($1)',
+      [1_873_289_124],
+    );
+    expect(poolQuery).toHaveBeenNthCalledWith(
+      2,
+      'SELECT pg_advisory_unlock($1)',
+      [1_873_289_124],
+    );
+    expect(poolRelease).toHaveBeenCalledTimes(1);
+    expect(selectLimit).toHaveBeenCalledTimes(5);
+
     await adapter.deleteDocument('config', 'runtime');
-    expect(deleteFrom).toHaveBeenCalledTimes(1);
-    expect(deleteWhere).toHaveBeenCalledTimes(1);
+    expect(deleteFrom).toHaveBeenCalledTimes(5);
+    expect(deleteWhere).toHaveBeenCalledTimes(3);
   });
 
   it('returns null when a document is missing', async () => {
     const { DrizzlePgDatabaseStorageAdapter } =
-      await import('@/lib/server/storage/database');
+      await import('@/lib/server/storage/backends/postgres');
 
     const adapter = new DrizzlePgDatabaseStorageAdapter({
       connectionString: 'postgres://example.test/codebuddy',

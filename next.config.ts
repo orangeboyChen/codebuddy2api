@@ -3,6 +3,9 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+  outputFileTracingIncludes: {
+    '/*': ['./lib/server/storage/migrations/**'],
+  },
   typedRoutes: true,
 };
 

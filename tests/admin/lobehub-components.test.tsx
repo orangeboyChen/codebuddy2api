@@ -1,14 +1,12 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
 import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
 
-import {
-  DashboardSection,
-  TabNav,
-} from '@/app/admin/_components/admin-sections';
+import Dashboard from '@/app/dashboard/dashboard';
+import { DashboardProvider } from '@/app/dashboard/dashboard';
 import { getMessages } from '@/lib/i18n/messages';
 
 const renderWithMessages = (children: React.ReactNode) => {
@@ -21,25 +19,12 @@ const renderWithMessages = (children: React.ReactNode) => {
   );
 };
 
-describe('LobeHub admin components', () => {
-  it('keeps the horizontal tab labels and selection callback intact', () => {
-    const onChange = vi.fn();
-
-    renderWithMessages(<TabNav activeTab="dashboard" onChange={onChange} />);
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Usage' }));
-
-    expect(onChange).toHaveBeenCalledWith('usage');
-    expect(screen.getByRole('tab', { name: 'Dashboard' })).toBeVisible();
-  });
-
+describe('dashboard view', () => {
   it('keeps all four dashboard cards visible', () => {
     renderWithMessages(
-      <>
-        <DashboardSection
-          onCopyEndpoint={vi.fn()}
-          onRefresh={vi.fn()}
-          state={{
+      <DashboardProvider
+        value={{
+          dashboard: {
             apiEndpoint: 'http://localhost:8001/v1',
             credentialUsage: [],
             credentialUsagePercent: 100,
@@ -52,45 +37,49 @@ describe('LobeHub admin components', () => {
             totalCredentials: 2,
             uptimeText: 'ok',
             validCredentials: 2,
-          }}
-        />
-      </>,
+          },
+          onCopyEndpoint: vi.fn(),
+          onRefresh: vi.fn(),
+        }}
+      >
+        <Dashboard />
+      </DashboardProvider>,
     );
 
-    expect(document.getElementById('totalCredentials')).toHaveTextContent('2');
-    expect(document.getElementById('apiEndpoint')).toHaveTextContent(
-      'http://localhost:8001/v1',
-    );
+    expect(screen.getAllByText('2').length).toBeGreaterThan(0);
+    expect(screen.getByText('http://localhost:8001/v1')).toBeVisible();
     expect(document.getElementById('totalApiCalls')).toHaveTextContent('42');
-    expect(
-      document.querySelector('#dashboard > div:first-child')?.children,
-    ).toHaveLength(4);
+    expect(document.querySelectorAll('.dashboard-metric-card')).toHaveLength(4);
   });
 
   it('keeps the initial service status time visible', () => {
     renderWithMessages(
-      <DashboardSection
-        onCopyEndpoint={vi.fn()}
-        onRefresh={vi.fn()}
-        state={{
-          apiEndpoint: 'http://localhost:8001/v1',
-          credentialUsage: [],
-          credentialUsagePercent: 0,
-          lastCheckedAt: 'Last checked 7/12/2026, 5:00:00 PM',
-          loading: false,
-          modelUsage: [],
-          serviceStatus: 'online',
-          statusText: 'Running',
-          totalApiCalls: 0,
-          totalCredentials: 0,
-          uptimeText: '',
-          validCredentials: 0,
+      <DashboardProvider
+        value={{
+          dashboard: {
+            apiEndpoint: 'http://localhost:8001/v1',
+            credentialUsage: [],
+            credentialUsagePercent: 0,
+            lastCheckedAt: 'Last checked 7/12/2026, 5:00:00 PM',
+            loading: false,
+            modelUsage: [],
+            serviceStatus: 'online',
+            statusText: 'Running',
+            totalApiCalls: 0,
+            totalCredentials: 0,
+            uptimeText: '',
+            validCredentials: 0,
+          },
+          onCopyEndpoint: vi.fn(),
+          onRefresh: vi.fn(),
         }}
-      />,
+      >
+        <Dashboard />
+      </DashboardProvider>,
     );
 
-    expect(document.getElementById('uptime')).toHaveTextContent(
-      'Last checked 7/12/2026, 5:00:00 PM',
-    );
+    expect(
+      screen.getAllByText('Last checked 7/12/2026, 5:00:00 PM').length,
+    ).toBeGreaterThan(0);
   });
 });

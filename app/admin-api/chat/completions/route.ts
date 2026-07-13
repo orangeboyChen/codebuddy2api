@@ -56,7 +56,7 @@ export const POST = async (request: NextRequest): Promise<Response> => {
     const response = Response.json(
       {
         error: {
-          message: error instanceof Error ? error.message : 'API 测试失败',
+          message: error instanceof Error ? error.message : undefined,
         },
       },
       { status: 400 },

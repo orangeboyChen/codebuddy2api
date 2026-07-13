@@ -3,7 +3,7 @@ import { cookies } from 'next/headers';
 import { getTranslations } from 'next-intl/server';
 import { redirect } from 'next/navigation';
 
-import LoginClient from '@/features/admin/login-client';
+import LoginClient from './login-client';
 import { getAdminSessionSummary } from '@/lib/server/admin/session';
 import { getMessages } from '@/lib/i18n/messages';
 import {
@@ -55,12 +55,6 @@ const LoginPage = async () => {
       initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
       locale={locale}
       localePreference={localePreference}
-      systemLocaleLabel={messages.Admin.languageSystem}
-      themeLabels={{
-        dark: messages.Admin.themeDark,
-        light: messages.Admin.themeLight,
-        system: messages.Admin.themeSystem,
-      }}
       translations={messages.Admin.loginPage}
     />
   );

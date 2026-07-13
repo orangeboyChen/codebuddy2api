@@ -44,7 +44,6 @@ export const POST = async (request: Request): Promise<Response> => {
   }>(request);
 
   return Response.json({
-    message: '设置已保存并成功热加载！',
     settings: await updateSettings(body.settings ?? {}),
   });
 };

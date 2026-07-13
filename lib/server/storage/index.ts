@@ -5,9 +5,11 @@ import path from 'node:path';
 import {
   type DatabaseStorageAdapter,
   DrizzlePgDatabaseStorageAdapter,
-} from './database';
+} from './backends/postgres';
+import { DrizzleSqliteDatabaseStorageAdapter } from './backends/sqlite';
+import type { StorageEvent } from './backends/types';
 
-export type StorageBackendKind = 'file' | 'pg';
+export type StorageBackendKind = 'file' | 'pg' | 'sqlite';
 
 interface JsonDocument<T> {
   key: string;
@@ -21,11 +23,19 @@ export interface StorageJsonReadResult<T> {
 }
 
 interface StorageBackend {
+  appendDebugLogs?(entries: StorageEvent[]): Promise<void>;
+  appendUsageEvents?(entries: StorageEvent[]): Promise<void>;
+  clearDebugLogs?(): Promise<void>;
+  clearUsageEvents?(): Promise<void>;
   deleteJson(namespace: string, key: string): Promise<void>;
   getJson<T>(namespace: string, key: string): Promise<T | null>;
   initialize(): Promise<void>;
   listJson<T>(namespace: string): Promise<Array<JsonDocument<T>>>;
+  listDebugLogs?(limit: number): Promise<StorageEvent[]>;
+  listUsageEvents?(since: Date): Promise<StorageEvent[]>;
   putJson<T>(namespace: string, key: string, value: T): Promise<void>;
+  trimDebugLogs?(maxEntries: number): Promise<void>;
+  trimUsageEvents?(before: Date): Promise<void>;
 }
 
 interface DatabaseBackendFactory {
@@ -40,7 +50,7 @@ interface StorageRuntime {
 
 const STORAGE_KIND_ENV = 'CODEBUDDY_STORAGE_BACKEND';
 const STORAGE_PG_URL_ENV = 'CODEBUDDY_STORAGE_PG_URL';
-const STORAGE_PG_SCHEMA_ENV = 'CODEBUDDY_STORAGE_PG_SCHEMA';
+const STORAGE_SQLITE_PATH_ENV = 'CODEBUDDY_STORAGE_SQLITE_PATH';
 const STORAGE_IMPORT_ENV = 'CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES';
 const STORAGE_ENCRYPTION_KEY_ENV = 'CODEBUDDY_STORAGE_ENCRYPTION_KEY';
 const STORAGE_PERSISTENCE_ENV = 'CODEBUDDY_STORAGE_PERSISTENCE';
@@ -57,21 +67,16 @@ const resolveFileStorageDir = (): string => {
   const explicitDir = process.env[STORAGE_FILE_DIR_ENV]?.trim();
 
   if (explicitDir) {
-    return path.resolve(/* turbopackIgnore: true */ process.cwd(), explicitDir);
+    return path.resolve('.', explicitDir);
   }
 
   const legacyConfigPath = process.env[LEGACY_CONFIG_PATH_ENV]?.trim();
 
   if (legacyConfigPath) {
-    return path.dirname(
-      path.resolve(/* turbopackIgnore: true */ process.cwd(), legacyConfigPath),
-    );
+    return path.dirname(path.resolve('.', legacyConfigPath));
   }
 
-  return path.resolve(
-    /* turbopackIgnore: true */ process.cwd(),
-    '.codebuddy_data',
-  );
+  return path.resolve('.', '.codebuddy_data');
 };
 
 const getLegacyConfigPath = (): string | null => {
@@ -81,10 +86,7 @@ const getLegacyConfigPath = (): string | null => {
     return null;
   }
 
-  return path.resolve(
-    /* turbopackIgnore: true */ process.cwd(),
-    legacyConfigPath,
-  );
+  return path.resolve('.', legacyConfigPath);
 };
 
 export const getFileStorageDir = (): string => {
@@ -102,10 +104,7 @@ export const getConfigDir = (): string => {
 };
 
 export const getCredsDir = (): string => {
-  return path.resolve(
-    /* turbopackIgnore: true */ process.cwd(),
-    '.codebuddy_creds',
-  );
+  return path.resolve('.', '.codebuddy_creds');
 };
 
 const getStorageBackendKind = (): StorageBackendKind => {
@@ -120,6 +119,10 @@ const getStorageBackendKind = (): StorageBackendKind => {
     return 'file';
   }
 
+  if (value === 'sqlite' || persistence === 'sqlite') {
+    return 'sqlite';
+  }
+
   if (value === 'pg' || persistence === 'pg') {
     return 'pg';
   }
@@ -131,14 +134,18 @@ const getStorageBackendKind = (): StorageBackendKind => {
   return 'file';
 };
 
-const getPgSchema = (): string => {
-  const raw = process.env[STORAGE_PG_SCHEMA_ENV]?.trim();
+const getSqlitePath = (): string => {
+  const explicitPath = process.env[STORAGE_SQLITE_PATH_ENV]?.trim();
 
-  if (!raw) {
-    return 'codebuddy2api';
+  if (explicitPath) {
+    return path.resolve('.', explicitPath);
   }
 
-  return raw.replace(/[^a-zA-Z0-9_]/g, '_') || 'codebuddy2api';
+  return path.join(resolveFileStorageDir(), 'storage.sqlite');
+};
+
+const getPgSchema = (): string => {
+  return 'codebuddy2api';
 };
 
 const shouldImportLegacyFiles = (): boolean => {
@@ -273,13 +280,8 @@ const getLegacyDocumentPath = (
 ): string | null => {
   const legacyConfigPath = process.env[LEGACY_CONFIG_PATH_ENV]?.trim();
   const legacyConfigDir = legacyConfigPath
-    ? path.dirname(
-        path.resolve(
-          /* turbopackIgnore: true */ process.cwd(),
-          legacyConfigPath,
-        ),
-      )
-    : path.resolve(/* turbopackIgnore: true */ process.cwd(), 'config');
+    ? path.dirname(path.resolve('.', legacyConfigPath))
+    : path.resolve('.', 'config');
   const legacyFilename =
     namespace === 'config' && key === 'runtime'
       ? 'config.json'
@@ -334,12 +336,18 @@ const readFileStorageDocument = <T>(
 };
 
 const listCredentialFiles = (): string[] => {
-  if (!fs.existsSync(getCredsDir())) {
+  const credentialsDirectory = getCredsDir();
+
+  if (!fs.existsSync(credentialsDirectory)) {
     return [];
   }
 
+  if (!fs.statSync(credentialsDirectory).isDirectory()) {
+    throw new Error(`${credentialsDirectory} must be a directory`);
+  }
+
   return fs
-    .readdirSync(getCredsDir())
+    .readdirSync(credentialsDirectory)
     .filter(
       (item) =>
         item.endsWith('.json') && item !== CREDENTIAL_MANAGER_STATE_FILENAME,
@@ -409,7 +417,16 @@ const decryptPayload = <T>(ciphertext: string, mode: string): T => {
 };
 
 class FileStorageBackend implements StorageBackend {
-  public async initialize(): Promise<void> {}
+  public async initialize(): Promise<void> {
+    const credentialsDirectory = getCredsDir();
+
+    if (
+      fs.existsSync(credentialsDirectory) &&
+      !fs.statSync(credentialsDirectory).isDirectory()
+    ) {
+      throw new Error(`${credentialsDirectory} must be a directory`);
+    }
+  }
 
   public async getJson<T>(namespace: string, key: string): Promise<T | null> {
     return readFileStorageDocument<T>(namespace, key).value;
@@ -467,6 +484,15 @@ class PgDatabaseFactory implements DatabaseBackendFactory {
   }
 }
 
+class SqliteDatabaseFactory implements DatabaseBackendFactory {
+  public createAdapter(): DatabaseStorageAdapter {
+    const sqlitePath = getSqlitePath();
+    fs.mkdirSync(path.dirname(sqlitePath), { recursive: true });
+
+    return new DrizzleSqliteDatabaseStorageAdapter({ path: sqlitePath });
+  }
+}
+
 class DatabaseStorageBackend implements StorageBackend {
   private adapter: DatabaseStorageAdapter;
 
@@ -475,6 +501,12 @@ class DatabaseStorageBackend implements StorageBackend {
   }
 
   public async initialize(): Promise<void> {
+    if (!process.env[STORAGE_ENCRYPTION_KEY_ENV]?.trim()) {
+      throw new Error(
+        `${STORAGE_ENCRYPTION_KEY_ENV} is required when storage backend is ${getStorageBackendKind()}`,
+      );
+    }
+
     await this.adapter.ensureSchema();
 
     if (shouldImportLegacyFiles()) {
@@ -548,6 +580,38 @@ class DatabaseStorageBackend implements StorageBackend {
     await this.adapter.deleteDocument(namespace, key);
   }
 
+  public appendUsageEvents(entries: StorageEvent[]): Promise<void> {
+    return this.adapter.appendUsageEvents(entries);
+  }
+
+  public listUsageEvents(since: Date): Promise<StorageEvent[]> {
+    return this.adapter.listUsageEvents(since);
+  }
+
+  public clearUsageEvents(): Promise<void> {
+    return this.adapter.clearUsageEvents();
+  }
+
+  public trimUsageEvents(before: Date): Promise<void> {
+    return this.adapter.trimUsageEvents(before);
+  }
+
+  public appendDebugLogs(entries: StorageEvent[]): Promise<void> {
+    return this.adapter.appendDebugLogs(entries);
+  }
+
+  public listDebugLogs(limit: number): Promise<StorageEvent[]> {
+    return this.adapter.listDebugLogs(limit);
+  }
+
+  public clearDebugLogs(): Promise<void> {
+    return this.adapter.clearDebugLogs();
+  }
+
+  public trimDebugLogs(maxEntries: number): Promise<void> {
+    return this.adapter.trimDebugLogs(maxEntries);
+  }
+
   private async importLegacyDocument(
     namespace: string,
     key: string,
@@ -568,8 +632,6 @@ class DatabaseStorageBackend implements StorageBackend {
       { namespace: 'admin-auth', key: 'state' },
       { namespace: 'access-keys', key: 'store' },
       { namespace: 'debug', key: 'settings' },
-      { namespace: 'debug', key: 'logs' },
-      { namespace: 'usage', key: 'history' },
       { namespace: 'credentials', key: CREDENTIAL_MANAGER_STATE_FILENAME },
     ];
 
@@ -600,9 +662,17 @@ class DatabaseStorageBackend implements StorageBackend {
 }
 
 const createBackend = (): StorageBackend => {
-  return getStorageBackendKind() === 'pg'
-    ? new DatabaseStorageBackend(new PgDatabaseFactory())
-    : new FileStorageBackend();
+  const backend = getStorageBackendKind();
+
+  if (backend === 'pg') {
+    return new DatabaseStorageBackend(new PgDatabaseFactory());
+  }
+
+  if (backend === 'sqlite') {
+    return new DatabaseStorageBackend(new SqliteDatabaseFactory());
+  }
+
+  return new FileStorageBackend();
 };
 
 const getRuntime = (): StorageRuntime => {
@@ -695,6 +765,67 @@ export const deleteStorageJson = async (
 ): Promise<void> => {
   await ensureStorageReady();
   await getRuntime().backend.deleteJson(namespace, key);
+};
+
+const getEventBackend = async (): Promise<StorageBackend> => {
+  await ensureStorageReady();
+  const backend = getRuntime().backend;
+
+  if (getStorageBackendKind() === 'file') {
+    throw new Error('Event storage is only available for database backends');
+  }
+
+  return backend;
+};
+
+export const appendStorageUsageEvents = async (
+  entries: StorageEvent[],
+): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.appendUsageEvents?.(entries);
+};
+
+export const listStorageUsageEvents = async (
+  since: Date,
+): Promise<StorageEvent[]> => {
+  const backend = await getEventBackend();
+  return (await backend.listUsageEvents?.(since)) ?? [];
+};
+
+export const clearStorageUsageEvents = async (): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.clearUsageEvents?.();
+};
+
+export const trimStorageUsageEvents = async (before: Date): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.trimUsageEvents?.(before);
+};
+
+export const appendStorageDebugLogs = async (
+  entries: StorageEvent[],
+): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.appendDebugLogs?.(entries);
+};
+
+export const listStorageDebugLogs = async (
+  limit: number,
+): Promise<StorageEvent[]> => {
+  const backend = await getEventBackend();
+  return (await backend.listDebugLogs?.(limit)) ?? [];
+};
+
+export const clearStorageDebugLogs = async (): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.clearDebugLogs?.();
+};
+
+export const trimStorageDebugLogs = async (
+  maxEntries: number,
+): Promise<void> => {
+  const backend = await getEventBackend();
+  await backend.trimDebugLogs?.(maxEntries);
 };
 
 export const resetStorageRuntime = (): void => {
