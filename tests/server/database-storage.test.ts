@@ -15,6 +15,7 @@ const selectWhere = vi.fn(() => ({
 
 const selectFrom = vi.fn(() => ({
   limit: selectLimit,
+  orderBy: () => ({ limit: selectLimit }),
   where: selectWhere,
 }));
 
@@ -163,11 +164,81 @@ describe('drizzle pg storage adapter', () => {
     await adapter.appendUsageEvents([
       {
         id: 'usage-1',
-        payload: { totalTokens: 1 },
+        payload: {
+          accessKeyId: null,
+          accessKeyName: null,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          callCount: 1,
+          credentialFilename: null,
+          inputTokens: 0,
+          model: 'test',
+          outputTokens: 1,
+          route: '/v1/chat/completions',
+          totalTokens: 1,
+        },
         timestamp: '2026-07-12T00:00:00.000Z',
       },
     ]);
     expect(insertOnConflictDoNothing).toHaveBeenCalledTimes(1);
+
+    selectOrderBy.mockResolvedValueOnce([
+      {
+        accessKeyId: null,
+        accessKeyName: null,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        callCount: 1,
+        credentialFilename: null,
+        eventId: 'usage-1',
+        inputTokens: 0,
+        model: 'test',
+        occurredAt: new Date('2026-07-12T00:00:00.000Z'),
+        outputTokens: 1,
+        route: '/v1/chat/completions',
+        totalTokens: 1,
+      },
+    ]);
+    expect(
+      await adapter.listUsageEvents(new Date('2026-07-01T00:00:00.000Z')),
+    ).toEqual([expect.objectContaining({ id: 'usage-1' })]);
+    await adapter.clearUsageEvents();
+    await adapter.trimUsageEvents(new Date('2026-07-01T00:00:00.000Z'));
+
+    await adapter.appendDebugLogs([
+      {
+        id: 'debug-1',
+        payload: {
+          credentialFilename: null,
+          error: null,
+          requestBody: null,
+          requestKey: null,
+          route: '/v1/chat/completions',
+          transformedResponse: null,
+          upstreamRequest: null,
+          upstreamResponse: null,
+        },
+        timestamp: '2026-07-12T00:00:00.000Z',
+      },
+    ]);
+    selectLimit.mockResolvedValueOnce([
+      {
+        createdAt: new Date('2026-07-12T00:00:00.000Z'),
+        credentialFilename: null,
+        error: null,
+        eventId: 'debug-1',
+        requestBody: null,
+        requestKey: null,
+        route: '/v1/chat/completions',
+        transformedResponse: null,
+        upstreamRequest: null,
+        upstreamResponse: null,
+      },
+    ]);
+    expect(await adapter.listDebugLogs(1)).toEqual([
+      expect.objectContaining({ id: 'debug-1' }),
+    ]);
+    await adapter.clearDebugLogs();
 
     await adapter.ensureSchema();
     expect(migrate).toHaveBeenCalledTimes(1);
@@ -182,11 +253,11 @@ describe('drizzle pg storage adapter', () => {
       [1_873_289_124],
     );
     expect(poolRelease).toHaveBeenCalledTimes(1);
-    expect(selectLimit).toHaveBeenCalledTimes(4);
+    expect(selectLimit).toHaveBeenCalledTimes(5);
 
     await adapter.deleteDocument('config', 'runtime');
-    expect(deleteFrom).toHaveBeenCalledTimes(1);
-    expect(deleteWhere).toHaveBeenCalledTimes(1);
+    expect(deleteFrom).toHaveBeenCalledTimes(4);
+    expect(deleteWhere).toHaveBeenCalledTimes(2);
   });
 
   it('returns null when a document is missing', async () => {
