@@ -88,6 +88,58 @@ describe('storage backends', () => {
     storage.resetStorageRuntime();
   });
 
+  it('initializes SQLite storage and forwards event operations', async () => {
+    process.env.CODEBUDDY_STORAGE_BACKEND = 'sqlite';
+    process.env.CODEBUDDY_STORAGE_ENCRYPTION_KEY = 'storage-secret';
+    process.env.CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES = 'false';
+    process.env.CODEBUDDY_STORAGE_SQLITE_PATH = path.join(
+      tempRootDir,
+      'storage.sqlite',
+    );
+    vi.spyOn(process, 'cwd').mockReturnValue(repoRoot);
+
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+
+    await storage.ensureStorageReady();
+    await storage.writeStorageJson('config', 'runtime', { enabled: true });
+    expect(await storage.readStorageJson('config', 'runtime')).toEqual({
+      enabled: true,
+    });
+
+    const event = {
+      id: 'event-1',
+      payload: {
+        accessKeyId: null,
+        accessKeyName: null,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        callCount: 1,
+        credentialFilename: null,
+        inputTokens: 1,
+        model: 'test',
+        outputTokens: 1,
+        route: '/v1/messages',
+        totalTokens: 2,
+      },
+      timestamp: '2026-07-13T00:00:00.000Z',
+    };
+
+    await storage.appendStorageUsageEvents([event]);
+    expect(
+      await storage.listStorageUsageEvents(
+        new Date('2026-07-12T00:00:00.000Z'),
+      ),
+    ).toHaveLength(1);
+    await storage.trimStorageUsageEvents(new Date('2026-07-14T00:00:00.000Z'));
+    expect(await storage.listStorageUsageEvents(new Date(0))).toEqual([]);
+    await storage.appendStorageDebugLogs([event]);
+    expect(await storage.listStorageDebugLogs(10)).toHaveLength(1);
+    await storage.clearStorageDebugLogs();
+    await storage.clearStorageUsageEvents();
+    storage.resetStorageRuntime();
+  });
+
   it('rejects a credential path that is not a directory', async () => {
     fs.mkdirSync(tempRootDir, { recursive: true });
     fs.writeFileSync(tempCredsDir, '{}');
@@ -204,14 +256,30 @@ describe('storage backends', () => {
     });
     const putDocument = vi.fn(async () => undefined);
     const deleteDocument = vi.fn(async () => undefined);
+    const appendUsageEvents = vi.fn(async () => undefined);
+    const listUsageEvents = vi.fn(async () => []);
+    const clearUsageEvents = vi.fn(async () => undefined);
+    const trimUsageEvents = vi.fn(async () => undefined);
+    const appendDebugLogs = vi.fn(async () => undefined);
+    const listDebugLogs = vi.fn(async () => []);
+    const clearDebugLogs = vi.fn(async () => undefined);
+    const trimDebugLogs = vi.fn(async () => undefined);
 
     vi.doMock('@/lib/server/storage/backends/postgres', () => ({
       DrizzlePgDatabaseStorageAdapter: class MockAdapter {
+        public appendDebugLogs = appendDebugLogs;
+        public appendUsageEvents = appendUsageEvents;
+        public clearDebugLogs = clearDebugLogs;
+        public clearUsageEvents = clearUsageEvents;
         public deleteDocument = deleteDocument;
         public ensureSchema = ensureSchema;
         public getDocument = getDocument;
+        public listDebugLogs = listDebugLogs;
         public listDocuments = listDocuments;
+        public listUsageEvents = listUsageEvents;
         public putDocument = putDocument;
+        public trimDebugLogs = trimDebugLogs;
+        public trimUsageEvents = trimUsageEvents;
       },
     }));
 
@@ -297,6 +365,31 @@ describe('storage backends', () => {
 
     await storage.deleteStorageJson('credentials', 'cred-a.json');
     expect(deleteDocument).toHaveBeenCalledWith('credentials', 'cred-a.json');
+
+    const event = {
+      id: 'event-1',
+      payload: { route: '/v1/messages' },
+      timestamp: '2026-07-13T00:00:00.000Z',
+    };
+    const before = new Date('2026-07-12T00:00:00.000Z');
+
+    await storage.appendStorageUsageEvents([event]);
+    await storage.listStorageUsageEvents(before);
+    await storage.clearStorageUsageEvents();
+    await storage.trimStorageUsageEvents(before);
+    await storage.appendStorageDebugLogs([event]);
+    await storage.listStorageDebugLogs(10);
+    await storage.clearStorageDebugLogs();
+    await storage.trimStorageDebugLogs(10);
+
+    expect(appendUsageEvents).toHaveBeenCalledWith([event]);
+    expect(listUsageEvents).toHaveBeenCalledWith(before);
+    expect(clearUsageEvents).toHaveBeenCalledTimes(1);
+    expect(trimUsageEvents).toHaveBeenCalledWith(before);
+    expect(appendDebugLogs).toHaveBeenCalledWith([event]);
+    expect(listDebugLogs).toHaveBeenCalledWith(10);
+    expect(clearDebugLogs).toHaveBeenCalledTimes(1);
+    expect(trimDebugLogs).toHaveBeenCalledWith(10);
   });
 
   it('fails fast when pg backend is enabled without a connection string', async () => {

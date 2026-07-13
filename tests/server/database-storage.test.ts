@@ -4,6 +4,9 @@ const selectLimit = vi.fn<() => Promise<Record<string, unknown>[]>>(
 const selectOrderBy = vi.fn<() => Promise<Record<string, unknown>[]>>(
   async () => [],
 );
+const selectOffset = vi.fn<() => Promise<Record<string, unknown>[]>>(
+  async () => [],
+);
 const insertOnConflictDoUpdate = vi.fn(async () => undefined);
 const insertOnConflictDoNothing = vi.fn(async () => undefined);
 const deleteWhere = vi.fn(async () => undefined);
@@ -15,7 +18,7 @@ const selectWhere = vi.fn(() => ({
 
 const selectFrom = vi.fn(() => ({
   limit: selectLimit,
-  orderBy: () => ({ limit: selectLimit }),
+  orderBy: () => ({ limit: selectLimit, offset: selectOffset }),
   where: selectWhere,
 }));
 
@@ -239,6 +242,9 @@ describe('drizzle pg storage adapter', () => {
       expect.objectContaining({ id: 'debug-1' }),
     ]);
     await adapter.clearDebugLogs();
+    await adapter.trimDebugLogs(100);
+    selectOffset.mockResolvedValueOnce([{ eventId: 'debug-1' }]);
+    await adapter.trimDebugLogs(0);
 
     await adapter.ensureSchema();
     expect(migrate).toHaveBeenCalledTimes(1);
@@ -256,8 +262,8 @@ describe('drizzle pg storage adapter', () => {
     expect(selectLimit).toHaveBeenCalledTimes(5);
 
     await adapter.deleteDocument('config', 'runtime');
-    expect(deleteFrom).toHaveBeenCalledTimes(4);
-    expect(deleteWhere).toHaveBeenCalledTimes(2);
+    expect(deleteFrom).toHaveBeenCalledTimes(5);
+    expect(deleteWhere).toHaveBeenCalledTimes(3);
   });
 
   it('returns null when a document is missing', async () => {
