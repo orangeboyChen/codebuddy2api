@@ -156,15 +156,15 @@ export class DrizzleSqliteDatabaseStorageAdapter implements DatabaseStorageAdapt
     const rows = await this.db
       .select({ eventId: debugLogs.eventId })
       .from(debugLogs)
-      .orderBy(desc(debugLogs.createdAt), desc(debugLogs.eventId))
-      .offset(maxEntries);
+      .orderBy(desc(debugLogs.createdAt), desc(debugLogs.eventId));
+    const staleRows = rows.slice(maxEntries);
 
-    if (!rows.length) return;
+    if (!staleRows.length) return;
 
     await this.db.delete(debugLogs).where(
       inArray(
         debugLogs.eventId,
-        rows.map((row) => row.eventId),
+        staleRows.map((row) => row.eventId),
       ),
     );
   }

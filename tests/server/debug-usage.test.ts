@@ -24,6 +24,7 @@ import {
   recordUsageEvent,
   resetUsageHistory,
 } from '@/lib/server/domain/usage';
+import { resetStorageRuntime } from '@/lib/server/storage';
 
 const repoRoot = process.cwd();
 const tempRootDir = path.join(repoRoot, '.tmp-test-debug-usage-root');
@@ -49,6 +50,11 @@ describe('debug and usage persistence', () => {
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
     delete process.env.CODEBUDDY_STORAGE_FILE_DIR;
     delete process.env.CODEBUDDY_CONFIG_PATH;
+    delete process.env.CODEBUDDY_STORAGE_BACKEND;
+    delete process.env.CODEBUDDY_STORAGE_ENCRYPTION_KEY;
+    delete process.env.CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES;
+    delete process.env.CODEBUDDY_STORAGE_SQLITE_PATH;
+    resetStorageRuntime();
   });
 
   afterEach(() => {
@@ -259,6 +265,43 @@ describe('debug and usage persistence', () => {
     expect(
       (await getUsageAnalytics({ range: 'today' })).todaySummary.callCount,
     ).toBe(2);
+  });
+
+  it('uses append-only SQLite events for debug and usage records', async () => {
+    process.env.CODEBUDDY_STORAGE_BACKEND = 'sqlite';
+    process.env.CODEBUDDY_STORAGE_ENCRYPTION_KEY = 'storage-secret';
+    process.env.CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES = 'false';
+    process.env.CODEBUDDY_STORAGE_SQLITE_PATH = path.join(
+      tempRootDir,
+      'events.sqlite',
+    );
+    vi.spyOn(process, 'cwd').mockReturnValue(repoRoot);
+    resetStorageRuntime();
+
+    await updateDebugSettings({ enabled: true, maxEntries: 10 });
+    const trace = createDebugTrace({
+      requestBody: { prompt: 'database event' },
+      requestKey: null,
+      route: '/v1/messages',
+    });
+    finalizeDebugTrace(trace, Response.json({ ok: true }));
+
+    await vi.waitFor(async () => {
+      expect(await listDebugLogs()).toHaveLength(1);
+    });
+
+    await recordUsageEvent({
+      model: 'sqlite-model',
+      route: '/v1/messages',
+      usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+    });
+    expect(
+      (await getUsageAnalytics({ range: 'today' })).todaySummary,
+    ).toMatchObject({ callCount: 1, totalTokens: 3 });
+
+    await clearDebugLogs();
+    await clearUsageHistory();
+    resetStorageRuntime();
   });
 
   it('records usage, aggregates ranges, filters, and trims stale events', async () => {
