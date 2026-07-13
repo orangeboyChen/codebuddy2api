@@ -119,12 +119,20 @@ const scheduleRuntimeStateSave = (): void => {
   runtimeStateFlushTimer.unref?.();
 };
 
+const flushRuntimeStateBeforeShutdown = (signal: NodeJS.Signals): void => {
+  void flushCredentialRuntimeState()
+    .catch(() => undefined)
+    .finally(() => {
+      process.kill(process.pid, signal);
+    });
+};
+
 process.once('SIGTERM', () => {
-  void flushCredentialRuntimeState();
+  flushRuntimeStateBeforeShutdown('SIGTERM');
 });
 
 process.once('SIGINT', () => {
-  void flushCredentialRuntimeState();
+  flushRuntimeStateBeforeShutdown('SIGINT');
 });
 
 const getNestedValue = (
