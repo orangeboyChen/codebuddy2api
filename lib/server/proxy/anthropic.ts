@@ -12,6 +12,7 @@ import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
 interface AnthropicContentBlock {
   type: string;
   text?: string;
+  cache_control?: { type?: string };
   id?: string;
   name?: string;
   input?: unknown;
@@ -109,6 +110,14 @@ interface OpenAIStreamChunk {
   usage?: OpenAIUsage;
 }
 
+interface ChatTextBlock {
+  cache_control?: { type?: string };
+  text: string;
+  type: 'text';
+}
+
+type ChatTextContent = string | ChatTextBlock[];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -145,9 +154,27 @@ const stringifyContent = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+const mapTextPartsToChatContent = (
+  parts: Array<string | ChatTextBlock>,
+): ChatTextContent => {
+  const textParts = parts.filter((part) =>
+    typeof part === 'string' ? part.length > 0 : part.text.length > 0,
+  );
+  const hasStructuredText = textParts.some((part) => typeof part !== 'string');
+
+  if (!hasStructuredText) {
+    return textParts.join('\n');
+  }
+
+  return textParts.flatMap((part, index) => [
+    ...(index > 0 ? [{ type: 'text' as const, text: '\n' }] : []),
+    typeof part === 'string' ? { type: 'text' as const, text: part } : part,
+  ]);
+};
+
 const extractSystemText = (
   system: string | AnthropicContentBlock[] | undefined,
-): string => {
+): ChatTextContent => {
   if (!system) {
     return '';
   }
@@ -156,15 +183,19 @@ const extractSystemText = (
     return system;
   }
 
-  return system
-    .map((block) => {
+  return mapTextPartsToChatContent(
+    system.map((block) => {
       if (block.type === 'text') {
-        return block.text ?? '';
+        const text = block.text ?? '';
+
+        return block.cache_control
+          ? { type: 'text', text, cache_control: block.cache_control }
+          : text;
       }
 
       return stringifyContent(block);
-    })
-    .join('\n');
+    }),
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -173,7 +204,7 @@ const extractSystemText = (
 
 interface ChatMessage {
   role: string;
-  content: string | null;
+  content: ChatTextContent | null;
   tool_calls?: Array<{
     id: string;
     type: string;
@@ -197,7 +228,7 @@ const mapAnthropicContentToChat = (
   // the OpenAI upstream receives proper tool_calls / tool messages instead
   // of flattened text. This preserves the call↔result relationship that
   // multi-step tool loops rely on.
-  const parts: string[] = [];
+  const parts: Array<string | ChatTextBlock> = [];
   const toolCalls: Array<{
     id: string;
     type: string;
@@ -210,7 +241,13 @@ const mapAnthropicContentToChat = (
 
   for (const block of content) {
     if (block.type === 'text') {
-      parts.push(block.text ?? '');
+      const text = block.text ?? '';
+
+      parts.push(
+        block.cache_control
+          ? { type: 'text', text, cache_control: block.cache_control }
+          : text,
+      );
     } else if (block.type === 'tool_use') {
       toolCalls.push({
         id: block.id ?? createAnthropicId('toolu'),
@@ -237,7 +274,7 @@ const mapAnthropicContentToChat = (
     }
   }
 
-  const textContent = parts.filter(Boolean).join('\n');
+  const textContent = mapTextPartsToChatContent(parts);
   const messages: ChatMessage[] = [];
 
   // Emit tool results before any free-form text so the tool result stays
@@ -253,10 +290,15 @@ const mapAnthropicContentToChat = (
   if (role === 'assistant') {
     messages.push({
       role: 'assistant',
-      content: textContent || null,
+      content:
+        Array.isArray(textContent) && textContent.length === 0
+          ? null
+          : textContent || null,
       ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
     });
-  } else if (textContent) {
+  } else if (
+    Array.isArray(textContent) ? textContent.length > 0 : textContent
+  ) {
     messages.push({ role: 'user', content: textContent });
   }
 

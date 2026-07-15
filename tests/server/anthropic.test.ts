@@ -139,6 +139,136 @@ describe('anthropic messages api', () => {
     expect(upstreamBody.stream).toBe(true);
   });
 
+  it('preserves explicit Anthropic cache control blocks upstream', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Reusable prompt prefix',
+                cache_control: { type: 'ephemeral' },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(response.status).toBe(200);
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown; role: string }> };
+
+    expect(upstreamBody.messages[0]).toEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: 'Reusable prompt prefix',
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+    });
+  });
+
+  it('preserves cache control blocks in top-level system content', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        system: [
+          {
+            type: 'text',
+            text: 'Reusable system prefix',
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+        messages: [{ role: 'user', content: 'Question' }],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown; role: string }> };
+
+    expect(upstreamBody.messages[0]).toEqual({
+      role: 'system',
+      content: [
+        {
+          type: 'text',
+          text: 'Reusable system prefix',
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+    });
+  });
+
+  it('keeps text separators when an Anthropic block uses cache control', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Reusable prompt prefix',
+                cache_control: { type: 'ephemeral' },
+              },
+              { type: 'text', text: 'Question' },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown; role: string }> };
+
+    expect(upstreamBody.messages[0]).toEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: 'Reusable prompt prefix',
+          cache_control: { type: 'ephemeral' },
+        },
+        { type: 'text', text: '\n' },
+        { type: 'text', text: 'Question' },
+      ],
+    });
+  });
+
   it('translates tool_use blocks in non-streaming response', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeJsonResponse({

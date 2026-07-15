@@ -596,6 +596,33 @@ describe('server units', () => {
       model: 'glm-5.1',
       totalTokens: 20,
     });
+
+    await recordUsageEvent({
+      accessKeyId: 'key-1',
+      accessKeyName: 'Team Key',
+      credentialFilename: 'legacy-credential.json',
+      model: 'glm-5.1',
+      route: '/v1/chat/completions',
+      timestamp: '2026-07-11T11:50:00.000Z',
+      usage: {
+        completion_tokens: 4,
+        prompt_tokens: 16,
+        prompt_tokens_details: {
+          cached_tokens: 6,
+          cache_creation_tokens: 4,
+        },
+      },
+    });
+
+    const openAIAnalytics = await getUsageAnalytics({
+      now,
+      range: '24h',
+    });
+    expect(openAIAnalytics.tableRows[0]).toMatchObject({
+      cacheHitTokens: 8,
+      model: 'glm-5.1',
+      totalTokens: 40,
+    });
     expect(analytics.tokenSeries[0]?.points).toHaveLength(24);
     expect(
       analytics.filters.accessKeys.some((item) => item.value === 'key-1'),
@@ -1236,6 +1263,119 @@ describe('server units', () => {
         },
       ],
     });
+  });
+
+  it('applies prompt cache control only when it is safe and useful', async () => {
+    const credential = (await listCredentials()).credentials[0];
+    expect(credential).toBeDefined();
+
+    const context = await resolveProxyContextByCredentialFilename(
+      String(credential?.filename),
+    );
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      return Promise.resolve(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+    });
+    const longText = 'cached prompt '.repeat(80);
+
+    await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [
+          { content: longText, role: 'system' },
+          { content: longText, role: 'user' },
+        ],
+      },
+      context,
+    );
+    await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [
+          {
+            content: [
+              {
+                cache_control: { type: 'ephemeral' },
+                text: 'explicit cache marker',
+                type: 'text',
+              },
+            ],
+            role: 'system',
+          },
+          { content: longText, role: 'user' },
+        ],
+      },
+      context,
+    );
+    await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [
+          {
+            content: [
+              { text: 'short text', type: 'text' },
+              { text: longText, type: 'text' },
+            ],
+            role: 'user',
+          },
+        ],
+      },
+      context,
+    );
+    await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      { messages: [{ content: 'short reply', role: 'assistant' }] },
+      context,
+    );
+
+    const firstBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown }> };
+    const secondBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown }> };
+    const thirdBody = JSON.parse(
+      String((fetchMock.mock.calls[2]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown }> };
+    const fourthBody = JSON.parse(
+      String((fetchMock.mock.calls[3]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown }> };
+
+    expect(firstBody.messages.map((message) => message.content)).toEqual([
+      [
+        {
+          cache_control: { type: 'ephemeral' },
+          text: longText,
+          type: 'text',
+        },
+      ],
+      [
+        {
+          cache_control: { type: 'ephemeral' },
+          text: longText,
+          type: 'text',
+        },
+      ],
+    ]);
+    expect(secondBody.messages[1]?.content).toBe(longText);
+    expect(thirdBody.messages[0]?.content).toEqual([
+      { text: 'short text', type: 'text' },
+      {
+        cache_control: { type: 'ephemeral' },
+        text: longText,
+        type: 'text',
+      },
+    ]);
+    expect(fourthBody.messages[0]?.content).toBe('short reply');
   });
 
   it('normalizes developer messages for chat upstream based on position', async () => {

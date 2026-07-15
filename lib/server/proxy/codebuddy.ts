@@ -30,6 +30,14 @@ interface OpenAIMessage {
   tool_call_id?: string;
 }
 
+interface CacheableTextBlock {
+  cache_control?: { type: 'ephemeral' };
+  text: string;
+  type: 'text';
+}
+
+const MIN_AUTO_CACHE_TEXT_LENGTH = 1024;
+
 export interface ChatRequestBody {
   model?: string;
   messages?: OpenAIMessage[];
@@ -312,6 +320,103 @@ const logUpstreamFailure = ({
   console.error('[CodeBuddy2API] Upstream request failed', payload);
 };
 
+const hasPromptCacheControl = (content: unknown): boolean => {
+  return (
+    Array.isArray(content) &&
+    content.some(
+      (part) => !!part && typeof part === 'object' && 'cache_control' in part,
+    )
+  );
+};
+
+const createCacheableTextBlock = (text: string): CacheableTextBlock => ({
+  type: 'text',
+  text,
+  cache_control: { type: 'ephemeral' },
+});
+
+const addPromptCacheControl = (message: OpenAIMessage): OpenAIMessage => {
+  if (
+    typeof message.content === 'string' &&
+    message.content.trim().length >= MIN_AUTO_CACHE_TEXT_LENGTH
+  ) {
+    return {
+      ...message,
+      content: [createCacheableTextBlock(message.content)],
+    };
+  }
+
+  if (Array.isArray(message.content)) {
+    const textIndex = message.content.findIndex(
+      (part) =>
+        !!part &&
+        typeof part === 'object' &&
+        (part as { type?: unknown }).type === 'text' &&
+        typeof (part as { text?: unknown }).text === 'string' &&
+        (part as { text: string }).text.trim().length >=
+          MIN_AUTO_CACHE_TEXT_LENGTH,
+    );
+
+    if (textIndex >= 0) {
+      return {
+        ...message,
+        content: message.content.map((part, index) =>
+          index === textIndex && part && typeof part === 'object'
+            ? {
+                ...part,
+                cache_control: { type: 'ephemeral' },
+              }
+            : part,
+        ),
+      };
+    }
+  }
+
+  return message;
+};
+
+const applyPromptCacheControl = (
+  messages: OpenAIMessage[],
+): OpenAIMessage[] => {
+  const explicitCacheControl = messages.some((message) =>
+    hasPromptCacheControl(message.content),
+  );
+
+  if (explicitCacheControl) {
+    return messages;
+  }
+
+  const cacheableIndexes = new Set<number>();
+  const systemIndex = messages.findIndex(
+    (message) => message.role === 'system',
+  );
+
+  if (systemIndex >= 0) {
+    cacheableIndexes.add(systemIndex);
+  }
+
+  let lastUserIndex = -1;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      lastUserIndex = index;
+      break;
+    }
+  }
+
+  if (lastUserIndex >= 0) {
+    cacheableIndexes.add(lastUserIndex);
+  }
+
+  if (cacheableIndexes.size === 0) {
+    return messages;
+  }
+
+  return messages.map((message, index) =>
+    cacheableIndexes.has(index) ? addPromptCacheControl(message) : message,
+  );
+};
+
 const normalizeMessages = (
   messages: OpenAIMessage[],
   firstMessageRoleToSystem: boolean,
@@ -321,12 +426,12 @@ const normalizeMessages = (
   );
 
   if (!firstMessageRoleToSystem) {
-    return filtered;
+    return applyPromptCacheControl(filtered);
   }
 
   let hasSystemMessage = false;
 
-  return filtered.map((message, index) => {
+  const normalized = filtered.map((message, index) => {
     if (message.role === 'system') {
       hasSystemMessage = true;
       return message;
@@ -352,6 +457,7 @@ const normalizeMessages = (
 
   // Preserve role:'tool' messages so the OpenAI-compatible upstream
   // receives a valid tool_calls/tool-result pair for multi-step tool loops.
+  return applyPromptCacheControl(normalized);
 };
 
 export const resolveProxyContext = async (

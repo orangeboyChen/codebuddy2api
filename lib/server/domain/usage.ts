@@ -18,6 +18,10 @@ export type UsageRange =
 export interface UsageSnapshot {
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  prompt_tokens_details?: {
+    cached_tokens?: number | null;
+    cache_creation_tokens?: number | null;
+  } | null;
   completion_tokens?: number | null;
   input_tokens?: number | null;
   output_tokens?: number | null;
@@ -126,12 +130,20 @@ const toNumber = (value: unknown): number => {
 const normalizeUsage = (usage: UsageSnapshot): UsageEventRecord => {
   const inputTokens = toNumber(usage.input_tokens ?? usage.prompt_tokens);
   const outputTokens = toNumber(usage.output_tokens ?? usage.completion_tokens);
-  const cacheReadTokens = toNumber(usage.cache_read_input_tokens);
-  const cacheCreationTokens = toNumber(usage.cache_creation_input_tokens);
+  const promptTokenDetails = usage.prompt_tokens_details;
+  const cacheReadTokens = toNumber(
+    usage.cache_read_input_tokens ?? promptTokenDetails?.cached_tokens,
+  );
+  const cacheCreationTokens = toNumber(
+    usage.cache_creation_input_tokens ??
+      promptTokenDetails?.cache_creation_tokens,
+  );
   const explicitTotal = toNumber(usage.total_tokens);
   const totalTokens =
     explicitTotal ||
-    inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+    inputTokens +
+      outputTokens +
+      (promptTokenDetails ? 0 : cacheReadTokens + cacheCreationTokens);
 
   return {
     accessKeyId: null,
