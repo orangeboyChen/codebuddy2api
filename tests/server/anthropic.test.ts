@@ -139,6 +139,51 @@ describe('anthropic messages api', () => {
     expect(upstreamBody.stream).toBe(true);
   });
 
+  it('preserves explicit Anthropic cache control blocks upstream', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Reusable prompt prefix',
+                cache_control: { type: 'ephemeral' },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(response.status).toBe(200);
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown; role: string }> };
+
+    expect(upstreamBody.messages[0]).toEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: 'Reusable prompt prefix',
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+    });
+  });
+
   it('translates tool_use blocks in non-streaming response', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeJsonResponse({

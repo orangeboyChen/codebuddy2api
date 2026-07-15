@@ -596,6 +596,33 @@ describe('server units', () => {
       model: 'glm-5.1',
       totalTokens: 20,
     });
+
+    await recordUsageEvent({
+      accessKeyId: 'key-1',
+      accessKeyName: 'Team Key',
+      credentialFilename: 'legacy-credential.json',
+      model: 'glm-5.1',
+      route: '/v1/chat/completions',
+      timestamp: '2026-07-11T11:50:00.000Z',
+      usage: {
+        completion_tokens: 4,
+        prompt_tokens: 16,
+        prompt_tokens_details: {
+          cached_tokens: 6,
+          cache_creation_tokens: 4,
+        },
+      },
+    });
+
+    const openAIAnalytics = await getUsageAnalytics({
+      now,
+      range: '24h',
+    });
+    expect(openAIAnalytics.tableRows[0]).toMatchObject({
+      cacheHitTokens: 8,
+      model: 'glm-5.1',
+      totalTokens: 40,
+    });
     expect(analytics.tokenSeries[0]?.points).toHaveLength(24);
     expect(
       analytics.filters.accessKeys.some((item) => item.value === 'key-1'),
