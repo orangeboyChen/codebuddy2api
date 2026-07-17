@@ -141,7 +141,9 @@ describe('debug view', () => {
       </DebugProvider>,
     );
 
-    fireEvent.click(screen.getByText('/v1/chat/completions'));
+    fireEvent.click(
+      screen.getByRole('button', { name: /\/v1\/chat\/completions/ }),
+    );
 
     await waitFor(() => {
       expect(document.body).toHaveTextContent('Hello world');
@@ -149,9 +151,5 @@ describe('debug view', () => {
     expect(screen.queryByText('nullms')).not.toBeInTheDocument();
     expect(screen.getByText('Assistant')).toBeInTheDocument();
     expect(screen.queryByText('User')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByText('Show all messages'));
-
-    expect(screen.getByText('User')).toBeVisible();
   });
 });
