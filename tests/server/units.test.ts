@@ -128,6 +128,7 @@ describe('server units', () => {
     resetResponseSessions();
     await resetUsageStats();
     vi.restoreAllMocks();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
     delete process.env.CODEBUDDY_CONFIG_PATH;
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
@@ -144,6 +145,7 @@ describe('server units', () => {
   afterEach(() => {
     cleanupTempState();
     delete process.env.CODEBUDDY_API_KEY;
+    vi.useRealTimers();
   });
 
   it('masks sensitive debug headers and body fields', () => {
@@ -546,6 +548,8 @@ describe('server units', () => {
 
   it('persists usage history under file storage and preserves historical filters', async () => {
     const now = new Date('2026-07-11T12:30:00.000Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
 
     await recordUsageEvent({
       accessKeyId: 'key-1',
