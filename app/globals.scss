@@ -563,6 +563,8 @@ textarea {
   #debug .debug-entry-tags {
     flex-direction: column !important;
     flex-wrap: nowrap !important;
+    gap: 12px !important;
+    justify-content: flex-start !important;
   }
 
   #debug :is(.debug-entry-tags, .debug-entry-tags [class*='tag']) {
@@ -598,7 +600,7 @@ textarea {
   }
 
   #debug .debug-entry-tags > span {
-    flex: 1 1 8rem;
+    flex: 0 0 auto;
   }
 
   #debug .debug-payload-summary > button {
