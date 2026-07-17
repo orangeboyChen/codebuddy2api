@@ -8,6 +8,13 @@
       "when": 1783876258881,
       "tag": "0000_confused_siren",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784448000000,
+      "tag": "0001_debug_log_metrics",
+      "breakpoints": true
     }
   ]
 }

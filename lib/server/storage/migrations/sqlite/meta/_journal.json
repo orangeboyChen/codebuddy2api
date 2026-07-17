@@ -8,6 +8,13 @@
       "when": 1783876264588,
       "tag": "0000_overconfident_luminals",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784448000000,
+      "tag": "0001_debug_log_metrics",
+      "breakpoints": true
     }
   ]
 }

@@ -18,11 +18,38 @@ export const GET = async (request: Request): Promise<Response> => {
   }
 
   const settings = await getDebugSettings();
+  const debugId = new URL(request.url).searchParams.get('id');
+  const logs = await listDebugLogs();
+
+  if (debugId) {
+    const item = logs.find((log) => log.id === debugId);
+    return Response.json({ item: item ?? null }, { status: item ? 200 : 404 });
+  }
 
   return Response.json({
     autoRefreshSeconds: settings.autoRefreshSeconds,
     enabled: settings.enabled,
-    items: await listDebugLogs(),
+    // Payload bodies are loaded on demand through ?id= to keep list refreshes fast.
+    items: logs.map((log) => ({
+      credentialFilename: log.credentialFilename,
+      createdAt: log.createdAt,
+      elapsedMs: log.elapsedMs,
+      error: log.error,
+      id: log.id,
+      model: log.model,
+      requestKey: log.requestKey,
+      route: log.route,
+      usage: log.usage,
+      transformedResponse: log.transformedResponse
+        ? { status: log.transformedResponse.status }
+        : null,
+      upstreamRequest: log.upstreamRequest
+        ? { method: log.upstreamRequest.method, url: log.upstreamRequest.url }
+        : null,
+      upstreamResponse: log.upstreamResponse
+        ? { status: log.upstreamResponse.status }
+        : null,
+    })),
     maxEntries: settings.maxEntries,
   });
 };
@@ -48,7 +75,6 @@ export const POST = async (request: Request): Promise<Response> => {
   return Response.json({
     autoRefreshSeconds: settings.autoRefreshSeconds,
     enabled: settings.enabled,
-    items: await listDebugLogs(),
     maxEntries: settings.maxEntries,
   });
 };

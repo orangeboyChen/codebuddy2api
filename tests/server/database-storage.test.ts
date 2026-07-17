@@ -213,13 +213,16 @@ describe('drizzle pg storage adapter', () => {
         id: 'debug-1',
         payload: {
           credentialFilename: null,
+          elapsedMs: 42,
           error: null,
+          model: 'gpt-5.5',
           requestBody: null,
           requestKey: null,
           route: '/v1/chat/completions',
           transformedResponse: null,
           upstreamRequest: null,
           upstreamResponse: null,
+          usage: { inputTokens: 3, outputTokens: 5 },
         },
         timestamp: '2026-07-12T00:00:00.000Z',
       },
@@ -228,18 +231,28 @@ describe('drizzle pg storage adapter', () => {
       {
         createdAt: new Date('2026-07-12T00:00:00.000Z'),
         credentialFilename: null,
+        elapsedMs: 42,
         error: null,
         eventId: 'debug-1',
+        model: 'gpt-5.5',
         requestBody: null,
         requestKey: null,
         route: '/v1/chat/completions',
         transformedResponse: null,
         upstreamRequest: null,
         upstreamResponse: null,
+        usage: { inputTokens: 3, outputTokens: 5 },
       },
     ]);
     expect(await adapter.listDebugLogs(1)).toEqual([
-      expect.objectContaining({ id: 'debug-1' }),
+      expect.objectContaining({
+        id: 'debug-1',
+        payload: expect.objectContaining({
+          elapsedMs: 42,
+          model: 'gpt-5.5',
+          usage: { inputTokens: 3, outputTokens: 5 },
+        }),
+      }),
     ]);
     await adapter.clearDebugLogs();
     await adapter.trimDebugLogs(100);

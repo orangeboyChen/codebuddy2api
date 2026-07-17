@@ -173,6 +173,10 @@ interface DebugResponse {
   message?: string;
 }
 
+interface DebugDetailResponse {
+  item?: DebugLogEntry | null;
+}
+
 interface ApiTestSuccess {
   choices?: Array<{
     delta?: {
@@ -647,7 +651,7 @@ const AdminPageLayoutContent = ({
         enabled: preserveSettings
           ? current.enabled
           : Boolean(result.data?.enabled),
-        items: result.data?.items ?? [],
+        items: result.data?.items ?? current.items,
         loading: false,
         maxEntries: preserveSettings
           ? current.maxEntries
@@ -655,6 +659,30 @@ const AdminPageLayoutContent = ({
             ? result.data.maxEntries
             : 100,
         saving: false,
+      }));
+    },
+    [consoleMessages.debugLoadFailed, setDebug, showNotification],
+  );
+
+  const loadDebugDetail = useCallback(
+    async (id: string) => {
+      const result = await requestJson<DebugDetailResponse>(
+        `/admin-api/debug?id=${encodeURIComponent(id)}`,
+      );
+
+      if (!result.ok || !result.data?.item) {
+        showNotification(
+          'error',
+          getErrorMessage(result.data, consoleMessages.debugLoadFailed),
+        );
+        return;
+      }
+
+      const detail = result.data.item;
+
+      setDebug((current) => ({
+        ...current,
+        items: current.items.map((item) => (item.id === id ? detail : item)),
       }));
     },
     [consoleMessages.debugLoadFailed, setDebug, showNotification],
@@ -1375,7 +1403,7 @@ const AdminPageLayoutContent = ({
           ? result.data.autoRefreshSeconds
           : debug.autoRefreshSeconds,
       enabled: Boolean(result.data?.enabled),
-      items: result.data?.items ?? [],
+      items: result.data?.items ?? debug.items,
       loading: false,
       maxEntries:
         typeof result.data?.maxEntries === 'number'
@@ -1448,6 +1476,12 @@ const AdminPageLayoutContent = ({
     loadSettings,
     loadUsage,
   ]);
+
+  useEffect(() => {
+    if (activeTab === 'debug' && debug.loading) {
+      void loadDebug();
+    }
+  }, [activeTab, debug.loading, loadDebug]);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -1882,6 +1916,9 @@ const AdminPageLayoutContent = ({
                 },
                 onEnabledChange: (value) => {
                   setDebug((current) => ({ ...current, enabled: value }));
+                },
+                onLoadDetail: (id) => {
+                  void loadDebugDetail(id);
                 },
                 onMaxEntriesChange: (value) => {
                   setDebug((current) => ({

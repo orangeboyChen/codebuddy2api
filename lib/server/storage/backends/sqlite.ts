@@ -108,13 +108,16 @@ export class DrizzleSqliteDatabaseStorageAdapter implements DatabaseStorageAdapt
         entries.map((entry) => ({
           ...(entry.payload as {
             credentialFilename: string | null;
+            elapsedMs: number;
             error: string | null;
+            model: string | null;
             requestBody: unknown;
             requestKey: string | null;
             route: string;
             transformedResponse: unknown;
             upstreamRequest: unknown;
             upstreamResponse: unknown;
+            usage: unknown;
           }),
           createdAt: new Date(entry.timestamp),
           eventId: entry.id,
@@ -135,14 +138,17 @@ export class DrizzleSqliteDatabaseStorageAdapter implements DatabaseStorageAdapt
       payload: {
         credentialFilename: row.credentialFilename,
         createdAt: row.createdAt.toISOString(),
+        elapsedMs: row.elapsedMs,
         error: row.error,
         id: row.eventId,
+        model: row.model,
         requestBody: row.requestBody,
         requestKey: row.requestKey,
         route: row.route,
         transformedResponse: row.transformedResponse,
         upstreamRequest: row.upstreamRequest,
         upstreamResponse: row.upstreamResponse,
+        usage: row.usage,
       },
       timestamp: row.createdAt.toISOString(),
     }));

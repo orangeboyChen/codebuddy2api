@@ -64,7 +64,9 @@ export const debugLogs = sqliteTable(
     eventId: text('event_id').primaryKey(),
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
     credentialFilename: text('credential_filename'),
+    elapsedMs: integer('elapsed_ms'),
     error: text('error'),
+    model: text('model'),
     requestKey: text('request_key'),
     route: text('route').notNull(),
     requestBody: text('request_body', { mode: 'json' }).$type<unknown>(),
@@ -77,6 +79,7 @@ export const debugLogs = sqliteTable(
     upstreamResponse: text('upstream_response', {
       mode: 'json',
     }).$type<unknown>(),
+    usage: text('usage', { mode: 'json' }).$type<unknown>(),
   },
   (table) => [
     index('debug_logs_created_at_idx').on(table.createdAt, table.eventId),

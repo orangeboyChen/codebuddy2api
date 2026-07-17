@@ -211,6 +211,11 @@ describe('debug and usage persistence', () => {
       body: 'plain response',
       status: 201,
     });
+    expect(entry).toMatchObject({
+      elapsedMs: expect.any(Number),
+      model: null,
+      usage: null,
+    });
 
     finalizeDebugTrace(undefined, new Response('ignored'));
     await clearDebugLogs();
@@ -227,6 +232,73 @@ describe('debug and usage persistence', () => {
       },
     ]);
     expect(await listDebugLogs()).toHaveLength(1);
+  });
+
+  it('keeps pending traces out of reads until the background flush runs', async () => {
+    vi.useFakeTimers();
+    try {
+      await updateDebugSettings({ enabled: true, maxEntries: 10 });
+      const trace = createDebugTrace({
+        requestBody: { model: 'gpt-5.5' },
+        requestKey: null,
+        route: '/v1/responses',
+      });
+
+      enqueueUpstreamResponseSnapshot(
+        trace,
+        Response.json({
+          usage: {
+            input_tokens: 3,
+            output_tokens: 5,
+            prompt_tokens_details: { cached_tokens: 2 },
+          },
+        }),
+      );
+      finalizeDebugTrace(trace, new Response('completed'));
+
+      await vi.runAllTicks();
+      expect(await listDebugLogs()).toEqual([]);
+
+      await vi.runAllTimersAsync();
+      const [entry] = await listDebugLogs();
+      expect(entry).toMatchObject({
+        model: 'gpt-5.5',
+        usage: {
+          cacheCreationTokens: 0,
+          cacheReadTokens: 2,
+          inputTokens: 3,
+          outputTokens: 5,
+          totalTokens: 8,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('truncates response snapshots while reading the cloned stream', async () => {
+    await updateDebugSettings({ enabled: true, maxEntries: 10 });
+    const trace = createDebugTrace({
+      requestBody: {},
+      requestKey: null,
+      route: '/v1/responses',
+    });
+
+    finalizeDebugTrace(
+      trace,
+      new Response(`${'a'.repeat(200_000)}tail`, {
+        headers: { 'Content-Type': 'text/plain' },
+      }),
+    );
+
+    await vi.waitFor(async () => {
+      expect(await listDebugLogs()).toHaveLength(1);
+    });
+    const [entry] = await listDebugLogs();
+    expect(entry.transformedResponse?.body).toMatch(
+      /^a+\n\.\.\.\[truncated\]$/,
+    );
+    expect(entry.transformedResponse?.body).not.toContain('tail');
   });
 
   it('serializes concurrent debug and usage persistence', async () => {

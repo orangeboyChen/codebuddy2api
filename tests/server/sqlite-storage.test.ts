@@ -94,13 +94,16 @@ describe('drizzle sqlite storage adapter', () => {
         id: 'debug-1',
         payload: {
           credentialFilename: 'credential.json',
+          elapsedMs: 42,
           error: null,
+          model: 'gpt-5.5',
           requestBody: { prompt: 'hello' },
           requestKey: 'request-1',
           route: '/v1/messages',
           transformedResponse: null,
           upstreamRequest: null,
           upstreamResponse: { ok: true },
+          usage: { inputTokens: 3, outputTokens: 5 },
         },
         timestamp: '2026-07-02T00:00:00.000Z',
       },
@@ -108,7 +111,12 @@ describe('drizzle sqlite storage adapter', () => {
     expect(await adapter.listDebugLogs(1)).toEqual([
       expect.objectContaining({
         id: 'debug-1',
-        payload: expect.objectContaining({ requestBody: { prompt: 'hello' } }),
+        payload: expect.objectContaining({
+          elapsedMs: 42,
+          model: 'gpt-5.5',
+          requestBody: { prompt: 'hello' },
+          usage: { inputTokens: 3, outputTokens: 5 },
+        }),
       }),
     ]);
     await adapter.trimDebugLogs(0);

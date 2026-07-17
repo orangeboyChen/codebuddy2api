@@ -13,14 +13,25 @@ import {
 export interface DebugLogEntry {
   credentialFilename: string | null;
   createdAt: string;
+  elapsedMs: number;
   error: string | null;
   id: string;
+  model: string | null;
   requestBody: unknown;
   requestKey: string | null;
   route: string;
   transformedResponse: DebugHttpSnapshot | null;
   upstreamRequest: DebugUpstreamRequest | null;
   upstreamResponse: DebugHttpSnapshot | null;
+  usage: DebugUsageMetrics | null;
+}
+
+export interface DebugUsageMetrics {
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
 }
 
 export interface DebugHttpSnapshot {
@@ -44,6 +55,7 @@ export interface DebugTrace {
   requestBody: unknown;
   requestKey: string | null;
   route: string;
+  startedAtMs: number;
   transformedResponse: DebugHttpSnapshot | null;
   upstreamRequest: DebugUpstreamRequest | null;
   upstreamResponse: DebugHttpSnapshot | null;
@@ -331,8 +343,7 @@ const readDebugLogs = async (): Promise<DebugLogEntry[]> => {
 };
 
 export const listDebugLogs = async (): Promise<DebugLogEntry[]> => {
-  await flushPendingDebugLogs();
-  await debugWriteQueue;
+  void flushPendingDebugLogs().catch(() => undefined);
   return readDebugLogs();
 };
 
@@ -376,6 +387,7 @@ export const createDebugTrace = ({
         ? maskSensitiveString(requestKey)
         : requestKey,
     route,
+    startedAtMs: Date.now(),
     transformedResponse: null,
     upstreamRequest: null,
     upstreamResponse: null,
@@ -424,13 +436,118 @@ const captureResponseSnapshot = async (
   response: Response,
 ): Promise<DebugHttpSnapshot> => {
   const clone = response.clone();
-  const text = await clone.text();
   const contentType = clone.headers.get('content-type') ?? '';
+  const text = await readSnapshotText(clone);
 
   return {
     body: tryParseBody(text, contentType),
     headers: toHeadersRecord(clone.headers),
     status: clone.status,
+  };
+};
+
+const readSnapshotText = async (response: Response): Promise<string> => {
+  if (!response.body) {
+    return '';
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let capturedLength = 0;
+  let truncated = false;
+
+  try {
+    while (capturedLength < MAX_SNAPSHOT_TEXT_LENGTH) {
+      const chunk = await reader.read();
+
+      if (chunk.done) {
+        text += decoder.decode();
+        break;
+      }
+
+      const remaining = MAX_SNAPSHOT_TEXT_LENGTH - capturedLength;
+      const decoded = decoder.decode(chunk.value, { stream: true });
+
+      if (decoded.length <= remaining) {
+        text += decoded;
+        capturedLength += decoded.length;
+        continue;
+      }
+
+      text += decoded.slice(0, remaining);
+      truncated = true;
+      break;
+    }
+
+    if (capturedLength >= MAX_SNAPSHOT_TEXT_LENGTH) {
+      truncated = true;
+    }
+  } finally {
+    if (truncated) {
+      void reader.cancel().catch(() => undefined);
+    }
+    reader.releaseLock();
+  }
+
+  return truncated ? `${text}\n...[truncated]` : text;
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+};
+
+const toTokenCount = (value: unknown): number => {
+  const numeric =
+    typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
+
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+};
+
+const getTraceModel = (trace: DebugTrace): string | null => {
+  const upstreamBody = asRecord(trace.upstreamRequest?.body);
+  const requestBody = asRecord(trace.requestBody);
+  const model = upstreamBody?.model ?? requestBody?.model;
+
+  return typeof model === 'string' && model.trim() ? model.trim() : null;
+};
+
+const getTraceUsage = (trace: DebugTrace): DebugUsageMetrics | null => {
+  const responseBody =
+    asRecord(trace.transformedResponse?.body) ??
+    asRecord(trace.upstreamResponse?.body);
+  const usage = asRecord(responseBody?.usage);
+
+  if (!usage) {
+    return null;
+  }
+
+  const inputTokens = toTokenCount(usage.input_tokens ?? usage.prompt_tokens);
+  const outputTokens = toTokenCount(
+    usage.output_tokens ?? usage.completion_tokens,
+  );
+  const promptTokenDetails = asRecord(usage.prompt_tokens_details);
+  const cacheReadTokens = toTokenCount(
+    usage.cache_read_input_tokens ?? promptTokenDetails?.cached_tokens,
+  );
+  const cacheCreationTokens = toTokenCount(
+    usage.cache_creation_input_tokens ??
+      promptTokenDetails?.cache_creation_tokens,
+  );
+  const totalTokens =
+    toTokenCount(usage.total_tokens) ||
+    inputTokens +
+      outputTokens +
+      (promptTokenDetails ? 0 : cacheReadTokens + cacheCreationTokens);
+
+  return {
+    cacheCreationTokens,
+    cacheReadTokens,
+    inputTokens,
+    outputTokens,
+    totalTokens,
   };
 };
 
@@ -525,6 +642,8 @@ export const finalizeDebugTrace = (
     return;
   }
 
+  const elapsedMs = Math.max(0, Date.now() - trace.startedAtMs);
+
   trace.pending.push(
     captureResponseSnapshot(response)
       .then((snapshot) => {
@@ -543,14 +662,17 @@ export const finalizeDebugTrace = (
       void appendDebugLog({
         credentialFilename: trace.credentialFilename,
         createdAt: trace.createdAt,
+        elapsedMs,
         error: trace.error,
         id: trace.id,
+        model: getTraceModel(trace),
         requestBody: trace.requestBody,
         requestKey: trace.requestKey,
         route: trace.route,
         transformedResponse: trace.transformedResponse,
         upstreamRequest: trace.upstreamRequest,
         upstreamResponse: trace.upstreamResponse,
+        usage: getTraceUsage(trace),
       });
     });
 };

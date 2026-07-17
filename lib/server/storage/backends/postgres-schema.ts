@@ -70,13 +70,16 @@ export const createPostgresStorageSchema = (schemaName: string) => {
       eventId: text('event_id').primaryKey(),
       createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
       credentialFilename: text('credential_filename'),
+      elapsedMs: integer('elapsed_ms'),
       error: text('error'),
+      model: text('model'),
       requestKey: text('request_key'),
       route: text('route').notNull(),
       requestBody: jsonb('request_body'),
       transformedResponse: jsonb('transformed_response'),
       upstreamRequest: jsonb('upstream_request'),
       upstreamResponse: jsonb('upstream_response'),
+      usage: jsonb('usage'),
     },
     (table): PgTableExtraConfigValue[] => [
       index('debug_logs_created_at_idx').on(

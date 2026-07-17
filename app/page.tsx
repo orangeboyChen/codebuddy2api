@@ -16,7 +16,6 @@ import {
   isAdminSessionAuthenticated,
 } from '@/lib/server/admin/session';
 import { getActiveConfig, getSettingLabels } from '@/lib/server/domain/config';
-import { getDebugSettings, listDebugLogs } from '@/lib/server/domain/debug';
 import {
   getCurrentCredentialInfo,
   listCredentials,
@@ -63,8 +62,6 @@ const getInitialData = async (
     apiEndpoint,
     credentials,
     currentCredential,
-    debugSettings,
-    debugItems,
     activeConfig,
     stats,
     usage,
@@ -73,8 +70,6 @@ const getInitialData = async (
     buildApiEndpoint(),
     listCredentials(),
     getCurrentCredentialInfo(),
-    getDebugSettings(),
-    listDebugLogs(),
     getActiveConfig(),
     getUsageStats(),
     getUsageAnalytics({ range: '24h' }),
@@ -87,10 +82,9 @@ const getInitialData = async (
     currentCredential:
       currentCredential as unknown as AdminConsoleInitialData['currentCredential'],
     debug: {
-      autoRefreshSeconds: debugSettings.autoRefreshSeconds,
-      enabled: debugSettings.enabled,
-      items: debugItems,
-      maxEntries: debugSettings.maxEntries,
+      autoRefreshSeconds: 0,
+      enabled: false,
+      maxEntries: 100,
     },
     health: {
       checkedAtLabel: formatInitialHealthLabel(locale, timestamp),
