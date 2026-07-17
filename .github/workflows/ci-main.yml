@@ -62,11 +62,9 @@ jobs:
         if: ${{ !cancelled() }}
         uses: codecov/test-results-action@v1
         with:
-          files: ./test-report.junit.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage reports to Codecov
-        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage/lcov.info
