@@ -83,7 +83,7 @@ export const defaultDebugState: DebugState = {
   enabled: false,
   items: [],
   loading: true,
-  maxEntries: 100,
+  maxEntries: 10,
   saving: false,
 };
 
@@ -165,6 +165,22 @@ const formatValue = (value: unknown): string => {
   return JSON.stringify(value ?? null, null, 2);
 };
 
+const formatDuration = (elapsedMs: number): string => {
+  if (elapsedMs < 1_000) {
+    return `${elapsedMs}ms`;
+  }
+
+  const seconds = elapsedMs / 1_000;
+
+  if (seconds < 60) {
+    return `${seconds.toFixed(2)}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes}m ${remainingSeconds}s`;
+};
+
 const getText = (value: unknown): string | null => {
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) {
@@ -205,7 +221,7 @@ const RawPayload = ({
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="border-t border-border-light dark:border-border-dark pt-3">
+    <div className="mt-3 border-t border-border-light dark:border-border-dark pt-3">
       <Button
         icon={Braces}
         onClick={() => setOpen((current) => !current)}
@@ -305,6 +321,7 @@ const StructuredUpstreamRequest = ({
   title: string;
   value: unknown;
 }) => {
+  const [showAllMessages, setShowAllMessages] = useState(false);
   const request = parseJsonValue(value);
   const record = isRecord(request) ? request : null;
   const tools = Array.isArray(record?.tools)
@@ -315,6 +332,7 @@ const StructuredUpstreamRequest = ({
     : Array.isArray(record?.input)
       ? record.input
       : [];
+  const displayedMessages = showAllMessages ? messages : messages.slice(-1);
 
   return (
     <Block
@@ -327,16 +345,11 @@ const StructuredUpstreamRequest = ({
       </div>
       {record ? (
         <div className="mt-3 grid gap-4 text-sm">
-          <div className="flex items-center gap-2">
-            <Bot aria-hidden="true" size={16} />
-            <span className="text-secondary">Model</span>
-            <code>{String(record.model ?? 'Not specified')}</code>
-          </div>
-          <div>
-            <div className="mb-2 flex items-center gap-2 font-medium">
-              <Wrench aria-hidden="true" size={16} /> Tools ({tools.length})
-            </div>
-            {tools.length ? (
+          {tools.length ? (
+            <div>
+              <div className="mb-2 flex items-center gap-2 font-medium">
+                <Wrench aria-hidden="true" size={16} /> Tools ({tools.length})
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[440px] text-xs">
                   <thead className="text-secondary">
@@ -390,10 +403,8 @@ const StructuredUpstreamRequest = ({
                   </tbody>
                 </table>
               </div>
-            ) : (
-              <div className="text-xs text-secondary">No tools</div>
-            )}
-          </div>
+            </div>
+          ) : null}
           <div>
             <div className="mb-2 flex items-center gap-2 font-medium">
               <MessageSquareText aria-hidden="true" size={16} /> Messages (
@@ -409,7 +420,7 @@ const StructuredUpstreamRequest = ({
                     </tr>
                   </thead>
                   <tbody>
-                    {messages.map((message, index) => {
+                    {displayedMessages.map((message, index) => {
                       const item: JsonRecord = isRecord(message)
                         ? message
                         : { content: message };
@@ -430,6 +441,15 @@ const StructuredUpstreamRequest = ({
                     })}
                   </tbody>
                 </table>
+                {messages.length > 1 && !showAllMessages ? (
+                  <Button
+                    className="mt-2"
+                    onClick={() => setShowAllMessages(true)}
+                    size="small"
+                  >
+                    Show all messages
+                  </Button>
+                ) : null}
               </div>
             ) : (
               <div className="text-xs text-secondary">No messages</div>
@@ -605,6 +625,11 @@ const Debug = () => {
     onSave,
   } = useDebug();
   const debugText = useTranslations('Admin.debug');
+  const formatCreatedAt = (createdAt: string) => {
+    const date = new Date(createdAt);
+
+    return Number.isNaN(date.getTime()) ? createdAt : date.toLocaleString();
+  };
 
   return (
     <div id="debug" className="block">
@@ -702,12 +727,12 @@ const Debug = () => {
                 padding={16}
                 variant="outlined"
               >
-                <summary className="debug-entry-summary cursor-pointer list-none p-4 grid gap-3 w-full min-w-0 max-w-full overflow-hidden">
-                  <div className="font-medium text-text-light dark:text-text-dark break-words">
+                <summary className="debug-entry-summary cursor-pointer list-none p-4 grid items-start gap-3 w-full min-w-0 max-w-full overflow-hidden text-left">
+                  <div className="font-medium text-text-light dark:text-text-dark break-words text-left">
                     {item.route}
                   </div>
-                  <div className="flex flex-wrap gap-2 text-xs min-w-0 max-w-full">
-                    <Tag variant="borderless">
+                  <div className="flex flex-wrap items-start gap-2 text-xs min-w-0 max-w-full">
+                    <Tag className="!px-0" variant="borderless">
                       {debugText('credential')}:{' '}
                       {item.credentialFilename ??
                         debugText('credentialUnknown')}
@@ -718,23 +743,23 @@ const Debug = () => {
                       </Tag>
                     ) : null}
                   </div>
-                  <div className="flex flex-wrap gap-2 text-xs min-w-0 max-w-full">
-                    <Tag variant="borderless">
+                  <div className="flex flex-wrap items-start gap-2 text-xs min-w-0 max-w-full">
+                    <Tag className="!px-0" variant="borderless">
                       {debugText('upstreamStatus', {
                         value: item.upstreamResponse?.status ?? '-',
                       })}
                     </Tag>
-                    <Tag variant="borderless">
+                    <Tag className="!px-0" variant="borderless">
                       {debugText('returnedStatus', {
                         value: item.transformedResponse?.status ?? '-',
                       })}
                     </Tag>
                   </div>
-                  <div className="text-sm text-secondary break-all min-w-0 max-w-full">
-                    {item.createdAt} · key:{' '}
+                  <div className="text-sm text-secondary break-all min-w-0 max-w-full text-left">
+                    {formatCreatedAt(item.createdAt)} · key:{' '}
                     {item.requestKey ?? debugText('requestKeyNone')}
                   </div>
-                  <div className="debug-entry-tags flex flex-wrap gap-x-5 gap-y-2 text-xs min-w-0 max-w-full">
+                  <div className="debug-entry-tags flex flex-wrap items-start gap-x-5 gap-y-2 text-xs min-w-0 max-w-full text-left">
                     <DebugMetric icon={Bot} label="Model" value={item.model} />
                     <DebugMetric
                       icon={Database}
@@ -771,7 +796,7 @@ const Debug = () => {
                       value={
                         item.elapsedMs === undefined
                           ? null
-                          : `${item.elapsedMs}ms`
+                          : formatDuration(item.elapsedMs)
                       }
                     />
                   </div>

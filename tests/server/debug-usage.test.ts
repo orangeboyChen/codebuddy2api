@@ -66,7 +66,7 @@ describe('debug and usage persistence', () => {
     expect(await getDebugSettings()).toEqual({
       autoRefreshSeconds: 0,
       enabled: false,
-      maxEntries: 100,
+      maxEntries: 10,
     });
     expect(await isDebugEnabled()).toBe(false);
 
@@ -75,7 +75,7 @@ describe('debug and usage persistence', () => {
     expect(await getDebugSettings()).toEqual({
       autoRefreshSeconds: 0,
       enabled: false,
-      maxEntries: 100,
+      maxEntries: 10,
     });
 
     writeJson(debugConfigPath, {
@@ -86,7 +86,7 @@ describe('debug and usage persistence', () => {
     expect(await getDebugSettings()).toEqual({
       autoRefreshSeconds: 0,
       enabled: false,
-      maxEntries: 100,
+      maxEntries: 10,
     });
 
     expect(
@@ -110,7 +110,7 @@ describe('debug and usage persistence', () => {
     ).toEqual({
       autoRefreshSeconds: 0,
       enabled: true,
-      maxEntries: 100,
+      maxEntries: 10,
     });
   });
 

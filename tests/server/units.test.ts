@@ -710,7 +710,7 @@ describe('server units', () => {
     expect(await getDebugSettings()).toEqual({
       autoRefreshSeconds: 0,
       enabled: false,
-      maxEntries: 100,
+      maxEntries: 10,
     });
 
     fs.mkdirSync(tempDataDir, { recursive: true });
@@ -725,7 +725,7 @@ describe('server units', () => {
     expect(await getDebugSettings()).toEqual({
       autoRefreshSeconds: 0,
       enabled: false,
-      maxEntries: 100,
+      maxEntries: 10,
     });
 
     expect(

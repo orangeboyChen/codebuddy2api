@@ -77,7 +77,7 @@ export interface DebugUpstreamRequest {
 const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   autoRefreshSeconds: 0,
   enabled: false,
-  maxEntries: 100,
+  maxEntries: 10,
 };
 
 const MAX_SNAPSHOT_TEXT_LENGTH = 200_000;

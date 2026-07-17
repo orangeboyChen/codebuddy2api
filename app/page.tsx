@@ -84,7 +84,7 @@ const getInitialData = async (
     debug: {
       autoRefreshSeconds: 0,
       enabled: false,
-      maxEntries: 100,
+      maxEntries: 10,
     },
     health: {
       checkedAtLabel: formatInitialHealthLabel(locale, timestamp),
