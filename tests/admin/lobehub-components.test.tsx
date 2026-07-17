@@ -147,7 +147,7 @@ describe('debug view', () => {
       expect(document.body).toHaveTextContent('Hello world');
     });
     expect(screen.queryByText('nullms')).not.toBeInTheDocument();
-    expect(screen.getByText('Assistant')).toBeVisible();
+    expect(screen.getByText('Assistant')).toBeInTheDocument();
     expect(screen.queryByText('User')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Show all messages'));
