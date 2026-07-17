@@ -256,6 +256,31 @@ textarea {
   display: none;
 }
 
+#debug .debug-raw-code {
+  min-height: 16rem;
+  max-height: 38rem;
+  overflow: auto;
+  padding: 12px;
+}
+
+#debug .debug-raw-events .ant-collapse-header {
+  align-items: center;
+  padding: 12px !important;
+}
+
+#debug .debug-raw-events .ant-collapse-content-box {
+  padding: 12px !important;
+}
+
+#debug .debug-message-row {
+  align-items: flex-start;
+  border-block-start: 1px solid var(--lobe-color-fill-tertiary);
+}
+
+#debug .debug-message-role {
+  flex: 0 0 88px;
+}
+
 .dashboard-metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -508,6 +533,15 @@ textarea {
 
   #debug .debug-payload-summary > button {
     align-self: flex-start;
+  }
+
+  #debug .debug-message-row {
+    --lobe-flex-direction: column !important;
+    gap: 4px !important;
+  }
+
+  #debug .debug-message-role {
+    flex-basis: auto;
   }
 }
 

@@ -1,12 +1,20 @@
 'use client';
 
-import { Block, Flexbox, Input, Tag } from '@lobehub/ui';
+import {
+  Block,
+  Collapse,
+  Flexbox,
+  Highlighter,
+  Input,
+  List,
+  Snippet,
+  Tag,
+} from '@lobehub/ui';
 import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import {
   Bot,
   Braces,
   Clock3,
-  Copy,
   Database,
   Gauge,
   Info,
@@ -202,6 +210,11 @@ const getToolName = (tool: JsonRecord): string => {
   return String(functionValue.name ?? tool.name ?? 'Unnamed tool');
 };
 
+const formatRole = (value: unknown): string => {
+  const role = String(value ?? 'input');
+  return `${role.slice(0, 1).toUpperCase()}${role.slice(1)}`;
+};
+
 const isMcpTool = (tool: JsonRecord): boolean => {
   const serialized = JSON.stringify(tool).toLowerCase();
   return (
@@ -211,17 +224,11 @@ const isMcpTool = (tool: JsonRecord): boolean => {
   );
 };
 
-const RawPayload = ({
-  onCopy,
-  value,
-}: {
-  onCopy: (value: string) => void;
-  value: unknown;
-}) => {
+const RawPayload = ({ value }: { value: unknown }) => {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="mt-3 border-t border-border-light dark:border-border-dark pt-3">
+    <div className="mt-3">
       <Button
         icon={Braces}
         onClick={() => setOpen((current) => !current)}
@@ -229,62 +236,50 @@ const RawPayload = ({
       >
         {open ? 'Hide raw' : 'View raw'}
       </Button>
-      {open ? <RawPayloadContent onCopy={onCopy} value={value} /> : null}
+      {open ? <RawPayloadContent value={value} /> : null}
     </div>
   );
 };
 
-const RawPayloadContent = ({
-  onCopy,
-  value,
-}: {
-  onCopy: (value: string) => void;
-  value: unknown;
-}) => {
+const RawPayloadContent = ({ value }: { value: unknown }) => {
   // This intentionally happens only after the operator asks for raw data.
   const content = formatValue(value);
   const sseEvents = parseSseEvents(value);
 
   return (
     <div className="mt-3 grid gap-3">
-      <div className="flex justify-end">
-        <Button icon={Copy} onClick={() => onCopy(content)} size="small">
-          Copy
-        </Button>
-      </div>
       {sseEvents ? (
-        <div className="w-full overflow-x-auto">
-          <table className="w-full min-w-[480px] border-collapse text-xs">
-            <thead>
-              <tr>
-                <th className="p-3 text-left font-semibold border-b border-border-light dark:border-border-dark">
-                  Event
-                </th>
-                <th className="p-3 text-left font-semibold border-b border-border-light dark:border-border-dark">
-                  Data
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sseEvents.map((event, index) => (
-                <tr key={`${index}-${event.slice(0, 32)}`}>
-                  <td className="p-3 align-top border-b border-border-light dark:border-border-dark text-secondary">
-                    {index + 1}
-                  </td>
-                  <td className="p-3 border-b border-border-light dark:border-border-dark">
-                    <pre className="whitespace-pre-wrap break-all text-text-light dark:text-text-dark">
-                      {formatValue(parseJsonValue(event))}
-                    </pre>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Collapse
+          className="debug-raw-events w-full min-w-0"
+          defaultActiveKey={sseEvents.map(
+            (event, index) => `${index}-${event.slice(0, 32)}`,
+          )}
+          items={sseEvents.map((event, index) => ({
+            children: (
+              <Highlighter
+                className="debug-raw-code"
+                language="json"
+                showLanguage={false}
+                variant="outlined"
+              >
+                {formatValue(parseJsonValue(event))}
+              </Highlighter>
+            ),
+            key: `${index}-${event.slice(0, 32)}`,
+            label: `Event ${index + 1}`,
+          }))}
+          padding={{ body: 12, header: 12 }}
+          variant="outlined"
+        />
       ) : (
-        <pre className="w-full overflow-x-auto whitespace-pre-wrap break-all text-xs text-text-light dark:text-text-dark">
+        <Highlighter
+          className="debug-raw-code"
+          language="json"
+          showLanguage={false}
+          variant="outlined"
+        >
           {content}
-        </pre>
+        </Highlighter>
       )}
     </div>
   );
@@ -313,11 +308,9 @@ const DebugMetric = ({
 };
 
 const StructuredUpstreamRequest = ({
-  onCopy,
   title,
   value,
 }: {
-  onCopy: (value: string) => void;
   title: string;
   value: unknown;
 }) => {
@@ -350,129 +343,102 @@ const StructuredUpstreamRequest = ({
               <div className="mb-2 flex items-center gap-2 font-medium">
                 <Wrench aria-hidden="true" size={16} /> Tools ({tools.length})
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[440px] text-xs">
-                  <thead className="text-secondary">
-                    <tr>
-                      <th className="p-2 text-left">Name</th>
-                      <th className="p-2 text-left">Type</th>
-                      <th className="p-2 text-left">Description</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tools.map((tool, index) => {
-                      const functionValue = isRecord(tool.function)
-                        ? tool.function
-                        : tool;
-                      return (
-                        <tr
-                          key={`${getToolName(tool)}-${index}`}
-                          className="border-t border-border-light dark:border-border-dark"
-                        >
-                          <td className="p-2 font-medium">
-                            <span className="inline-flex items-center gap-1">
-                              {isMcpTool(tool) ? (
-                                <Server aria-label="MCP tool" size={14} />
-                              ) : null}
-                              {getToolName(tool)}
-                            </span>
-                          </td>
-                          <td className="p-2 text-secondary">
-                            {String(tool.type ?? 'function')}
-                          </td>
-                          <td className="p-2 text-secondary">
-                            {String(functionValue.description ?? '-')}
-                          </td>
-                          <td className="p-2">
-                            <details>
-                              <summary className="cursor-pointer text-primary">
-                                Parameters
-                              </summary>
-                              <pre className="mt-2 max-w-[420px] overflow-x-auto whitespace-pre-wrap break-all">
+              <List
+                items={tools.map((tool, index) => {
+                  const functionValue = isRecord(tool.function)
+                    ? tool.function
+                    : tool;
+                  return {
+                    addon: (
+                      <Collapse
+                        items={[
+                          {
+                            children: (
+                              <Snippet language="json" variant="outlined">
                                 {formatValue(
                                   functionValue.parameters ??
                                     tool.parameters ??
                                     {},
                                 )}
-                              </pre>
-                            </details>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                              </Snippet>
+                            ),
+                            key: 'parameters',
+                            label: 'Parameters',
+                          },
+                        ]}
+                        padding={8}
+                        variant="borderless"
+                      />
+                    ),
+                    description: `${String(tool.type ?? 'function')} - ${String(
+                      functionValue.description ?? 'No description',
+                    )}`,
+                    key: `${getToolName(tool)}-${index}`,
+                    title: (
+                      <span className="inline-flex items-center gap-1">
+                        {isMcpTool(tool) ? (
+                          <Server aria-label="MCP tool" size={14} />
+                        ) : null}
+                        {getToolName(tool)}
+                      </span>
+                    ),
+                  };
+                })}
+                padding={0}
+              />
             </div>
           ) : null}
-          <div>
-            <div className="mb-2 flex items-center gap-2 font-medium">
+          <Flexbox className="debug-messages-section" gap={8} padding={12}>
+            <div className="flex items-center gap-2 font-medium">
               <MessageSquareText aria-hidden="true" size={16} /> Messages (
               {messages.length})
             </div>
             {messages.length ? (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[440px] text-xs">
-                  <thead className="text-secondary">
-                    <tr>
-                      <th className="p-2 text-left">Role</th>
-                      <th className="p-2 text-left">Content</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayedMessages.map((message, index) => {
-                      const item: JsonRecord = isRecord(message)
-                        ? message
-                        : { content: message };
-                      return (
-                        <tr
-                          className="border-t border-border-light dark:border-border-dark"
-                          key={index}
-                        >
-                          <td className="p-2 align-top font-medium">
-                            {String(item.role ?? 'input')}
-                          </td>
-                          <td className="p-2 whitespace-pre-wrap break-words">
-                            {getText(item.content) ??
-                              formatValue(item.content ?? item)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <Flexbox className="debug-message-list" gap={8} padding={12}>
+                {displayedMessages.map((message, index) => {
+                  const item: JsonRecord = isRecord(message)
+                    ? message
+                    : { content: message };
+                  return (
+                    <Flexbox
+                      className="debug-message-row"
+                      gap={12}
+                      horizontal
+                      key={`${String(item.role ?? 'input')}-${index}`}
+                      padding={12}
+                    >
+                      <div className="debug-message-role text-sm font-medium text-secondary">
+                        {formatRole(item.role)}
+                      </div>
+                      <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm text-text-light dark:text-text-dark">
+                        {getText(item.content) ??
+                          formatValue(item.content ?? item)}
+                      </div>
+                    </Flexbox>
+                  );
+                })}
                 {messages.length > 1 && !showAllMessages ? (
-                  <Button
-                    className="mt-2"
-                    onClick={() => setShowAllMessages(true)}
-                    size="small"
-                  >
+                  <Button onClick={() => setShowAllMessages(true)} size="small">
                     Show all messages
                   </Button>
                 ) : null}
-              </div>
+              </Flexbox>
             ) : (
               <div className="text-xs text-secondary">No messages</div>
             )}
-          </div>
+          </Flexbox>
         </div>
       ) : (
         <div className="mt-3 text-sm text-secondary">
           No structured request data
         </div>
       )}
-      <RawPayload onCopy={onCopy} value={value} />
+      <RawPayload value={value} />
     </Block>
   );
 };
 
-const StructuredUpstreamResponse = ({
-  onCopy,
-  value,
-}: {
-  onCopy: (value: string) => void;
-  value: unknown;
-}) => {
+const StructuredUpstreamResponse = ({ value }: { value: unknown }) => {
   const sseEvents = parseSseEvents(value);
   const parsed = parseJsonValue(value);
   const eventPayloads = sseEvents?.map(parseJsonValue) ?? [];
@@ -523,26 +489,28 @@ const StructuredUpstreamResponse = ({
           />
         </div>
         {content ? (
-          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs text-text-light dark:text-text-dark">
+          <Snippet
+            className="max-h-80 w-full overflow-auto"
+            language="text"
+            variant="borderless"
+          >
             {content}
-          </pre>
+          </Snippet>
         ) : (
           <div className="text-xs text-secondary">
             No aggregate response content
           </div>
         )}
       </div>
-      <RawPayload onCopy={onCopy} value={value} />
+      <RawPayload value={value} />
     </Block>
   );
 };
 
 const RawDebugSection = ({
-  onCopy,
   title,
   value,
 }: {
-  onCopy: (value: string) => void;
   title: string;
   value: unknown;
 }) => {
@@ -555,7 +523,7 @@ const RawDebugSection = ({
       <div className="font-medium text-text-light dark:text-text-dark">
         {title}
       </div>
-      <RawPayload onCopy={onCopy} value={value} />
+      <RawPayload value={value} />
     </Block>
   );
 };
@@ -617,7 +585,6 @@ const Debug = () => {
     debug,
     onAutoRefreshSecondsChange,
     onClear,
-    onCopy,
     onEnabledChange,
     onLoadDetail,
     onMaxEntriesChange,
@@ -625,6 +592,7 @@ const Debug = () => {
     onSave,
   } = useDebug();
   const debugText = useTranslations('Admin.debug');
+  const [openTraceIds, setOpenTraceIds] = useState<string[]>([]);
   const formatCreatedAt = (createdAt: string) => {
     const date = new Date(createdAt);
 
@@ -710,128 +678,140 @@ const Debug = () => {
         </div>
         {debug.items.length ? (
           <div className="grid gap-4 w-full min-w-0">
-            {debug.items.map((item) => (
-              <Block
-                as="details"
-                key={item.id}
-                className="debug-entry w-full min-w-0 max-w-full"
-                onToggle={(event) => {
-                  if (
-                    (event.target as HTMLDetailsElement).open &&
-                    !debug.detailLoadedIds[item.id] &&
-                    !debug.detailLoadingIds[item.id]
-                  ) {
-                    onLoadDetail?.(item.id);
-                  }
-                }}
-                padding={16}
-                variant="outlined"
-              >
-                <summary className="debug-entry-summary cursor-pointer list-none p-4 grid items-start gap-3 w-full min-w-0 max-w-full overflow-hidden text-left">
-                  <div className="font-medium text-text-light dark:text-text-dark break-words text-left">
-                    {item.route}
+            <Collapse
+              activeKey={openTraceIds}
+              className="debug-entry w-full min-w-0 max-w-full"
+              items={debug.items.map((item) => ({
+                children: (
+                  <div className="grid gap-4 w-full min-w-0 pt-1">
+                    {!debug.detailLoadedIds[item.id] ? (
+                      <div className="text-sm text-secondary">
+                        Loading trace detail...
+                      </div>
+                    ) : (
+                      <>
+                        <RawDebugSection
+                          title={debugText('request')}
+                          value={item.requestBody}
+                        />
+                        <StructuredUpstreamRequest
+                          title={debugText('upstreamRequest')}
+                          value={item.upstreamRequest?.body}
+                        />
+                        <StructuredUpstreamResponse
+                          value={item.upstreamResponse?.body}
+                        />
+                        <RawDebugSection
+                          title={debugText('response')}
+                          value={item.transformedResponse?.body}
+                        />
+                      </>
+                    )}
                   </div>
-                  <div className="flex flex-wrap items-start gap-2 text-xs min-w-0 max-w-full">
-                    <Tag className="!px-0" variant="borderless">
-                      {debugText('credential')}:{' '}
-                      {item.credentialFilename ??
-                        debugText('credentialUnknown')}
-                    </Tag>
-                    {item.error ? (
-                      <Tag color="red" variant="borderless">
-                        {item.error}
-                      </Tag>
-                    ) : null}
-                  </div>
-                  <div className="flex flex-wrap items-start gap-2 text-xs min-w-0 max-w-full">
-                    <Tag className="!px-0" variant="borderless">
-                      {debugText('upstreamStatus', {
-                        value: item.upstreamResponse?.status ?? '-',
-                      })}
-                    </Tag>
-                    <Tag className="!px-0" variant="borderless">
-                      {debugText('returnedStatus', {
-                        value: item.transformedResponse?.status ?? '-',
-                      })}
-                    </Tag>
-                  </div>
-                  <div className="text-sm text-secondary break-all min-w-0 max-w-full text-left">
-                    {formatCreatedAt(item.createdAt)} · key:{' '}
-                    {item.requestKey ?? debugText('requestKeyNone')}
-                  </div>
-                  <div className="debug-entry-tags flex flex-wrap items-start gap-x-5 gap-y-2 text-xs min-w-0 max-w-full text-left">
-                    <DebugMetric icon={Bot} label="Model" value={item.model} />
-                    <DebugMetric
-                      icon={Database}
-                      label="Input tokens"
-                      value={item.usage?.inputTokens}
-                    />
-                    <DebugMetric
-                      icon={Sparkles}
-                      label="Output tokens"
-                      value={item.usage?.outputTokens}
-                    />
-                    <DebugMetric
-                      icon={Database}
-                      label="Cached tokens"
-                      value={
-                        (item.usage?.cacheReadTokens ?? 0) +
-                        (item.usage?.cacheCreationTokens ?? 0)
-                      }
-                    />
-                    <DebugMetric
-                      icon={Gauge}
-                      label="TPS"
-                      value={
-                        item.elapsedMs && item.usage?.totalTokens
-                          ? Math.round(
-                              (item.usage.totalTokens * 1_000) / item.elapsedMs,
-                            )
-                          : null
-                      }
-                    />
-                    <DebugMetric
-                      icon={Clock3}
-                      label="Request duration"
-                      value={
-                        item.elapsedMs === undefined
-                          ? null
-                          : formatDuration(item.elapsedMs)
-                      }
-                    />
-                  </div>
-                </summary>
-                <div className="debug-entry-content p-4 pt-0 grid gap-4 w-full min-w-0">
-                  {!debug.detailLoadedIds[item.id] ? (
-                    <div className="text-sm text-secondary">
-                      Loading trace detail...
+                ),
+                key: item.id,
+                label: (
+                  <div className="grid items-start gap-3 w-full min-w-0 max-w-full overflow-hidden text-left">
+                    <div className="font-medium text-text-light dark:text-text-dark break-words text-left">
+                      {item.route}
                     </div>
-                  ) : (
-                    <>
-                      <RawDebugSection
-                        onCopy={onCopy}
-                        title={debugText('request')}
-                        value={item.requestBody}
+                    <div className="flex flex-wrap items-start gap-2 text-xs min-w-0 max-w-full">
+                      <Tag
+                        className="!px-0 min-w-0 max-w-full whitespace-normal"
+                        variant="borderless"
+                      >
+                        {debugText('credential')}:{' '}
+                        <span className="break-all">
+                          {item.credentialFilename ??
+                            debugText('credentialUnknown')}
+                        </span>
+                      </Tag>
+                      {item.error ? (
+                        <Tag color="red" variant="borderless">
+                          {item.error}
+                        </Tag>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-wrap items-start gap-2 text-xs min-w-0 max-w-full">
+                      <Tag className="!px-0" variant="borderless">
+                        {debugText('upstreamStatus', {
+                          value: item.upstreamResponse?.status ?? '-',
+                        })}
+                      </Tag>
+                      <Tag className="!px-0" variant="borderless">
+                        {debugText('returnedStatus', {
+                          value: item.transformedResponse?.status ?? '-',
+                        })}
+                      </Tag>
+                    </div>
+                    <div className="text-sm text-secondary break-all min-w-0 max-w-full text-left">
+                      {formatCreatedAt(item.createdAt)} · key:{' '}
+                      {item.requestKey ?? debugText('requestKeyNone')}
+                    </div>
+                    <div className="debug-entry-tags flex flex-wrap items-start gap-x-5 gap-y-2 text-xs min-w-0 max-w-full text-left">
+                      <DebugMetric
+                        icon={Bot}
+                        label="Model"
+                        value={item.model}
                       />
-                      <StructuredUpstreamRequest
-                        onCopy={onCopy}
-                        title={debugText('upstreamRequest')}
-                        value={item.upstreamRequest?.body}
+                      <DebugMetric
+                        icon={Database}
+                        label="Input tokens"
+                        value={item.usage?.inputTokens}
                       />
-                      <StructuredUpstreamResponse
-                        onCopy={onCopy}
-                        value={item.upstreamResponse?.body}
+                      <DebugMetric
+                        icon={Sparkles}
+                        label="Output tokens"
+                        value={item.usage?.outputTokens}
                       />
-                      <RawDebugSection
-                        onCopy={onCopy}
-                        title={debugText('response')}
-                        value={item.transformedResponse?.body}
+                      <DebugMetric
+                        icon={Database}
+                        label="Cached tokens"
+                        value={
+                          (item.usage?.cacheReadTokens ?? 0) +
+                          (item.usage?.cacheCreationTokens ?? 0)
+                        }
                       />
-                    </>
-                  )}
-                </div>
-              </Block>
-            ))}
+                      <DebugMetric
+                        icon={Gauge}
+                        label="TPS"
+                        value={
+                          item.elapsedMs && item.usage?.totalTokens
+                            ? Math.round(
+                                (item.usage.totalTokens * 1_000) /
+                                  item.elapsedMs,
+                              )
+                            : null
+                        }
+                      />
+                      <DebugMetric
+                        icon={Clock3}
+                        label="Request duration"
+                        value={
+                          item.elapsedMs === undefined
+                            ? null
+                            : formatDuration(item.elapsedMs)
+                        }
+                      />
+                    </div>
+                  </div>
+                ),
+              }))}
+              onChange={(keys) => {
+                const nextOpenTraceIds = Array.isArray(keys) ? keys : [keys];
+                setOpenTraceIds(nextOpenTraceIds);
+                nextOpenTraceIds.forEach((id) => {
+                  if (
+                    !debug.detailLoadedIds[id] &&
+                    !debug.detailLoadingIds[id]
+                  ) {
+                    onLoadDetail?.(id);
+                  }
+                });
+              }}
+              padding={{ body: 16, header: 16 }}
+              variant="outlined"
+            />
           </div>
         ) : (
           <div className="flex items-center justify-center gap-2 py-8 text-secondary">

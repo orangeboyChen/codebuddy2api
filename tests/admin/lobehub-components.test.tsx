@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
 import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
@@ -86,7 +86,7 @@ describe('dashboard view', () => {
 });
 
 describe('debug view', () => {
-  it('aggregates OpenAI streaming choice deltas', () => {
+  it('aggregates OpenAI streaming choice deltas', async () => {
     renderWithMessages(
       <DebugProvider
         value={{
@@ -107,7 +107,13 @@ describe('debug view', () => {
                 route: '/v1/chat/completions',
                 transformedResponse: null,
                 upstreamRequest: {
-                  body: {},
+                  body: {
+                    messages: [
+                      { content: 'What is 2 + 2?', role: 'user' },
+                      { content: '2 + 2 equals 4.', role: 'assistant' },
+                    ],
+                    model: 'hy3',
+                  },
                   method: 'POST',
                   url: 'https://upstream.test',
                 },
@@ -134,7 +140,16 @@ describe('debug view', () => {
       </DebugProvider>,
     );
 
-    screen.getByText('/v1/chat/completions').click();
-    expect(screen.getByText('Hello world')).toBeVisible();
+    fireEvent.click(screen.getByText('/v1/chat/completions'));
+
+    await waitFor(() => {
+      expect(document.body).toHaveTextContent('Hello world');
+    });
+    expect(screen.getByText('Assistant')).toBeVisible();
+    expect(screen.queryByText('User')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Show all messages'));
+
+    expect(screen.getByText('User')).toBeVisible();
   });
 });
