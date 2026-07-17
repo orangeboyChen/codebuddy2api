@@ -61,6 +61,8 @@ export interface DebugLogEntry {
 
 export interface DebugState {
   autoRefreshSeconds: number;
+  detailLoadedIds: Record<string, boolean>;
+  detailLoadingIds: Record<string, boolean>;
   enabled: boolean;
   items: DebugLogEntry[];
   loading: boolean;
@@ -77,6 +79,8 @@ export interface AdminDebugSnapshot {
 
 export const defaultDebugState: DebugState = {
   autoRefreshSeconds: 0,
+  detailLoadedIds: {},
+  detailLoadingIds: {},
   enabled: false,
   items: [],
   loading: true,
@@ -91,6 +95,8 @@ export const createDebugState = (initialData: {
 }): DebugState => {
   return {
     autoRefreshSeconds: initialData.debug.autoRefreshSeconds,
+    detailLoadedIds: {},
+    detailLoadingIds: {},
     enabled: initialData.debug.enabled,
     items: initialData.debug.items ?? [],
     loading: !initialData.debug.items,
@@ -665,12 +671,7 @@ const Debug = () => {
             {debugText('save')}
           </Button>
         </div>
-        {debug.loading ? (
-          <div className="text-center py-8 text-secondary">
-            <LoaderCircle />
-            <div>{debugText('loading')}</div>
-          </div>
-        ) : debug.items.length ? (
+        {debug.items.length ? (
           <div className="grid gap-4 w-full min-w-0">
             {debug.items.map((item) => (
               <Block
@@ -678,7 +679,11 @@ const Debug = () => {
                 key={item.id}
                 className="debug-entry w-full min-w-0 max-w-full"
                 onToggle={(event) => {
-                  if ((event.target as HTMLDetailsElement).open) {
+                  if (
+                    (event.target as HTMLDetailsElement).open &&
+                    !debug.detailLoadedIds[item.id] &&
+                    !debug.detailLoadingIds[item.id]
+                  ) {
                     onLoadDetail?.(item.id);
                   }
                 }}
@@ -759,7 +764,7 @@ const Debug = () => {
                   </div>
                 </summary>
                 <div className="debug-entry-content p-4 pt-0 grid gap-4 w-full min-w-0">
-                  {item.upstreamRequest?.body === undefined ? (
+                  {!debug.detailLoadedIds[item.id] ? (
                     <div className="text-sm text-secondary">
                       Loading trace detail...
                     </div>
@@ -790,8 +795,19 @@ const Debug = () => {
             ))}
           </div>
         ) : (
-          <div className="text-center py-8 text-secondary">
-            {debugText('empty')}
+          <div className="flex items-center justify-center gap-2 py-8 text-secondary">
+            {debug.loading ? (
+              <>
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="animate-spin"
+                  size={18}
+                />
+                <span>{debugText('loading')}</span>
+              </>
+            ) : (
+              debugText('empty')
+            )}
           </div>
         )}
       </Block>

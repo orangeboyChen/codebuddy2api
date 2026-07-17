@@ -651,6 +651,8 @@ const AdminPageLayoutContent = ({
         enabled: preserveSettings
           ? current.enabled
           : Boolean(result.data?.enabled),
+        detailLoadedIds: {},
+        detailLoadingIds: {},
         items: result.data?.items ?? current.items,
         loading: false,
         maxEntries: preserveSettings
@@ -666,11 +668,20 @@ const AdminPageLayoutContent = ({
 
   const loadDebugDetail = useCallback(
     async (id: string) => {
+      setDebug((current) => ({
+        ...current,
+        detailLoadingIds: { ...current.detailLoadingIds, [id]: true },
+      }));
       const result = await requestJson<DebugDetailResponse>(
         `/admin-api/debug?id=${encodeURIComponent(id)}`,
       );
 
       if (!result.ok || !result.data?.item) {
+        setDebug((current) => {
+          const { [id]: _loading, ...detailLoadingIds } =
+            current.detailLoadingIds;
+          return { ...current, detailLoadingIds };
+        });
         showNotification(
           'error',
           getErrorMessage(result.data, consoleMessages.debugLoadFailed),
@@ -682,6 +693,12 @@ const AdminPageLayoutContent = ({
 
       setDebug((current) => ({
         ...current,
+        detailLoadedIds: { ...current.detailLoadedIds, [id]: true },
+        detailLoadingIds: Object.fromEntries(
+          Object.entries(current.detailLoadingIds).filter(
+            ([loadingId]) => loadingId !== id,
+          ),
+        ),
         items: current.items.map((item) => (item.id === id ? detail : item)),
       }));
     },
@@ -1403,6 +1420,8 @@ const AdminPageLayoutContent = ({
           ? result.data.autoRefreshSeconds
           : debug.autoRefreshSeconds,
       enabled: Boolean(result.data?.enabled),
+      detailLoadedIds: debug.detailLoadedIds,
+      detailLoadingIds: debug.detailLoadingIds,
       items: result.data?.items ?? debug.items,
       loading: false,
       maxEntries:
