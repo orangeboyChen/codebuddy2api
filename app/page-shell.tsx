@@ -384,10 +384,6 @@ const AdminPageLayoutContent = ({
   ] as const;
   const authPollTimerRef = useRef<number | null>(null);
   const debugAutoRefreshTimerRef = useRef<number | null>(null);
-  const debugPendingRefreshTimerRef = useRef<number | null>(null);
-  const loadDebugRef = useRef<
-    ((options?: { preserveSettings?: boolean }) => Promise<void>) | null
-  >(null);
   const usageAutoRefreshTimerRef = useRef<number | null>(null);
   const usageRequestRef = useRef(usage.request);
   const showNotification = useCallback(
@@ -408,13 +404,6 @@ const AdminPageLayoutContent = ({
     if (debugAutoRefreshTimerRef.current !== null) {
       window.clearInterval(debugAutoRefreshTimerRef.current);
       debugAutoRefreshTimerRef.current = null;
-    }
-  }, []);
-
-  const clearDebugPendingRefreshTimer = useCallback(() => {
-    if (debugPendingRefreshTimerRef.current !== null) {
-      window.clearTimeout(debugPendingRefreshTimerRef.current);
-      debugPendingRefreshTimerRef.current = null;
     }
   }, []);
 
@@ -698,25 +687,9 @@ const AdminPageLayoutContent = ({
           saving: false,
         };
       });
-
-      clearDebugPendingRefreshTimer();
-      if (result.data?.pending) {
-        debugPendingRefreshTimerRef.current = window.setTimeout(() => {
-          void loadDebugRef.current?.({ preserveSettings: true });
-        }, 500);
-      }
     },
-    [
-      clearDebugPendingRefreshTimer,
-      consoleMessages.debugLoadFailed,
-      setDebug,
-      showNotification,
-    ],
+    [consoleMessages.debugLoadFailed, setDebug, showNotification],
   );
-
-  useEffect(() => {
-    loadDebugRef.current = loadDebug;
-  }, [loadDebug]);
 
   const loadDebugDetail = useCallback(
     async (id: string) => {
@@ -1535,13 +1508,11 @@ const AdminPageLayoutContent = ({
     return () => {
       clearAuthTimer();
       clearDebugAutoRefreshTimer();
-      clearDebugPendingRefreshTimer();
       clearUsageTimer();
     };
   }, [
     activeTab,
     clearDebugAutoRefreshTimer,
-    clearDebugPendingRefreshTimer,
     initialData,
     loadCredentials,
     loadDashboard,
