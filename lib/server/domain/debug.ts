@@ -698,7 +698,6 @@ export const finalizeDebugTrace = (
   }
 
   pendingDebugTraces += 1;
-  const elapsedMs = Math.max(0, Date.now() - trace.startedAtMs);
 
   trace.pending.push(
     captureResponseSnapshot(response)
@@ -715,6 +714,7 @@ export const finalizeDebugTrace = (
       setDebugTraceError(trace, error);
     })
     .finally(() => {
+      const elapsedMs = Math.max(0, Date.now() - trace.startedAtMs);
       void appendDebugLog({
         credentialFilename: trace.credentialFilename,
         createdAt: trace.createdAt,

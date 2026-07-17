@@ -654,26 +654,50 @@ const AdminPageLayoutContent = ({
         return;
       }
 
-      setDebug((current) => ({
-        autoRefreshSeconds: preserveSettings
-          ? current.autoRefreshSeconds
-          : typeof result.data?.autoRefreshSeconds === 'number'
-            ? result.data.autoRefreshSeconds
-            : 0,
-        enabled: preserveSettings
-          ? current.enabled
-          : Boolean(result.data?.enabled),
-        detailLoadedIds: {},
-        detailLoadingIds: {},
-        items: result.data?.items ?? current.items,
-        loading: false,
-        maxEntries: preserveSettings
-          ? current.maxEntries
-          : typeof result.data?.maxEntries === 'number'
-            ? result.data.maxEntries
-            : 100,
-        saving: false,
-      }));
+      setDebug((current) => {
+        const nextItems = result.data?.items ?? current.items;
+        const currentItems = new Map(
+          current.items.map((item) => [item.id, item]),
+        );
+        const activeIds = new Set(nextItems.map((item) => item.id));
+        const keepDetailState = (ids: Record<string, boolean>) => {
+          return Object.fromEntries(
+            Object.entries(ids).filter(([id]) => activeIds.has(id)),
+          );
+        };
+
+        return {
+          autoRefreshSeconds: preserveSettings
+            ? current.autoRefreshSeconds
+            : typeof result.data?.autoRefreshSeconds === 'number'
+              ? result.data.autoRefreshSeconds
+              : 0,
+          detailLoadedIds: keepDetailState(current.detailLoadedIds),
+          detailLoadingIds: keepDetailState(current.detailLoadingIds),
+          enabled: preserveSettings
+            ? current.enabled
+            : Boolean(result.data?.enabled),
+          items: nextItems.map((item) => {
+            const previous = currentItems.get(item.id);
+            return current.detailLoadedIds[item.id] && previous
+              ? {
+                  ...item,
+                  requestBody: previous.requestBody,
+                  transformedResponse: previous.transformedResponse,
+                  upstreamRequest: previous.upstreamRequest,
+                  upstreamResponse: previous.upstreamResponse,
+                }
+              : item;
+          }),
+          loading: false,
+          maxEntries: preserveSettings
+            ? current.maxEntries
+            : typeof result.data?.maxEntries === 'number'
+              ? result.data.maxEntries
+              : 100,
+          saving: false,
+        };
+      });
 
       clearDebugPendingRefreshTimer();
       if (result.data?.pending) {
