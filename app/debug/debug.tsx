@@ -12,7 +12,6 @@ import {
   Info,
   LoaderCircle,
   MessageSquareText,
-  Network,
   RefreshCw,
   Save,
   Server,
@@ -291,16 +290,19 @@ const DebugMetric = ({
       title={label}
     >
       <Icon aria-hidden="true" size={14} />
-      <span>{value}</span>
+      <span>{label}</span>
+      <span>{typeof value === 'number' ? value.toLocaleString() : value}</span>
     </span>
   );
 };
 
 const StructuredUpstreamRequest = ({
   onCopy,
+  title,
   value,
 }: {
   onCopy: (value: string) => void;
+  title: string;
   value: unknown;
 }) => {
   const request = parseJsonValue(value);
@@ -321,7 +323,7 @@ const StructuredUpstreamRequest = ({
       variant="outlined"
     >
       <div className="flex items-center gap-2 font-medium text-text-light dark:text-text-dark">
-        <Network aria-hidden="true" size={18} /> Upstream request
+        {title}
       </div>
       {record ? (
         <div className="mt-3 grid gap-4 text-sm">
@@ -398,26 +400,36 @@ const StructuredUpstreamRequest = ({
               {messages.length})
             </div>
             {messages.length ? (
-              <div className="grid gap-2">
-                {messages.map((message, index) => {
-                  const item: JsonRecord = isRecord(message)
-                    ? message
-                    : { content: message };
-                  return (
-                    <div
-                      className="border border-border-light dark:border-border-dark p-3"
-                      key={index}
-                    >
-                      <div className="mb-1 text-xs font-medium text-secondary">
-                        {String(item.role ?? 'input')}
-                      </div>
-                      <div className="whitespace-pre-wrap break-words text-xs">
-                        {getText(item.content) ??
-                          formatValue(item.content ?? item)}
-                      </div>
-                    </div>
-                  );
-                })}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[440px] text-xs">
+                  <thead className="text-secondary">
+                    <tr>
+                      <th className="p-2 text-left">Role</th>
+                      <th className="p-2 text-left">Content</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {messages.map((message, index) => {
+                      const item: JsonRecord = isRecord(message)
+                        ? message
+                        : { content: message };
+                      return (
+                        <tr
+                          className="border-t border-border-light dark:border-border-dark"
+                          key={index}
+                        >
+                          <td className="p-2 align-top font-medium">
+                            {String(item.role ?? 'input')}
+                          </td>
+                          <td className="p-2 whitespace-pre-wrap break-words">
+                            {getText(item.content) ??
+                              formatValue(item.content ?? item)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             ) : (
               <div className="text-xs text-secondary">No messages</div>
@@ -462,7 +474,7 @@ const StructuredUpstreamResponse = ({
       variant="outlined"
     >
       <div className="flex items-center gap-2 font-medium text-text-light dark:text-text-dark">
-        <Sparkles aria-hidden="true" size={18} /> Upstream response
+        Upstream response
         {sseEvents ? (
           <Tag variant="borderless">SSE · {sseEvents.length} events</Tag>
         ) : null}
@@ -690,22 +702,39 @@ const Debug = () => {
                 padding={16}
                 variant="outlined"
               >
-                <summary className="debug-entry-summary cursor-pointer list-none p-4 flex flex-wrap items-center justify-between gap-3 w-full min-w-0 max-w-full overflow-hidden">
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-text-light dark:text-text-dark">
-                      {item.route}
-                    </div>
-                    <div className="text-sm text-secondary break-all min-w-0 max-w-full">
-                      {item.createdAt} · key:{' '}
-                      {item.requestKey ?? debugText('requestKeyNone')}
-                    </div>
+                <summary className="debug-entry-summary cursor-pointer list-none p-4 grid gap-3 w-full min-w-0 max-w-full overflow-hidden">
+                  <div className="font-medium text-text-light dark:text-text-dark break-words">
+                    {item.route}
                   </div>
-                  <div className="debug-entry-tags flex flex-wrap gap-2 text-xs min-w-0 max-w-full">
+                  <div className="flex flex-wrap gap-2 text-xs min-w-0 max-w-full">
+                    <Tag variant="borderless">
+                      {debugText('credential')}:{' '}
+                      {item.credentialFilename ??
+                        debugText('credentialUnknown')}
+                    </Tag>
+                    {item.error ? (
+                      <Tag color="red" variant="borderless">
+                        {item.error}
+                      </Tag>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-xs min-w-0 max-w-full">
                     <Tag variant="borderless">
                       {debugText('upstreamStatus', {
                         value: item.upstreamResponse?.status ?? '-',
                       })}
                     </Tag>
+                    <Tag variant="borderless">
+                      {debugText('returnedStatus', {
+                        value: item.transformedResponse?.status ?? '-',
+                      })}
+                    </Tag>
+                  </div>
+                  <div className="text-sm text-secondary break-all min-w-0 max-w-full">
+                    {item.createdAt} · key:{' '}
+                    {item.requestKey ?? debugText('requestKeyNone')}
+                  </div>
+                  <div className="debug-entry-tags flex flex-wrap gap-x-5 gap-y-2 text-xs min-w-0 max-w-full">
                     <DebugMetric icon={Bot} label="Model" value={item.model} />
                     <DebugMetric
                       icon={Database}
@@ -727,12 +756,11 @@ const Debug = () => {
                     />
                     <DebugMetric
                       icon={Gauge}
-                      label="TPM"
+                      label="TPS"
                       value={
                         item.elapsedMs && item.usage?.totalTokens
                           ? Math.round(
-                              (item.usage.totalTokens * 60_000) /
-                                item.elapsedMs,
+                              (item.usage.totalTokens * 1_000) / item.elapsedMs,
                             )
                           : null
                       }
@@ -746,21 +774,6 @@ const Debug = () => {
                           : `${item.elapsedMs}ms`
                       }
                     />
-                    <Tag variant="borderless">
-                      {debugText('returnedStatus', {
-                        value: item.transformedResponse?.status ?? '-',
-                      })}
-                    </Tag>
-                    <Tag variant="borderless">
-                      {debugText('credential')}:{' '}
-                      {item.credentialFilename ??
-                        debugText('credentialUnknown')}
-                    </Tag>
-                    {item.error ? (
-                      <Tag color="red" variant="borderless">
-                        {item.error}
-                      </Tag>
-                    ) : null}
                   </div>
                 </summary>
                 <div className="debug-entry-content p-4 pt-0 grid gap-4 w-full min-w-0">
@@ -777,6 +790,7 @@ const Debug = () => {
                       />
                       <StructuredUpstreamRequest
                         onCopy={onCopy}
+                        title={debugText('upstreamRequest')}
                         value={item.upstreamRequest?.body}
                       />
                       <StructuredUpstreamResponse
