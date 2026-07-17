@@ -209,6 +209,17 @@ const getText = (value: unknown): string | null => {
   return null;
 };
 
+const getStreamingEventText = (event: unknown): string | null => {
+  if (!isRecord(event)) return null;
+
+  const choiceText = getText(event.choices);
+  if (choiceText) return choiceText;
+
+  return event.type === 'response.output_text.delta'
+    ? getText(event.delta)
+    : null;
+};
+
 const getToolName = (tool: JsonRecord): string => {
   const functionValue = isRecord(tool.function) ? tool.function : tool;
   return String(functionValue.name ?? tool.name ?? 'Unnamed tool');
@@ -457,7 +468,7 @@ const StructuredUpstreamResponse = ({ value }: { value: unknown }) => {
   const responseRecord = isRecord(response) ? response : null;
   const content =
     eventPayloads
-      .map((event) => (isRecord(event) ? getText(event.choices) : null))
+      .map(getStreamingEventText)
       .filter((item): item is string => Boolean(item))
       .join('') ||
     getText(responseRecord?.choices) ||

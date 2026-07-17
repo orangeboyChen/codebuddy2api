@@ -152,4 +152,56 @@ describe('debug view', () => {
     expect(screen.getByText('Assistant')).toBeInTheDocument();
     expect(screen.queryByText('User')).not.toBeInTheDocument();
   });
+
+  it('aggregates Responses API streaming deltas', async () => {
+    renderWithMessages(
+      <DebugProvider
+        value={{
+          autoRefreshOptions: [],
+          debug: {
+            autoRefreshSeconds: 0,
+            detailLoadedIds: { responses: true },
+            detailLoadingIds: {},
+            enabled: true,
+            items: [
+              {
+                credentialFilename: null,
+                createdAt: '2026-07-18T00:00:00.000Z',
+                elapsedMs: null,
+                error: null,
+                id: 'responses',
+                requestBody: {},
+                requestKey: null,
+                route: '/v1/responses',
+                transformedResponse: null,
+                upstreamRequest: null,
+                upstreamResponse: {
+                  body: 'data: {"type":"response.output_text.delta","delta":"Hello "}\n\ndata: {"type":"response.output_text.delta","delta":"world"}\n\ndata: [DONE]\n\n',
+                  status: 200,
+                },
+              },
+            ],
+            loading: false,
+            maxEntries: 100,
+            saving: false,
+          },
+          onAutoRefreshSecondsChange: vi.fn(),
+          onClear: vi.fn(),
+          onCopy: vi.fn(),
+          onEnabledChange: vi.fn(),
+          onMaxEntriesChange: vi.fn(),
+          onRefresh: vi.fn(),
+          onSave: vi.fn(),
+        }}
+      >
+        <Debug />
+      </DebugProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /\/v1\/responses/ }));
+
+    await waitFor(() => {
+      expect(document.body).toHaveTextContent('Hello world');
+    });
+  });
 });
