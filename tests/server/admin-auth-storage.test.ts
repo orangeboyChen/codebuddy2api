@@ -19,6 +19,7 @@ import {
   loginWithAdminPassword,
   logoutAdminSession,
   setupAdminPassword,
+  updateAdminSessionUsagePreferences,
 } from '@/lib/server/admin/session';
 import {
   deleteStorageJson,
@@ -135,6 +136,35 @@ describe('admin auth and storage', () => {
     expect(summary.accountConfigured).toBe(true);
     expect(summary.authenticated).toBe(true);
     expect(summary.passwordConfigured).toBe(true);
+
+    expect(
+      await updateAdminSessionUsagePreferences(
+        makeRequest('/admin-api/usage', { cookie: setupCookie }),
+        {
+          accessKey: ['key-a'],
+          autoRefreshSeconds: 30,
+          credential: ['credential-a'],
+          range: 'today',
+        },
+      ),
+    ).toEqual({
+      accessKey: ['key-a'],
+      autoRefreshSeconds: 30,
+      credential: ['credential-a'],
+      range: 'today',
+    });
+    expect(
+      (
+        await getAdminSessionSummary(
+          makeRequest('/admin-api/usage', { cookie: setupCookie }),
+        )
+      ).usagePreferences,
+    ).toEqual({
+      accessKey: ['key-a'],
+      autoRefreshSeconds: 30,
+      credential: ['credential-a'],
+      range: 'today',
+    });
 
     const duplicateSetupResponse = await setupAdminPassword(
       makeRequest('/admin-api/auth/setup'),

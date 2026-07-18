@@ -1029,22 +1029,12 @@ describe('server runtime', () => {
       },
     });
 
-    const invalidResponse = await AdminUsageRoute.GET(
-      makeNextRequest('http://localhost/admin-api/usage?range=10d'),
-    );
-    expect(invalidResponse.status).toBe(400);
-    expect(await invalidResponse.json()).toEqual({
-      error: 'Invalid range',
-    });
-
     const usageResponse = await AdminUsageRoute.GET(
-      makeNextRequest(
-        'http://localhost/admin-api/usage?range=today&accessKey=key-1&credential=runtime-credential.json',
-      ),
+      makeNextRequest('http://localhost/admin-api/usage'),
     );
     expect(usageResponse.status).toBe(200);
     const usagePayload = await usageResponse.json();
-    expect(usagePayload.range).toBe('today');
+    expect(usagePayload.range).toBe('24h');
     expect(usagePayload.tableRows).toEqual([
       {
         callCount: 1,
@@ -1082,7 +1072,7 @@ describe('server runtime', () => {
 
     const clearedPayload = await (
       await AdminUsageRoute.GET(
-        makeNextRequest('http://localhost/admin-api/usage?range=today'),
+        makeNextRequest('http://localhost/admin-api/usage'),
       )
     ).json();
     expect(clearedPayload.tableRows).toEqual([]);

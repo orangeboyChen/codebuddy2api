@@ -1,20 +1,25 @@
-import { getAdminSessionErrorResponse } from '@/lib/server/admin/session';
+import {
+  getAdminSessionErrorResponse,
+  getAdminSessionSummary,
+  updateAdminSessionUsagePreferences,
+} from '@/lib/server/admin/session';
 import { getUsageAnalytics, type UsageRange } from '@/lib/server/domain/usage';
+import { getJsonBody } from '@/lib/server/shared/http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const ALLOWED_RANGES = new Set<UsageRange>([
-  '1h',
-  '3h',
-  '6h',
-  '12h',
-  '24h',
-  '3d',
-  '7d',
-  'today',
-  'yesterday',
-]);
+const getUsageResponse = async (request: Request): Promise<Response> => {
+  const preferences = (await getAdminSessionSummary(request)).usagePreferences;
+
+  return Response.json(
+    await getUsageAnalytics({
+      accessKey: preferences?.accessKey ?? [],
+      credential: preferences?.credential ?? [],
+      range: preferences?.range ?? '24h',
+    }),
+  );
+};
 
 export const GET = async (request: Request): Promise<Response> => {
   const authError = await getAdminSessionErrorResponse(request);
@@ -23,27 +28,38 @@ export const GET = async (request: Request): Promise<Response> => {
     return authError;
   }
 
-  const url = new URL(request.url);
-  const range = url.searchParams.get('range') ?? '24h';
-  const accessKey = url.searchParams.getAll('accessKey');
-  const credential = url.searchParams.getAll('credential');
+  return getUsageResponse(request);
+};
 
-  if (!ALLOWED_RANGES.has(range as UsageRange)) {
+export const PATCH = async (request: Request): Promise<Response> => {
+  const authError = await getAdminSessionErrorResponse(request);
+
+  if (authError) {
+    return authError;
+  }
+
+  const preferences = await updateAdminSessionUsagePreferences(
+    request,
+    await getJsonBody<{
+      accessKey?: unknown;
+      autoRefreshSeconds?: unknown;
+      credential?: unknown;
+      range?: UsageRange;
+    }>(request),
+  );
+
+  if (!preferences) {
     return Response.json(
-      {
-        error: 'Invalid range',
-      },
-      {
-        status: 400,
-      },
+      { error: 'An authenticated admin session is required' },
+      { status: 401 },
     );
   }
 
   return Response.json(
     await getUsageAnalytics({
-      accessKey,
-      credential,
-      range: range as UsageRange,
+      accessKey: preferences.accessKey,
+      credential: preferences.credential,
+      range: preferences.range,
     }),
   );
 };

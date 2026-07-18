@@ -19,6 +19,7 @@ import {
 import { readStorageJsonResult, writeStorageJson } from '../storage';
 
 import { getActiveConfig } from '../domain/config';
+import type { UsageRange } from '../domain/usage';
 
 const ADMIN_AUTH_NAMESPACE = 'admin-auth';
 const ADMIN_AUTH_KEY = 'state';
@@ -45,6 +46,14 @@ interface StoredSessionRecord {
   id: string;
   lastUsedAt: string;
   tokenHash: string;
+  usagePreferences?: AdminUsagePreferences;
+}
+
+export interface AdminUsagePreferences {
+  accessKey: string[];
+  autoRefreshSeconds: number;
+  credential: string[];
+  range: UsageRange;
 }
 
 interface StoredPasskeyRecord {
@@ -332,6 +341,59 @@ const getSessionToken = (request: RequestLike): string | null => {
   return getCookieValue(request, ADMIN_SESSION_COOKIE);
 };
 
+const usageRanges = new Set<UsageRange>([
+  '1h',
+  '3h',
+  '6h',
+  '12h',
+  '24h',
+  '3d',
+  '7d',
+  'today',
+  'yesterday',
+]);
+const usageAutoRefreshSeconds = new Set([0, 5, 15, 30, 60, 300]);
+
+const normalizeUsagePreferenceValues = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 100);
+};
+
+const normalizeUsagePreferences = (
+  value: unknown,
+): AdminUsagePreferences | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Partial<AdminUsagePreferences>;
+
+  if (!usageRanges.has(record.range as UsageRange)) {
+    return null;
+  }
+
+  const autoRefreshSeconds = Number(record.autoRefreshSeconds);
+
+  if (!usageAutoRefreshSeconds.has(autoRefreshSeconds)) {
+    return null;
+  }
+
+  return {
+    accessKey: normalizeUsagePreferenceValues(record.accessKey),
+    autoRefreshSeconds,
+    credential: normalizeUsagePreferenceValues(record.credential),
+    range: record.range as UsageRange,
+  };
+};
+
 const getValidSessionRecord = (
   request: RequestLike,
 ): Promise<StoredSessionRecord | null> => {
@@ -533,16 +595,47 @@ export const isAdminSessionAuthenticated = async (
 
 export const getAdminSessionSummary = async (request: RequestLike) => {
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
+  const session = await getValidSessionRecord(request);
 
   return {
     accountConfigured:
       state.enabled && (Boolean(state.password) || state.passkeys.length > 0),
     authEnabled: state.enabled,
-    authenticated: await isAdminSessionAuthenticated(request),
+    authenticated: session !== null,
     passkeyCount: state.passkeys.length,
     passwordConfigured: Boolean(state.password),
     username: state.username,
+    usagePreferences: normalizeUsagePreferences(session?.usagePreferences),
   };
+};
+
+export const updateAdminSessionUsagePreferences = async (
+  request: RequestLike,
+  preferences: unknown,
+): Promise<AdminUsagePreferences | null> => {
+  const normalizedPreferences = normalizeUsagePreferences(preferences);
+  const token = getSessionToken(request);
+
+  if (!normalizedPreferences || !token) {
+    return null;
+  }
+
+  const tokenHash = hashSessionToken(token);
+
+  return mutateAdminAuthState((state) => {
+    const session = state.sessions.find(
+      (entry) => entry.tokenHash === tokenHash,
+    );
+
+    if (!session) {
+      return null;
+    }
+
+    session.usagePreferences = normalizedPreferences;
+    session.lastUsedAt = new Date().toISOString();
+
+    return normalizedPreferences;
+  });
 };
 
 export const getAdminSessionErrorResponse = (

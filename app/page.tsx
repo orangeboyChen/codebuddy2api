@@ -6,7 +6,6 @@ import type { ReactNode } from 'react';
 import AdminPageLayout from '@/app/page-shell';
 import type { TabKey } from '@/app/page-data';
 import { getInitialData } from '@/app/page-loader';
-import type { UsageFiltersState } from '@/app/usage/usage';
 import { getAdminSessionSummary } from '@/lib/server/admin/session';
 import {
   localeCookieName,
@@ -22,13 +21,9 @@ export const dynamic = 'force-dynamic';
 export const AdminPage = async ({
   children,
   initialTab,
-  initialUsageAutoRefreshSeconds,
-  initialUsageRequest,
 }: {
   children: ReactNode;
   initialTab: TabKey;
-  initialUsageAutoRefreshSeconds?: number;
-  initialUsageRequest?: UsageFiltersState;
 }) => {
   const cookieStore = await cookies();
   const headerStore = await headers();
@@ -63,8 +58,7 @@ export const AdminPage = async ({
       initialData={await getInitialData({
         locale,
         tab: initialTab,
-        usageAutoRefreshSeconds: initialUsageAutoRefreshSeconds,
-        usageRequest: initialUsageRequest,
+        usagePreferences: session.usagePreferences,
       })}
       initialLocalePreference={localePreference}
       showLogout={sessionAuthenticated}

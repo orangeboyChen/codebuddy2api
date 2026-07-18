@@ -383,21 +383,6 @@ const AdminPageLayoutContent = ({
   const debugAutoRefreshTimerRef = useRef<number | null>(null);
   const usageAutoRefreshTimerRef = useRef<number | null>(null);
   const usageRequestRef = useRef(usage.request);
-  const syncUsageQuery = useCallback(
-    (request: UsageFiltersState, autoRefreshSeconds: number) => {
-      const params = new URLSearchParams(window.location.search);
-      params.delete('accessKey');
-      params.delete('credential');
-      request.accessKey.forEach((value) => params.append('accessKey', value));
-      request.credential.forEach((value) => params.append('credential', value));
-      params.set('range', request.range);
-      params.set('autoRefresh', String(autoRefreshSeconds));
-      router.replace(
-        `${window.location.pathname}?${params.toString()}` as Route,
-      );
-    },
-    [router],
-  );
   const showNotification = useCallback(
     (type: 'success' | 'error' | 'warning' | 'info', message: string) => {
       toast[type]({ description: message, duration: 3000 });
@@ -743,11 +728,16 @@ const AdminPageLayoutContent = ({
   );
 
   const loadUsage = useCallback(
-    async (requestOverride?: Partial<UsageFiltersState>) => {
+    async (
+      requestOverride?: Partial<UsageFiltersState>,
+      autoRefreshSecondsOverride?: number,
+    ) => {
       const nextRequest = {
         ...usageRequestRef.current,
         ...requestOverride,
       };
+      const nextAutoRefreshSeconds =
+        autoRefreshSecondsOverride ?? usage.autoRefreshSeconds;
       usageRequestRef.current = nextRequest;
 
       setUsage((current) => ({
@@ -756,17 +746,18 @@ const AdminPageLayoutContent = ({
         request: nextRequest,
       }));
 
-      const params = new URLSearchParams({
-        range: nextRequest.range,
-      });
-      nextRequest.accessKey.forEach((value) =>
-        params.append('accessKey', value),
-      );
-      nextRequest.credential.forEach((value) =>
-        params.append('credential', value),
-      );
       const result = await requestJson<UsageResponse>(
-        `/admin-api/usage?${params.toString()}`,
+        '/admin-api/usage',
+        requestOverride || autoRefreshSecondsOverride !== undefined
+          ? {
+              body: JSON.stringify({
+                ...nextRequest,
+                autoRefreshSeconds: nextAutoRefreshSeconds,
+              }),
+              headers: { 'Content-Type': 'application/json' },
+              method: 'PATCH',
+            }
+          : undefined,
       );
 
       if (!result.ok) {
@@ -792,6 +783,7 @@ const AdminPageLayoutContent = ({
       setUsage((current) => ({
         ...current,
         callSeries: result.data?.callSeries ?? [],
+        autoRefreshSeconds: nextAutoRefreshSeconds,
         filters: {
           accessKeys: result.data?.filters?.accessKeys ?? [],
           credentials: result.data?.filters?.credentials ?? [],
@@ -814,7 +806,13 @@ const AdminPageLayoutContent = ({
         tokenSeries: result.data?.tokenSeries ?? [],
       }));
     },
-    [consoleMessages.usageLoadFailed, locale, setUsage, showNotification],
+    [
+      consoleMessages.usageLoadFailed,
+      locale,
+      setUsage,
+      showNotification,
+      usage.autoRefreshSeconds,
+    ],
   );
 
   const refreshAdminData = useCallback(async () => {
@@ -1939,38 +1937,21 @@ const AdminPageLayoutContent = ({
             <UsageProvider
               value={{
                 onAccessKeyChange: (value) => {
-                  syncUsageQuery(
-                    { ...usageRequestRef.current, accessKey: value },
-                    usage.autoRefreshSeconds,
-                  );
                   void loadUsage({ accessKey: value });
                 },
                 onAutoRefreshSecondsChange: (value) => {
-                  syncUsageQuery(usageRequestRef.current, value);
-                  setUsage((current) => ({
-                    ...current,
-                    autoRefreshSeconds: value,
-                    autoRefreshVisible: true,
-                  }));
+                  void loadUsage(undefined, value);
                 },
                 onClearHistory: () => {
                   void clearUsageHistory();
                 },
                 onCredentialChange: (value) => {
-                  syncUsageQuery(
-                    { ...usageRequestRef.current, credential: value },
-                    usage.autoRefreshSeconds,
-                  );
                   void loadUsage({ credential: value });
                 },
                 onHoverPoint: (point) => {
                   setUsage((current) => ({ ...current, hoveredPoint: point }));
                 },
                 onRangeChange: (value) => {
-                  syncUsageQuery(
-                    { ...usageRequestRef.current, range: value },
-                    usage.autoRefreshSeconds,
-                  );
                   void loadUsage({ range: value });
                 },
                 onRefresh: () => {

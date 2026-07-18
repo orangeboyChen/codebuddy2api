@@ -13,6 +13,7 @@ import type {
   TabKey,
 } from '@/app/page-data';
 import type { UsageFiltersState } from '@/app/usage/usage';
+import type { AdminUsagePreferences } from '@/lib/server/admin/session';
 import { listAccessKeys } from '@/lib/server/domain/access-keys';
 import { getActiveConfig, getSettingLabels } from '@/lib/server/domain/config';
 import {
@@ -34,8 +35,7 @@ const defaultUsageRequest: UsageFiltersState = {
 export interface InitialDataRequest {
   locale: AppLocale;
   tab: TabKey;
-  usageAutoRefreshSeconds?: number;
-  usageRequest?: UsageFiltersState;
+  usagePreferences?: AdminUsagePreferences | null;
 }
 
 const buildApiEndpoint = async () => {
@@ -103,8 +103,7 @@ const createDebugSnapshot = async () => {
 export const getInitialData = async ({
   locale,
   tab,
-  usageAutoRefreshSeconds = 15,
-  usageRequest = defaultUsageRequest,
+  usagePreferences,
 }: InitialDataRequest): Promise<AdminConsoleInitialData> => {
   switch (tab) {
     case 'dashboard': {
@@ -125,13 +124,20 @@ export const getInitialData = async ({
     }
     case 'usage': {
       const timestamp = new Date().toISOString();
+      const usageRequest: UsageFiltersState = usagePreferences
+        ? {
+            accessKey: usagePreferences.accessKey,
+            credential: usagePreferences.credential,
+            range: usagePreferences.range,
+          }
+        : defaultUsageRequest;
       const usage = await getUsageAnalytics(usageRequest);
 
       return {
         tab,
         usage: {
           ...usage,
-          autoRefreshSeconds: usageAutoRefreshSeconds,
+          autoRefreshSeconds: usagePreferences?.autoRefreshSeconds ?? 15,
           request: usageRequest,
           updatedAtLabel: new Date(timestamp).toLocaleTimeString(locale),
         },

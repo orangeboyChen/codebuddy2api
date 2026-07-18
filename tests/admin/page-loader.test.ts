@@ -122,7 +122,7 @@ describe('tab-scoped initial data', () => {
     },
   );
 
-  it('preserves usage filters and refresh settings in the usage snapshot', async () => {
+  it('restores persisted usage filters and refresh settings in the usage snapshot', async () => {
     vi.mocked(getUsageAnalytics).mockResolvedValue({
       callSeries: [],
       filters: { accessKeys: [], credentials: [] },
@@ -132,24 +132,32 @@ describe('tab-scoped initial data', () => {
       tokenSeries: [],
     } as never);
 
-    const usageRequest = {
+    const usagePreferences = {
       accessKey: ['key-a'],
+      autoRefreshSeconds: 30,
       credential: ['credential-a'],
       range: 'today' as const,
     };
     const initialData = await getInitialData({
       locale: 'en-US',
       tab: 'usage',
-      usageAutoRefreshSeconds: 30,
-      usageRequest,
+      usagePreferences,
     });
 
-    expect(getUsageAnalytics).toHaveBeenCalledWith(usageRequest);
+    expect(getUsageAnalytics).toHaveBeenCalledWith({
+      accessKey: usagePreferences.accessKey,
+      credential: usagePreferences.credential,
+      range: usagePreferences.range,
+    });
     expect(initialData).toMatchObject({
       tab: 'usage',
       usage: {
         autoRefreshSeconds: 30,
-        request: usageRequest,
+        request: {
+          accessKey: usagePreferences.accessKey,
+          credential: usagePreferences.credential,
+          range: usagePreferences.range,
+        },
       },
     });
   });
