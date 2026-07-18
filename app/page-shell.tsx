@@ -23,24 +23,20 @@ import {
   createDashboardState,
   dashboardStateAtom,
   DashboardProvider,
-  defaultDashboardState,
 } from '@/app/dashboard/dashboard';
 import {
   createDebugState,
   debugStateAtom,
-  defaultDebugState,
   DebugProvider,
   type DebugLogEntry,
 } from '@/app/debug/debug';
 import {
   createSettingsState,
-  defaultSettingsState,
   SettingsProvider,
   settingsStateAtom,
 } from '@/app/settings/settings';
 import {
   createUsageState,
-  defaultUsageState,
   type UsageChartSeries,
   type UsageFilterOption,
   type UsageFiltersState,
@@ -52,7 +48,6 @@ import {
   ApiTestProvider,
   apiTestStateAtom,
   createApiTestState,
-  defaultApiTestState,
 } from '@/app/api-test/api-test';
 import {
   authStateAtom,
@@ -60,7 +55,6 @@ import {
   CredentialsProvider,
   credentialsStateAtom,
   defaultAuthState,
-  defaultCredentialsState,
   type AccessKeySummary,
   type CredentialSummary,
 } from '@/app/credentials/credentials';
@@ -297,6 +291,14 @@ interface AdminPageLayoutProps {
   showLogout: boolean;
 }
 
+type InitialStateAtom =
+  | typeof apiTestStateAtom
+  | typeof credentialsStateAtom
+  | typeof dashboardStateAtom
+  | typeof debugStateAtom
+  | typeof settingsStateAtom
+  | typeof usageStateAtom;
+
 const AdminPageLayoutContent = ({
   children,
   initialData,
@@ -306,33 +308,28 @@ const AdminPageLayoutContent = ({
   showLogout,
 }: AdminPageLayoutProps) => {
   const router = useRouter();
-  const initialDashboardState = initialData
-    ? createDashboardState(initialData)
-    : defaultDashboardState;
-  const initialCredentialsState = initialData
-    ? createCredentialsState(initialData)
-    : defaultCredentialsState;
-  const initialDebugState = initialData
-    ? createDebugState(initialData)
-    : defaultDebugState;
-  const initialUsageState = initialData
-    ? createUsageState(initialData)
-    : defaultUsageState;
-  const initialSettingsState = initialData
-    ? createSettingsState(initialData)
-    : defaultSettingsState;
-  const initialApiTestState = initialData
-    ? createApiTestState(initialData)
-    : defaultApiTestState;
+  const initialTabAtoms = new Map<InitialStateAtom, unknown>();
 
+  if (initialData?.tab === 'dashboard') {
+    initialTabAtoms.set(dashboardStateAtom, createDashboardState(initialData));
+  } else if (initialData?.tab === 'credentials') {
+    initialTabAtoms.set(
+      credentialsStateAtom,
+      createCredentialsState(initialData),
+    );
+  } else if (initialData?.tab === 'debug') {
+    initialTabAtoms.set(debugStateAtom, createDebugState(initialData));
+  } else if (initialData?.tab === 'usage') {
+    initialTabAtoms.set(usageStateAtom, createUsageState(initialData));
+  } else if (initialData?.tab === 'settings') {
+    initialTabAtoms.set(settingsStateAtom, createSettingsState(initialData));
+  } else if (initialData?.tab === 'api-test') {
+    initialTabAtoms.set(apiTestStateAtom, createApiTestState(initialData));
+  }
+
+  useHydrateAtoms(initialTabAtoms);
   useHydrateAtoms([
-    [dashboardStateAtom, initialDashboardState],
-    [credentialsStateAtom, initialCredentialsState],
-    [debugStateAtom, initialDebugState],
-    [usageStateAtom, initialUsageState],
-    [settingsStateAtom, initialSettingsState],
     [authStateAtom, defaultAuthState],
-    [apiTestStateAtom, initialApiTestState],
     [themeAtom, initialTheme],
   ]);
 
@@ -1550,13 +1547,19 @@ const AdminPageLayoutContent = ({
 
   useEffect(() => {
     if (!initialData) {
-      void Promise.all([
-        loadDashboard(),
-        loadCredentials(),
-        loadDebug(),
-        loadUsage(),
-        loadSettings(),
-      ]);
+      if (activeTab === 'api-test') {
+        void Promise.all([loadCredentials(), loadSettings()]);
+      } else if (activeTab === 'credentials') {
+        void loadCredentials();
+      } else if (activeTab === 'dashboard') {
+        void loadDashboard();
+      } else if (activeTab === 'debug') {
+        void loadDebug();
+      } else if (activeTab === 'settings') {
+        void loadSettings();
+      } else {
+        void loadUsage();
+      }
     }
 
     return () => {
@@ -1983,13 +1986,14 @@ const AdminPageLayoutContent = ({
             <ApiTestProvider
               value={{
                 apiTest,
-                credentialOptions: credentials.items.filter(
-                  (item) => !item.is_expired,
-                ),
-                models: String(settings.values.CODEBUDDY_MODELS ?? '')
-                  .split(',')
-                  .map((item) => item.trim())
-                  .filter(Boolean),
+                credentialOptions:
+                  initialData?.tab === 'api-test'
+                    ? initialData.credentials.filter((item) => !item.is_expired)
+                    : credentials.items.filter((item) => !item.is_expired),
+                models:
+                  initialData?.tab === 'api-test'
+                    ? getConfiguredModels(initialData.modelSettings)
+                    : getConfiguredModels(settings.values.CODEBUDDY_MODELS),
                 onCredentialChange: (value) => {
                   setApiTest((current) => ({
                     ...current,

@@ -53,7 +53,7 @@ export const defaultDashboardState: DashboardState = {
 export const dashboardStateAtom = atom<DashboardState>(defaultDashboardState);
 
 export const createDashboardState = (
-  initialData: AdminConsoleInitialData,
+  initialData: Extract<AdminConsoleInitialData, { tab: 'dashboard' }>,
 ): DashboardState => {
   const validCredentials = initialData.credentials.filter(
     (item) => !item.is_expired,

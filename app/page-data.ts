@@ -27,14 +27,47 @@ export interface AdminSettingsSnapshot {
   values: Record<string, string | number | null>;
 }
 
-export interface AdminConsoleInitialData {
-  accessKeys: AccessKeySummary[];
+export interface DashboardInitialData {
   apiEndpoint: string;
   credentials: CredentialSummary[];
-  currentCredential: CurrentCredentialInfo;
-  debug: AdminDebugSnapshot;
   health: AdminHealthState;
-  settings: AdminSettingsSnapshot;
   stats: AdminStatsState;
-  usage?: import('@/app/usage/usage').AdminUsageSnapshot;
+  tab: 'dashboard';
 }
+
+export interface UsageTabInitialData {
+  tab: 'usage';
+  usage: import('@/app/usage/usage').AdminUsageSnapshot;
+}
+
+export interface CredentialsTabInitialData {
+  accessKeys: AccessKeySummary[];
+  credentials: CredentialSummary[];
+  currentCredential: CurrentCredentialInfo;
+  tab: 'credentials';
+}
+
+export interface ApiTestInitialData {
+  credentials: CredentialSummary[];
+  currentCredential: CurrentCredentialInfo;
+  modelSettings: string;
+  tab: 'api-test';
+}
+
+export interface DebugTabInitialData {
+  debug: AdminDebugSnapshot;
+  tab: 'debug';
+}
+
+export interface SettingsTabInitialData {
+  settings: AdminSettingsSnapshot;
+  tab: 'settings';
+}
+
+export type AdminConsoleInitialData =
+  | ApiTestInitialData
+  | CredentialsTabInitialData
+  | DashboardInitialData
+  | DebugTabInitialData
+  | SettingsTabInitialData
+  | UsageTabInitialData;
