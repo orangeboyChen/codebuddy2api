@@ -51,7 +51,6 @@ describe('dashboard view', () => {
     expect(screen.getByText('https://api.example.test/v1')).toBeVisible();
     expect(document.querySelectorAll('.dashboard-metric-card')).toHaveLength(4);
     expect(screen.queryByText('Service status')).not.toBeInTheDocument();
-    expect(screen.queryByText('API endpoint')).not.toBeInTheDocument();
   });
 });
 

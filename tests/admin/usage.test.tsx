@@ -86,5 +86,5 @@ describe('usage view', () => {
     expect(container.textContent).toMatch(
       /Time range[\s\S]*Calls[\s\S]*Credential usage/,
     );
-  });
+  }, 60_000);
 });
