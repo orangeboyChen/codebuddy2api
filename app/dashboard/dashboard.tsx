@@ -9,10 +9,11 @@ import {
   KeyRound,
 } from 'lucide-react';
 import Image from 'next/image';
-import { useLocale, useTranslations } from 'next-intl';
+import { useLocale, useMessages, useTranslations } from 'next-intl';
 import { createContext, useContext } from 'react';
 
 import type { AdminConsoleInitialData } from '@/app/page-data';
+import type { AppMessages } from '@/lib/i18n/messages';
 
 export interface DashboardSummary {
   cacheHitTokens: number;
@@ -64,13 +65,12 @@ const useDashboard = (): DashboardController => {
 const formatNumber = (locale: string, value: number) =>
   new Intl.NumberFormat(locale).format(value);
 
-const getDailyMessage = (messages: unknown): string => {
-  const availableMessages = Array.isArray(messages)
-    ? messages.filter(
-        (message): message is string => typeof message === 'string',
-      )
-    : typeof messages === 'string'
-      ? messages.split('|').filter(Boolean)
+export const getDailyMessage = (messages: unknown): string => {
+  const availableMessages =
+    messages && typeof messages === 'object' && !Array.isArray(messages)
+      ? Object.values(messages).filter(
+          (message): message is string => typeof message === 'string',
+        )
       : [];
   if (!availableMessages.length) return '';
 
@@ -79,22 +79,16 @@ const getDailyMessage = (messages: unknown): string => {
     (today.getFullYear() * 372 + today.getMonth() * 31 + today.getDate()) %
     availableMessages.length;
 
-  const message = availableMessages[dayIndex];
-
-  if (dayIndex % 10 === 0) return message;
-
-  return message
-    .replace(/\p{Extended_Pictographic}/gu, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  return availableMessages[dayIndex];
 };
 
 const Dashboard = () => {
   const { dashboard } = useDashboard();
   const locale = useLocale();
+  const messages = useMessages() as unknown as AppMessages;
   const translations = useTranslations('Admin.dashboard');
   const usageTranslations = useTranslations('Admin.usage');
-  const dailyMessage = getDailyMessage(translations('tokenMessages'));
+  const dailyMessage = getDailyMessage(messages.Admin.dashboard.messages.daily);
   const metrics = [
     {
       icon: KeyRound,

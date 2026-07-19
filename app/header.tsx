@@ -3,7 +3,7 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { DropdownMenu, Select } from '@lobehub/ui/base-ui';
-import { Ellipsis, Languages, Menu, PanelTop, SunMoon } from 'lucide-react';
+import { Ellipsis, Languages, Menu, SunMoon } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
@@ -143,20 +143,13 @@ export const AdminHeader = ({
           items={[
             ...(navigationItems?.length
               ? [
-                  {
-                    children: navigationItems.map(
-                      ({ icon, key, label, onClick }) => ({
-                        icon,
-                        key,
-                        label,
-                        onClick,
-                      }),
-                    ),
-                    icon: PanelTop,
-                    key: 'navigation',
-                    label: translations('tabsLabel'),
-                    type: 'submenu' as const,
-                  },
+                  ...navigationItems.map(({ icon, key, label, onClick }) => ({
+                    icon,
+                    key,
+                    label,
+                    onClick,
+                  })),
+                  { key: 'navigation-divider', type: 'divider' as const },
                 ]
               : []),
             {
@@ -208,7 +201,7 @@ export const AdminHeader = ({
           nativeButton
           placement="bottomRight"
         >
-          <Button aria-label="Console menu" icon={Menu} />
+          <Button aria-label={translations('tabsLabel')} icon={Menu} />
         </DropdownMenu>
       </div>
     </header>

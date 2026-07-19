@@ -18,7 +18,7 @@ import {
 import { getMessages } from '@/lib/i18n/messages';
 
 export const metadata: Metadata = {
-  title: 'CodeBuddy2API Console',
+  title: 'CodeBuddy2API',
   description: 'Next.js admin shell for the CodeBuddy2API migration.',
 };
 
