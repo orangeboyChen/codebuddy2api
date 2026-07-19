@@ -15,6 +15,7 @@
 - Prefer TypeScript for application and test code whenever a new file or rewrite is needed.
 - Use arrow functions only. Do not introduce `function` declarations; prefer `const name = () => {}` consistently.
 - Do not leave unused variables in committed code. Remove them or rename intentionally ignored values with a leading underscore only when the linter rule allows it.
+- When changing user-visible copy, review every supported locale in `messages/` and keep equivalent wording aligned across them.
 
 ## Verification Before Commit
 

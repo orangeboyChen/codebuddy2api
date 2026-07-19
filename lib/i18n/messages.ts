@@ -1,5 +1,3 @@
-import type { AbstractIntlMessages } from 'next-intl';
-
 import enUS from '@/messages/en-US.json';
 import jaJP from '@/messages/ja-JP.json';
 import zhCN from '@/messages/zh-CN.json';
@@ -10,7 +8,7 @@ const messages = {
   'en-US': enUS,
   'ja-JP': jaJP,
   'zh-CN': zhCN,
-} satisfies Record<AppLocale, AbstractIntlMessages>;
+};
 
 export type AppMessages = typeof zhCN;
 export type AdminMessages = AppMessages['Admin'];

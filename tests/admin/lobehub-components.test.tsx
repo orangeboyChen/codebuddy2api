@@ -5,10 +5,15 @@ import { ConfigProvider } from '@lobehub/ui';
 import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
 
-import Dashboard from '@/app/dashboard/dashboard';
-import { DashboardProvider } from '@/app/dashboard/dashboard';
+import Dashboard, {
+  DashboardProvider,
+  getDailyMessage,
+} from '@/app/dashboard/dashboard';
 import Debug, { DebugProvider } from '@/app/debug/debug';
 import { getMessages } from '@/lib/i18n/messages';
+import enUS from '@/messages/en-US.json';
+import jaJP from '@/messages/ja-JP.json';
+import zhCN from '@/messages/zh-CN.json';
 
 const renderWithMessages = (children: React.ReactNode) => {
   return render(
@@ -21,6 +26,50 @@ const renderWithMessages = (children: React.ReactNode) => {
 };
 
 describe('dashboard view', () => {
+  it('selects daily messages within each locale group', () => {
+    const dailyGroups = [
+      enUS.Admin.dashboard.messages.daily,
+      jaJP.Admin.dashboard.messages.daily,
+      zhCN.Admin.dashboard.messages.daily,
+    ];
+    const expectedKeys = Object.keys(dailyGroups[0]);
+
+    for (const dailyGroup of dailyGroups) {
+      expect(Object.keys(dailyGroup)).toEqual(expectedKeys);
+    }
+
+    const getDateForMessageIndex = (messageIndex: number, count: number) => {
+      for (let year = 1970; year <= 2100; year += 1) {
+        for (let month = 0; month < 12; month += 1) {
+          for (let day = 1; day <= 31; day += 1) {
+            const candidate = new Date(year, month, day);
+            if (candidate.getMonth() !== month) continue;
+
+            const candidateIndex = (year * 372 + month * 31 + day) % count;
+            if (candidateIndex === messageIndex) return candidate;
+          }
+        }
+      }
+
+      throw new Error(`No date found for message index ${messageIndex}`);
+    };
+
+    vi.useFakeTimers();
+    try {
+      for (const dailyGroup of dailyGroups) {
+        const entries = Object.entries(dailyGroup);
+        for (const [messageIndex, [, message]] of entries.entries()) {
+          vi.setSystemTime(
+            getDateForMessageIndex(messageIndex, entries.length),
+          );
+          expect(getDailyMessage(dailyGroup)).toBe(message);
+        }
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows the welcome hero, API endpoint, and four summary cards', () => {
     renderWithMessages(
       <DashboardProvider

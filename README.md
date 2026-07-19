@@ -2,6 +2,10 @@
 
 Proxy CodeBuddy through OpenAI-compatible and Anthropic-compatible APIs, with a built-in admin console for credentials, access keys, usage, debug traces, and runtime settings.
 
+<p align="center">
+  <img src="./.github/images/codebuddy2api-social.jpg" alt="CodeBuddy2API" width="600" />
+</p>
+
 > Forked from [Sliverkiss/CodeBuddy2api](https://github.com/Sliverkiss/CodeBuddy2api).
 
 ## Quick Start
