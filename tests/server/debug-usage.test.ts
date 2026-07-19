@@ -15,6 +15,7 @@ import {
   setDebugUpstreamRequest,
   updateDebugSettings,
 } from '@/lib/server/domain/debug';
+import type { DebugTrace } from '@/lib/server/domain/debug';
 import {
   addCredential,
   resetCredentialRuntimeState,
@@ -25,7 +26,7 @@ import {
   recordUsageEvent,
   resetUsageHistory,
 } from '@/lib/server/domain/usage';
-import { resetStorageRuntime } from '@/lib/server/storage';
+import { resetStorageRuntime, writeStorageJson } from '@/lib/server/storage';
 
 const repoRoot = process.cwd();
 const tempRootDir = path.join(repoRoot, '.tmp-test-debug-usage-root');
@@ -41,6 +42,26 @@ const cleanupTempState = (): void => {
 const writeJson = (filePath: string, value: unknown): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+};
+
+const enqueueAndConsumeUpstreamSnapshot = async (
+  trace: DebugTrace | undefined,
+  response: Response,
+): Promise<void> => {
+  await enqueueUpstreamResponseSnapshot(trace, response).text();
+};
+
+const finalizeAndConsumeDebugTrace = async (
+  trace: DebugTrace | undefined,
+  response: Response,
+): Promise<void> => {
+  await finalizeDebugTrace(trace, response).text();
+};
+
+const waitForDebugLogs = async (
+  assertion: () => Promise<void>,
+): Promise<void> => {
+  await vi.waitFor(assertion, { timeout: 2_000 });
 };
 
 describe('debug and usage persistence', () => {
@@ -60,6 +81,97 @@ describe('debug and usage persistence', () => {
 
   afterEach(() => {
     cleanupTempState();
+  });
+
+  it('stores a masked bearer request key without its auth scheme', () => {
+    const trace = createDebugTrace({
+      requestBody: {},
+      requestKey: 'Bearer sk-live-abcdefgh1234',
+      route: '/v1/chat/completions',
+    });
+
+    expect(trace.requestKey).toBe('sk-live-********1234');
+    expect(trace.requestKey).not.toContain('Bearer');
+
+    const shortTrace = createDebugTrace({
+      requestBody: { api_key: 'abc' },
+      requestKey: 'abc',
+      route: '/v1/chat/completions',
+    });
+
+    expect(shortTrace.requestKey).toBe('****');
+    expect(shortTrace.requestBody).toMatchObject({ api_key: '****' });
+
+    expect(
+      createDebugTrace({
+        requestBody: {},
+        requestKey: 'Bearer abc',
+        route: '/v1/chat/completions',
+      }).requestKey,
+    ).toBe('****');
+  });
+
+  it('captures terminal upstream stream states without delaying the response', async () => {
+    const consumeSnapshot = async (response: Response): Promise<DebugTrace> => {
+      const trace = createDebugTrace({
+        requestBody: {},
+        requestKey: null,
+        route: '/v1/chat/completions',
+      });
+      await enqueueUpstreamResponseSnapshot(trace, response).text();
+      await Promise.all(trace.pending);
+      return trace;
+    };
+
+    const truncated = await consumeSnapshot(
+      new Response(`${'a'.repeat(200_000)}tail`),
+    );
+    expect(truncated.upstreamResponse?.body).toMatch(
+      /^a+\n\.\.\.\[truncated\]$/,
+    );
+
+    const empty = await consumeSnapshot(new Response(null));
+    expect(empty.upstreamResponse?.body).toBe('');
+
+    const cancellableTrace = createDebugTrace({
+      requestBody: {},
+      requestKey: null,
+      route: '/v1/chat/completions',
+    });
+    const cancellable = enqueueUpstreamResponseSnapshot(
+      cancellableTrace,
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('partial'));
+          },
+        }),
+      ),
+    );
+    const cancellableReader = cancellable.body?.getReader();
+    await cancellableReader?.read();
+    await cancellableReader?.cancel();
+    await Promise.all(cancellableTrace.pending);
+    expect(cancellableTrace.upstreamResponse?.body).toBe('partial');
+
+    const errorTrace = createDebugTrace({
+      requestBody: {},
+      requestKey: null,
+      route: '/v1/chat/completions',
+    });
+    const failing = enqueueUpstreamResponseSnapshot(
+      errorTrace,
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull() {
+            throw new Error('upstream stream failure');
+          },
+        }),
+      ),
+    );
+    await expect(failing.text()).rejects.toThrow('upstream stream failure');
+    await Promise.all(errorTrace.pending);
+    expect(errorTrace.upstreamResponse?.body).toBe('');
   });
 
   it('normalizes debug settings and handles invalid persisted files', async () => {
@@ -114,6 +226,28 @@ describe('debug and usage persistence', () => {
     });
   });
 
+  it('refreshes the debug-enabled cache after its short TTL', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T00:00:00.000Z'));
+
+    try {
+      await updateDebugSettings({ enabled: true });
+      expect(await isDebugEnabled()).toBe(true);
+
+      await writeStorageJson('debug', 'settings', {
+        autoRefreshSeconds: 0,
+        enabled: false,
+        maxEntries: 10,
+      });
+      expect(await isDebugEnabled()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await isDebugEnabled()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('captures sanitized debug request and response snapshots', async () => {
     await updateDebugSettings({
       enabled: true,
@@ -154,7 +288,7 @@ describe('debug and usage persistence', () => {
     });
 
     enqueueUpstreamResponseSnapshot(undefined, new Response('ignored'));
-    enqueueUpstreamResponseSnapshot(
+    await enqueueAndConsumeUpstreamSnapshot(
       trace,
       Response.json(
         {
@@ -169,7 +303,7 @@ describe('debug and usage persistence', () => {
         },
       ),
     );
-    finalizeDebugTrace(
+    await finalizeAndConsumeDebugTrace(
       trace,
       new Response('plain response', {
         headers: {
@@ -180,7 +314,7 @@ describe('debug and usage persistence', () => {
       }),
     );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
 
@@ -189,18 +323,18 @@ describe('debug and usage persistence', () => {
     expect(entry.requestKey).not.toBe('request-key-secret');
     expect(entry.requestBody).toMatchObject({
       nested: {
-        api_key: 'shor****',
+        api_key: 'shor********',
       },
       prompt: 'hello',
     });
     expect(entry.upstreamRequest).toMatchObject({
       body: {
-        bearer_token: 'toke****',
+        bearer_token: 'toke*******',
       },
       method: 'POST',
     });
-    expect(entry.upstreamRequest?.headers.Authorization).toContain('...');
-    expect(entry.upstreamRequest?.headers['X-API-Key']).toBe('api-key-...alue');
+    expect(entry.upstreamRequest?.headers.Authorization).toContain('****');
+    expect(entry.upstreamRequest?.headers['X-API-Key']).toBe('api-key-*alue');
     expect(entry.upstreamResponse).toMatchObject({
       body: {
         access_token: expect.not.stringContaining('response-token'),
@@ -218,7 +352,7 @@ describe('debug and usage persistence', () => {
       usage: null,
     });
 
-    finalizeDebugTrace(undefined, new Response('ignored'));
+    await finalizeAndConsumeDebugTrace(undefined, new Response('ignored'));
     await clearDebugLogs();
     expect(await listDebugLogs()).toEqual([]);
 
@@ -245,7 +379,7 @@ describe('debug and usage persistence', () => {
         route: '/v1/responses',
       });
 
-      enqueueUpstreamResponseSnapshot(
+      await enqueueAndConsumeUpstreamSnapshot(
         trace,
         Response.json({
           usage: {
@@ -255,7 +389,7 @@ describe('debug and usage persistence', () => {
           },
         }),
       );
-      finalizeDebugTrace(trace, new Response('completed'));
+      await finalizeAndConsumeDebugTrace(trace, new Response('completed'));
 
       await vi.runAllTicks();
       expect(hasPendingDebugLogWrites()).toBe(true);
@@ -279,7 +413,7 @@ describe('debug and usage persistence', () => {
     }
   });
 
-  it('truncates response snapshots while reading the cloned stream', async () => {
+  it('truncates response snapshots while streaming to the client', async () => {
     await updateDebugSettings({ enabled: true, maxEntries: 10 });
     const trace = createDebugTrace({
       requestBody: {},
@@ -287,14 +421,14 @@ describe('debug and usage persistence', () => {
       route: '/v1/responses',
     });
 
-    finalizeDebugTrace(
+    await finalizeAndConsumeDebugTrace(
       trace,
       new Response(`${'a'.repeat(200_000)}tail`, {
         headers: { 'Content-Type': 'text/plain' },
       }),
     );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -312,7 +446,7 @@ describe('debug and usage persistence', () => {
       route: '/v1/responses',
     });
 
-    finalizeDebugTrace(
+    await finalizeAndConsumeDebugTrace(
       trace,
       new Response(
         JSON.stringify({
@@ -323,7 +457,7 @@ describe('debug and usage persistence', () => {
       ),
     );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -340,7 +474,7 @@ describe('debug and usage persistence', () => {
       route: '/v1/responses',
     });
 
-    finalizeDebugTrace(
+    await finalizeAndConsumeDebugTrace(
       trace,
       new Response(
         `{"access\\u005ftoken":"escaped-snapshot-access-token","payload":"${'a'.repeat(200_000)}"}`,
@@ -348,7 +482,7 @@ describe('debug and usage persistence', () => {
       ),
     );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -364,9 +498,12 @@ describe('debug and usage persistence', () => {
       requestKey: null,
       route: '/v1/chat/completions',
     });
-    finalizeDebugTrace(firstTrace, Response.json({ message: 'first' }));
+    await finalizeAndConsumeDebugTrace(
+      firstTrace,
+      Response.json({ message: 'first' }),
+    );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
 
@@ -375,9 +512,12 @@ describe('debug and usage persistence', () => {
       requestKey: null,
       route: '/v1/chat/completions',
     });
-    finalizeDebugTrace(secondTrace, Response.json({ message: 'second' }));
+    await finalizeAndConsumeDebugTrace(
+      secondTrace,
+      Response.json({ message: 'second' }),
+    );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       const logs = await listDebugLogs();
       expect(logs).toHaveLength(1);
       expect(logs[0]?.id).toBe(secondTrace.id);
@@ -396,20 +536,20 @@ describe('debug and usage persistence', () => {
       'data: {"usage":{"prompt_tokens":3,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2}}}\n\n' +
       'data: [DONE]\n\n';
 
-    enqueueUpstreamResponseSnapshot(
+    await enqueueAndConsumeUpstreamSnapshot(
       trace,
       new Response(stream, {
         headers: { 'content-type': 'text/event-stream' },
       }),
     );
-    finalizeDebugTrace(
+    await finalizeAndConsumeDebugTrace(
       trace,
       new Response(stream, {
         headers: { 'content-type': 'text/event-stream' },
       }),
     );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -433,20 +573,20 @@ describe('debug and usage persistence', () => {
       'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":5,"cache_read_input_tokens":2}}}\n\n' +
       'data: [DONE]\n\n';
 
-    enqueueUpstreamResponseSnapshot(
+    await enqueueAndConsumeUpstreamSnapshot(
       trace,
       new Response(stream, {
         headers: { 'content-type': 'text/event-stream' },
       }),
     );
-    finalizeDebugTrace(
+    await finalizeAndConsumeDebugTrace(
       trace,
       new Response(stream, {
         headers: { 'content-type': 'text/event-stream' },
       }),
     );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -472,10 +612,13 @@ describe('debug and usage persistence', () => {
       route: '/v1/responses',
     });
 
-    finalizeDebugTrace(firstTrace, Response.json({ ok: true }));
-    finalizeDebugTrace(secondTrace, Response.json({ ok: true }));
+    await finalizeAndConsumeDebugTrace(firstTrace, Response.json({ ok: true }));
+    await finalizeAndConsumeDebugTrace(
+      secondTrace,
+      Response.json({ ok: true }),
+    );
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(2);
     });
 
@@ -493,7 +636,7 @@ describe('debug and usage persistence', () => {
     ]);
 
     expect(
-      (await getUsageAnalytics({ range: 'today' })).todaySummary.callCount,
+      (await getUsageAnalytics({ range: 'today' })).rangeSummary.callCount,
     ).toBe(2);
   });
 
@@ -514,9 +657,9 @@ describe('debug and usage persistence', () => {
       requestKey: null,
       route: '/v1/messages',
     });
-    finalizeDebugTrace(trace, Response.json({ ok: true }));
+    await finalizeAndConsumeDebugTrace(trace, Response.json({ ok: true }));
 
-    await vi.waitFor(async () => {
+    await waitForDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
 
@@ -526,7 +669,7 @@ describe('debug and usage persistence', () => {
       usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
     });
     expect(
-      (await getUsageAnalytics({ range: 'today' })).todaySummary,
+      (await getUsageAnalytics({ range: 'today' })).rangeSummary,
     ).toMatchObject({ callCount: 1, totalTokens: 3 });
 
     await clearDebugLogs();
@@ -582,7 +725,7 @@ describe('debug and usage persistence', () => {
       now,
       range: '3h',
     });
-    expect(analytics.todaySummary).toEqual({
+    expect(analytics.rangeSummary).toEqual({
       callCount: 2,
       cacheHitTokens: 3,
       totalTokens: 43,
@@ -611,10 +754,18 @@ describe('debug and usage persistence', () => {
     });
     expect(analytics.tokenSeries).toHaveLength(2);
     expect(analytics.callSeries).toHaveLength(2);
+    expect(analytics.credentialRows).toEqual([
+      {
+        cacheHitTokens: 3,
+        callCount: 2,
+        credentialFilename: credential.filename,
+        totalTokens: 43,
+      },
+    ]);
 
     const filtered = await getUsageAnalytics({
-      accessKey: accessKey.access_key.id,
-      credential: credential.filename,
+      accessKey: [accessKey.access_key.id, 'missing-key'],
+      credential: [credential.filename, 'missing-credential.json'],
       now,
       range: 'today',
     });
@@ -622,6 +773,34 @@ describe('debug and usage persistence', () => {
     expect(filtered.tableRows[0].model).toBe('gpt-5.5');
     expect(filtered.callSeries[0].points).toHaveLength(24);
     expect(filtered.tokenSeries[0].points).toHaveLength(24);
+    expect(filtered.rangeSummary).toEqual({
+      cacheHitTokens: 3,
+      callCount: 1,
+      totalTokens: 23,
+    });
+    expect(filtered.credentialRows).toEqual([
+      {
+        cacheHitTokens: 3,
+        callCount: 1,
+        credentialFilename: credential.filename,
+        totalTokens: 23,
+      },
+    ]);
+
+    expect(
+      (
+        await getUsageAnalytics({
+          accessKey: accessKey.access_key.id,
+          credential: 'missing-credential.json',
+          now,
+          range: 'today',
+        })
+      ).rangeSummary,
+    ).toEqual({
+      cacheHitTokens: 0,
+      callCount: 0,
+      totalTokens: 0,
+    });
 
     expect(
       (

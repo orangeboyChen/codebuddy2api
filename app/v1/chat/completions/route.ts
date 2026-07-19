@@ -36,6 +36,5 @@ export const POST = async (request: NextRequest): Promise<Response> => {
     undefined,
     debugTrace,
   );
-  finalizeDebugTrace(debugTrace, response);
-  return response;
+  return finalizeDebugTrace(debugTrace, response);
 };

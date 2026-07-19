@@ -31,6 +31,5 @@ export const POST = async (request: NextRequest): Promise<Response> => {
     : undefined;
 
   const response = await handleResponsesRequest(request, body, debugTrace);
-  finalizeDebugTrace(debugTrace, response);
-  return response;
+  return finalizeDebugTrace(debugTrace, response);
 };

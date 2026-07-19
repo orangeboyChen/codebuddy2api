@@ -1146,14 +1146,17 @@ export const proxyChatCompletions = async (
       url: upstreamUrl,
     });
 
-    const upstreamResponse = await fetch(upstreamUrl, {
+    let upstreamResponse = await fetch(upstreamUrl, {
       method: 'POST',
       headers: upstreamHeaders,
       body: JSON.stringify(upstreamBody),
       cache: 'no-store',
     });
 
-    enqueueUpstreamResponseSnapshot(debugTrace, upstreamResponse);
+    upstreamResponse = enqueueUpstreamResponseSnapshot(
+      debugTrace,
+      upstreamResponse,
+    );
 
     if (!upstreamResponse.ok) {
       const detail = await upstreamResponse.text();
@@ -1264,14 +1267,17 @@ export const proxyResponsesUpstream = async (
       url: upstreamUrl,
     });
 
-    const upstreamResponse = await fetch(upstreamUrl, {
+    let upstreamResponse = await fetch(upstreamUrl, {
       method: 'POST',
       headers: upstreamHeaders,
       body: JSON.stringify(upstreamBody),
       cache: 'no-store',
     });
 
-    enqueueUpstreamResponseSnapshot(debugTrace, upstreamResponse);
+    upstreamResponse = enqueueUpstreamResponseSnapshot(
+      debugTrace,
+      upstreamResponse,
+    );
 
     if (!upstreamResponse.ok) {
       const detail = await upstreamResponse.text();

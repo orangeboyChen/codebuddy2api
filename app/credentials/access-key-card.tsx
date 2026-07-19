@@ -92,7 +92,11 @@ export const AccessKeyCard = ({
                 })}
               </span>
             </div>
-            <Flexbox gap={8} wrap="wrap">
+            <Flexbox
+              className="access-key-credential-tags mt-3"
+              gap={8}
+              wrap="wrap"
+            >
               {accessKey.credentialFilenames.map((filename) => (
                 <Tag key={filename}>{filename}</Tag>
               ))}

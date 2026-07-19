@@ -1,7 +1,7 @@
 'use client';
 
 import { atom } from 'jotai';
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useState } from 'react';
 import { Block, Flexbox, Input, TextArea } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import {
@@ -220,6 +220,7 @@ const Credentials = () => {
   const controller = useCredentials();
   const credentialsText = useTranslations('Admin');
   const common = useTranslations('Admin.common');
+  const [showManualCredential, setShowManualCredential] = useState(false);
   const {
     auth,
     credentials,
@@ -263,138 +264,152 @@ const Credentials = () => {
 
   return (
     <div id="credentials" className="block">
-      <Block direction="vertical" gap={16} padding={24} variant="outlined">
-        <Flexbox align="center" gap={8} horizontal>
-          <WandSparkles aria-hidden="true" size={18} strokeWidth={2} />
-          <h3 className="dashboard-data-title">
-            {credentialsText('credentials.autoAuthTitle')}
-          </h3>
-        </Flexbox>
-        <p className="text-secondary mb-4">
-          {credentialsText('credentials.autoAuthDescription')}
-        </p>
-        <Flexbox horizontal>
-          <Button
-            id="getAuthBtn"
-            disabled={auth.starting}
-            icon={Play}
-            loading={auth.starting}
-            onClick={onAuthAction}
-            type="primary"
-          >
-            {credentialsText('credentials.autoAuthStart')}
-          </Button>
-        </Flexbox>
-        {auth.authUrl ? (
-          <Block
-            id="authUrlSection"
-            direction="vertical"
-            gap={16}
-            padding={16}
-            variant="outlined"
-          >
-            <SectionTitle
-              icon={Link}
-              title={credentialsText('credentials.autoAuthGenerated')}
-            />
-            <p className="text-secondary mb-4">
-              {credentialsText('credentials.autoAuthGeneratedDescription')}
-            </p>
-            <Input
-              id="authUrlInput"
-              className="font-mono mb-4"
-              readOnly
-              type="text"
-              value={auth.authUrl}
-            />
-            <Flexbox gap={8} wrap="wrap">
-              <Button
-                icon={ExternalLink}
-                onClick={onOpenAuthUrl}
-                type="primary"
-              >
-                {credentialsText('credentials.autoAuthOpen')}
-              </Button>
-              <Button icon={Copy} onClick={onCopyAuthUrl}>
-                {common('copy')}
-              </Button>
-              <Button
-                icon={MousePointerClick}
-                onClick={() => onToggleCallbackMode(true)}
-              >
-                {credentialsText('credentials.autoAuthManual')}
-              </Button>
+      {!showManualCredential ? (
+        <Block direction="vertical" gap={16} padding={24} variant="outlined">
+          <Flexbox align="center" justify="space-between" horizontal>
+            <Flexbox align="center" gap={8} horizontal>
+              <WandSparkles aria-hidden="true" size={18} strokeWidth={2} />
+              <h3 className="dashboard-data-title">
+                {credentialsText('credentials.autoAuthTitle')}
+              </h3>
             </Flexbox>
+            <Button onClick={() => setShowManualCredential(true)}>
+              {credentialsText('credentials.manualCredentialTitle')}
+            </Button>
+          </Flexbox>
+          <p className="text-secondary mb-4">
+            {credentialsText('credentials.autoAuthDescription')}
+          </p>
+          <Flexbox horizontal>
+            <Button
+              id="getAuthBtn"
+              disabled={auth.starting}
+              icon={Play}
+              loading={auth.starting}
+              onClick={onAuthAction}
+              type="primary"
+            >
+              {credentialsText('credentials.autoAuthStart')}
+            </Button>
+          </Flexbox>
+          {auth.authUrl ? (
             <Block
-              id="autoCallbackSection"
+              id="authUrlSection"
               direction="vertical"
               gap={16}
               padding={16}
               variant="outlined"
             >
-              <div className="text-center p-4">
-                <div>
-                  {auth.message ||
-                    credentialsText('credentials.autoAuthPending')}
-                </div>
-                <small className="text-secondary">
-                  {credentialsText('credentials.autoAuthPendingHint')}
-                </small>
-              </div>
-              <div className="mt-4 text-center">
+              <SectionTitle
+                icon={Link}
+                title={credentialsText('credentials.autoAuthGenerated')}
+              />
+              <p className="text-secondary mb-4">
+                {credentialsText('credentials.autoAuthGeneratedDescription')}
+              </p>
+              <Input
+                id="authUrlInput"
+                className="font-mono mb-4"
+                readOnly
+                type="text"
+                value={auth.authUrl}
+              />
+              <Flexbox gap={8} wrap="wrap">
                 <Button
-                  icon={RefreshCw}
-                  loading={auth.polling}
-                  onClick={onPollAuth}
+                  icon={ExternalLink}
+                  onClick={onOpenAuthUrl}
+                  type="primary"
                 >
-                  {credentialsText('credentials.autoAuthPoll')}
+                  {credentialsText('credentials.autoAuthOpen')}
                 </Button>
-              </div>
-            </Block>
-            {auth.showManualCallback ? (
+                <Button icon={Copy} onClick={onCopyAuthUrl}>
+                  {common('copy')}
+                </Button>
+                <Button
+                  icon={MousePointerClick}
+                  onClick={() => onToggleCallbackMode(true)}
+                >
+                  {credentialsText('credentials.autoAuthManual')}
+                </Button>
+              </Flexbox>
               <Block
-                id="manualCallbackSection"
+                id="autoCallbackSection"
                 direction="vertical"
                 gap={16}
                 padding={16}
                 variant="outlined"
               >
-                <h5 className="mb-4">
-                  {credentialsText('credentials.autoAuthManualTitle')}
-                </h5>
-                <p className="text-secondary text-sm mb-4">
-                  {credentialsText('credentials.autoAuthManualDescription')}
-                </p>
-                <Input
-                  id="callbackUrl"
-                  className="w-full"
-                  placeholder={credentialsText(
-                    'credentials.autoAuthManualInput',
-                  )}
-                  type="text"
-                  value={auth.callbackUrl}
-                  onChange={(event) => onCallbackUrlChange(event.target.value)}
-                />
-                <div className="mt-4 text-right">
-                  <Button onClick={() => onToggleCallbackMode(false)}>
-                    {credentialsText('credentials.autoAuthManualBack')}
-                  </Button>
-                  <Button onClick={onSubmitCallbackUrl} type="primary">
-                    {credentialsText('credentials.submit')}
+                <div className="text-center p-4">
+                  <div>
+                    {auth.message ||
+                      credentialsText('credentials.autoAuthPending')}
+                  </div>
+                  <small className="text-secondary">
+                    {credentialsText('credentials.autoAuthPendingHint')}
+                  </small>
+                </div>
+                <div className="mt-4 text-center">
+                  <Button
+                    icon={RefreshCw}
+                    loading={auth.polling}
+                    onClick={onPollAuth}
+                  >
+                    {credentialsText('credentials.autoAuthPoll')}
                   </Button>
                 </div>
               </Block>
-            ) : null}
-          </Block>
-        ) : null}
-      </Block>
+              {auth.showManualCallback ? (
+                <Block
+                  id="manualCallbackSection"
+                  direction="vertical"
+                  gap={16}
+                  padding={16}
+                  variant="outlined"
+                >
+                  <h5 className="mb-4">
+                    {credentialsText('credentials.autoAuthManualTitle')}
+                  </h5>
+                  <p className="text-secondary text-sm mb-4">
+                    {credentialsText('credentials.autoAuthManualDescription')}
+                  </p>
+                  <Input
+                    id="callbackUrl"
+                    className="w-full"
+                    placeholder={credentialsText(
+                      'credentials.autoAuthManualInput',
+                    )}
+                    type="text"
+                    value={auth.callbackUrl}
+                    onChange={(event) =>
+                      onCallbackUrlChange(event.target.value)
+                    }
+                  />
+                  <div className="mt-4 text-right">
+                    <Button onClick={() => onToggleCallbackMode(false)}>
+                      {credentialsText('credentials.autoAuthManualBack')}
+                    </Button>
+                    <Button onClick={onSubmitCallbackUrl} type="primary">
+                      {credentialsText('credentials.submit')}
+                    </Button>
+                  </div>
+                </Block>
+              ) : null}
+            </Block>
+          ) : null}
+        </Block>
+      ) : null}
 
-      {credentials.form.editingIndex === null ? (
+      {showManualCredential && credentials.form.editingIndex === null ? (
         <Block direction="vertical" gap={16} padding={24} variant="outlined">
-          <SectionTitle
-            icon={Pencil}
-            title={credentialsText('credentials.manualCredentialTitle')}
-          />
+          <Flexbox align="center" justify="space-between" horizontal>
+            <SectionTitle
+              icon={Pencil}
+              title={credentialsText('credentials.manualCredentialTitle')}
+            />
+            <Button onClick={() => setShowManualCredential(false)}>
+              {credentialsText('credentials.autoAuthTitle')}
+            </Button>
+          </Flexbox>
           <div className="mb-4">
             <label
               className="block mb-2 font-medium text-text-light dark:text-text-dark"

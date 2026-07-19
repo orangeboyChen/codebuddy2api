@@ -2,7 +2,7 @@ import { AdminPage } from '@/app/page';
 
 import Usage from './usage';
 
-const UsagePage = async () => {
+const UsagePage = () => {
   return (
     <AdminPage initialTab="usage">
       <Usage />

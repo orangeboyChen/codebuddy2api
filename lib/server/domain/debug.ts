@@ -82,6 +82,7 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 
 const MAX_SNAPSHOT_TEXT_LENGTH = 200_000;
 const FLUSH_INTERVAL_MS = 1000;
+const DEBUG_SETTINGS_CACHE_TTL_MS = 1000;
 const MAX_PENDING_LOGS = 100;
 const REDACTED_VALUE = '[redacted]';
 let debugWriteQueue: Promise<void> = Promise.resolve();
@@ -89,6 +90,11 @@ let pendingDebugLogs: DebugLogEntry[] = [];
 let pendingDebugFlushes = 0;
 let pendingDebugTraces = 0;
 let debugFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let debugSettingsCache: {
+  cachedAt: number;
+  key: string;
+  value: DebugSettings;
+} | null = null;
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
   'proxy-authorization',
@@ -139,25 +145,32 @@ const maskSensitiveString = (value: string): string => {
   const bearerPrefixMatch = trimmed.match(/^Bearer\s+/i);
 
   if (bearerPrefixMatch) {
-    const prefix = bearerPrefixMatch[0];
-    const token = trimmed.slice(prefix.length);
+    const token = trimmed.slice(bearerPrefixMatch[0].length);
 
     if (!token) {
-      return prefix.trim();
+      return '';
+    }
+
+    if (token.length <= 4) {
+      return '****';
     }
 
     if (token.length <= 12) {
-      return `${prefix}${token.slice(0, 4)}****`;
+      return `${token.slice(0, 4)}${'*'.repeat(Math.max(4, token.length - 4))}`;
     }
 
-    return `${prefix}${token.slice(0, 8)}...${token.slice(-4)}`;
+    return `${token.slice(0, 8)}${'*'.repeat(token.length - 12)}${token.slice(-4)}`;
+  }
+
+  if (trimmed.length <= 4) {
+    return '****';
   }
 
   if (trimmed.length <= 12) {
-    return `${trimmed.slice(0, 4)}****`;
+    return `${trimmed.slice(0, 4)}${'*'.repeat(Math.max(4, trimmed.length - 4))}`;
   }
 
-  return `${trimmed.slice(0, 8)}...${trimmed.slice(-4)}`;
+  return `${trimmed.slice(0, 8)}${'*'.repeat(trimmed.length - 12)}${trimmed.slice(-4)}`;
 };
 
 const isSensitiveFieldName = (name: string): boolean => {
@@ -292,11 +305,21 @@ const normalizeAutoRefreshSeconds = (value: unknown): number => {
     : DEFAULT_DEBUG_SETTINGS.autoRefreshSeconds;
 };
 
-export const getDebugSettings = async (): Promise<DebugSettings> => {
+const getDebugSettingsCacheKey = (): string => {
+  return [
+    process.cwd(),
+    process.env.CODEBUDDY_CONFIG_PATH ?? '',
+    process.env.CODEBUDDY_STORAGE_BACKEND ?? '',
+    process.env.CODEBUDDY_STORAGE_FILE_DIR ?? '',
+    process.env.CODEBUDDY_STORAGE_SQLITE_PATH ?? '',
+  ].join(':');
+};
+
+const readDebugSettings = async (): Promise<DebugSettings> => {
   const file =
     (await readStorageJson<DebugConfigFile>('debug', 'settings')) ?? {};
 
-  return {
+  const settings = {
     autoRefreshSeconds: normalizeAutoRefreshSeconds(file.autoRefreshSeconds),
     enabled:
       typeof file.enabled === 'boolean'
@@ -304,12 +327,22 @@ export const getDebugSettings = async (): Promise<DebugSettings> => {
         : DEFAULT_DEBUG_SETTINGS.enabled,
     maxEntries: normalizeMaxEntries(file.maxEntries),
   };
+  debugSettingsCache = {
+    cachedAt: Date.now(),
+    key: getDebugSettingsCacheKey(),
+    value: settings,
+  };
+  return settings;
+};
+
+export const getDebugSettings = async (): Promise<DebugSettings> => {
+  return readDebugSettings();
 };
 
 export const updateDebugSettings = async (
   nextSettings: Partial<DebugSettings>,
 ): Promise<DebugSettings> => {
-  const current = await getDebugSettings();
+  const current = await readDebugSettings();
   const merged: DebugSettings = {
     autoRefreshSeconds:
       nextSettings.autoRefreshSeconds !== undefined
@@ -325,7 +358,22 @@ export const updateDebugSettings = async (
         : current.maxEntries,
   };
 
-  await writeStorageJson('debug', 'settings', merged);
+  await enqueueDebugWrite(async () => {
+    await writeStorageJson('debug', 'settings', merged);
+
+    if (getStorageBackendMeta().backend !== 'file') {
+      await trimStorageDebugLogs(merged.maxEntries);
+      return;
+    }
+
+    const logs = await readDebugLogs();
+    await writeStorageJson('debug', 'logs', logs.slice(0, merged.maxEntries));
+  });
+  debugSettingsCache = {
+    cachedAt: Date.now(),
+    key: getDebugSettingsCacheKey(),
+    value: merged,
+  };
 
   return merged;
 };
@@ -364,10 +412,6 @@ const readDebugLogs = async (): Promise<DebugLogEntry[]> => {
 };
 
 export const listDebugLogs = async (): Promise<DebugLogEntry[]> => {
-  while (pendingDebugLogs.length) {
-    await flushPendingDebugLogs();
-  }
-  await debugWriteQueue;
   return readDebugLogs();
 };
 
@@ -396,7 +440,16 @@ export const clearDebugLogs = async (): Promise<void> => {
 };
 
 export const isDebugEnabled = async (): Promise<boolean> => {
-  return (await getDebugSettings()).enabled;
+  const cacheKey = getDebugSettingsCacheKey();
+
+  if (
+    debugSettingsCache?.key === cacheKey &&
+    Date.now() - debugSettingsCache.cachedAt < DEBUG_SETTINGS_CACHE_TTL_MS
+  ) {
+    return debugSettingsCache.value.enabled;
+  }
+
+  return (await readDebugSettings()).enabled;
 };
 
 export const createDebugTrace = ({
@@ -465,17 +518,88 @@ export const setDebugUpstreamRequest = (
   };
 };
 
-const captureResponseSnapshot = async (
+const captureResponseSnapshot = (
   response: Response,
-): Promise<DebugHttpSnapshot> => {
-  const clone = response.clone();
-  const contentType = clone.headers.get('content-type') ?? '';
-  const text = await readSnapshotText(clone);
+): { response: Response; snapshot: Promise<DebugHttpSnapshot> } => {
+  const contentType = response.headers.get('content-type') ?? '';
+  const decoder = new TextDecoder();
+  let text = '';
+  let capturedLength = 0;
+  let truncated = false;
+  let resolveSnapshot: (snapshot: DebugHttpSnapshot) => void;
+  const snapshot = new Promise<DebugHttpSnapshot>((resolve) => {
+    resolveSnapshot = resolve;
+  });
+  let completed = false;
+  const finish = (): void => {
+    if (completed) return;
+    completed = true;
+    text += decoder.decode();
+    resolveSnapshot({
+      body: tryParseBody(
+        truncated ? `${text}\n...[truncated]` : text,
+        contentType,
+      ),
+      headers: toHeadersRecord(response.headers),
+      status: response.status,
+    });
+  };
+  const capture = (chunk: Uint8Array): void => {
+    if (truncated) return;
+
+    const remaining = MAX_SNAPSHOT_TEXT_LENGTH - capturedLength;
+    const decoded = decoder.decode(chunk, { stream: true });
+
+    if (decoded.length <= remaining) {
+      text += decoded;
+      capturedLength += decoded.length;
+      return;
+    }
+
+    text += decoded.slice(0, remaining);
+    capturedLength += remaining;
+    truncated = true;
+  };
+
+  if (!response.body) {
+    finish();
+    return { response, snapshot };
+  }
+
+  const reader = response.body.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async cancel(reason): Promise<void> {
+      await reader.cancel(reason);
+      finish();
+    },
+    async pull(controller): Promise<void> {
+      try {
+        const chunk = await reader.read();
+
+        if (chunk.done) {
+          finish();
+          controller.close();
+          reader.releaseLock();
+          return;
+        }
+
+        capture(chunk.value);
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        finish();
+        controller.error(error);
+        reader.releaseLock();
+      }
+    },
+  });
 
   return {
-    body: tryParseBody(text, contentType),
-    headers: toHeadersRecord(clone.headers),
-    status: clone.status,
+    response: new Response(body, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+    snapshot,
   };
 };
 
@@ -512,10 +636,6 @@ const readSnapshotText = async (response: Response): Promise<string> => {
       truncated = true;
       break;
     }
-
-    if (capturedLength >= MAX_SNAPSHOT_TEXT_LENGTH) {
-      truncated = true;
-    }
   } finally {
     if (truncated) {
       void reader.cancel().catch(() => undefined);
@@ -524,6 +644,21 @@ const readSnapshotText = async (response: Response): Promise<string> => {
   }
 
   return truncated ? `${text}\n...[truncated]` : text;
+};
+
+const captureIndependentResponseSnapshot = async (
+  response: Response,
+): Promise<DebugHttpSnapshot> => {
+  const clone = response.clone();
+
+  return {
+    body: tryParseBody(
+      await readSnapshotText(clone),
+      clone.headers.get('content-type') ?? '',
+    ),
+    headers: toHeadersRecord(clone.headers),
+    status: clone.status,
+  };
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
@@ -635,13 +770,15 @@ const getTraceUsage = (trace: DebugTrace): DebugUsageMetrics | null => {
 export const enqueueUpstreamResponseSnapshot = (
   trace: DebugTrace | undefined,
   response: Response,
-): void => {
+): Response => {
   if (!trace) {
-    return;
+    return response;
   }
 
+  const captured = captureResponseSnapshot(response);
+
   trace.pending.push(
-    captureResponseSnapshot(response)
+    captured.snapshot
       .then((snapshot) => {
         trace.upstreamResponse = snapshot;
       })
@@ -649,6 +786,7 @@ export const enqueueUpstreamResponseSnapshot = (
         setDebugTraceError(trace, error);
       }),
   );
+  return captured.response;
 };
 
 const appendDebugLog = async (entry: DebugLogEntry): Promise<void> => {
@@ -725,15 +863,15 @@ const scheduleDebugFlush = (): void => {
 export const finalizeDebugTrace = (
   trace: DebugTrace | undefined,
   response: Response,
-): void => {
+): Response => {
   if (!trace) {
-    return;
+    return response;
   }
 
   pendingDebugTraces += 1;
 
   trace.pending.push(
-    captureResponseSnapshot(response)
+    captureIndependentResponseSnapshot(response)
       .then((snapshot) => {
         trace.transformedResponse = snapshot;
       })
@@ -765,4 +903,5 @@ export const finalizeDebugTrace = (
       });
       pendingDebugTraces -= 1;
     });
+  return response;
 };

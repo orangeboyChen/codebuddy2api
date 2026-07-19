@@ -7,7 +7,6 @@ import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import type { Route } from 'next';
 import { Button, ToastHost, toast } from '@lobehub/ui/base-ui';
-import { Tabs } from '@lobehub/ui/base-ui';
 import {
   Bug,
   ChartLine,
@@ -23,24 +22,21 @@ import {
   createDashboardState,
   dashboardStateAtom,
   DashboardProvider,
-  defaultDashboardState,
 } from '@/app/dashboard/dashboard';
 import {
   createDebugState,
   debugStateAtom,
-  defaultDebugState,
   DebugProvider,
   type DebugLogEntry,
 } from '@/app/debug/debug';
 import {
   createSettingsState,
-  defaultSettingsState,
   SettingsProvider,
   settingsStateAtom,
 } from '@/app/settings/settings';
 import {
+  type CredentialUsageRow,
   createUsageState,
-  defaultUsageState,
   type UsageChartSeries,
   type UsageFilterOption,
   type UsageFiltersState,
@@ -52,7 +48,6 @@ import {
   ApiTestProvider,
   apiTestStateAtom,
   createApiTestState,
-  defaultApiTestState,
 } from '@/app/api-test/api-test';
 import {
   authStateAtom,
@@ -60,7 +55,6 @@ import {
   CredentialsProvider,
   credentialsStateAtom,
   defaultAuthState,
-  defaultCredentialsState,
   type AccessKeySummary,
   type CredentialSummary,
 } from '@/app/credentials/credentials';
@@ -88,11 +82,6 @@ const tabs: Array<{
   { icon: Settings2, key: 'settings', labelKey: 'settings' },
 ];
 
-interface HealthResponse {
-  status?: string;
-  timestamp?: string;
-}
-
 interface CredentialsResponse {
   credentials?: CredentialSummary[];
 }
@@ -116,13 +105,14 @@ interface CurrentCredentialResponse {
   user_id?: string;
 }
 
-interface StatsResponse {
-  credential_usage?: Record<string, number>;
-  model_usage?: Record<string, number>;
-}
-
 interface UsageResponse {
   callSeries?: UsageChartSeries[];
+  credentialRows?: Array<{
+    cacheHitTokens?: number;
+    callCount?: number;
+    credentialFilename?: string;
+    totalTokens?: number;
+  }>;
   filters?: {
     accessKeys?: UsageFilterOption[];
     credentials?: UsageFilterOption[];
@@ -134,7 +124,7 @@ interface UsageResponse {
     model?: string;
     totalTokens?: number;
   }>;
-  todaySummary?: {
+  rangeSummary?: {
     cacheHitTokens?: number;
     callCount?: number;
     totalTokens?: number;
@@ -297,6 +287,14 @@ interface AdminPageLayoutProps {
   showLogout: boolean;
 }
 
+type InitialStateAtom =
+  | typeof apiTestStateAtom
+  | typeof credentialsStateAtom
+  | typeof dashboardStateAtom
+  | typeof debugStateAtom
+  | typeof settingsStateAtom
+  | typeof usageStateAtom;
+
 const AdminPageLayoutContent = ({
   children,
   initialData,
@@ -306,33 +304,28 @@ const AdminPageLayoutContent = ({
   showLogout,
 }: AdminPageLayoutProps) => {
   const router = useRouter();
-  const initialDashboardState = initialData
-    ? createDashboardState(initialData)
-    : defaultDashboardState;
-  const initialCredentialsState = initialData
-    ? createCredentialsState(initialData)
-    : defaultCredentialsState;
-  const initialDebugState = initialData
-    ? createDebugState(initialData)
-    : defaultDebugState;
-  const initialUsageState = initialData
-    ? createUsageState(initialData)
-    : defaultUsageState;
-  const initialSettingsState = initialData
-    ? createSettingsState(initialData)
-    : defaultSettingsState;
-  const initialApiTestState = initialData
-    ? createApiTestState(initialData)
-    : defaultApiTestState;
+  const initialTabAtoms = new Map<InitialStateAtom, unknown>();
 
+  if (initialData?.tab === 'dashboard') {
+    initialTabAtoms.set(dashboardStateAtom, createDashboardState(initialData));
+  } else if (initialData?.tab === 'credentials') {
+    initialTabAtoms.set(
+      credentialsStateAtom,
+      createCredentialsState(initialData),
+    );
+  } else if (initialData?.tab === 'debug') {
+    initialTabAtoms.set(debugStateAtom, createDebugState(initialData));
+  } else if (initialData?.tab === 'usage') {
+    initialTabAtoms.set(usageStateAtom, createUsageState(initialData));
+  } else if (initialData?.tab === 'settings') {
+    initialTabAtoms.set(settingsStateAtom, createSettingsState(initialData));
+  } else if (initialData?.tab === 'api-test') {
+    initialTabAtoms.set(apiTestStateAtom, createApiTestState(initialData));
+  }
+
+  useHydrateAtoms(initialTabAtoms);
   useHydrateAtoms([
-    [dashboardStateAtom, initialDashboardState],
-    [credentialsStateAtom, initialCredentialsState],
-    [debugStateAtom, initialDebugState],
-    [usageStateAtom, initialUsageState],
-    [settingsStateAtom, initialSettingsState],
     [authStateAtom, defaultAuthState],
-    [apiTestStateAtom, initialApiTestState],
     [themeAtom, initialTheme],
   ]);
 
@@ -417,55 +410,29 @@ const AdminPageLayoutContent = ({
   const loadDashboard = useCallback(async () => {
     setDashboard((current) => ({
       ...current,
-      apiEndpoint: buildApiEndpoint(),
       loading: true,
     }));
 
-    const [healthResult, credentialResult, statsResult] = await Promise.all([
-      requestJson<HealthResponse>('/health'),
+    const [usageResult, credentialsResult] = await Promise.all([
+      requestJson<UsageResponse>('/admin-api/usage?range=today'),
       requestJson<CredentialsResponse>('/admin-api/credentials'),
-      requestJson<StatsResponse>('/admin-api/stats'),
     ]);
-    const items = credentialResult.data?.credentials ?? [];
-    const validCredentials = items.filter((item) => !item.is_expired).length;
-    const totalApiCalls = Object.values(
-      statsResult.data?.model_usage ?? {},
-    ).reduce((total, count) => total + count, 0);
-    const credentialUsagePercent = items.length
-      ? (validCredentials / items.length) * 100
-      : 0;
-
-    const checkedAt = `${consoleMessages.serviceCheckedAt} ${new Date(
-      healthResult.data?.timestamp ?? new Date().toISOString(),
-    ).toLocaleString(locale)}`;
 
     setDashboard({
       apiEndpoint: buildApiEndpoint(),
-      credentialUsage: Object.entries(
-        statsResult.data?.credential_usage ?? {},
-      ).sort((left, right) => right[1] - left[1]),
-      credentialUsagePercent,
-      lastCheckedAt: checkedAt,
       loading: false,
-      modelUsage: Object.entries(statsResult.data?.model_usage ?? {}).sort(
-        (left, right) => right[1] - left[1],
-      ),
-      serviceStatus: healthResult.ok ? 'online' : 'offline',
-      statusText: healthResult.ok
-        ? consoleMessages.serviceRunning
-        : consoleMessages.serviceUnavailable,
-      totalApiCalls,
-      totalCredentials: items.length,
-      uptimeText: checkedAt,
-      validCredentials,
+      summary: {
+        cacheHitTokens: usageResult.data?.rangeSummary?.cacheHitTokens ?? 0,
+        callCount: usageResult.data?.rangeSummary?.callCount ?? 0,
+        totalTokens: usageResult.data?.rangeSummary?.totalTokens ?? 0,
+      },
+      totalCredentials: credentialsResult.data?.credentials?.length ?? 0,
+      validCredentials:
+        credentialsResult.data?.credentials?.filter(
+          (credential) => !credential.is_expired,
+        ).length ?? 0,
     });
-  }, [
-    consoleMessages.serviceCheckedAt,
-    consoleMessages.serviceRunning,
-    consoleMessages.serviceUnavailable,
-    locale,
-    setDashboard,
-  ]);
+  }, [setDashboard]);
 
   const loadCredentials = useCallback(async () => {
     setCredentials((current) => ({
@@ -731,11 +698,16 @@ const AdminPageLayoutContent = ({
   );
 
   const loadUsage = useCallback(
-    async (requestOverride?: Partial<UsageFiltersState>) => {
+    async (
+      requestOverride?: Partial<UsageFiltersState>,
+      autoRefreshSecondsOverride?: number,
+    ) => {
       const nextRequest = {
         ...usageRequestRef.current,
         ...requestOverride,
       };
+      const nextAutoRefreshSeconds =
+        autoRefreshSecondsOverride ?? usage.autoRefreshSeconds;
       usageRequestRef.current = nextRequest;
 
       setUsage((current) => ({
@@ -744,14 +716,14 @@ const AdminPageLayoutContent = ({
         request: nextRequest,
       }));
 
-      const params = new URLSearchParams({
-        accessKey: nextRequest.accessKey,
-        credential: nextRequest.credential,
-        range: nextRequest.range,
+      const result = await requestJson<UsageResponse>('/admin-api/usage', {
+        body: JSON.stringify({
+          ...nextRequest,
+          autoRefreshSeconds: nextAutoRefreshSeconds,
+        }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'PATCH',
       });
-      const result = await requestJson<UsageResponse>(
-        `/admin-api/usage?${params.toString()}`,
-      );
 
       if (!result.ok) {
         setUsage((current) => ({
@@ -766,7 +738,7 @@ const AdminPageLayoutContent = ({
         return;
       }
 
-      const resolvedRequest = {
+      const resolvedRequest: UsageFiltersState = {
         accessKey: nextRequest.accessKey,
         credential: nextRequest.credential,
         range: result.data?.range ?? nextRequest.range,
@@ -776,6 +748,15 @@ const AdminPageLayoutContent = ({
       setUsage((current) => ({
         ...current,
         callSeries: result.data?.callSeries ?? [],
+        credentialRows: (result.data?.credentialRows ?? []).map(
+          (row): CredentialUsageRow => ({
+            cacheHitTokens: row.cacheHitTokens ?? 0,
+            callCount: row.callCount ?? 0,
+            credentialFilename: row.credentialFilename ?? 'unknown',
+            totalTokens: row.totalTokens ?? 0,
+          }),
+        ),
+        autoRefreshSeconds: nextAutoRefreshSeconds,
         filters: {
           accessKeys: result.data?.filters?.accessKeys ?? [],
           credentials: result.data?.filters?.credentials ?? [],
@@ -790,15 +771,21 @@ const AdminPageLayoutContent = ({
           model: row.model ?? 'unknown',
           totalTokens: row.totalTokens ?? 0,
         })),
-        todaySummary: {
-          cacheHitTokens: result.data?.todaySummary?.cacheHitTokens ?? 0,
-          callCount: result.data?.todaySummary?.callCount ?? 0,
-          totalTokens: result.data?.todaySummary?.totalTokens ?? 0,
+        rangeSummary: {
+          cacheHitTokens: result.data?.rangeSummary?.cacheHitTokens ?? 0,
+          callCount: result.data?.rangeSummary?.callCount ?? 0,
+          totalTokens: result.data?.rangeSummary?.totalTokens ?? 0,
         },
         tokenSeries: result.data?.tokenSeries ?? [],
       }));
     },
-    [consoleMessages.usageLoadFailed, locale, setUsage, showNotification],
+    [
+      consoleMessages.usageLoadFailed,
+      locale,
+      setUsage,
+      showNotification,
+      usage.autoRefreshSeconds,
+    ],
   );
 
   const refreshAdminData = useCallback(async () => {
@@ -1461,6 +1448,41 @@ const AdminPageLayoutContent = ({
     );
   };
 
+  const saveDebugEnabled = async (enabled: boolean) => {
+    setDebug((current) => ({
+      ...current,
+      enabled,
+      saving: true,
+    }));
+
+    const result = await requestJson<DebugResponse>('/admin-api/debug', {
+      body: JSON.stringify({ enabled }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!result.ok) {
+      setDebug((current) => ({
+        ...current,
+        enabled: debug.enabled,
+        saving: false,
+      }));
+      showNotification(
+        'error',
+        getErrorMessage(result.data, consoleMessages.debugSaveFailed),
+      );
+      return;
+    }
+
+    setDebug((current) => ({
+      ...current,
+      enabled: Boolean(result.data?.enabled),
+      saving: false,
+    }));
+  };
+
   const clearDebugItems = async () => {
     setDebug((current) => ({
       ...current,
@@ -1496,13 +1518,19 @@ const AdminPageLayoutContent = ({
 
   useEffect(() => {
     if (!initialData) {
-      void Promise.all([
-        loadDashboard(),
-        loadCredentials(),
-        loadDebug(),
-        loadUsage(),
-        loadSettings(),
-      ]);
+      if (activeTab === 'api-test') {
+        void Promise.all([loadCredentials(), loadSettings()]);
+      } else if (activeTab === 'credentials') {
+        void loadCredentials();
+      } else if (activeTab === 'dashboard') {
+        void loadDashboard();
+      } else if (activeTab === 'debug') {
+        void loadDebug();
+      } else if (activeTab === 'settings') {
+        void loadSettings();
+      } else {
+        void loadUsage();
+      }
     }
 
     return () => {
@@ -1581,7 +1609,11 @@ const AdminPageLayoutContent = ({
   useEffect(() => {
     clearDebugAutoRefreshTimer();
 
-    if (!debug.enabled || debug.autoRefreshSeconds <= 0) {
+    if (
+      activeTab !== 'debug' ||
+      !debug.enabled ||
+      debug.autoRefreshSeconds <= 0
+    ) {
       return;
     }
 
@@ -1593,6 +1625,7 @@ const AdminPageLayoutContent = ({
       clearDebugAutoRefreshTimer();
     };
   }, [
+    activeTab,
     clearDebugAutoRefreshTimer,
     debug.autoRefreshSeconds,
     debug.enabled,
@@ -1631,44 +1664,26 @@ const AdminPageLayoutContent = ({
               </Button>
             ) : null
           }
+          activeNavigationKey={activeTab}
           className="console-header"
           localePreference={initialLocalePreference}
+          navigationItems={tabs.map(({ icon, key, labelKey }) => ({
+            icon,
+            key,
+            label: translations(`tabs.${labelKey}`),
+            onClick: () => {
+              router.push(`/${key}` as Route);
+            },
+          }))}
           onLocaleChange={changeLocale}
           onThemeChange={setTheme}
           theme={theme}
         />
         <main className="console-main">
-          <Tabs
-            activeKey={activeTab}
-            className="console-tabs"
-            classNames={{ indicator: 'console-tabs-indicator' }}
-            items={tabs.map(({ icon: Icon, key, labelKey }) => {
-              const tab = key;
-
-              return {
-                icon: <Icon aria-hidden="true" size={16} strokeWidth={2} />,
-                key: tab,
-                label: translations(`tabs.${labelKey}`),
-              };
-            })}
-            onChange={(key) => {
-              router.push(`/${key}` as Route);
-            }}
-            variant="square"
-          />
           {activeTab === 'dashboard' ? (
             <DashboardProvider
               value={{
                 dashboard,
-                onCopyEndpoint: () => {
-                  void copyText(
-                    dashboard.apiEndpoint,
-                    consoleMessages.copyEndpoint,
-                  );
-                },
-                onRefresh: () => {
-                  void loadDashboard();
-                },
               }}
             >
               {children}
@@ -1880,11 +1895,7 @@ const AdminPageLayoutContent = ({
                   void loadUsage({ accessKey: value });
                 },
                 onAutoRefreshSecondsChange: (value) => {
-                  setUsage((current) => ({
-                    ...current,
-                    autoRefreshSeconds: value,
-                    autoRefreshVisible: true,
-                  }));
+                  void loadUsage(undefined, value);
                 },
                 onClearHistory: () => {
                   void clearUsageHistory();
@@ -1911,13 +1922,14 @@ const AdminPageLayoutContent = ({
             <ApiTestProvider
               value={{
                 apiTest,
-                credentialOptions: credentials.items.filter(
-                  (item) => !item.is_expired,
-                ),
-                models: String(settings.values.CODEBUDDY_MODELS ?? '')
-                  .split(',')
-                  .map((item) => item.trim())
-                  .filter(Boolean),
+                credentialOptions:
+                  initialData?.tab === 'api-test'
+                    ? initialData.credentials.filter((item) => !item.is_expired)
+                    : credentials.items.filter((item) => !item.is_expired),
+                models:
+                  initialData?.tab === 'api-test'
+                    ? getConfiguredModels(initialData.modelSettings)
+                    : getConfiguredModels(settings.values.CODEBUDDY_MODELS),
                 onCredentialChange: (value) => {
                   setApiTest((current) => ({
                     ...current,
@@ -1959,7 +1971,7 @@ const AdminPageLayoutContent = ({
                   void copyText(value, consoleMessages.copyContent);
                 },
                 onEnabledChange: (value) => {
-                  setDebug((current) => ({ ...current, enabled: value }));
+                  void saveDebugEnabled(value);
                 },
                 onLoadDetail: (id) => {
                   void loadDebugDetail(id);

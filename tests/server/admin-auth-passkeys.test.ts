@@ -192,6 +192,7 @@ describe('admin auth passkeys', () => {
       passkeyCount: 1,
       passwordConfigured: true,
       username: 'admin',
+      usagePreferences: null,
     });
 
     await storage.deleteStorageJson('admin-auth', 'state');

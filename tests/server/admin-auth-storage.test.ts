@@ -19,6 +19,7 @@ import {
   loginWithAdminPassword,
   logoutAdminSession,
   setupAdminPassword,
+  updateAdminSessionUsagePreferences,
 } from '@/lib/server/admin/session';
 import {
   deleteStorageJson,
@@ -97,6 +98,22 @@ describe('admin auth and storage', () => {
     expect(
       await getAdminSessionErrorResponse(makeRequest('/admin-api/settings')),
     ).toBeNull();
+    expect(
+      await updateAdminSessionUsagePreferences(
+        makeRequest('/admin-api/usage'),
+        {
+          accessKey: [],
+          autoRefreshSeconds: 30,
+          credential: [],
+          range: 'today',
+        },
+      ),
+    ).toEqual({
+      accessKey: [],
+      autoRefreshSeconds: 30,
+      credential: [],
+      range: 'today',
+    });
 
     const shortPasswordResponse = await setupAdminPassword(
       makeRequest('/admin-api/auth/setup'),
@@ -136,6 +153,35 @@ describe('admin auth and storage', () => {
     expect(summary.authenticated).toBe(true);
     expect(summary.passwordConfigured).toBe(true);
 
+    expect(
+      await updateAdminSessionUsagePreferences(
+        makeRequest('/admin-api/usage', { cookie: setupCookie }),
+        {
+          accessKey: ['key-a'],
+          autoRefreshSeconds: 30,
+          credential: ['credential-a'],
+          range: 'today',
+        },
+      ),
+    ).toEqual({
+      accessKey: ['key-a'],
+      autoRefreshSeconds: 30,
+      credential: ['credential-a'],
+      range: 'today',
+    });
+    expect(
+      (
+        await getAdminSessionSummary(
+          makeRequest('/admin-api/usage', { cookie: setupCookie }),
+        )
+      ).usagePreferences,
+    ).toEqual({
+      accessKey: ['key-a'],
+      autoRefreshSeconds: 30,
+      credential: ['credential-a'],
+      range: 'today',
+    });
+
     const duplicateSetupResponse = await setupAdminPassword(
       makeRequest('/admin-api/auth/setup'),
       'another strong password',
@@ -163,6 +209,67 @@ describe('admin auth and storage', () => {
     );
     expect(logoutResponse.status).toBe(200);
     expect(getCookieHeader(logoutResponse)).toContain('Max-Age=0');
+  });
+
+  it('normalizes usage preferences and rejects unauthenticated updates', async () => {
+    const preferences = {
+      accessKey: [' key-a ', 42, 'key-a', '', 'key-b'],
+      autoRefreshSeconds: '60',
+      credential: [' credential-a ', null, 'credential-a', 'credential-b'],
+      range: '7d',
+    };
+    const normalizedPreferences = {
+      accessKey: ['key-a', 'key-b'],
+      autoRefreshSeconds: 60,
+      credential: ['credential-a', 'credential-b'],
+      range: '7d',
+    };
+
+    expect(
+      await updateAdminSessionUsagePreferences(
+        makeRequest('/admin-api/usage'),
+        preferences,
+      ),
+    ).toEqual(normalizedPreferences);
+    expect(
+      (await getAdminSessionSummary(makeRequest('/admin-api/auth/session')))
+        .usagePreferences,
+    ).toBeNull();
+
+    await setupAdminPassword(
+      makeRequest('/admin-api/auth/setup'),
+      'correct horse battery staple',
+    );
+
+    await expect(
+      updateAdminSessionUsagePreferences(
+        makeRequest('/admin-api/usage'),
+        preferences,
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      updateAdminSessionUsagePreferences(
+        makeRequest('/admin-api/usage', {
+          cookie: 'codebuddy_admin_session=unknown-session',
+        }),
+        preferences,
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      updateAdminSessionUsagePreferences(makeRequest('/admin-api/usage'), null),
+    ).resolves.toBeNull();
+    await expect(
+      updateAdminSessionUsagePreferences(makeRequest('/admin-api/usage'), {
+        ...preferences,
+        range: 'all-time',
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      updateAdminSessionUsagePreferences(makeRequest('/admin-api/usage'), {
+        ...preferences,
+        autoRefreshSeconds: 10,
+      }),
+    ).resolves.toBeNull();
   });
 
   it('allows only one concurrent bootstrap password setup', async () => {

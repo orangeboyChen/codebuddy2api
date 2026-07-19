@@ -1,41 +1,45 @@
 import { describe, expect, it } from 'vitest';
 
-import { type AdminConsoleInitialData } from '@/app/page-data';
+import type { ApiTestInitialData, DashboardInitialData } from '@/app/page-data';
 import { createApiTestState } from '@/app/api-test/api-test';
 import { createDashboardState } from '@/app/dashboard/dashboard';
 
-const createInitialData = (): AdminConsoleInitialData => {
+const createDashboardInitialData = (): DashboardInitialData => {
   return {
-    accessKeys: [],
-    apiEndpoint: 'http://localhost:8001/v1',
+    apiEndpoint: 'https://api.example.test/v1',
+    tab: 'dashboard',
+    totalCredentials: 3,
+    validCredentials: 2,
+    usage: {
+      rangeSummary: { cacheHitTokens: 3, callCount: 2, totalTokens: 9 },
+    },
+  };
+};
+
+const createApiTestInitialData = (): ApiTestInitialData => {
+  return {
     credentials: [],
     currentCredential: { status: 'empty' },
-    debug: {
-      autoRefreshSeconds: 15,
-      enabled: false,
-      items: [],
-      maxEntries: 100,
-    },
-    health: {
-      checkedAtLabel: '',
-      status: 'healthy',
-      timestamp: '2026-07-12T09:00:00.000Z',
-      uptimeText: '',
-    },
-    settings: { labels: {}, values: {} },
-    stats: { credential_usage: {}, model_usage: {} },
+    modelSettings: '',
+    tab: 'api-test',
   };
 };
 
 describe('admin initial state', () => {
-  it('keeps the service status time visible on the first render', () => {
-    expect(createDashboardState(createInitialData()).uptimeText).toBe(
-      '2026-07-12T09:00:00.000Z',
-    );
+  it('hydrates the fixed today usage summary', () => {
+    const state = createDashboardState(createDashboardInitialData());
+
+    expect(state.summary).toEqual({
+      cacheHitTokens: 3,
+      callCount: 2,
+      totalTokens: 9,
+    });
+    expect(state.totalCredentials).toBe(3);
+    expect(state.validCredentials).toBe(2);
   });
 
   it('selects the current valid credential for API testing', () => {
-    const initialData = createInitialData();
+    const initialData = createApiTestInitialData();
     initialData.currentCredential = {
       filename: 'current.json',
       status: 'available',

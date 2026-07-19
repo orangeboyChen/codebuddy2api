@@ -102,7 +102,7 @@ export const CredentialCard = ({
                 : text('credentials.unknown')}
             </span>
           </div>
-          <Flexbox gap={8} paddingBlock={8} wrap="wrap">
+          <div className="credential-card-routing-tags flex flex-wrap gap-2 py-2">
             <Tag>
               {credential.responses_passthrough
                 ? text('credentials.credentialResponsesDirect')
@@ -113,7 +113,7 @@ export const CredentialCard = ({
                 ? text('credentials.credentialRoleAsSystemTag')
                 : text('credentials.credentialRoleKeepDeveloper')}
             </Tag>
-          </Flexbox>
+          </div>
         </div>
         <div className="credential-card-actions flex gap-2 shrink-0">
           <Button icon={Pencil} onClick={onEdit} type="primary">

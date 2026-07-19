@@ -84,7 +84,7 @@ export const defaultApiTestState: ApiTestState = {
 export const apiTestStateAtom = atom<ApiTestState>(defaultApiTestState);
 
 export const createApiTestState = (
-  initialData: AdminConsoleInitialData,
+  initialData: Extract<AdminConsoleInitialData, { tab: 'api-test' }>,
 ): ApiTestState => {
   const validCredentials = initialData.credentials.filter(
     (credential) => !credential.is_expired,
@@ -98,6 +98,11 @@ export const createApiTestState = (
     ...defaultApiTestState,
     credentialFilename:
       currentCredential?.filename ?? validCredentials[0]?.filename ?? '',
+    model:
+      initialData.modelSettings
+        .split(',')
+        .map((model) => model.trim())
+        .find(Boolean) ?? '',
   };
 };
 

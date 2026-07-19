@@ -3,7 +3,8 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { DropdownMenu, Select } from '@lobehub/ui/base-ui';
-import { Languages, Menu, SunMoon } from 'lucide-react';
+import { Ellipsis, Languages, Menu, PanelTop, SunMoon } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
 
@@ -22,9 +23,16 @@ const localeLabels: Record<string, string> = {
 
 interface AdminHeaderProps {
   action?: ReactNode;
+  activeNavigationKey?: string;
   brand?: string;
   className?: string;
   localePreference: LocalePreference;
+  navigationItems?: Array<{
+    icon: LucideIcon;
+    key: string;
+    label: string;
+    onClick: () => void;
+  }>;
   onLocaleChange: (locale: string) => void;
   onThemeChange: (theme: ThemeMode) => void;
   theme: ThemeMode;
@@ -32,12 +40,14 @@ interface AdminHeaderProps {
 
 export const AdminHeader = ({
   action,
+  activeNavigationKey,
   brand,
   className,
   onLocaleChange,
   onThemeChange,
   theme,
   localePreference,
+  navigationItems,
 }: AdminHeaderProps) => {
   const locale = useLocale();
   const translations = useTranslations('Admin');
@@ -53,6 +63,45 @@ export const AdminHeader = ({
       <Text as="div" className="admin-header-brand" strong>
         {brand ?? translations('brand')}
       </Text>
+      {navigationItems?.length ? (
+        <nav
+          aria-label={translations('tabsLabel')}
+          className="admin-header-navigation"
+        >
+          {navigationItems.map(({ icon: Icon, key, label, onClick }) => (
+            <Button
+              className="admin-header-tab"
+              data-active={key === activeNavigationKey ? true : undefined}
+              data-nav-key={key}
+              htmlType="button"
+              icon={Icon}
+              key={key}
+              onClick={onClick}
+            >
+              {label}
+            </Button>
+          ))}
+          <div className="admin-header-more-wrap">
+            <DropdownMenu
+              items={navigationItems.map(({ icon, key, label, onClick }) => ({
+                icon,
+                key,
+                label,
+                onClick,
+              }))}
+              nativeButton
+              placement="bottom"
+            >
+              <Button
+                aria-label={translations('tabsLabel')}
+                className="admin-header-more"
+                htmlType="button"
+                icon={Ellipsis}
+              />
+            </DropdownMenu>
+          </div>
+        </nav>
+      ) : null}
       <Flexbox
         align="center"
         className="admin-header-controls"
@@ -92,6 +141,24 @@ export const AdminHeader = ({
       <div className="admin-header-mobile-menu">
         <DropdownMenu
           items={[
+            ...(navigationItems?.length
+              ? [
+                  {
+                    children: navigationItems.map(
+                      ({ icon, key, label, onClick }) => ({
+                        icon,
+                        key,
+                        label,
+                        onClick,
+                      }),
+                    ),
+                    icon: PanelTop,
+                    key: 'navigation',
+                    label: translations('tabsLabel'),
+                    type: 'submenu' as const,
+                  },
+                ]
+              : []),
             {
               children: [
                 {

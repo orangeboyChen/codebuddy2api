@@ -179,15 +179,15 @@ describe('server units', () => {
     expect(JSON.stringify(trace)).not.toContain(requestKey);
     expect(JSON.stringify(trace)).not.toContain(requestUserId);
     expect(JSON.stringify(trace)).not.toContain(upstreamUserId);
-    expect(trace.requestKey).toMatch(/^cb2_requ\.\.\./);
+    expect(trace.requestKey).toMatch(/^cb2_requ\*+7890$/);
     expect(trace.upstreamRequest?.headers.authorization).toMatch(
-      /^Bearer upstrea/,
+      /^upstream\*+oken$/,
     );
     expect(trace.upstreamRequest?.headers['x-api-key']).toMatch(
-      /^upstream\.\.\./,
+      /^upstream\*+7890$/,
     );
     expect(trace.upstreamRequest?.headers['x-user-id']).toMatch(
-      /^upstream\.\.\./,
+      /^upstream\*+7890$/,
     );
   });
 
@@ -651,7 +651,7 @@ describe('server units', () => {
         totalTokens: 8,
       },
     ]);
-    expect(filtered.todaySummary.callCount).toBe(0);
+    expect(filtered.rangeSummary.callCount).toBe(1);
   });
 
   it('sanitizes invalid persisted usage records and clears usage history', async () => {
@@ -787,12 +787,12 @@ describe('server units', () => {
       method: 'POST',
       url: 'https://example.com/v1/responses',
     });
-    enqueueUpstreamResponseSnapshot(
+    await enqueueUpstreamResponseSnapshot(
       trace,
       makeJsonResponse({
         id: 'resp_upstream',
       }),
-    );
+    ).text();
     finalizeDebugTrace(
       trace,
       new Response('completed', {
@@ -803,16 +803,19 @@ describe('server units', () => {
       }),
     );
 
-    await vi.waitFor(async () => {
-      expect(await listDebugLogs()).toHaveLength(1);
-    });
+    await vi.waitFor(
+      async () => {
+        expect(await listDebugLogs()).toHaveLength(1);
+      },
+      { timeout: 2_000 },
+    );
 
     expect((await listDebugLogs())[0]).toMatchObject({
       error: 'upstream warning',
       requestBody: {
         model: 'gpt-5.5',
       },
-      requestKey: 'credenti...json',
+      requestKey: 'credenti***json',
       route: '/v1/responses',
       transformedResponse: {
         body: 'completed',
@@ -941,7 +944,7 @@ describe('server units', () => {
       secondCredential.filename,
     ]);
     expect(created.secret.startsWith('cb2_')).toBe(true);
-    expect(created.access_key.maskedSecret).toContain('...');
+    expect(created.access_key.maskedSecret).toContain('****');
 
     await expect(
       updateAccessKey(created.access_key.id, {

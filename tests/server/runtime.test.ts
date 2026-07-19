@@ -195,7 +195,7 @@ describe('server runtime', () => {
       )
     ).json();
     expect(listedAccessKeys.access_keys).toHaveLength(1);
-    expect(listedAccessKeys.access_keys[0].maskedSecret).toContain('...');
+    expect(listedAccessKeys.access_keys[0].maskedSecret).toContain('****');
 
     const revealedSecretPayload = await (
       await AdminAccessKeySecretRoute.GET(new Request('http://localhost'), {
@@ -1029,22 +1029,27 @@ describe('server runtime', () => {
       },
     });
 
-    const invalidResponse = await AdminUsageRoute.GET(
-      makeNextRequest('http://localhost/admin-api/usage?range=10d'),
+    const filteredUsageResponse = await AdminUsageRoute.PATCH(
+      new Request('http://localhost/admin-api/usage', {
+        body: JSON.stringify({
+          accessKey: ['key-1'],
+          autoRefreshSeconds: 30,
+          credential: ['runtime-credential.json'],
+          range: 'today',
+        }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'PATCH',
+      }),
     );
-    expect(invalidResponse.status).toBe(400);
-    expect(await invalidResponse.json()).toEqual({
-      error: 'Invalid range',
-    });
+    expect(filteredUsageResponse.status).toBe(200);
+    expect((await filteredUsageResponse.json()).range).toBe('today');
 
     const usageResponse = await AdminUsageRoute.GET(
-      makeNextRequest(
-        'http://localhost/admin-api/usage?range=today&accessKey=key-1&credential=runtime-credential.json',
-      ),
+      makeNextRequest('http://localhost/admin-api/usage'),
     );
     expect(usageResponse.status).toBe(200);
     const usagePayload = await usageResponse.json();
-    expect(usagePayload.range).toBe('today');
+    expect(usagePayload.range).toBe('24h');
     expect(usagePayload.tableRows).toEqual([
       {
         callCount: 1,
@@ -1082,11 +1087,11 @@ describe('server runtime', () => {
 
     const clearedPayload = await (
       await AdminUsageRoute.GET(
-        makeNextRequest('http://localhost/admin-api/usage?range=today'),
+        makeNextRequest('http://localhost/admin-api/usage'),
       )
     ).json();
     expect(clearedPayload.tableRows).toEqual([]);
-    expect(clearedPayload.todaySummary).toEqual({
+    expect(clearedPayload.rangeSummary).toEqual({
       callCount: 0,
       cacheHitTokens: 0,
       totalTokens: 0,

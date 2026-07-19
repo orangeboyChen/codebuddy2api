@@ -50,8 +50,7 @@ export const POST = async (request: NextRequest): Promise<Response> => {
       context,
       debugTrace,
     );
-    finalizeDebugTrace(debugTrace, response);
-    return response;
+    return finalizeDebugTrace(debugTrace, response);
   } catch (error) {
     const response = Response.json(
       {
@@ -61,7 +60,6 @@ export const POST = async (request: NextRequest): Promise<Response> => {
       },
       { status: 400 },
     );
-    finalizeDebugTrace(debugTrace, response);
-    return response;
+    return finalizeDebugTrace(debugTrace, response);
   }
 };

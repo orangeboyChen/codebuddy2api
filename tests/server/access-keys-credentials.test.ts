@@ -6,6 +6,7 @@ import {
   findAccessKeyById,
   findAccessKeyBySecret,
   hasAccessKeys,
+  listAccessKeys,
   listStoredAccessKeys,
   removeCredentialReferencesFromAccessKeys,
 } from '@/lib/server/domain/access-keys';
@@ -15,6 +16,7 @@ import {
   listCredentials,
   resetCredentialRuntimeState,
 } from '@/lib/server/domain/credentials';
+import { writeStorageJson } from '@/lib/server/storage';
 
 const repoRoot = process.cwd();
 const tempRootDir = path.join(repoRoot, '.tmp-test-access-keys-credentials');
@@ -246,5 +248,32 @@ describe('access key credential reconciliation', () => {
         expect.objectContaining({ id: second.access_key.id }),
       ]),
     );
+  });
+
+  it('masks persisted short access-key secrets safely', async () => {
+    const credential = (await listCredentials()).credentials[0];
+    const now = '2026-07-19T00:00:00.000Z';
+
+    await writeStorageJson('access-keys', 'store', {
+      accessKeys: [
+        {
+          createdAt: now,
+          credentialFilenames: [credential.filename],
+          id: 'short-secret',
+          name: 'Short secret',
+          secret: 'abc',
+          updatedAt: now,
+        },
+      ],
+    });
+
+    await expect(listAccessKeys()).resolves.toMatchObject({
+      access_keys: [
+        {
+          id: 'short-secret',
+          maskedSecret: '****',
+        },
+      ],
+    });
   });
 });
