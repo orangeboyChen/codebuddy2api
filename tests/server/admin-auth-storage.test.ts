@@ -236,10 +236,11 @@ describe('admin auth and storage', () => {
         .usagePreferences,
     ).toBeNull();
 
-    await setupAdminPassword(
+    const setupResponse = await setupAdminPassword(
       makeRequest('/admin-api/auth/setup'),
       'correct horse battery staple',
     );
+    const sessionCookie = getCookieHeader(setupResponse);
 
     await expect(
       updateAdminSessionUsagePreferences(
@@ -255,6 +256,20 @@ describe('admin auth and storage', () => {
         preferences,
       ),
     ).resolves.toBeNull();
+
+    expect(
+      (
+        await disableAdminAuthentication(
+          makeRequest('/admin-api/auth/password', { cookie: sessionCookie }),
+        )
+      ).status,
+    ).toBe(200);
+    await expect(
+      updateAdminSessionUsagePreferences(
+        makeRequest('/admin-api/usage', { cookie: sessionCookie }),
+        preferences,
+      ),
+    ).resolves.toEqual(normalizedPreferences);
     await expect(
       updateAdminSessionUsagePreferences(makeRequest('/admin-api/usage'), null),
     ).resolves.toBeNull();
