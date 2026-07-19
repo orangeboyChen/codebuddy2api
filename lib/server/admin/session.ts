@@ -628,6 +628,10 @@ export const updateAdminSessionUsagePreferences = async (
   const tokenHash = hashSessionToken(token);
 
   return mutateAdminAuthState((state) => {
+    if (!state.enabled) {
+      return normalizedPreferences;
+    }
+
     const session = state.sessions.find(
       (entry) => entry.tokenHash === tokenHash,
     );
