@@ -18,9 +18,10 @@ const createDashboardInitialData = (): DashboardInitialData => {
 
 const createApiTestInitialData = (): ApiTestInitialData => {
   return {
+    credentialModels: {},
     credentials: [],
     currentCredential: { status: 'empty' },
-    modelSettings: '',
+    models: [],
     tab: 'api-test',
   };
 };

@@ -1,7 +1,11 @@
 import crypto from 'node:crypto';
 
 import { listAccessKeys } from './access-keys';
-import { listCredentialFilenames } from './credentials';
+import {
+  getCredentialSupportedModels,
+  listCredentialFilenames,
+  readCredentialRecords,
+} from './credentials';
 import {
   appendStorageUsageEvents,
   clearStorageUsageEvents,
@@ -18,6 +22,9 @@ export type UsageRange =
 export interface UsageSnapshot {
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  prompt_cache_hit_tokens?: number | null;
+  prompt_cache_miss_tokens?: number | null;
+  prompt_cache_write_tokens?: number | null;
   prompt_tokens_details?: {
     cached_tokens?: number | null;
     cache_creation_tokens?: number | null;
@@ -60,6 +67,7 @@ interface UsageBucket {
 }
 
 export interface UsageChartSeries {
+  color: string;
   model: string;
   points: Array<UsageBucketTotals & UsageBucket>;
 }
@@ -104,6 +112,14 @@ const DAY_MS = 24 * HOUR_MS;
 const FLUSH_INTERVAL_MS = 1000;
 const MAX_PENDING_EVENTS = 100;
 const RETENTION_PRUNE_INTERVAL_MS = HOUR_MS;
+const chartColors = [
+  '#1d4ed8',
+  '#ea580c',
+  '#059669',
+  '#9333ea',
+  '#dc2626',
+  '#0891b2',
+];
 let usageMutationQueue: Promise<void> = Promise.resolve();
 let pendingUsageEvents: UsageEventRecord[] = [];
 let usageFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -132,16 +148,23 @@ const toNumber = (value: unknown): number => {
   return numeric;
 };
 
+const getLargestTokenCount = (...values: unknown[]): number => {
+  return Math.max(0, ...values.map(toNumber));
+};
+
 const normalizeUsage = (usage: UsageSnapshot): UsageEventRecord => {
   const inputTokens = toNumber(usage.input_tokens ?? usage.prompt_tokens);
   const outputTokens = toNumber(usage.output_tokens ?? usage.completion_tokens);
   const promptTokenDetails = usage.prompt_tokens_details;
-  const cacheReadTokens = toNumber(
-    usage.cache_read_input_tokens ?? promptTokenDetails?.cached_tokens,
+  const cacheReadTokens = getLargestTokenCount(
+    usage.cache_read_input_tokens,
+    promptTokenDetails?.cached_tokens,
+    usage.prompt_cache_hit_tokens,
   );
-  const cacheCreationTokens = toNumber(
-    usage.cache_creation_input_tokens ??
-      promptTokenDetails?.cache_creation_tokens,
+  const cacheCreationTokens = getLargestTokenCount(
+    usage.cache_creation_input_tokens,
+    promptTokenDetails?.cache_creation_tokens,
+    usage.prompt_cache_write_tokens,
   );
   const explicitTotal = toNumber(usage.total_tokens);
   const totalTokens =
@@ -491,6 +514,15 @@ const createEmptyTotals = (): UsageBucketTotals => ({
   totalTokens: 0,
 });
 
+const createModelColors = (models: string[]): Record<string, string> => {
+  return Object.fromEntries(
+    models.map((model, index) => [
+      model,
+      chartColors[index] ?? `hsl(${(index * 137.508) % 360}deg 68% 42%)`,
+    ]),
+  );
+};
+
 const createEmptyBucketTotals = (count: number): UsageBucketTotals[] => {
   return Array.from({ length: count }, () => createEmptyTotals());
 };
@@ -669,10 +701,12 @@ export const getUsageAnalytics = async ({
 
     const toSeries = (
       modelMap: Map<string, UsageBucketTotals[]>,
+      modelColors: Record<string, string>,
     ): UsageChartSeries[] => {
       return [...modelMap.entries()]
         .sort((left, right) => left[0].localeCompare(right[0]))
         .map(([model, points]) => ({
+          color: modelColors[model] ?? '#64748b',
           model,
           points: points.map((point, index) => ({
             callCount: point.callCount,
@@ -684,8 +718,12 @@ export const getUsageAnalytics = async ({
         }));
     };
 
-    const accessKeys = await listAccessKeys();
-    const credentialFilenames = await listCredentialFilenames();
+    const [accessKeys, credentialFilenames, credentialRecords] =
+      await Promise.all([
+        listAccessKeys(),
+        listCredentialFilenames(),
+        readCredentialRecords(),
+      ]);
     const accessKeyHistoryOptions = [...store.events]
       .filter(
         (
@@ -721,8 +759,17 @@ export const getUsageAnalytics = async ({
         value,
       }));
 
+    const modelOrder = [
+      ...new Set(
+        credentialRecords.flatMap((record) =>
+          getCredentialSupportedModels(record.data),
+        ),
+      ),
+    ].sort((left, right) => left.localeCompare(right));
+    const modelColors = createModelColors(modelOrder);
+
     return {
-      callSeries: toSeries(callSeriesByModel),
+      callSeries: toSeries(callSeriesByModel, modelColors),
       credentialCallCounts,
       credentialRows: [...credentialRowsByFilename.entries()]
         .map(([credentialFilename, totals]) => ({
@@ -766,7 +813,7 @@ export const getUsageAnalytics = async ({
           model,
         }))
         .sort((left, right) => right.totalTokens - left.totalTokens),
-      tokenSeries: toSeries(tokenSeriesByModel),
+      tokenSeries: toSeries(tokenSeriesByModel, modelColors),
     };
   });
 };

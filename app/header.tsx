@@ -3,7 +3,7 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { DropdownMenu, Select } from '@lobehub/ui/base-ui';
-import { Ellipsis, Languages, Menu, SunMoon } from 'lucide-react';
+import { Languages, Menu, SunMoon } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
@@ -57,50 +57,49 @@ export const AdminHeader = ({
     light: translations('themeLight'),
     system: translations('themeSystem'),
   };
-
   return (
     <header className={`admin-header ${className}`}>
       <Text as="div" className="admin-header-brand" strong>
         {brand ?? translations('brand')}
       </Text>
       {navigationItems?.length ? (
-        <nav
-          aria-label={translations('tabsLabel')}
-          className="admin-header-navigation"
-        >
-          {navigationItems.map(({ icon: Icon, key, label, onClick }) => (
-            <Button
-              className="admin-header-tab"
-              data-active={key === activeNavigationKey ? true : undefined}
-              data-nav-key={key}
-              htmlType="button"
-              icon={Icon}
-              key={key}
-              onClick={onClick}
-            >
-              {label}
-            </Button>
-          ))}
-          <div className="admin-header-more-wrap">
-            <DropdownMenu
-              items={navigationItems.map(({ icon, key, label, onClick }) => ({
-                icon,
-                key,
-                label,
-                onClick,
-              }))}
-              nativeButton
-              placement="bottom"
-            >
+        <>
+          <nav
+            aria-label={translations('tabsLabel')}
+            className="admin-header-navigation admin-header-navigation-full"
+          >
+            {navigationItems.map(({ icon: Icon, key, label, onClick }) => (
               <Button
-                aria-label={translations('tabsLabel')}
-                className="admin-header-more"
+                className="admin-header-tab"
+                data-active={key === activeNavigationKey ? true : undefined}
+                data-nav-key={key}
                 htmlType="button"
-                icon={Ellipsis}
-              />
-            </DropdownMenu>
-          </div>
-        </nav>
+                icon={Icon}
+                key={key}
+                onClick={onClick}
+              >
+                {label}
+              </Button>
+            ))}
+          </nav>
+          <nav
+            aria-label={translations('tabsLabel')}
+            className="admin-header-navigation admin-header-navigation-compact"
+          >
+            {navigationItems.map(({ key, label, onClick }) => (
+              <Button
+                className="admin-header-tab"
+                data-active={key === activeNavigationKey ? true : undefined}
+                data-nav-key={key}
+                htmlType="button"
+                key={key}
+                onClick={onClick}
+              >
+                {label}
+              </Button>
+            ))}
+          </nav>
+        </>
       ) : null}
       <Flexbox
         align="center"

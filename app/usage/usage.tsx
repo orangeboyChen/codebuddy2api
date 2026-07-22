@@ -31,6 +31,7 @@ export interface UsageBucketPoint {
 }
 
 export interface UsageChartSeries {
+  color: string;
   model: string;
   points: UsageBucketPoint[];
 }
@@ -182,67 +183,6 @@ const useUsage = (): UsageController => {
   return controller;
 };
 
-const chartColors = [
-  '#1d4ed8',
-  '#ea580c',
-  '#059669',
-  '#9333ea',
-  '#dc2626',
-  '#0891b2',
-];
-
-const usageModelColorsStorageKey = 'codebuddy2api.usage.modelColors';
-
-const getDistinctChartColors = (models: string[]): Map<string, string> => {
-  const storedColors =
-    typeof window === 'undefined'
-      ? { hy3: chartColors[0] }
-      : (() => {
-          try {
-            return JSON.parse(
-              window.localStorage.getItem(usageModelColorsStorageKey) ?? '{}',
-            ) as Record<string, string>;
-          } catch {
-            return {} as Record<string, string>;
-          }
-        })();
-  storedColors.hy3 ??= chartColors[0];
-  const colors = new Map<string, string>();
-  const usedColors = new Set<string>();
-
-  models.forEach((model) => {
-    const storedColor = storedColors[model];
-    if (storedColor && !usedColors.has(storedColor)) {
-      colors.set(model, storedColor);
-      usedColors.add(storedColor);
-    }
-  });
-
-  models.forEach((model) => {
-    if (colors.has(model)) return;
-
-    const colorIndex = Array.from(colors).length;
-    const color =
-      chartColors.find((candidate) => !usedColors.has(candidate)) ??
-      `hsl(${colorIndex * 137.508}deg 68% 42%)`;
-    colors.set(model, color);
-    usedColors.add(color);
-  });
-
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage.setItem(
-        usageModelColorsStorageKey,
-        JSON.stringify({ ...storedColors, ...Object.fromEntries(colors) }),
-      );
-    } catch {
-      // Keep the in-memory colors when browser storage is unavailable.
-    }
-  }
-
-  return colors;
-};
-
 const getMonotoneLinePath = (points: Array<{ x: number; y: number }>) => {
   if (!points.length) return '';
   if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
@@ -353,13 +293,8 @@ const UsageChart = ({
     (_, index) => gridStep * (index + 1),
   ).reverse();
   const yAxisValues = [...gridValues, 0];
-  const xLabelInterval = Math.max(1, Math.ceil((pointCount - 1) / 3));
+  const xLabelInterval = Math.max(1, Math.ceil((pointCount - 1) / 6));
   const axisLabelFontSize = width < 640 ? 11 : 8;
-  const modelColors = useMemo(
-    () => getDistinctChartColors(series.map((item) => item.model)),
-    [series],
-  );
-
   return (
     <Block direction="vertical" gap={16} padding={24} variant="outlined">
       <Flexbox align="center" gap={8} horizontal>
@@ -368,115 +303,146 @@ const UsageChart = ({
       </Flexbox>
       {series.length && pointCount ? (
         <div className="usage-chart relative">
-          <svg
-            aria-label={title}
-            className="usage-chart-svg h-auto w-full overflow-visible"
-            role="img"
-            viewBox={`0 0 ${width} ${height}`}
-          >
-            <title>{title}</title>
-            {yAxisValues.map((value) => {
-              const y = getY(value);
-              return (
-                <g key={`grid-${value}`}>
-                  <line
-                    className="stroke-border-light dark:stroke-border-dark"
-                    strokeWidth="1"
-                    vectorEffect="non-scaling-stroke"
-                    x1={padding.left}
-                    x2={width - padding.right}
-                    y1={y}
-                    y2={y}
-                  />
-                  <text
-                    className="fill-secondary"
-                    fontSize={axisLabelFontSize}
-                    textAnchor="end"
-                    x={padding.left - 10}
-                    y={y + 4}
-                  >
-                    {formatCompactNumber(locale, value)}
-                  </text>
-                </g>
-              );
-            })}
-            {series.map((item) => {
-              const color = modelColors.get(item.model)!;
-              const points = item.points.map((point, index) => ({
-                x: getX(index),
-                y: getY(point[metric]),
-              }));
-              return (
-                <g key={item.model}>
-                  <path
-                    d={getMonotoneLinePath(points)}
-                    fill="none"
-                    stroke={color}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="1.5"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  {item.points.map((point, index) => {
-                    const value = point[metric];
-                    const x = getX(index);
-                    const y = getY(value);
-                    const hover = () =>
-                      onHoverPoint({
-                        chart,
-                        label: point.label,
-                        metricLabel,
-                        model: item.model,
-                        value,
-                        x,
-                        y,
-                      });
-                    return (
-                      <circle
-                        cx={x}
-                        cy={y}
-                        fill={color}
-                        key={`${item.model}-${point.start}`}
-                        onBlur={() => onHoverPoint(null)}
-                        onFocus={hover}
-                        onMouseEnter={hover}
-                        onMouseLeave={() => onHoverPoint(null)}
-                        r="2"
-                        stroke="transparent"
-                        strokeWidth="8"
-                        tabIndex={0}
-                      />
-                    );
-                  })}
-                </g>
-              );
-            })}
-            {labels.map((label, index) => (
-              <text
-                className="fill-secondary"
-                fontSize={axisLabelFontSize}
-                key={`${title}-${label}`}
-                textAnchor={
-                  index === 0
-                    ? 'start'
-                    : index === labels.length - 1
-                      ? 'end'
-                      : 'middle'
-                }
-                x={getX(index)}
-                y={height - 10}
+          <div className="relative">
+            <svg
+              aria-label={title}
+              className="usage-chart-svg h-auto w-full overflow-visible"
+              role="img"
+              viewBox={`0 0 ${width} ${height}`}
+            >
+              <title>{title}</title>
+              {yAxisValues.map((value) => {
+                const y = getY(value);
+                return (
+                  <g key={`grid-${value}`}>
+                    <line
+                      className="stroke-border-light dark:stroke-border-dark"
+                      strokeWidth="1"
+                      vectorEffect="non-scaling-stroke"
+                      x1={padding.left}
+                      x2={width - padding.right}
+                      y1={y}
+                      y2={y}
+                    />
+                    <text
+                      className="fill-secondary"
+                      fontSize={axisLabelFontSize}
+                      textAnchor="end"
+                      x={padding.left - 10}
+                      y={y + 4}
+                    >
+                      {formatCompactNumber(locale, value)}
+                    </text>
+                  </g>
+                );
+              })}
+              {series.map((item) => {
+                const color = item.color;
+                const points = item.points.map((point, index) => ({
+                  x: getX(index),
+                  y: getY(point[metric]),
+                }));
+                return (
+                  <g key={item.model}>
+                    <path
+                      d={getMonotoneLinePath(points)}
+                      fill="none"
+                      stroke={color}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="1.5"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    {item.points.map((point, index) => {
+                      const value = point[metric];
+                      const x = getX(index);
+                      const y = getY(value);
+                      const hover = () =>
+                        onHoverPoint({
+                          chart,
+                          label: point.label,
+                          metricLabel,
+                          model: item.model,
+                          value,
+                          x,
+                          y,
+                        });
+                      return (
+                        <circle
+                          cx={x}
+                          cy={y}
+                          fill={color}
+                          key={`${item.model}-${point.start}`}
+                          onBlur={() => onHoverPoint(null)}
+                          onFocus={hover}
+                          onMouseEnter={hover}
+                          onMouseLeave={() => onHoverPoint(null)}
+                          r="2"
+                          stroke="transparent"
+                          strokeWidth="8"
+                          tabIndex={0}
+                        />
+                      );
+                    })}
+                  </g>
+                );
+              })}
+              {labels.map((label, index) => (
+                <text
+                  className="fill-secondary"
+                  fontSize={axisLabelFontSize}
+                  key={`${title}-${label}`}
+                  textAnchor={
+                    index === 0
+                      ? 'start'
+                      : index === labels.length - 1
+                        ? 'end'
+                        : 'middle'
+                  }
+                  x={getX(index)}
+                  y={height - 10}
+                >
+                  {index === 0 ||
+                  index === labels.length - 1 ||
+                  index % xLabelInterval === 0
+                    ? label
+                    : ''}
+                </text>
+              ))}
+            </svg>
+            {hoveredPoint?.chart === chart ? (
+              <div
+                className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-[calc(100%+12px)]"
+                // eslint-disable-next-line react/forbid-dom-props
+                style={{
+                  left: `${(hoveredPoint.x / width) * 100}%`,
+                  top: `${(hoveredPoint.y / height) * 100}%`,
+                }}
               >
-                {index === 0 ||
-                index === labels.length - 1 ||
-                index % xLabelInterval === 0
-                  ? label
-                  : ''}
-              </text>
-            ))}
-          </svg>
+                <Block
+                  className="min-w-44 text-xs"
+                  direction="vertical"
+                  gap={4}
+                  padding={12}
+                  variant="outlined"
+                >
+                  <div className="font-semibold">{hoveredPoint.model}</div>
+                  <div className="mt-1 text-secondary">
+                    {hoveredPoint.label}
+                  </div>
+                  <div className="mt-1">
+                    {hoveredPoint.metricLabel}:{' '}
+                    <span className="font-semibold">
+                      {formatNumber(locale, hoveredPoint.value)}
+                    </span>
+                  </div>
+                </Block>
+              </div>
+            ) : null}
+          </div>
           <Flexbox className="mt-3" gap={6} horizontal wrap="wrap">
             {series.map((item) => {
-              const color = modelColors.get(item.model)!;
+              const color = item.color;
               return (
                 <Flexbox align="center" gap={6} horizontal key={item.model}>
                   <span
@@ -496,33 +462,6 @@ const UsageChart = ({
               );
             })}
           </Flexbox>
-          {hoveredPoint?.chart === chart ? (
-            <div
-              className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full"
-              // eslint-disable-next-line react/forbid-dom-props
-              style={{
-                left: `${(hoveredPoint.x / width) * 100}%`,
-                top: `${(hoveredPoint.y / height) * 100}%`,
-              }}
-            >
-              <Block
-                className="min-w-44 text-xs"
-                direction="vertical"
-                gap={4}
-                padding={12}
-                variant="outlined"
-              >
-                <div className="font-semibold">{hoveredPoint.model}</div>
-                <div className="mt-1 text-secondary">{hoveredPoint.label}</div>
-                <div className="mt-1">
-                  {hoveredPoint.metricLabel}:{' '}
-                  <span className="font-semibold">
-                    {formatNumber(locale, hoveredPoint.value)}
-                  </span>
-                </div>
-              </Block>
-            </div>
-          ) : null}
         </div>
       ) : (
         <div className="py-12 text-center text-secondary">{emptyLabel}</div>

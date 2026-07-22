@@ -31,6 +31,7 @@ export type CredentialData = Record<string, unknown> & {
   user_info?: Record<string, unknown>;
   responses_passthrough?: boolean;
   first_message_role_to_system?: boolean;
+  supported_models?: string;
 };
 
 export interface CredentialRecord {
@@ -252,6 +253,23 @@ const getBooleanSetting = (value: unknown, fallback = false): boolean => {
   return fallback;
 };
 
+export const getCredentialSupportedModels = (
+  credential: CredentialData | null | undefined,
+): string[] => {
+  if (typeof credential?.supported_models !== 'string') {
+    return [];
+  }
+
+  return [
+    ...new Set(
+      credential.supported_models
+        .split(/[\n,]/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
+};
+
 export const readCredentialRecords = async (): Promise<CredentialRecord[]> => {
   const items = await listStorageJson<CredentialData>('credentials');
 
@@ -364,6 +382,15 @@ const getEligibleRecords = (
 
     return true;
   });
+};
+
+export const listEligibleCredentialRecords = async (
+  allowedCredentialFilenames?: string[],
+): Promise<CredentialRecord[]> => {
+  return getEligibleRecords(
+    await readCredentialRecords(),
+    allowedCredentialFilenames,
+  );
 };
 
 const chooseNextRecord = (
@@ -603,6 +630,24 @@ export const updateCredentialByIndex = async (
   }
 
   return addCredential(credentialData, records[index].filename);
+};
+
+export const updateCredentialSupportedModels = async (
+  filename: string,
+  models: string[],
+): Promise<void> => {
+  const credential = await findCredentialRecordByFilename(filename);
+
+  if (!credential) {
+    throw new Error('Credential is unavailable');
+  }
+
+  await writeStorageJson('credentials', filename, {
+    ...credential.data,
+    supported_models: [
+      ...new Set(models.map((model) => model.trim()).filter(Boolean)),
+    ].join(','),
+  });
 };
 
 export const selectCredential = async (

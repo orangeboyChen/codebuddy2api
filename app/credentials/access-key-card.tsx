@@ -98,7 +98,9 @@ export const AccessKeyCard = ({
               wrap="wrap"
             >
               {accessKey.credentialFilenames.map((filename) => (
-                <Tag key={filename}>{filename}</Tag>
+                <Tag className="access-key-credential-tag" key={filename}>
+                  {filename}
+                </Tag>
               ))}
             </Flexbox>
           </div>

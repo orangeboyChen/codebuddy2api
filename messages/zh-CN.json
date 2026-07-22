@@ -130,7 +130,7 @@
           "message79": "这个仪表盘相信你 🌟",
           "message80": "又是一次整齐的响应 📬",
           "message81": "继续投递好数据包 📦",
-          "message82": "你的筛选器今天格外锋利 🔎",
+          "message82": "今天也把 Token 蹬起来 🔎",
           "message83": "服务器正在礼貌地伸懒腰 🤸",
           "message84": "好心情配合法 JSON 🧾",
           "message85": "今天的小胜利也算双份 ✌️",
@@ -233,6 +233,10 @@
       "credentialRoleAsSystemTag": "developer → system",
       "credentialRoleKeepDeveloper": "保留 developer",
       "credentialSectionTitle": "已保存的凭证",
+      "modelCredential": "凭据",
+      "modelRefresh": "刷新",
+      "modelSupported": "支持的模型",
+      "modelTableTitle": "凭据模型",
       "credentialUserId": "用户 ID (可选)",
       "credentialUserIdPlaceholder": "输入用户 ID (可选)",
       "delete": "删除",
@@ -250,7 +254,6 @@
       "examples": "API 使用示例",
       "examplesCurl": "curl 示例:",
       "examplesPython": "Python 示例:",
-      "followCurrent": "跟随当前轮询",
       "idle": "点击“发送测试”查看 API 响应...",
       "message": "测试消息",
       "model": "模型",
@@ -399,11 +402,15 @@
       "loginDescription": "使用内置管理员登录建立 session cookie，然后在控制台里管理凭证、Access Key 与 passkey。"
     },
     "settingsPanel": {
+      "clearUsageEvents": "清空用量统计缓存",
+      "confirmClearUsageEvents": "确认清空所有已保存的用量统计记录吗？",
       "helper": "Passkey RP ID 通常应与最终访问域名一致。HTTPS 站点可直接使用；localhost 在现代浏览器中通常可用于本地调试，其它非 HTTPS 域名通常无法使用 passkey。",
       "loading": "加载配置中...",
       "passkeyRpIdPlaceholder": "留空则跟随当前访问域名",
       "saveSuccess": "设置已保存。",
-      "title": "服务配置"
+      "title": "服务配置",
+      "usageCacheDescription": "删除所有已保存的用量统计记录。此操作无法撤销。",
+      "usageCacheTitle": "用量统计缓存"
     },
     "securityPanel": {
       "accountUpdated": "管理员账户已更新。",

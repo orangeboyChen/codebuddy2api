@@ -21,6 +21,11 @@ const LobeUiProvider = ({ children, initialTheme }: LobeUiProviderProps) => {
   );
 
   useEffect(() => {
+    const syncFromDocument = () => {
+      setAppearance(
+        document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+      );
+    };
     const syncAppearance = (event: Event) => {
       const nextAppearance = (event as CustomEvent<'dark' | 'light'>).detail;
 
@@ -29,10 +34,17 @@ const LobeUiProvider = ({ children, initialTheme }: LobeUiProviderProps) => {
       }
     };
 
+    syncFromDocument();
     window.addEventListener(themeChangeEventName, syncAppearance);
+    const observer = new MutationObserver(syncFromDocument);
+    observer.observe(document.documentElement, {
+      attributeFilter: ['class'],
+      attributes: true,
+    });
 
     return () => {
       window.removeEventListener(themeChangeEventName, syncAppearance);
+      observer.disconnect();
     };
   }, []);
 

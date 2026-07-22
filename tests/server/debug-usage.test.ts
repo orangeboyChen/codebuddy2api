@@ -533,7 +533,7 @@ describe('debug and usage persistence', () => {
     });
     const stream =
       'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' +
-      'data: {"usage":{"prompt_tokens":3,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2}}}\n\n' +
+      'data: {"usage":{"prompt_tokens":3,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2},"prompt_cache_hit_tokens":2,"cache_read_input_tokens":0}}\n\n' +
       'data: [DONE]\n\n';
 
     await enqueueAndConsumeUpstreamSnapshot(

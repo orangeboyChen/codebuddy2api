@@ -13,7 +13,6 @@ export interface RuntimeConfig {
   CODEBUDDY_AUTH_MODE: 'auto' | 'token';
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa' | 'internal' | 'public';
   CODEBUDDY_LOG_LEVEL: string;
-  CODEBUDDY_MODELS: string;
 }
 
 export type ConfigLabelLocale = 'zh-CN' | 'en-US' | 'ja-JP';
@@ -26,8 +25,6 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_AUTH_MODE: 'auto',
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa',
   CODEBUDDY_LOG_LEVEL: 'INFO',
-  CODEBUDDY_MODELS:
-    'glm-5.1,glm-5.0,glm-5.0-turbo,glm-5v-turbo,glm-4.7,minimax-m3-play,minimax-m2.7,minimax-m2.5,kimi-k2.6,kimi-k2.5,hy3-preview-agent,deepseek-v4-pro,deepseek-v4-flash,deepseek-v3-2-volc,claude-sonnet-4.6,claude-opus-4.8,claude-opus-4.8-1m,claude-opus-4.7,claude-opus-4.7-1m,claude-opus-4.6,claude-opus-4.6-1m,claude-haiku-4.5,gemini-3.1-pro,gemini-3.5-flash,gemini-2.5-pro,gpt-5.5,gpt-5.4,gpt-5.3-codex,gpt-5.1-codex,gpt-5.1-codex-mini,glm-5.2-ioa,glm-5v-turbo-ioa,glm-5.0-ioa,glm-4.7-ioa,minimax-m3-ioa,minimax-m2.7-ioa,minimax-m2.5-ioa,kimi-k2.6-ioa,hy3-preview-agent-ioa,deepseek-v4-pro-ioa,deepseek-v4-flash-ioa,deepseek-v3-2-volc-ioa',
 };
 let configMutationQueue: Promise<void> = Promise.resolve();
 
@@ -41,7 +38,6 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_AUTH_MODE: 'Authentication mode (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: 'Network environment (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'Log level',
-    CODEBUDDY_MODELS: 'Available models (comma-separated)',
   },
   'ja-JP': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy API エンドポイント',
@@ -49,7 +45,6 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_AUTH_MODE: '認証モード (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: 'ネットワーク環境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'ログレベル',
-    CODEBUDDY_MODELS: '利用可能なモデル一覧 (カンマ区切り)',
   },
   'zh-CN': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方 API 端点',
@@ -57,7 +52,6 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_AUTH_MODE: '认证模式 (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: '网络环境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: '日志级别',
-    CODEBUDDY_MODELS: '可用模型列表 (逗号分隔)',
   },
 };
 
@@ -130,10 +124,6 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
       'CODEBUDDY_LOG_LEVEL',
       persisted.CODEBUDDY_LOG_LEVEL ?? process.env.CODEBUDDY_LOG_LEVEL,
     ),
-    CODEBUDDY_MODELS: normalizeValue(
-      'CODEBUDDY_MODELS',
-      persisted.CODEBUDDY_MODELS ?? process.env.CODEBUDDY_MODELS,
-    ),
   };
 };
 
@@ -178,16 +168,7 @@ export const getCodeBuddyApiEndpoint = async (): Promise<string> => {
     : 'https://copilot.tencent.com';
 };
 
-export const getAvailableModels = async (): Promise<string[]> => {
-  return (await getActiveConfig()).CODEBUDDY_MODELS.split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-};
-
-export const getDefaultModel = async (
-  fallback = 'glm-5.1',
-): Promise<string> => {
-  return (await getAvailableModels())[0] ?? fallback;
-};
+export const getDefaultModel = async (fallback = 'glm-5.1'): Promise<string> =>
+  fallback;
 
 export { getConfigDir, getConfigPath, getCredsDir, getFileStorageDir };

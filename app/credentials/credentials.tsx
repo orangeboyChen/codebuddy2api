@@ -114,6 +114,8 @@ export interface CredentialsState {
   form: CredentialFormState;
   items: CredentialSummary[];
   loading: boolean;
+  modelRows: Record<string, { error: string | null; models: string[] }>;
+  modelsLoading: boolean;
   revealedSecret: RevealedAccessKeySecret | null;
 }
 
@@ -149,6 +151,8 @@ export const defaultCredentialsState: CredentialsState = {
   },
   items: [],
   loading: true,
+  modelRows: {},
+  modelsLoading: false,
   revealedSecret: null,
 };
 
