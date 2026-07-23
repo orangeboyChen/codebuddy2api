@@ -745,12 +745,15 @@ const getTraceUsage = (trace: DebugTrace): DebugUsageMetrics | null => {
     usage.output_tokens ?? usage.completion_tokens,
   );
   const promptTokenDetails = asRecord(usage.prompt_tokens_details);
-  const cacheReadTokens = toTokenCount(
-    usage.cache_read_input_tokens ?? promptTokenDetails?.cached_tokens,
+  const cacheReadTokens = Math.max(
+    toTokenCount(usage.cache_read_input_tokens),
+    toTokenCount(promptTokenDetails?.cached_tokens),
+    toTokenCount(usage.prompt_cache_hit_tokens),
   );
-  const cacheCreationTokens = toTokenCount(
-    usage.cache_creation_input_tokens ??
-      promptTokenDetails?.cache_creation_tokens,
+  const cacheCreationTokens = Math.max(
+    toTokenCount(usage.cache_creation_input_tokens),
+    toTokenCount(promptTokenDetails?.cache_creation_tokens),
+    toTokenCount(usage.prompt_cache_write_tokens),
   );
   const totalTokens =
     toTokenCount(usage.total_tokens) ||

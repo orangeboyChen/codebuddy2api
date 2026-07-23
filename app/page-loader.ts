@@ -16,8 +16,13 @@ import { listAccessKeys } from '@/lib/server/domain/access-keys';
 import { getActiveConfig, getSettingLabels } from '@/lib/server/domain/config';
 import {
   getCurrentCredentialInfo,
+  listEligibleCredentialRecords,
   listCredentials,
 } from '@/lib/server/domain/credentials';
+import {
+  getModelsByCredential,
+  getModelsForCredentials,
+} from '@/lib/server/proxy/codebuddy';
 import { getDebugSettings, listDebugLogs } from '@/lib/server/domain/debug';
 import { getUsageAnalytics } from '@/lib/server/domain/usage';
 import type { AppLocale } from '@/lib/i18n/routing';
@@ -139,17 +144,26 @@ export const getInitialData = async ({
       };
     }
     case 'api-test': {
-      const [credentials, currentCredential, config] = await Promise.all([
-        listCredentials(),
-        getCurrentCredentialInfo(),
-        getActiveConfig(),
-      ]);
+      const eligibleCredentials = await listEligibleCredentialRecords();
+      const [credentials, currentCredential, models, credentialModels] =
+        await Promise.all([
+          listCredentials(),
+          getCurrentCredentialInfo(),
+          getModelsForCredentials(eligibleCredentials),
+          getModelsByCredential(eligibleCredentials),
+        ]);
 
       return {
+        credentialModels: Object.fromEntries(
+          Object.entries(credentialModels).map(([filename, value]) => [
+            filename,
+            value.models.map((model) => model.id),
+          ]),
+        ),
         credentials: credentials.credentials as unknown as CredentialSummary[],
         currentCredential:
           currentCredential as unknown as CurrentCredentialInfo,
-        modelSettings: config.CODEBUDDY_MODELS,
+        models: models.map((model) => model.id),
         tab,
       };
     }

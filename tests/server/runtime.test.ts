@@ -10,6 +10,7 @@ import * as AdminAccessKeysRoute from '@/app/admin-api/access-keys/route';
 import * as AdminCredentialsAutoRoute from '@/app/admin-api/credentials/auto/route';
 import * as AdminCredentialsCurrentRoute from '@/app/admin-api/credentials/current/route';
 import * as AdminCredentialsDeleteRoute from '@/app/admin-api/credentials/delete/route';
+import * as AdminCredentialsModelsRoute from '@/app/admin-api/credentials/models/route';
 import * as AdminCredentialsRoute from '@/app/admin-api/credentials/route';
 import * as AdminCredentialsSelectRoute from '@/app/admin-api/credentials/select/route';
 import * as AdminCredentialsToggleRoute from '@/app/admin-api/credentials/toggle-rotation/route';
@@ -111,7 +112,7 @@ describe('server runtime', () => {
     expect(healthPayload.active_credential).toBeUndefined();
     expect(modelsPayload.object).toBe('list');
     expect(Array.isArray(modelsPayload.data)).toBe(true);
-    expect(modelsPayload.data[0].id).toBeTruthy();
+    expect(modelsPayload.data).toEqual([]);
   });
 
   it('reports unhealthy when storage initialization fails', async () => {
@@ -123,6 +124,47 @@ describe('server runtime', () => {
 
     expect(response.status).toBe(503);
     expect((await response.json()).status).toBe('unhealthy');
+  });
+
+  it('preserves credential models when discovery fails', async () => {
+    const addResponse = await AdminCredentialsRoute.POST(
+      makeJsonRequest('http://localhost/admin-api/credentials', {
+        bearer_token: 'token-a',
+        user_id: 'alice@example.com',
+      }),
+    );
+    const { filename } = await addResponse.json();
+
+    await AdminCredentialsModelsRoute.PUT(
+      new Request('http://localhost/admin-api/credentials/models', {
+        body: JSON.stringify({ filename, models: 'glm-5.1,glm-4.7' }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'PUT',
+      }),
+    );
+    vi.spyOn(global, 'fetch').mockRejectedValueOnce(
+      new Error('Upstream unavailable'),
+    );
+
+    const refreshResponse = await AdminCredentialsModelsRoute.POST(
+      makeJsonRequest('http://localhost/admin-api/credentials/models', {
+        filename,
+      }),
+    );
+
+    expect(refreshResponse.status).toBe(200);
+    expect((await refreshResponse.json()).models[filename]).toEqual({
+      error: 'Upstream unavailable',
+      models: [],
+    });
+
+    const modelsResponse = await AdminCredentialsModelsRoute.GET(
+      new Request('http://localhost/admin-api/credentials/models'),
+    );
+    expect((await modelsResponse.json()).models[filename].models).toEqual([
+      { id: 'glm-5.1' },
+      { id: 'glm-4.7' },
+    ]);
   });
 
   it('manages settings and credentials through admin routes', async () => {

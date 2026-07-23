@@ -8,39 +8,6 @@ import { useTranslations } from 'next-intl';
 import { createContext, useContext } from 'react';
 import type { AdminConsoleInitialData } from '@/app/page-data';
 
-const defaultModels = [
-  'glm-5.1',
-  'glm-5.0',
-  'glm-5.0-turbo',
-  'glm-5v-turbo',
-  'glm-4.7',
-  'minimax-m3-play',
-  'minimax-m2.7',
-  'minimax-m2.5',
-  'kimi-k2.6',
-  'kimi-k2.5',
-  'hy3-preview-agent',
-  'deepseek-v4-pro',
-  'deepseek-v4-flash',
-  'deepseek-v3-2-volc',
-  'glm-5.1-ioa',
-  'glm-5.0-ioa',
-  'glm-5.0-turbo-ioa',
-  'glm-5v-turbo-ioa',
-  'glm-4.7-ioa',
-  'minimax-m3-ioa',
-  'minimax-m2.7-ioa',
-  'minimax-m2.5-ioa',
-  'kimi-k2.6-ioa',
-  'kimi-k2.5-ioa',
-  'hy3-preview-agent-ioa',
-  'deepseek-v4-pro-ioa',
-  'deepseek-v4-flash-ioa',
-  'deepseek-v3-2-volc-ioa',
-] as const;
-
-const followCurrentCredentialValue = '__follow_current_rotation__';
-
 export interface ApiTestController {
   apiTest: {
     credentialFilename: string;
@@ -99,10 +66,11 @@ export const createApiTestState = (
     credentialFilename:
       currentCredential?.filename ?? validCredentials[0]?.filename ?? '',
     model:
-      initialData.modelSettings
-        .split(',')
-        .map((model) => model.trim())
-        .find(Boolean) ?? '',
+      initialData.credentialModels[
+        currentCredential?.filename ?? validCredentials[0]?.filename ?? ''
+      ]?.[0] ??
+      initialData.models[0] ??
+      '',
   };
 };
 
@@ -122,7 +90,7 @@ const useApiTest = (): ApiTestController => {
 const ApiTest = () => {
   const context = useApiTest();
   const apiTestText = useTranslations('Admin.apiTest');
-  const models = context.models.length ? context.models : [...defaultModels];
+  const models = context.models;
   const model = models.includes(context.apiTest.model)
     ? context.apiTest.model
     : (models[0] ?? '');
@@ -144,23 +112,13 @@ const ApiTest = () => {
           <Select
             className="w-full"
             id="testCredential"
-            options={[
-              {
-                label: apiTestText('followCurrent'),
-                value: followCurrentCredentialValue,
-              },
-              ...context.credentialOptions.map((credential) => ({
-                label: `${credential.filename} · ${credential.email || credential.user_id}`,
-                value: credential.filename,
-              })),
-            ]}
-            value={
-              context.apiTest.credentialFilename || followCurrentCredentialValue
-            }
+            options={context.credentialOptions.map((credential) => ({
+              label: `${credential.filename} · ${credential.email || credential.user_id}`,
+              value: credential.filename,
+            }))}
+            value={context.apiTest.credentialFilename}
             onChange={(value) => {
-              context.onCredentialChange(
-                value === followCurrentCredentialValue ? '' : String(value),
-              );
+              context.onCredentialChange(String(value));
             }}
           />
         </div>

@@ -29,6 +29,9 @@ import {
 } from '@/lib/server/proxy/codebuddy-auth';
 import {
   createProxyContextFromCredential,
+  getModelsByCredential,
+  getModelsForCredential,
+  getModelsForCredentials,
   getModelsResponse,
   proxyChatCompletions,
   proxyResponsesUpstream,
@@ -39,13 +42,16 @@ import {
   deleteCredentialByIndex,
   getCurrentCredentialInfo,
   listCredentials,
+  readCredentialRecords,
   resetCredentialRuntimeState,
   resolveCredentialForRequest,
   resumeAutoRotation,
   selectCredential,
   toggleAutoRotation,
+  updateCredentialSupportedModels,
   updateCredentialByIndex,
 } from '@/lib/server/domain/credentials';
+import { refreshMissingCredentialModels } from '@/lib/server/domain/credential-models';
 import {
   handleResponsesRequest,
   resetResponseSessions,
@@ -546,10 +552,85 @@ describe('server units', () => {
     expect(reassigned?.filename).toBe(secondCredential.filename);
   });
 
+  it('refreshes only credentials missing saved models', async () => {
+    const refreshState = globalThis as typeof globalThis & {
+      __codebuddy2apiCredentialModelRefresh__?: Promise<void>;
+    };
+    delete refreshState.__codebuddy2apiCredentialModelRefresh__;
+
+    const first = await addCredential({ bearer_token: 'token-first' });
+    const second = await addCredential({ bearer_token: 'token-second' });
+    const existing = await addCredential({ bearer_token: 'token-existing' });
+    await updateCredentialSupportedModels(existing.filename, ['glm-existing']);
+    const defaultCredential = (await readCredentialRecords()).find(
+      (record) => record.data.bearer_token === 'default-test-token',
+    );
+    await updateCredentialSupportedModels(defaultCredential?.filename ?? '', [
+      'glm-default',
+    ]);
+    vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              agents: [{ models: ['glm-5.1'], name: 'cli' }],
+              models: [{ id: 'glm-5.1', name: 'GLM 5.1' }],
+            },
+          }),
+        ),
+      )
+      .mockRejectedValueOnce(new Error('Upstream unavailable'))
+      .mockRejectedValue(new Error('Unexpected model discovery request'));
+
+    await refreshMissingCredentialModels();
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    const records = await readCredentialRecords();
+    const refreshedModels = [first.filename, second.filename].map(
+      (filename) =>
+        records.find((record) => record.filename === filename)?.data
+          .supported_models,
+    );
+    expect(refreshedModels).toContain('glm-5.1');
+    expect(refreshedModels).toContain(undefined);
+
+    delete refreshState.__codebuddy2apiCredentialModelRefresh__;
+  });
+
+  it('does not block startup when credential model refresh cannot read storage', async () => {
+    const refreshState = globalThis as typeof globalThis & {
+      __codebuddy2apiCredentialModelRefresh__?: Promise<void>;
+    };
+    delete refreshState.__codebuddy2apiCredentialModelRefresh__;
+    process.env.CODEBUDDY_STORAGE_BACKEND = 'pg';
+    process.env.CODEBUDDY_STORAGE_PG_URL = 'postgres://example.test/codebuddy';
+    resetStorageRuntime();
+    const warning = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+
+    await expect(refreshMissingCredentialModels()).resolves.toBeUndefined();
+    expect(warning).toHaveBeenCalledWith(
+      '[CodeBuddy2API] Unable to refresh missing credential models',
+      expect.any(Error),
+    );
+
+    delete process.env.CODEBUDDY_STORAGE_BACKEND;
+    delete process.env.CODEBUDDY_STORAGE_PG_URL;
+    resetStorageRuntime();
+    delete refreshState.__codebuddy2apiCredentialModelRefresh__;
+  });
+
   it('persists usage history under file storage and preserves historical filters', async () => {
     const now = new Date('2026-07-11T12:30:00.000Z');
     vi.useFakeTimers();
     vi.setSystemTime(now);
+
+    await addCredential({
+      bearer_token: 'token-a',
+      supported_models: 'glm-4.7,glm-5.1',
+    });
 
     await recordUsageEvent({
       accessKeyId: 'key-1',
@@ -600,6 +681,7 @@ describe('server units', () => {
       model: 'glm-5.1',
       totalTokens: 20,
     });
+    expect(analytics.callSeries[0]?.color).toBe('#ea580c');
 
     await recordUsageEvent({
       accessKeyId: 'key-1',
@@ -1269,6 +1351,49 @@ describe('server units', () => {
           totalTokens: 0,
         },
       ],
+    });
+  });
+
+  it('records CodeBuddy prompt cache hits from streamed usage', async () => {
+    const credential = (await listCredentials()).credentials[0];
+    expect(credential).toBeDefined();
+
+    const context = await resolveProxyContextByCredentialFilename(
+      String(credential?.filename),
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        'data: {"choices":[{"delta":{"content":"cached"}}]}\n\n' +
+          'data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":125823,"completion_tokens":56,"total_tokens":125879,"prompt_tokens_details":{"cached_tokens":125376},"prompt_cache_hit_tokens":125376,"cache_read_input_tokens":0}}\n\n' +
+          'data: [DONE]\n\n',
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+          },
+        },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'cached request', role: 'user' }],
+        stream: true,
+      },
+      context,
+    );
+    await response.text();
+
+    await waitForAsync(async () => {
+      expect(
+        (await getUsageAnalytics({ range: 'today' })).rangeSummary,
+      ).toEqual({
+        cacheHitTokens: 125376,
+        callCount: 1,
+        totalTokens: 125879,
+      });
     });
   });
 
@@ -2644,24 +2769,150 @@ describe('server units', () => {
     expect(resolved.preferences.responsesPassthrough).toBe(false);
   });
 
+  it('discovers models per credential without live upstream requests', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              agents: [{ models: ['glm-5.1', 'disabled', 42], name: 'cli' }],
+              models: [
+                { id: 'glm-5.1', name: 'GLM 5.1' },
+                { disabled: true, id: 'disabled', name: 'Disabled' },
+                { id: 'fallback-name', name: '   ' },
+              ],
+            },
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 1 })))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 0, data: { models: [] } })),
+      )
+      .mockRejectedValue(new Error('Upstream unavailable'));
+
+    await expect(
+      getModelsForCredential({
+        bearerToken: 'token-a',
+        credentialData: {
+          domain: 'example.com',
+          enterprise_id: 'enterprise-a',
+          tenant_id: 'tenant-a',
+        },
+      }),
+    ).resolves.toEqual([{ displayName: 'GLM 5.1', id: 'glm-5.1' }]);
+    const requestInit = fetchMock.mock.calls[0]?.[1];
+    const headers = new Headers(requestInit?.headers);
+    expect(headers.get('authorization')).toBe('Bearer token-a');
+    expect(headers.get('x-domain')).toBe('example.com');
+    expect(headers.get('x-enterprise-id')).toBe('enterprise-a');
+    expect(headers.get('x-tenant-id')).toBe('tenant-a');
+
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-b', credentialData: {} }),
+    ).rejects.toThrow('Model discovery failed with status 503');
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-c', credentialData: {} }),
+    ).rejects.toThrow('Model discovery returned an unsuccessful response');
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-d', credentialData: {} }),
+    ).resolves.toEqual([]);
+
+    const records = [
+      {
+        data: { supported_models: 'glm-saved,glm-other' },
+        filePath: '',
+        filename: 'saved.json',
+      },
+      {
+        data: { bearer_token: 'token-failing' },
+        filePath: '',
+        filename: 'failing.json',
+      },
+      { data: {}, filePath: '', filename: 'empty.json' },
+    ];
+    await expect(getModelsForCredentials(records)).resolves.toEqual([
+      { displayName: 'glm-other', id: 'glm-other' },
+      { displayName: 'glm-saved', id: 'glm-saved' },
+    ]);
+    await expect(getModelsByCredential(records)).resolves.toEqual({
+      'empty.json': { error: null, models: [] },
+      'failing.json': { error: 'Upstream unavailable', models: [] },
+      'saved.json': { error: null, models: [] },
+    });
+  });
+
   it('returns models in both OpenAI-compatible and admin-friendly shapes', async () => {
-    const payload = (await (await getModelsResponse()).json()) as {
+    const secondCredential = await addCredential({
+      bearer_token: 'second-model-token',
+      user_id: 'second-model@example.com',
+    });
+    const credentials = await listCredentials();
+    const accessKey = await createAccessKey({
+      credentialFilenames: [
+        credentials.credentials[0].filename as string,
+        secondCredential.filename,
+      ],
+      name: 'Model Discovery Key',
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (_input, init) => {
+        const token = new Headers(init?.headers).get('authorization');
+        const models =
+          token === 'Bearer second-model-token'
+            ? [
+                { id: 'shared-model', name: 'Shared' },
+                { id: 'second-model', name: 'Second' },
+              ]
+            : [
+                { id: 'default-model', name: 'Default' },
+                { disabled: true, id: 'disabled-model', name: 'Disabled' },
+                { id: 'shared-model', name: 'Shared' },
+              ];
+
+        return makeJsonResponse({
+          code: 0,
+          data: {
+            agents: [
+              {
+                models: models.map((model) => model.id),
+                name: 'cli',
+              },
+            ],
+            models,
+          },
+        });
+      });
+    const payload = (await (
+      await getModelsResponse(
+        makeNextRequest('http://localhost/v1/models', {
+          headers: { authorization: `Bearer ${accessKey.secret}` },
+        }),
+      )
+    ).json()) as {
       data: Array<Record<string, unknown>>;
       models: Array<Record<string, unknown>>;
     };
 
-    expect(payload.data.length).toBeGreaterThan(0);
+    expect(secondCredential.filename).toBeTruthy();
     expect(payload.models).toEqual(payload.data);
-    expect(payload.data[0]).toEqual(
-      expect.objectContaining({
-        created: 0,
-        display_name: expect.any(String),
-        id: expect.any(String),
-        object: 'model',
-        owned_by: 'codebuddy',
-        slug: expect.any(String),
-      }),
+    expect(payload.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'default-model' }),
+        expect.objectContaining({ id: 'second-model' }),
+        expect.objectContaining({ id: 'shared-model' }),
+      ]),
     );
+    expect(payload.data).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'disabled-model' }),
+      ]),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('keeps empty streamed assistant content for previous_response_id follow-ups', async () => {

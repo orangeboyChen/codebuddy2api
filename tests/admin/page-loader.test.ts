@@ -15,7 +15,13 @@ vi.mock('@/lib/server/domain/config', () => ({
 
 vi.mock('@/lib/server/domain/credentials', () => ({
   getCurrentCredentialInfo: vi.fn(),
+  listEligibleCredentialRecords: vi.fn(),
   listCredentials: vi.fn(),
+}));
+
+vi.mock('@/lib/server/proxy/codebuddy', () => ({
+  getModelsByCredential: vi.fn(),
+  getModelsForCredentials: vi.fn(),
 }));
 
 vi.mock('@/lib/server/domain/debug', () => ({
@@ -35,8 +41,13 @@ const { headers } = await import('next/headers');
 const { listAccessKeys } = await import('@/lib/server/domain/access-keys');
 const { getActiveConfig, getSettingLabels } =
   await import('@/lib/server/domain/config');
-const { getCurrentCredentialInfo, listCredentials } =
-  await import('@/lib/server/domain/credentials');
+const {
+  getCurrentCredentialInfo,
+  listEligibleCredentialRecords,
+  listCredentials,
+} = await import('@/lib/server/domain/credentials');
+const { getModelsByCredential, getModelsForCredentials } =
+  await import('@/lib/server/proxy/codebuddy');
 const { getDebugSettings, listDebugLogs } =
   await import('@/lib/server/domain/debug');
 const { getUsageStats } = await import('@/lib/server/domain/stats');
@@ -52,7 +63,10 @@ const domainLoaders = {
   getUsageStats,
   listAccessKeys,
   listCredentials,
+  listEligibleCredentialRecords,
   listDebugLogs,
+  getModelsByCredential,
+  getModelsForCredentials,
 };
 
 describe('tab-scoped initial data', () => {
@@ -62,12 +76,13 @@ describe('tab-scoped initial data', () => {
       new Headers({ host: 'admin.example.test' }) as never,
     );
     vi.mocked(listAccessKeys).mockResolvedValue({ access_keys: [] } as never);
-    vi.mocked(getActiveConfig).mockResolvedValue({
-      CODEBUDDY_MODELS: '',
-    } as never);
+    vi.mocked(getActiveConfig).mockResolvedValue({} as never);
     vi.mocked(getSettingLabels).mockReturnValue({} as never);
     vi.mocked(getCurrentCredentialInfo).mockResolvedValue({ status: 'empty' });
     vi.mocked(listCredentials).mockResolvedValue({ credentials: [] } as never);
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([]);
+    vi.mocked(getModelsForCredentials).mockResolvedValue([]);
+    vi.mocked(getModelsByCredential).mockResolvedValue({});
     vi.mocked(getDebugSettings).mockResolvedValue({
       autoRefreshSeconds: 15,
       enabled: false,
@@ -90,7 +105,13 @@ describe('tab-scoped initial data', () => {
     ],
     [
       'api-test',
-      ['listCredentials', 'getCurrentCredentialInfo', 'getActiveConfig'],
+      [
+        'listCredentials',
+        'getCurrentCredentialInfo',
+        'listEligibleCredentialRecords',
+        'getModelsForCredentials',
+        'getModelsByCredential',
+      ],
     ],
     ['debug', ['getDebugSettings', 'listDebugLogs']],
     ['settings', ['getActiveConfig', 'getSettingLabels']],

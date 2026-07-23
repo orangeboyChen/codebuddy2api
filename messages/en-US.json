@@ -130,7 +130,7 @@
           "message79": "This dashboard believes in you 🌟",
           "message80": "Another day, another neat response 📬",
           "message81": "Keep the good packets coming 📦",
-          "message82": "Your filters look especially sharp today 🔎",
+          "message82": "Put those tokens to work today 🔎",
           "message83": "The server is stretching politely 🤸",
           "message84": "Good vibes, valid JSON 🧾",
           "message85": "Small wins count double today ✌️",
@@ -237,6 +237,10 @@
       "credentialRoleAsSystemTag": "developer → system",
       "credentialRoleKeepDeveloper": "Keep developer",
       "credentialSectionTitle": "Saved credentials",
+      "modelCredential": "Credential",
+      "modelRefresh": "Refresh",
+      "modelSupported": "Supported models",
+      "modelTableTitle": "Credential models",
       "credentialUserId": "User ID (optional)",
       "credentialUserIdPlaceholder": "Enter the user ID (optional)",
       "delete": "Delete",
@@ -254,7 +258,6 @@
       "examples": "API usage examples",
       "examplesCurl": "curl example:",
       "examplesPython": "Python example:",
-      "followCurrent": "Follow current rotation",
       "idle": "Click \"Send test\" to view the API response...",
       "message": "Test message",
       "model": "Model",
@@ -403,11 +406,15 @@
       "loginDescription": "Use the built-in admin login to establish the session cookie, then manage credentials, access keys, and passkeys from the console."
     },
     "settingsPanel": {
+      "clearUsageEvents": "Clear usage event cache",
+      "confirmClearUsageEvents": "Clear all stored usage events?",
       "helper": "The passkey RP ID should usually match the final site domain. HTTPS works directly; localhost is commonly allowed for local development, while other non-HTTPS domains usually cannot use passkeys.",
       "loading": "Loading settings...",
       "passkeyRpIdPlaceholder": "Leave empty to follow the current host",
       "saveSuccess": "Settings saved.",
-      "title": "Service settings"
+      "title": "Service settings",
+      "usageCacheDescription": "Remove all stored usage events. This cannot be undone.",
+      "usageCacheTitle": "Usage event cache"
     },
     "securityPanel": {
       "accountUpdated": "Administrator account updated.",

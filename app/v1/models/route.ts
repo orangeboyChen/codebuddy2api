@@ -13,5 +13,5 @@ export const GET = async (request: NextRequest): Promise<Response> => {
     return authError;
   }
 
-  return getModelsResponse();
+  return getModelsResponse(request);
 };

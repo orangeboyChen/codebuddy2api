@@ -190,7 +190,8 @@ Current persisted runtime settings:
 - `CODEBUDDY_AUTH_MODE`
 - `CODEBUDDY_INTERNET_ENVIRONMENT`
 - `CODEBUDDY_LOG_LEVEL`
-- `CODEBUDDY_MODELS`
+
+Models are discovered from CodeBuddy for each active credential. The credentials page shows one row per credential with its supported models and a refresh action. `/v1/models` only merges models from credentials bound to the requesting API key.
 
 ## Logging
 

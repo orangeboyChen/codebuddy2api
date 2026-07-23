@@ -130,7 +130,7 @@
           "message79": "このダッシュボードはあなたを信じています 🌟",
           "message80": "また一つ、整ったレスポンス 📬",
           "message81": "良いパケットを送り続けよう 📦",
-          "message82": "今日のフィルターは特に鋭いです 🔎",
+          "message82": "今日も Token をしっかり回そう 🔎",
           "message83": "サーバーが礼儀正しく伸びをしています 🤸",
           "message84": "いい気分と有効な JSON 🧾",
           "message85": "小さな勝利も今日は二倍 ✌️",
@@ -237,6 +237,10 @@
       "credentialRoleAsSystemTag": "developer → system",
       "credentialRoleKeepDeveloper": "developer を保持",
       "credentialSectionTitle": "保存済み認証情報",
+      "modelCredential": "認証情報",
+      "modelRefresh": "更新",
+      "modelSupported": "対応モデル",
+      "modelTableTitle": "認証情報モデル",
       "credentialUserId": "ユーザー ID (任意)",
       "credentialUserIdPlaceholder": "ユーザー ID を入力 (任意)",
       "delete": "削除",
@@ -254,7 +258,6 @@
       "examples": "API 利用例",
       "examplesCurl": "curl 例:",
       "examplesPython": "Python 例:",
-      "followCurrent": "現在のローテーションに従う",
       "idle": "「送信テスト」をクリックすると API 応答を表示します...",
       "message": "テストメッセージ",
       "model": "モデル",
@@ -403,11 +406,15 @@
       "loginDescription": "組み込みの管理者ログインで session cookie を作成し、その後コンソールから認証情報、Access Key、passkey を管理します。"
     },
     "settingsPanel": {
+      "clearUsageEvents": "使用量イベントキャッシュを削除",
+      "confirmClearUsageEvents": "保存済みの使用量イベントをすべて削除しますか？",
       "helper": "Passkey の RP ID は通常、最終的にアクセスするドメインと一致させます。HTTPS ではそのまま利用でき、localhost はローカル開発で使えることが多い一方、それ以外の非 HTTPS ドメインでは通常 passkey を利用できません。",
       "loading": "設定を読み込んでいます...",
       "passkeyRpIdPlaceholder": "空欄なら現在のホストに追従",
       "saveSuccess": "設定を保存しました。",
-      "title": "サービス設定"
+      "title": "サービス設定",
+      "usageCacheDescription": "保存済みの使用量イベントをすべて削除します。この操作は元に戻せません。",
+      "usageCacheTitle": "使用量イベントキャッシュ"
     },
     "securityPanel": {
       "accountUpdated": "管理者アカウントを更新しました。",

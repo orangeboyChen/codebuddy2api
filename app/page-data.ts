@@ -36,9 +36,10 @@ export interface CredentialsTabInitialData {
 }
 
 export interface ApiTestInitialData {
+  credentialModels: Record<string, string[]>;
   credentials: CredentialSummary[];
   currentCredential: CurrentCredentialInfo;
-  modelSettings: string;
+  models: string[];
   tab: 'api-test';
 }
 

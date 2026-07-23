@@ -86,6 +86,13 @@ interface CredentialsResponse {
   credentials?: CredentialSummary[];
 }
 
+interface CredentialModelsResponse {
+  models?: Record<
+    string,
+    { error?: string | null; models?: Array<{ id?: string }> }
+  >;
+}
+
 interface AccessKeysResponse {
   access_keys?: AccessKeySummary[];
 }
@@ -234,13 +241,6 @@ const buildApiEndpoint = () => {
   }
 
   return `${window.location.origin}/v1`;
-};
-
-const getConfiguredModels = (rawValue: string | number | null | undefined) => {
-  return String(rawValue ?? '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
 };
 
 const formatResult = (payload: unknown) => {
@@ -507,6 +507,55 @@ const AdminPageLayoutContent = ({
     }));
   }, [setCredentials]);
 
+  const refreshCredentialModels = useCallback(
+    async (filename?: string) => {
+      setCredentials((current) => ({ ...current, modelsLoading: true }));
+      const result = await requestJson<CredentialModelsResponse>(
+        '/admin-api/credentials/models',
+        filename
+          ? {
+              body: JSON.stringify({ filename }),
+              headers: { 'Content-Type': 'application/json' },
+              method: 'POST',
+            }
+          : undefined,
+      );
+      const modelRows = Object.fromEntries(
+        Object.entries(result.data?.models ?? {}).map(([key, value]) => [
+          key,
+          {
+            error: value.error ?? null,
+            models: (value.models ?? [])
+              .map((model) => model.id)
+              .filter((model): model is string => Boolean(model)),
+          },
+        ]),
+      );
+
+      setCredentials((current) => ({
+        ...current,
+        modelRows: filename
+          ? { ...current.modelRows, ...modelRows }
+          : modelRows,
+        modelsLoading: false,
+      }));
+      setApiTest((current) => {
+        const selectedFilename = filename ?? current.credentialFilename;
+        const models = modelRows[selectedFilename]?.models;
+
+        if (!models) return current;
+
+        return {
+          ...current,
+          model: models.includes(current.model)
+            ? current.model
+            : (models[0] ?? ''),
+        };
+      });
+    },
+    [setApiTest, setCredentials],
+  );
+
   const refreshCredentialList = useCallback(async () => {
     setCredentials((current) => ({
       ...current,
@@ -571,21 +620,7 @@ const AdminPageLayoutContent = ({
       loading: false,
       values: nextValues,
     }));
-
-    setApiTest((current) => {
-      if (current.model.trim()) {
-        return current;
-      }
-
-      const configuredModels = getConfiguredModels(nextValues.CODEBUDDY_MODELS);
-
-      return {
-        ...current,
-        model: configuredModels[0] ?? current.model,
-        result: current.result || consoleMessages.requestIdle,
-      };
-    });
-  }, [consoleMessages.requestIdle, setApiTest, setSettings]);
+  }, [setSettings]);
 
   const loadDebug = useCallback(
     async ({
@@ -790,7 +825,8 @@ const AdminPageLayoutContent = ({
 
   const refreshAdminData = useCallback(async () => {
     await Promise.all([loadDashboard(), loadCredentials()]);
-  }, [loadCredentials, loadDashboard]);
+    await refreshCredentialModels();
+  }, [loadCredentials, loadDashboard, refreshCredentialModels]);
 
   const clearUsageHistory = async () => {
     setUsage((current) => ({
@@ -1008,6 +1044,9 @@ const AdminPageLayoutContent = ({
         name: result.data.filename ?? 'unknown',
       }),
     );
+    if (!isEditing && result.data.filename) {
+      await refreshCredentialModels(result.data.filename);
+    }
     await refreshAdminData();
   };
 
@@ -1239,10 +1278,7 @@ const AdminPageLayoutContent = ({
             role: 'user',
           },
         ],
-        model:
-          apiTest.model ||
-          getConfiguredModels(settings.values.CODEBUDDY_MODELS)[0] ||
-          'glm-5.1',
+        model: apiTest.model,
         stream: apiTest.stream,
       }),
       headers: {
@@ -1372,24 +1408,6 @@ const AdminPageLayoutContent = ({
       saving: false,
       values: result.data?.settings ?? current.values,
     }));
-    setApiTest((current) => {
-      const configuredModels = getConfiguredModels(
-        result.data?.settings?.CODEBUDDY_MODELS,
-      );
-      const nextModel = configuredModels[0] ?? current.model;
-
-      if (
-        current.model.trim() &&
-        configuredModels.includes(current.model.trim())
-      ) {
-        return current;
-      }
-
-      return {
-        ...current,
-        model: nextModel,
-      };
-    });
     showNotification(
       'success',
       result.data?.message ?? consoleMessages.settingsSaved,
@@ -1927,14 +1945,24 @@ const AdminPageLayoutContent = ({
                     ? initialData.credentials.filter((item) => !item.is_expired)
                     : credentials.items.filter((item) => !item.is_expired),
                 models:
-                  initialData?.tab === 'api-test'
-                    ? getConfiguredModels(initialData.modelSettings)
-                    : getConfiguredModels(settings.values.CODEBUDDY_MODELS),
+                  credentials.modelRows[apiTest.credentialFilename]?.models ??
+                  (initialData?.tab === 'api-test'
+                    ? (initialData.credentialModels[
+                        apiTest.credentialFilename
+                      ] ?? initialData.models)
+                    : []),
                 onCredentialChange: (value) => {
+                  const models =
+                    credentials.modelRows[value]?.models ??
+                    (initialData?.tab === 'api-test'
+                      ? (initialData.credentialModels[value] ?? [])
+                      : []);
                   setApiTest((current) => ({
                     ...current,
                     credentialFilename: value,
+                    model: models[0] ?? '',
                   }));
+                  void refreshCredentialModels(value);
                 },
                 onMessageChange: (value) => {
                   setApiTest((current) => ({ ...current, message: value }));

@@ -1257,11 +1257,11 @@ const Debug = () => {
                             value={
                               hasDuration(item.elapsedMs) &&
                               item.elapsedMs > 0 &&
-                              item.usage?.totalTokens
-                                ? Math.round(
-                                    (item.usage.totalTokens * 1_000) /
+                              item.usage?.outputTokens
+                                ? `${Math.round(
+                                    (item.usage.outputTokens * 1_000) /
                                       item.elapsedMs,
-                                  )
+                                  )} t/s`
                                 : null
                             }
                           />

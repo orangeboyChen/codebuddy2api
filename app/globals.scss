@@ -144,12 +144,15 @@ textarea {
   --header-height: 56px;
 
   position: relative !important;
+  container-type: inline-size;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--border-color) !important;
   border-radius: 0 !important;
   height: var(--header-height) !important;
+  max-width: 100%;
+  min-width: 0;
   padding: 0 12px 0 24px !important;
   background-color: transparent !important;
   background-image: radial-gradient(
@@ -194,6 +197,10 @@ textarea {
   min-width: 0;
 }
 
+.admin-header-navigation-compact {
+  display: none;
+}
+
 .admin-header-tab {
   background: transparent !important;
   border-color: transparent !important;
@@ -202,16 +209,6 @@ textarea {
 
 .admin-header-tab[data-active] {
   background: var(--lobe-color-fill-secondary) !important;
-}
-
-.admin-header-more-wrap {
-  display: none;
-}
-
-.admin-header-more {
-  background: transparent !important;
-  border-color: transparent !important;
-  box-shadow: none !important;
 }
 
 .admin-header-select {
@@ -233,6 +230,32 @@ textarea {
   display: none;
 }
 
+@container (max-width: 1280px) {
+  .admin-header-navigation-full {
+    display: none;
+  }
+
+  .admin-header-navigation-compact {
+    display: flex;
+  }
+}
+
+@container (max-width: 1120px) {
+  .admin-header-navigation,
+  .admin-header-controls {
+    display: none;
+  }
+
+  .admin-header-brand {
+    flex: 1 1 auto;
+  }
+
+  .admin-header-mobile-menu {
+    display: block;
+    flex: 0 0 auto;
+  }
+}
+
 .console-logout {
   box-shadow: none !important;
 }
@@ -241,16 +264,6 @@ textarea {
   width: min(1440px, 100%);
   margin: 0 auto;
   padding: 24px 32px 48px;
-}
-
-@media (max-width: 1180px) {
-  .admin-header-tab:nth-of-type(n + 4) {
-    display: none;
-  }
-
-  .admin-header-more-wrap {
-    display: block;
-  }
 }
 
 .usage-auto-refresh-control {
@@ -415,7 +428,20 @@ textarea {
 }
 
 #credentials .access-key-credential-tags {
+  max-width: 100%;
+  min-width: 0;
   row-gap: 12px;
+}
+
+#credentials .access-key-credential-tag.ant-tag {
+  width: fit-content;
+  max-width: 100%;
+  height: auto;
+  justify-content: flex-start;
+  overflow-wrap: anywhere;
+  padding: 3px 7px;
+  white-space: normal;
+  word-break: break-all;
 }
 
 #debug .debug-tool-list {
@@ -695,6 +721,24 @@ textarea {
   min-width: 0;
 }
 
+.credential-models-table,
+.credential-models-table .ant-table-wrapper,
+.credential-models-table .ant-table,
+.credential-models-table .ant-table-container,
+.credential-models-table .ant-table-content {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.credential-models-table .ant-table-content {
+  overscroll-behavior-x: contain;
+}
+
+.credential-models-input {
+  max-width: 100%;
+  width: min(360px, calc(100vw - 112px));
+}
+
 @media (max-width: 960px) {
   .dashboard-metric-grid {
     grid-template-columns: 1fr;
@@ -702,34 +746,6 @@ textarea {
 }
 
 @media (max-width: 640px) {
-  .admin-header {
-    display: flex !important;
-    height: 56px;
-    min-height: 56px;
-    padding: 0 12px !important;
-  }
-
-  .admin-header-brand {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .admin-header-controls {
-    display: none !important;
-  }
-
-  .admin-header-navigation {
-    display: none;
-  }
-
-  .admin-header-mobile-menu {
-    display: block;
-    flex: 0 0 auto;
-  }
-
   .console-main {
     padding: 20px 0 32px;
   }
