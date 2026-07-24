@@ -1,5 +1,6 @@
 import { getCodeBuddyApiEndpoint } from '../domain/config';
 import { addCredential, type CredentialData } from '../domain/credentials';
+import { refreshCredentialModels } from '../domain/credential-models';
 import { getAdminSessionErrorResponse } from '../admin/session';
 
 const getAuthStateEndpoint = async (): Promise<string> =>
@@ -286,6 +287,7 @@ export const pollCodeBuddyAuth = async (
     };
     const credential = buildCredentialDataFromToken(tokenPayload);
     const saved = await addCredential(credential);
+    await refreshCredentialModels(saved.filename);
 
     return Response.json({
       access_token: tokenPayload.access_token,
