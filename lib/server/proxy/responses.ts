@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 
 import { getDefaultModel } from '../domain/config';
+import { getCredentialSupportedModels } from '../domain/credentials';
 import type { DebugTrace } from '../domain/debug';
 import {
   proxyChatCompletions,
@@ -1414,10 +1415,22 @@ export const handleResponsesRequest = async (
           typeof body.model === 'string' ? body.model : undefined,
         );
 
+    const scopedBody =
+      !storedPreviousSession &&
+      (typeof body.model !== 'string' || !body.model.trim())
+        ? {
+            ...body,
+            model:
+              getCredentialSupportedModels(
+                proxyContext.auth.credentialData,
+              )[0] ?? (await getDefaultModel()),
+          }
+        : body;
+
     if (proxyContext.preferences.responsesPassthrough) {
       return proxyResponsesUpstream(
         request,
-        body as Record<string, unknown>,
+        scopedBody as Record<string, unknown>,
         proxyContext,
         debugTrace,
       );
@@ -1429,7 +1442,7 @@ export const handleResponsesRequest = async (
     );
 
     const prepared = await prepareTranscript(
-      body,
+      scopedBody,
       proxyContext.accessKeyId,
       previousSession,
     );
