@@ -525,6 +525,7 @@ describe('server runtime', () => {
       await AdminCredentialsRoute.POST(
         makeJsonRequest('http://localhost/admin-api/credentials', {
           bearer_token: 'responses-token',
+          supported_models: 'credential-model,gpt-5.5',
           user_id: 'responses@example.com',
         }),
       )
@@ -584,7 +585,6 @@ describe('server runtime', () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'gpt-5.5',
           input: 'hello',
           instructions: 'Keep replies brief',
           tool_choice: { type: 'function', name: 'lookup_weather' },
@@ -605,6 +605,10 @@ describe('server runtime', () => {
     );
     const firstPayload = await firstResponse.json();
     expect(firstPayload.output_text).toBe('first answer');
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
+        .model,
+    ).toBe('credential-model');
 
     const secondResponse = await V1ResponsesRoute.POST(
       makeNextRequest('http://localhost/v1/responses', {
