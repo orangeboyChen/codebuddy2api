@@ -6,6 +6,10 @@ import {
   readStorageJson,
   writeStorageJson,
 } from '../storage';
+import {
+  getCredentialSupportedModels,
+  listEligibleCredentialRecords,
+} from './credentials';
 
 export interface RuntimeConfig {
   CODEBUDDY_API_ENDPOINT: string;
@@ -168,7 +172,16 @@ export const getCodeBuddyApiEndpoint = async (): Promise<string> => {
     : 'https://copilot.tencent.com';
 };
 
-export const getDefaultModel = async (fallback = 'glm-5.1'): Promise<string> =>
-  fallback;
+export const getDefaultModel = async (
+  fallback = 'glm-5.1',
+): Promise<string> => {
+  const credentials = await listEligibleCredentialRecords();
+
+  return (
+    credentials
+      .flatMap((credential) => getCredentialSupportedModels(credential.data))
+      .sort((left, right) => left.localeCompare(right))[0] ?? fallback
+  );
+};
 
 export { getConfigDir, getConfigPath, getCredsDir, getFileStorageDir };

@@ -14,6 +14,7 @@ vi.mock('@/lib/server/domain/config', () => ({
 }));
 
 vi.mock('@/lib/server/domain/credentials', () => ({
+  getCredentialSupportedModels: vi.fn(),
   getCurrentCredentialInfo: vi.fn(),
   listEligibleCredentialRecords: vi.fn(),
   listCredentials: vi.fn(),
@@ -42,6 +43,7 @@ const { listAccessKeys } = await import('@/lib/server/domain/access-keys');
 const { getActiveConfig, getSettingLabels } =
   await import('@/lib/server/domain/config');
 const {
+  getCredentialSupportedModels,
   getCurrentCredentialInfo,
   listEligibleCredentialRecords,
   listCredentials,
@@ -81,6 +83,7 @@ describe('tab-scoped initial data', () => {
     vi.mocked(getCurrentCredentialInfo).mockResolvedValue({ status: 'empty' });
     vi.mocked(listCredentials).mockResolvedValue({ credentials: [] } as never);
     vi.mocked(listEligibleCredentialRecords).mockResolvedValue([]);
+    vi.mocked(getCredentialSupportedModels).mockReturnValue([]);
     vi.mocked(getModelsForCredentials).mockResolvedValue([]);
     vi.mocked(getModelsByCredential).mockResolvedValue({});
     vi.mocked(getDebugSettings).mockResolvedValue({
@@ -110,7 +113,6 @@ describe('tab-scoped initial data', () => {
         'getCurrentCredentialInfo',
         'listEligibleCredentialRecords',
         'getModelsForCredentials',
-        'getModelsByCredential',
       ],
     ],
     ['debug', ['getDebugSettings', 'listDebugLogs']],
@@ -142,6 +144,28 @@ describe('tab-scoped initial data', () => {
       }
     },
   );
+
+  it('hydrates API-test credential models from saved values', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      {
+        data: { supported_models: 'glm-5.1' },
+        filePath: '',
+        filename: 'credential-a.json',
+      },
+    ] as never);
+    vi.mocked(getCredentialSupportedModels).mockReturnValue(['glm-5.1']);
+
+    const initialData = await getInitialData({
+      locale: 'en-US',
+      tab: 'api-test',
+    });
+
+    expect(initialData).toMatchObject({
+      credentialModels: { 'credential-a.json': ['glm-5.1'] },
+      tab: 'api-test',
+    });
+    expect(getModelsByCredential).not.toHaveBeenCalled();
+  });
 
   it('restores persisted usage filters and refresh settings in the usage snapshot', async () => {
     vi.mocked(getUsageAnalytics).mockResolvedValue({

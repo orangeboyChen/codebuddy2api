@@ -690,16 +690,26 @@ export const resolveCredentialForRequest = async ({
   accessKeyId,
   affinityKey,
   allowedCredentialFilenames,
+  model,
 }: {
   accessKeyId?: string;
   affinityKey?: string;
   allowedCredentialFilenames?: string[];
+  model?: string;
 } = {}): Promise<CredentialRecord | null> => {
   const records = await readCredentialRecords();
+  const requestedModel = model?.trim();
   const eligibleRecords = getEligibleRecords(
     records,
     allowedCredentialFilenames,
-  );
+  ).filter((record) => {
+    if (!requestedModel) return true;
+
+    const supportedModels = getCredentialSupportedModels(record.data);
+    return (
+      supportedModels.length === 0 || supportedModels.includes(requestedModel)
+    );
+  });
 
   if (!eligibleRecords.length) {
     return null;

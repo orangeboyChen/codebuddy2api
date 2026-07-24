@@ -1409,7 +1409,10 @@ export const handleResponsesRequest = async (
             requireEligible: true,
           },
         )
-      : await resolveProxyContext(request);
+      : await resolveProxyContext(
+          request,
+          typeof body.model === 'string' ? body.model : undefined,
+        );
 
     if (proxyContext.preferences.responsesPassthrough) {
       return proxyResponsesUpstream(

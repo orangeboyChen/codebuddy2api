@@ -540,6 +540,10 @@ const AdminPageLayoutContent = ({
         modelsLoading: false,
       }));
       setApiTest((current) => {
+        if (filename && current.credentialFilename !== filename) {
+          return current;
+        }
+
         const selectedFilename = filename ?? current.credentialFilename;
         const models = modelRows[selectedFilename]?.models;
 
@@ -1044,9 +1048,6 @@ const AdminPageLayoutContent = ({
         name: result.data.filename ?? 'unknown',
       }),
     );
-    if (!isEditing && result.data.filename) {
-      await refreshCredentialModels(result.data.filename);
-    }
     await refreshAdminData();
   };
 

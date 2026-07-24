@@ -57,7 +57,11 @@ import {
   resetResponseSessions,
   translateResponsesToolsToChat,
 } from '@/lib/server/proxy/responses';
-import { updateSettings, getActiveConfig } from '@/lib/server/domain/config';
+import {
+  getActiveConfig,
+  getDefaultModel,
+  updateSettings,
+} from '@/lib/server/domain/config';
 import { getRequestHeaderMap } from '@/lib/server/shared/http';
 import { getUsageStats, resetUsageStats } from '@/lib/server/domain/stats';
 import {
@@ -491,6 +495,31 @@ describe('server units', () => {
         })
       )?.filename,
     ).toBe(keyedCredential.filename);
+
+    const modelOneCredential = (await readCredentialRecords()).find(
+      (record) => record.data.user_id === 'one@example.com',
+    );
+    const modelTwoCredential = (await readCredentialRecords()).find(
+      (record) => record.data.user_id === 'two@example.com',
+    );
+    await updateCredentialSupportedModels(modelOneCredential?.filename ?? '', [
+      'glm-one',
+    ]);
+    await updateCredentialSupportedModels(modelTwoCredential?.filename ?? '', [
+      'glm-two',
+    ]);
+    expect(await getDefaultModel()).toBe('glm-one');
+    expect(
+      (
+        await resolveCredentialForRequest({
+          allowedCredentialFilenames: [
+            modelOneCredential?.filename ?? '',
+            modelTwoCredential?.filename ?? '',
+          ],
+          model: 'glm-two',
+        })
+      )?.filename,
+    ).toBe(modelTwoCredential?.filename);
 
     await recordUsageEvent({
       credentialFilename: 'cred-a',
@@ -1510,7 +1539,7 @@ describe('server units', () => {
     expect(fourthBody.messages[0]?.content).toBe('short reply');
   });
 
-  it('normalizes developer messages for chat upstream based on position', async () => {
+  it('normalizes developer messages as user messages for chat upstream', async () => {
     await addCredential({
       bearer_token: 'token-dev-role',
       created_at: Math.floor(Date.now() / 1000),
@@ -1563,7 +1592,7 @@ describe('server units', () => {
     };
 
     expect(upstreamBody.messages).toEqual([
-      { role: 'system', content: 'first developer' },
+      { role: 'user', content: 'first developer' },
       { role: 'user', content: 'hello' },
       { role: 'user', content: 'later developer' },
       { role: 'system', content: 'existing system' },
@@ -1676,7 +1705,7 @@ describe('server units', () => {
 
     expect(firstBody.messages[0]?.role).toBe('developer');
     expect(secondBody.messages[0]?.role).toBe('developer');
-    expect(thirdBody.messages[0]?.role).toBe('system');
+    expect(thirdBody.messages[0]?.role).toBe('user');
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
@@ -3146,6 +3175,16 @@ describe('server units', () => {
             tenantId: 'tenant-456',
           },
         }),
+      )
+      // refreshCredentialModels after the credential is saved
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          code: 0,
+          data: {
+            agents: [{ models: ['glm-5.1'], name: 'cli' }],
+            models: [{ id: 'glm-5.1', name: 'GLM 5.1' }],
+          },
+        }),
       );
 
     const startResult = (await (await startCodeBuddyAuth()).json()) as Record<
@@ -3174,6 +3213,11 @@ describe('server units', () => {
       (credential) => credential.tenant_id === 'tenant-456',
     );
     expect(savedCredential?.tenant_id).toBe('tenant-456');
+    expect(
+      (await readCredentialRecords()).find(
+        (credential) => credential.filename === savedCredential?.filename,
+      )?.data.supported_models,
+    ).toBe('glm-5.1');
 
     const credInfo = await getCurrentCredentialInfo();
     expect(credInfo.status).toBe('round_robin');
