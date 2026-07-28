@@ -1012,12 +1012,19 @@ const createResponsesEventStream = async (
   const toolCallStates = new Map<string, StreamingToolCallState>();
   const toolCallStateKeys = new Map<string, string>();
   let nextToolCallOutputIndex = 1;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let cancelled = false;
+  const releaseReader = (): void => {
+    reader?.releaseLock();
+    reader = null;
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
       const encoder = new TextEncoder();
       const decoder = new TextDecoder();
-      const reader = upstreamResponse.body!.getReader();
+      const upstreamReader = upstreamResponse.body!.getReader();
+      reader = upstreamReader;
       let buffer = '';
 
       const enqueueEvent = (payload: Record<string, unknown>): void => {
@@ -1130,7 +1137,11 @@ const createResponsesEventStream = async (
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await reader.read();
+        const { done, value } = await upstreamReader.read();
+
+        if (cancelled) {
+          return;
+        }
 
         if (done) {
           const transcriptToolCalls =
@@ -1222,6 +1233,7 @@ const createResponsesEventStream = async (
             },
           });
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          releaseReader();
           controller.close();
           return;
         }
@@ -1353,6 +1365,14 @@ const createResponsesEventStream = async (
       };
 
       void pump();
+    },
+    async cancel(reason): Promise<void> {
+      cancelled = true;
+      try {
+        await reader?.cancel(reason);
+      } finally {
+        releaseReader();
+      }
     },
   });
 

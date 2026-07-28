@@ -2048,6 +2048,31 @@ describe('server units', () => {
     expect(await streamResponse.text()).toContain('response.error');
   });
 
+  it('cancels the upstream Chat stream when a Responses client disconnects', async () => {
+    const cancel = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          cancel,
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+          },
+        },
+      ),
+    );
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'cancel me', model: 'gpt-5.5', stream: true },
+    );
+
+    await response.body?.cancel('client disconnected');
+
+    expect(cancel).toHaveBeenCalledWith('client disconnected');
+  });
+
   it('maps mcp tool calls back to responses mcp items', async () => {
     process.env.CODEBUDDY_AUTH_MODE = 'api_key';
     process.env.CODEBUDDY_API_KEY = 'cb-key';
@@ -2443,6 +2468,31 @@ describe('server units', () => {
         },
       ]);
     });
+  });
+
+  it('cancels the upstream Responses stream when the client disconnects', async () => {
+    const cancel = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          cancel,
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+          },
+        },
+      ),
+    );
+
+    const response = await proxyResponsesUpstream(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'cancel me', model: 'gpt-5.5', stream: true },
+    );
+
+    await response.body?.cancel('client disconnected');
+
+    expect(cancel).toHaveBeenCalledWith('client disconnected');
   });
 
   it('covers responses passthrough header fallback, raw body passthrough, and upstream errors', async () => {

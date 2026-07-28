@@ -565,6 +565,36 @@ describe('anthropic messages api', () => {
     expect(text).toContain('event: message_stop');
   });
 
+  it('cancels the upstream Chat stream when an Anthropic client disconnects', async () => {
+    const cancel = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          cancel,
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+          },
+        },
+      ),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: 'user', content: 'cancel me' }],
+      },
+    );
+
+    await response.body?.cancel('client disconnected');
+
+    expect(cancel).toHaveBeenCalledWith('client disconnected');
+  });
+
   it('handles streaming with tool_use blocks', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeSseResponse([
