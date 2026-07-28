@@ -433,24 +433,9 @@ const normalizeMessages = (
     return applyPromptCacheControl(filtered);
   }
 
-  let hasSystemMessage = false;
-
-  const normalized = filtered.map((message, index) => {
-    if (message.role === 'system') {
-      hasSystemMessage = true;
-      return message;
-    }
-
+  const normalized = filtered.map((message) => {
     if (message.role !== 'developer') {
       return message;
-    }
-
-    if (index === 0 && !hasSystemMessage) {
-      hasSystemMessage = true;
-      return {
-        ...message,
-        role: 'system',
-      };
     }
 
     return {
@@ -466,12 +451,14 @@ const normalizeMessages = (
 
 export const resolveProxyContext = async (
   request: NextRequest,
+  model?: string,
 ): Promise<ProxyContext> => {
   const accessKey = await resolveRequestAccessKey(request);
   const credential = await resolveCredentialForRequest({
     accessKeyId: accessKey?.id,
     affinityKey: getCredentialAffinityKey(request, accessKey?.id ?? null),
     allowedCredentialFilenames: accessKey?.credentialFilenames,
+    model,
   });
 
   if (!credential) {
@@ -673,10 +660,13 @@ const buildUpstreamBody = async (
     context.preferences.firstMessageRoleToSystem,
   );
   const maxTokens = body.max_tokens ?? body.max_completion_tokens;
+  const credentialModels = getCredentialSupportedModels(
+    context.auth.credentialData,
+  );
   const model =
     typeof body.model === 'string' && body.model.trim()
       ? body.model
-      : await getDefaultModel();
+      : (credentialModels[0] ?? (await getDefaultModel()));
 
   return {
     model,
@@ -1315,7 +1305,8 @@ export const proxyChatCompletions = async (
   }
 
   try {
-    const resolvedContext = context ?? (await resolveProxyContext(request));
+    const resolvedContext =
+      context ?? (await resolveProxyContext(request, body.model));
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
     const upstreamBody = await buildUpstreamBody(body, resolvedContext);
     const apiEndpoint = await getCodeBuddyApiEndpoint();
@@ -1430,7 +1421,12 @@ export const proxyResponsesUpstream = async (
   debugTrace?: DebugTrace,
 ): Promise<Response> => {
   try {
-    const resolvedContext = context ?? (await resolveProxyContext(request));
+    const resolvedContext =
+      context ??
+      (await resolveProxyContext(
+        request,
+        typeof body.model === 'string' ? body.model : undefined,
+      ));
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
     const upstreamBody = {
       ...body,

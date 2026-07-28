@@ -1,4 +1,5 @@
 import {
+  findCredentialRecordByFilename,
   getCredentialSupportedModels,
   listEligibleCredentialRecords,
   updateCredentialSupportedModels,
@@ -7,6 +8,30 @@ import { getModelsByCredential } from '../proxy/codebuddy';
 
 const globalCredentialModelRefreshState = globalThis as typeof globalThis & {
   __codebuddy2apiCredentialModelRefresh__?: Promise<void>;
+};
+
+export const refreshCredentialModels = async (
+  filename: string,
+): Promise<void> => {
+  try {
+    const credential = await findCredentialRecordByFilename(filename);
+
+    if (!credential) {
+      return;
+    }
+
+    const result = await getModelsByCredential([credential]);
+    const models = result[credential.filename]?.models ?? [];
+
+    if (models.length) {
+      await updateCredentialSupportedModels(
+        credential.filename,
+        models.map((model) => model.id),
+      );
+    }
+  } catch (error) {
+    console.warn('[CodeBuddy2API] Unable to refresh credential models', error);
+  }
 };
 
 export const refreshMissingCredentialModels = (): Promise<void> => {
@@ -24,15 +49,7 @@ export const refreshMissingCredentialModels = (): Promise<void> => {
 
           await Promise.allSettled(
             missingModels.map(async (credential) => {
-              const result = await getModelsByCredential([credential]);
-              const models = result[credential.filename]?.models ?? [];
-
-              if (models.length) {
-                await updateCredentialSupportedModels(
-                  credential.filename,
-                  models.map((model) => model.id),
-                );
-              }
+              await refreshCredentialModels(credential.filename);
             }),
           );
         } catch (error) {
