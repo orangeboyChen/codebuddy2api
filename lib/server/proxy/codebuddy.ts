@@ -222,9 +222,16 @@ const trackResponsesUsageStream = async ({
 
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let cancelled = false;
+  const releaseReader = (): void => {
+    reader?.releaseLock();
+    reader = null;
+  };
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
-      const reader = upstreamResponse.body!.getReader();
+      const upstreamReader = upstreamResponse.body!.getReader();
+      reader = upstreamReader;
       let buffer = '';
       let latestUsage = fallbackUsage;
 
@@ -250,7 +257,11 @@ const trackResponsesUsageStream = async ({
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await reader.read();
+        const { done, value } = await upstreamReader.read();
+
+        if (cancelled) {
+          return;
+        }
 
         if (done) {
           if (buffer) {
@@ -264,6 +275,7 @@ const trackResponsesUsageStream = async ({
             route: '/v1/responses',
             usage: latestUsage,
           });
+          releaseReader();
           controller.close();
           return;
         }
@@ -282,6 +294,14 @@ const trackResponsesUsageStream = async ({
       };
 
       void pump();
+    },
+    async cancel(reason): Promise<void> {
+      cancelled = true;
+      try {
+        await reader?.cancel(reason);
+      } finally {
+        releaseReader();
+      }
     },
   });
 
@@ -897,10 +917,17 @@ const normalizeStreamingResponse = ({
     mappings: new Map<string, ToolCallMapping>(),
     nextIndex: 0,
   };
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let cancelled = false;
+  const releaseReader = (): void => {
+    reader?.releaseLock();
+    reader = null;
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
-      const reader = upstreamResponse.body!.getReader();
+      const upstreamReader = upstreamResponse.body!.getReader();
+      reader = upstreamReader;
       let buffer = '';
       let latestUsage: unknown = null;
 
@@ -938,7 +965,11 @@ const normalizeStreamingResponse = ({
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await reader.read();
+        const { done, value } = await upstreamReader.read();
+
+        if (cancelled) {
+          return;
+        }
 
         if (done) {
           if (buffer.trim()) {
@@ -952,6 +983,7 @@ const normalizeStreamingResponse = ({
             usage: latestUsage,
           });
 
+          releaseReader();
           controller.close();
           return;
         }
@@ -964,6 +996,14 @@ const normalizeStreamingResponse = ({
       };
 
       void pump();
+    },
+    async cancel(reason): Promise<void> {
+      cancelled = true;
+      try {
+        await reader?.cancel(reason);
+      } finally {
+        releaseReader();
+      }
     },
   });
 

@@ -813,10 +813,17 @@ const mapOpenAIStreamToAnthropicSSE = (
     });
   };
 
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let cancelled = false;
+  const releaseReader = (): void => {
+    reader?.releaseLock();
+    reader = null;
+  };
   const stream = new ReadableStream<Uint8Array>({
     start: (ctrl) => {
       controller = ctrl;
-      const reader = upstreamResponse.body!.getReader();
+      const upstreamReader = upstreamResponse.body!.getReader();
+      reader = upstreamReader;
       let buffer = '';
 
       const flushFrames = (frames: string[]): void => {
@@ -845,7 +852,11 @@ const mapOpenAIStreamToAnthropicSSE = (
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await reader.read();
+        const { done, value } = await upstreamReader.read();
+
+        if (cancelled) {
+          return;
+        }
 
         if (done) {
           if (buffer.trim()) {
@@ -853,6 +864,7 @@ const mapOpenAIStreamToAnthropicSSE = (
           }
 
           finalize();
+          releaseReader();
           controller.close();
           return;
         }
@@ -865,6 +877,14 @@ const mapOpenAIStreamToAnthropicSSE = (
       };
 
       void pump();
+    },
+    async cancel(reason): Promise<void> {
+      cancelled = true;
+      try {
+        await reader?.cancel(reason);
+      } finally {
+        releaseReader();
+      }
     },
   });
 
