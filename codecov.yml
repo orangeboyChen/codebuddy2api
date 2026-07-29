@@ -1,8 +1,8 @@
 parsers:
-  javascript:
-    # Vitest enforces branch coverage separately. Do not count partial
-    # branches a second time as uncovered lines in the project status.
-    enable_partials: false
+  lcov:
+    # Vitest uploads LCOV. Keep its branch metric out of Codecov's line gate;
+    # Vitest enforces the branch threshold locally.
+    partials_as_hits: true
 
 coverage:
   status:
