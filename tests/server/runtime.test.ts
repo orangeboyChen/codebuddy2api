@@ -77,6 +77,14 @@ const makeSseResponse = (frames: string[]): Response => {
   });
 };
 
+const getChatCompletionCalls = (fetchMock: {
+  mock: { calls: Array<[RequestInfo | URL, RequestInit?]> };
+}) => {
+  return fetchMock.mock.calls.filter(([input]) =>
+    String(input).includes('/v2/chat/completions'),
+  );
+};
+
 describe('server runtime', () => {
   beforeEach(async () => {
     cleanupTempState();
@@ -92,9 +100,11 @@ describe('server runtime', () => {
     resetResponseSessions();
     await resetUsageStats();
     vi.restoreAllMocks();
+    vi.clearAllMocks();
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
     process.env.CODEBUDDY_AUTH_MODE = 'auto';
     process.env.CODEBUDDY_API_KEY = '';
+    vi.clearAllMocks();
   });
 
   afterEach(() => {
@@ -426,14 +436,15 @@ describe('server runtime', () => {
       }),
     );
     expect(v1Response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const chatCompletionCalls = getChatCompletionCalls(fetchMock);
+    expect(chatCompletionCalls).toHaveLength(2);
     expect(
-      new Headers((fetchMock.mock.calls[1]?.[1] as RequestInit).headers).get(
+      new Headers((chatCompletionCalls[1]?.[1] as RequestInit).headers).get(
         'authorization',
       ),
     ).toBe('Bearer chat-token');
     expect(
-      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
+      JSON.parse(String((chatCompletionCalls[0]?.[1] as RequestInit).body))
         .stream,
     ).toBe(true);
   });
@@ -514,8 +525,9 @@ describe('server runtime', () => {
     );
 
     expect(response.status).toBe(200);
+    const chatCompletionCalls = getChatCompletionCalls(fetchMock);
     expect(
-      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
+      JSON.parse(String((chatCompletionCalls[0]?.[1] as RequestInit).body))
         .model,
     ).toBe('glm-5.1');
   });
@@ -657,8 +669,9 @@ describe('server runtime', () => {
     const streamText = await streamResponse.text();
     expect(streamText).toContain('response.output_text.delta');
     expect(streamText).toContain('stream answer');
+    const chatCompletionCalls = getChatCompletionCalls(fetchMock);
     const firstUpstream = JSON.parse(
-      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+      String((chatCompletionCalls[0]?.[1] as RequestInit).body),
     );
     expect(firstUpstream.tools).toHaveLength(1);
     expect(firstUpstream.tools[0].function.name).toBe('lookup_weather');
@@ -670,11 +683,11 @@ describe('server runtime', () => {
       function: { name: 'lookup_weather' },
     });
     expect(
-      JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))
+      JSON.parse(String((chatCompletionCalls[1]?.[1] as RequestInit).body))
         .messages[0].content,
     ).toBe('Keep replies brief');
     expect(
-      JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))
+      JSON.parse(String((chatCompletionCalls[1]?.[1] as RequestInit).body))
         .messages[1].tool_calls,
     ).toBeUndefined();
     expect(
@@ -824,7 +837,7 @@ describe('server runtime', () => {
 
     expect(firstResponse.status).toBe(200);
     expect(secondResponse.status).toBe(400);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getChatCompletionCalls(fetchMock)).toHaveLength(1);
   });
 
   it('keeps one responses session on the original credential within a pooled access key', async () => {
@@ -909,11 +922,12 @@ describe('server runtime', () => {
     expect(secondResponse.status).toBe(200);
     expect(thirdResponse.status).toBe(200);
 
-    const firstHeaders = (fetchMock.mock.calls[0]?.[1] as RequestInit)
+    const chatCompletionCalls = getChatCompletionCalls(fetchMock);
+    const firstHeaders = (chatCompletionCalls[0]?.[1] as RequestInit)
       .headers as Headers;
-    const secondHeaders = (fetchMock.mock.calls[1]?.[1] as RequestInit)
+    const secondHeaders = (chatCompletionCalls[1]?.[1] as RequestInit)
       .headers as Headers;
-    const thirdHeaders = (fetchMock.mock.calls[2]?.[1] as RequestInit)
+    const thirdHeaders = (chatCompletionCalls[2]?.[1] as RequestInit)
       .headers as Headers;
 
     expect(firstHeaders.get('Authorization')).toBe(

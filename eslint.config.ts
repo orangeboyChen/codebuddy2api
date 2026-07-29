@@ -1,5 +1,6 @@
 import { globalIgnores } from 'eslint/config';
 
+import { fixupConfigRules } from '@eslint/compat';
 import { configs as nextConfigs } from '@next/eslint-plugin-next';
 import tseslint from '@typescript-eslint/eslint-plugin/use-at-your-own-risk/raw-plugin';
 import prettierRecommended from 'eslint-plugin-prettier/recommended';
@@ -16,8 +17,8 @@ const eslintConfig = [
   ]),
   nextConfigs.recommended,
   nextConfigs['core-web-vitals'],
-  reactPlugin.configs.flat.recommended,
-  reactPlugin.configs.flat['jsx-runtime'],
+  ...fixupConfigRules(reactPlugin.configs.flat.recommended),
+  ...fixupConfigRules(reactPlugin.configs.flat['jsx-runtime']),
   reactHooksPlugin.configs.flat.recommended,
   ...tseslint.flatConfigs['flat/recommended'],
   prettierRecommended,
