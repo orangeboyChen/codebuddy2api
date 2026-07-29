@@ -138,6 +138,7 @@ describe('server units', () => {
     resetResponseSessions();
     await resetUsageStats();
     vi.restoreAllMocks();
+    vi.clearAllMocks();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
     delete process.env.CODEBUDDY_CONFIG_PATH;
