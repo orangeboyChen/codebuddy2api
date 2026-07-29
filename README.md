@@ -1,5 +1,9 @@
 # CodeBuddy2API
 
+[![CI](https://github.com/orangeboyChen/codebuddy2api/actions/workflows/ci-main.yml/badge.svg?branch=main)](https://github.com/orangeboyChen/codebuddy2api/actions/workflows/ci-main.yml)
+[![codecov](https://codecov.io/gh/orangeboyChen/codebuddy2api/graph/badge.svg?token=SJP5CBSQ16)](https://codecov.io/gh/orangeboyChen/codebuddy2api)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/orangeboyChen/codebuddy2api)
+
 Proxy CodeBuddy through OpenAI-compatible and Anthropic-compatible APIs, with a built-in admin console for credentials, access keys, usage, debug traces, and runtime settings.
 
 <p align="center">
