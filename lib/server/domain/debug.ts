@@ -855,6 +855,10 @@ const flushPendingDebugLogs = async (): Promise<void> => {
   }
 };
 
+export const flushDebugLogs = async (): Promise<void> => {
+  await flushPendingDebugLogs();
+};
+
 const scheduleDebugFlush = (): void => {
   if (debugFlushTimer) return;
   debugFlushTimer = setTimeout(() => {
