@@ -38,27 +38,30 @@ export const refreshMissingCredentialModels = (): Promise<void> => {
   if (
     !globalCredentialModelRefreshState.__codebuddy2apiCredentialModelRefresh__
   ) {
-    globalCredentialModelRefreshState.__codebuddy2apiCredentialModelRefresh__ =
-      (async () => {
-        try {
-          const credentials = await listEligibleCredentialRecords();
-          const missingModels = credentials.filter(
-            (credential) =>
-              getCredentialSupportedModels(credential.data).length === 0,
-          );
+    const refresh = (async () => {
+      try {
+        const credentials = await listEligibleCredentialRecords();
+        const missingModels = credentials.filter(
+          (credential) =>
+            getCredentialSupportedModels(credential.data).length === 0,
+        );
 
-          await Promise.allSettled(
-            missingModels.map(async (credential) => {
-              await refreshCredentialModels(credential.filename);
-            }),
-          );
-        } catch (error) {
-          console.warn(
-            '[CodeBuddy2API] Unable to refresh missing credential models',
-            error,
-          );
-        }
-      })();
+        await Promise.allSettled(
+          missingModels.map(async (credential) => {
+            await refreshCredentialModels(credential.filename);
+          }),
+        );
+      } catch (error) {
+        console.warn(
+          '[CodeBuddy2API] Unable to refresh missing credential models',
+          error,
+        );
+      }
+    })();
+    globalCredentialModelRefreshState.__codebuddy2apiCredentialModelRefresh__ =
+      refresh.finally(() => {
+        delete globalCredentialModelRefreshState.__codebuddy2apiCredentialModelRefresh__;
+      });
   }
 
   return globalCredentialModelRefreshState.__codebuddy2apiCredentialModelRefresh__;

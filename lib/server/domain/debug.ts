@@ -84,6 +84,7 @@ const MAX_SNAPSHOT_TEXT_LENGTH = 200_000;
 const FLUSH_INTERVAL_MS = 1000;
 const DEBUG_SETTINGS_CACHE_TTL_MS = 1000;
 const MAX_PENDING_LOGS = 100;
+const MAX_BUFFERED_LOGS = 1_000;
 const REDACTED_VALUE = '[redacted]';
 let debugWriteQueue: Promise<void> = Promise.resolve();
 let pendingDebugLogs: DebugLogEntry[] = [];
@@ -569,8 +570,12 @@ const captureResponseSnapshot = (
   const reader = response.body.getReader();
   const body = new ReadableStream<Uint8Array>({
     async cancel(reason): Promise<void> {
-      await reader.cancel(reason);
-      finish();
+      try {
+        await reader.cancel(reason);
+      } finally {
+        finish();
+        reader.releaseLock();
+      }
     },
     async pull(controller): Promise<void> {
       try {
@@ -638,7 +643,7 @@ const readSnapshotText = async (response: Response): Promise<string> => {
     }
   } finally {
     if (truncated) {
-      void reader.cancel().catch(() => undefined);
+      await reader.cancel().catch(() => undefined);
     }
     reader.releaseLock();
   }
@@ -794,6 +799,10 @@ export const enqueueUpstreamResponseSnapshot = (
 
 const appendDebugLog = async (entry: DebugLogEntry): Promise<void> => {
   pendingDebugLogs.push(entry);
+  pendingDebugLogs.splice(
+    0,
+    Math.max(0, pendingDebugLogs.length - MAX_BUFFERED_LOGS),
+  );
 
   if (pendingDebugLogs.length >= MAX_PENDING_LOGS) {
     void flushPendingDebugLogs().catch(() => undefined);
@@ -847,7 +856,9 @@ const flushPendingDebugLogs = async (): Promise<void> => {
       }
     });
   } catch (error) {
-    pendingDebugLogs = [...entries, ...pendingDebugLogs];
+    pendingDebugLogs = [...entries, ...pendingDebugLogs].slice(
+      -MAX_BUFFERED_LOGS,
+    );
     scheduleDebugFlush();
     throw error;
   } finally {

@@ -1361,10 +1361,17 @@ const createResponsesEventStream = async (
           }
         });
 
-        await pump();
+        continuePumping();
       };
 
-      void pump();
+      const continuePumping = (): void => {
+        void pump().catch((error: unknown) => {
+          releaseReader();
+          if (!cancelled) controller.error(error);
+        });
+      };
+
+      continuePumping();
     },
     async cancel(reason): Promise<void> {
       cancelled = true;

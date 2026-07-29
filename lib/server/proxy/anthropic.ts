@@ -873,10 +873,17 @@ const mapOpenAIStreamToAnthropicSSE = (
         const frames = buffer.split('\n\n');
         buffer = frames.pop() ?? '';
         flushFrames(frames);
-        await pump();
+        continuePumping();
       };
 
-      void pump();
+      const continuePumping = (): void => {
+        void pump().catch((error: unknown) => {
+          releaseReader();
+          if (!cancelled) controller.error(error);
+        });
+      };
+
+      continuePumping();
     },
     async cancel(reason): Promise<void> {
       cancelled = true;

@@ -111,6 +111,7 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const FLUSH_INTERVAL_MS = 1000;
 const MAX_PENDING_EVENTS = 100;
+const MAX_BUFFERED_EVENTS = 1_000;
 const RETENTION_PRUNE_INTERVAL_MS = HOUR_MS;
 const chartColors = [
   '#1d4ed8',
@@ -338,7 +339,9 @@ const flushPendingUsageEvents = async (): Promise<void> => {
       }
     });
   } catch (error) {
-    pendingUsageEvents = [...events, ...pendingUsageEvents];
+    pendingUsageEvents = [...events, ...pendingUsageEvents].slice(
+      -MAX_BUFFERED_EVENTS,
+    );
     scheduleUsageFlush();
     throw error;
   }
@@ -584,6 +587,10 @@ export const recordUsageEvent = async ({
     route,
     timestamp: timestamp ?? new Date().toISOString(),
   });
+  pendingUsageEvents.splice(
+    0,
+    Math.max(0, pendingUsageEvents.length - MAX_BUFFERED_EVENTS),
+  );
 
   if (pendingUsageEvents.length >= MAX_PENDING_EVENTS) {
     void flushPendingUsageEvents().catch(() => undefined);

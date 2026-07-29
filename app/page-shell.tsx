@@ -376,6 +376,7 @@ const AdminPageLayoutContent = ({
     },
   ] as const;
   const authPollTimerRef = useRef<number | null>(null);
+  const apiTestAbortControllerRef = useRef<AbortController | null>(null);
   const debugAutoRefreshTimerRef = useRef<number | null>(null);
   const usageAutoRefreshTimerRef = useRef<number | null>(null);
   const usageRequestRef = useRef(usage.request);
@@ -1264,6 +1265,9 @@ const AdminPageLayoutContent = ({
   };
 
   const testApi = async () => {
+    apiTestAbortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    apiTestAbortControllerRef.current = abortController;
     setApiTest((current) => ({
       ...current,
       result: consoleMessages.requestSending,
@@ -1286,6 +1290,7 @@ const AdminPageLayoutContent = ({
         'Content-Type': 'application/json',
       },
       method: 'POST',
+      signal: abortController.signal,
     });
     if (!response.ok) {
       const text = await response.text();
@@ -1321,21 +1326,25 @@ const AdminPageLayoutContent = ({
       let streamedResult = '';
       let done = false;
 
-      while (!done) {
-        const next = await reader.read();
-        done = next.done;
-        buffered += decoder.decode(next.value, { stream: !done });
-        const events = buffered.split(/\r?\n\r?\n/);
-        buffered = events.pop() ?? '';
-        const nextContent = events.map(getSseEventContent).join('');
+      try {
+        while (!done) {
+          const next = await reader.read();
+          done = next.done;
+          buffered += decoder.decode(next.value, { stream: !done });
+          const events = buffered.split(/\r?\n\r?\n/);
+          buffered = events.pop() ?? '';
+          const nextContent = events.map(getSseEventContent).join('');
 
-        if (nextContent) {
-          streamedResult += nextContent;
-          setApiTest((current) => ({
-            ...current,
-            result: streamedResult,
-          }));
+          if (nextContent) {
+            streamedResult += nextContent;
+            setApiTest((current) => ({
+              ...current,
+              result: streamedResult,
+            }));
+          }
         }
+      } finally {
+        reader.releaseLock();
       }
 
       const finalContent = getSseEventContent(buffered);
@@ -1553,6 +1562,8 @@ const AdminPageLayoutContent = ({
     }
 
     return () => {
+      apiTestAbortControllerRef.current?.abort();
+      apiTestAbortControllerRef.current = null;
       clearAuthTimer();
       clearDebugAutoRefreshTimer();
       clearUsageTimer();

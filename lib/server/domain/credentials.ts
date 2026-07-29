@@ -54,6 +54,9 @@ interface ManagerState {
 
 const globalCredentialState = globalThis as typeof globalThis & {
   __codebuddy2apiCredentialState__?: ManagerState;
+  __codebuddy2apiCredentialSignalHandlers__?: Partial<
+    Record<NodeJS.Signals, () => void>
+  >;
 };
 
 const MANAGER_STATE_FILENAME = 'manager_state.json';
@@ -184,13 +187,26 @@ const flushRuntimeStateBeforeShutdown = (signal: NodeJS.Signals): void => {
     });
 };
 
-process.once('SIGTERM', () => {
-  flushRuntimeStateBeforeShutdown('SIGTERM');
-});
+const installShutdownHandler = (signal: NodeJS.Signals): void => {
+  const previousHandler =
+    globalCredentialState.__codebuddy2apiCredentialSignalHandlers__?.[signal];
 
-process.once('SIGINT', () => {
-  flushRuntimeStateBeforeShutdown('SIGINT');
-});
+  if (previousHandler) {
+    process.removeListener(signal, previousHandler);
+  }
+
+  const handler = (): void => {
+    flushRuntimeStateBeforeShutdown(signal);
+  };
+  globalCredentialState.__codebuddy2apiCredentialSignalHandlers__ = {
+    ...globalCredentialState.__codebuddy2apiCredentialSignalHandlers__,
+    [signal]: handler,
+  };
+  process.once(signal, handler);
+};
+
+installShutdownHandler('SIGTERM');
+installShutdownHandler('SIGINT');
 
 const getNestedValue = (
   value: unknown,
