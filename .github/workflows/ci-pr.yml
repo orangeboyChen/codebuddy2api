@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -72,6 +74,9 @@ jobs:
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
+
+      - name: Enforce changed branch coverage
+        run: bun run test:patch-branches --base "${{ github.event.pull_request.base.sha }}"
 
       - name: Build Next.js app
         run: bun run build
