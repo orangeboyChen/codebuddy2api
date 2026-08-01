@@ -1,8 +1,6 @@
 parsers:
-  javascript:
-    # Vitest enforces branch coverage separately. Do not count partial
-    # branches a second time as uncovered lines in the project status.
-    enable_partials: false
+  lcov:
+    partials_as_hits: true
 
 coverage:
   status:

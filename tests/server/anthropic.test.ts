@@ -45,6 +45,7 @@ describe('anthropic messages api', () => {
   beforeEach(() => {
     cleanupTempState();
     vi.restoreAllMocks();
+    vi.clearAllMocks();
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
     process.env.CODEBUDDY_CONFIG_PATH = '.codebuddy_data/runtime.json';
     process.env.CODEBUDDY_AUTH_MODE = 'auto';

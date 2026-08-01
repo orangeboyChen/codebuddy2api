@@ -7,6 +7,7 @@ import {
   createDebugTrace,
   enqueueUpstreamResponseSnapshot,
   finalizeDebugTrace,
+  flushDebugLogs,
   getDebugSettings,
   hasPendingDebugLogWrites,
   isDebugEnabled,
@@ -49,6 +50,7 @@ const enqueueAndConsumeUpstreamSnapshot = async (
   response: Response,
 ): Promise<void> => {
   await enqueueUpstreamResponseSnapshot(trace, response).text();
+  await Promise.all(trace?.pending ?? []);
 };
 
 const finalizeAndConsumeDebugTrace = async (
@@ -56,12 +58,14 @@ const finalizeAndConsumeDebugTrace = async (
   response: Response,
 ): Promise<void> => {
   await finalizeDebugTrace(trace, response).text();
+  await Promise.all(trace?.pending ?? []);
 };
 
-const waitForDebugLogs = async (
+const flushAndAssertDebugLogs = async (
   assertion: () => Promise<void>,
 ): Promise<void> => {
-  await vi.waitFor(assertion, { timeout: 2_000 });
+  await flushDebugLogs();
+  await assertion();
 };
 
 describe('debug and usage persistence', () => {
@@ -314,7 +318,7 @@ describe('debug and usage persistence', () => {
       }),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
 
@@ -428,7 +432,7 @@ describe('debug and usage persistence', () => {
       }),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -457,7 +461,7 @@ describe('debug and usage persistence', () => {
       ),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -482,7 +486,7 @@ describe('debug and usage persistence', () => {
       ),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -503,7 +507,7 @@ describe('debug and usage persistence', () => {
       Response.json({ message: 'first' }),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
 
@@ -517,11 +521,31 @@ describe('debug and usage persistence', () => {
       Response.json({ message: 'second' }),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       const logs = await listDebugLogs();
       expect(logs).toHaveLength(1);
       expect(logs[0]?.id).toBe(secondTrace.id);
     });
+  });
+
+  it('drains every pending debug log when more than one batch is queued', async () => {
+    await updateDebugSettings({ enabled: true, maxEntries: 101 });
+
+    await Promise.all(
+      Array.from({ length: 101 }, async (_, index) => {
+        const trace = createDebugTrace({
+          requestBody: { index },
+          requestKey: null,
+          route: '/v1/chat/completions',
+        });
+        await finalizeAndConsumeDebugTrace(trace, Response.json({ index }));
+      }),
+    );
+
+    await flushDebugLogs();
+
+    expect(await listDebugLogs()).toHaveLength(101);
+    expect(hasPendingDebugLogWrites()).toBe(false);
   });
 
   it('extracts usage from OpenAI streaming response events', async () => {
@@ -549,7 +573,7 @@ describe('debug and usage persistence', () => {
       }),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -586,7 +610,7 @@ describe('debug and usage persistence', () => {
       }),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
     const [entry] = await listDebugLogs();
@@ -618,7 +642,7 @@ describe('debug and usage persistence', () => {
       Response.json({ ok: true }),
     );
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(2);
     });
 
@@ -659,7 +683,7 @@ describe('debug and usage persistence', () => {
     });
     await finalizeAndConsumeDebugTrace(trace, Response.json({ ok: true }));
 
-    await waitForDebugLogs(async () => {
+    await flushAndAssertDebugLogs(async () => {
       expect(await listDebugLogs()).toHaveLength(1);
     });
 
