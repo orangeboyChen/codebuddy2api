@@ -528,6 +528,26 @@ describe('debug and usage persistence', () => {
     });
   });
 
+  it('drains every pending debug log when more than one batch is queued', async () => {
+    await updateDebugSettings({ enabled: true, maxEntries: 101 });
+
+    await Promise.all(
+      Array.from({ length: 101 }, async (_, index) => {
+        const trace = createDebugTrace({
+          requestBody: { index },
+          requestKey: null,
+          route: '/v1/chat/completions',
+        });
+        await finalizeAndConsumeDebugTrace(trace, Response.json({ index }));
+      }),
+    );
+
+    await flushDebugLogs();
+
+    expect(await listDebugLogs()).toHaveLength(101);
+    expect(hasPendingDebugLogWrites()).toBe(false);
+  });
+
   it('extracts usage from OpenAI streaming response events', async () => {
     await updateDebugSettings({ enabled: true, maxEntries: 10 });
     const trace = createDebugTrace({

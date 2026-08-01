@@ -856,7 +856,9 @@ const flushPendingDebugLogs = async (): Promise<void> => {
 };
 
 export const flushDebugLogs = async (): Promise<void> => {
-  await flushPendingDebugLogs();
+  while (pendingDebugLogs.length || pendingDebugFlushes) {
+    await flushPendingDebugLogs();
+  }
 };
 
 const scheduleDebugFlush = (): void => {
