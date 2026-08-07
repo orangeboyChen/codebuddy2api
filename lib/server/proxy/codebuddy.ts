@@ -287,7 +287,7 @@ const trackResponsesUsageStream = async ({
             buffer = buffer.slice(-1_000_000);
           }
           const frames = buffer.split('\n\n');
-          buffer = frames.pop() ?? '';
+          buffer = frames.pop()!;
 
           frames.forEach((frame) => {
             inspectFrame(frame);
@@ -987,7 +987,7 @@ const normalizeStreamingResponse = ({
             buffer = buffer.slice(-1_000_000);
           }
           const frames = buffer.split('\n\n');
-          buffer = frames.pop() ?? '';
+          buffer = frames.pop()!;
           flushFrames(frames);
         }
       };

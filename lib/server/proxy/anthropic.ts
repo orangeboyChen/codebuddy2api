@@ -875,7 +875,7 @@ const mapOpenAIStreamToAnthropicSSE = (
             buffer = buffer.slice(-1_000_000);
           }
           const frames = buffer.split('\n\n');
-          buffer = frames.pop() ?? '';
+          buffer = frames.pop()!;
           flushFrames(frames);
         }
       };

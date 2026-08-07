@@ -1031,8 +1031,8 @@ const createResponsesEventStream = async (
   transcript: TranscriptMessage[],
   model: string,
   previousResponseId: string | null,
-  maxOutputTokens?: number,
-  proxyContext?: ProxyContext,
+  maxOutputTokens: number | undefined,
+  proxyContext: ProxyContext,
   debugTrace?: DebugTrace,
 ): Promise<Response> => {
   const upstreamResponse = await proxyChatCompletions(
@@ -1211,8 +1211,8 @@ const createResponsesEventStream = async (
                 defaults.tools,
               );
             await storeResponseSession({
-              accessKeyId: proxyContext?.accessKeyId ?? null,
-              credentialFilename: proxyContext?.credentialFilename ?? null,
+              accessKeyId: proxyContext.accessKeyId,
+              credentialFilename: proxyContext.credentialFilename,
               createdAt: Date.now(),
               id: responseId,
               model,
@@ -1306,7 +1306,7 @@ const createResponsesEventStream = async (
             buffer = buffer.slice(-MAX_STREAM_BUFFER_LENGTH);
           }
           const frames = buffer.split('\n\n');
-          buffer = frames.pop() ?? '';
+          buffer = frames.pop()!;
 
           frames.forEach((frame) => {
             const line = frame
