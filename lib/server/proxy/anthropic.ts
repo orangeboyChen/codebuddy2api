@@ -5,6 +5,8 @@ import type { DebugTrace } from '../domain/debug';
 
 import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
 
+const MAX_STREAM_FRAME_LENGTH = 1_000_000;
+
 // ---------------------------------------------------------------------------
 // Anthropic Messages API types
 // ---------------------------------------------------------------------------
@@ -828,6 +830,9 @@ const mapOpenAIStreamToAnthropicSSE = (
 
       const flushFrames = (frames: string[]): void => {
         for (const frame of frames) {
+          if (frame.length > MAX_STREAM_FRAME_LENGTH) {
+            continue;
+          }
           const line = frame
             .split('\n')
             .find((segment) => segment.startsWith('data: '));
@@ -871,11 +876,11 @@ const mapOpenAIStreamToAnthropicSSE = (
           }
 
           buffer += decoder.decode(value, { stream: true });
-          if (buffer.length > 1_000_000) {
-            buffer = buffer.slice(-1_000_000);
-          }
           const frames = buffer.split('\n\n');
           buffer = frames.pop()!;
+          if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
+            buffer = '';
+          }
           flushFrames(frames);
         }
       };

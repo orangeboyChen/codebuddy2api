@@ -41,6 +41,16 @@ vi.mock('@/lib/server/storage', async (importOriginal) => {
       encryptionEnabled: true,
       schema: 'codebuddy2api',
     }),
+    listStorageJson: async <T>(namespace: string) => {
+      if (namespace === 'responses') {
+        return [...pgSessions.entries()].map(([key, value]) => ({
+          key,
+          value: value as T,
+        }));
+      }
+
+      return storage.listStorageJson<T>(namespace);
+    },
     readStorageJson: async <T>(namespace: string, key: string) => {
       if (namespace === 'responses') {
         return (await readPgSession(namespace, key)) as T | null;
@@ -93,6 +103,18 @@ const makeChatResponse = (content: string): Response => {
   );
 };
 
+const makeChunkedResponse = (body: string): Response => {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        controller.enqueue(new TextEncoder().encode(body));
+        controller.close();
+      },
+    }),
+    { headers: { 'Content-Type': 'text/event-stream' } },
+  );
+};
+
 describe('Responses memory bounds', () => {
   beforeEach(async () => {
     cleanupTempState();
@@ -117,7 +139,8 @@ describe('Responses memory bounds', () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(makeChatResponse('first response'))
-      .mockResolvedValueOnce(makeChatResponse('follow-up response'));
+      .mockResolvedValueOnce(makeChatResponse('follow-up response'))
+      .mockResolvedValueOnce(makeChatResponse('pruned response'));
 
     const firstResponse = await handleResponsesRequest(makeRequest(), {
       input: 'start',
@@ -151,6 +174,13 @@ describe('Responses memory bounds', () => {
       transcript: [],
     });
 
+    const pruneResponse = await handleResponsesRequest(makeRequest(), {
+      input: 'trigger prune',
+      model: 'gpt-5.5',
+    });
+    expect((await pruneResponse.json()).output_text).toBe('pruned response');
+    expect(deletePgSession).toHaveBeenCalledWith('responses', expiredId);
+
     const expiredResponse = await handleResponsesRequest(makeRequest(), {
       input: 'expired',
       model: 'gpt-5.5',
@@ -158,7 +188,55 @@ describe('Responses memory bounds', () => {
     });
     expect(expiredResponse.status).toBe(400);
     expect(deletePgSession).toHaveBeenCalledWith('responses', expiredId);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('completes the stream when session persistence fails', async () => {
+    writePgSession.mockRejectedValueOnce(new Error('database unavailable'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('data: [DONE]\n\n', {
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'storage failure',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+    const text = await response.text();
+
+    expect(text).toContain('response.error');
+    expect(text).toContain('data: [DONE]');
+  });
+
+  it('starts a truncated transcript at a complete tool turn', async () => {
+    const previousId = 'resp_tool_boundary';
+    pgSessions.set(previousId, {
+      accessKeyId: null,
+      createdAt: Date.now(),
+      defaults: { instructions: null, tools: [] },
+      id: previousId,
+      model: 'gpt-5.5',
+      transcript: [
+        { content: '{}', role: 'tool', tool_call_id: 'call-orphan' },
+        { content: 'continue', role: 'user' },
+      ],
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(makeChatResponse('continued'));
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'continue safely',
+      model: 'gpt-5.5',
+      previous_response_id: previousId,
+    });
+    expect(response.status).toBe(200);
+    const requestBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string }> };
+    expect(requestBody.messages[0]?.role).toBe('user');
   });
 
   it('does not persist an oversized response session', async () => {
@@ -171,7 +249,7 @@ describe('Responses memory bounds', () => {
       model: 'gpt-5.5',
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(413);
     expect(writePgSession).not.toHaveBeenCalled();
   });
 
@@ -201,6 +279,12 @@ describe('Responses memory bounds', () => {
         new Response(
           'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}',
           { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(makeChunkedResponse(oversizedFrame))
+      .mockResolvedValueOnce(
+        makeChunkedResponse(
+          `${oversizedFrame}\n\ndata: {"choices":[{"delta":{"content":"complete"}}]}\n\n`,
         ),
       );
 
@@ -245,7 +329,57 @@ describe('Responses memory bounds', () => {
       stream: true,
     });
     expect(await passthroughStream.text()).toContain('response.completed');
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    const oversizedRemainder = await handleResponsesRequest(makeRequest(), {
+      input: 'oversized remainder',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+    expect(await oversizedRemainder.text()).toContain('response.completed');
+
+    const oversizedComplete = await handleResponsesRequest(makeRequest(), {
+      input: 'oversized complete frame',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+    expect(await oversizedComplete.text()).toContain('"complete"');
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it('rejects streamed output and tool arguments above their limits', async () => {
+    const oversizedText = [
+      'x'.repeat(900_000),
+      'x'.repeat(900_000),
+      'x'.repeat(300_001),
+    ];
+    const oversizedArguments = ['x'.repeat(900_000), 'x'.repeat(100_001)];
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          `data: {"choices":[{"delta":{"content":"${oversizedText[0]}"}}]}\n\ndata: {"choices":[{"delta":{"content":"${oversizedText[1]}"}}]}\n\ndata: {"choices":[{"delta":{"content":"${oversizedText[2]}"}}]}\n\n`,
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"${oversizedArguments[0]}"}}]}}]}\n\ndata: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"${oversizedArguments[1]}"}}]}}]}\n\n`,
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+    const textResponse = await handleResponsesRequest(makeRequest(), {
+      input: 'oversized output',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+    expect(await textResponse.text()).toContain('response.error');
+
+    const argumentResponse = await handleResponsesRequest(makeRequest(), {
+      input: 'oversized arguments',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+    expect(await argumentResponse.text()).toContain('response.error');
   });
 
   it('retains tool argument deltas until an unnamed streaming tool is finalized', async () => {

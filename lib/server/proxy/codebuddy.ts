@@ -36,6 +36,7 @@ interface CacheableTextBlock {
 }
 
 const MIN_AUTO_CACHE_TEXT_LENGTH = 1024;
+const MAX_STREAM_FRAME_LENGTH = 1_000_000;
 
 export interface ChatRequestBody {
   model?: string;
@@ -283,13 +284,16 @@ const trackResponsesUsageStream = async ({
 
           const text = decoder.decode(value, { stream: true });
           buffer += text;
-          if (buffer.length > 1_000_000) {
-            buffer = buffer.slice(-1_000_000);
-          }
           const frames = buffer.split('\n\n');
           buffer = frames.pop()!;
+          if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
+            buffer = '';
+          }
 
           frames.forEach((frame) => {
+            if (frame.length > MAX_STREAM_FRAME_LENGTH) {
+              return;
+            }
             inspectFrame(frame);
             controller.enqueue(encoder.encode(`${frame}\n\n`));
           });
@@ -953,6 +957,9 @@ const normalizeStreamingResponse = ({
 
       const flushFrames = (frames: string[]): void => {
         frames.forEach((frame) => {
+          if (frame.length > MAX_STREAM_FRAME_LENGTH) {
+            return;
+          }
           controller.enqueue(encoder.encode(`${processFrame(frame)}\n\n`));
         });
       };
@@ -983,11 +990,11 @@ const normalizeStreamingResponse = ({
           }
 
           buffer += decoder.decode(value, { stream: true });
-          if (buffer.length > 1_000_000) {
-            buffer = buffer.slice(-1_000_000);
-          }
           const frames = buffer.split('\n\n');
           buffer = frames.pop()!;
+          if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
+            buffer = '';
+          }
           flushFrames(frames);
         }
       };

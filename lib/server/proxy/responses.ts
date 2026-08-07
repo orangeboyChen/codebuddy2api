@@ -15,6 +15,7 @@ import { createErrorResponse } from '../shared/http';
 import {
   deleteStorageJson,
   getStorageBackendMeta,
+  listStorageJson,
   readStorageJson,
   writeStorageJson,
 } from '../storage';
@@ -134,6 +135,8 @@ const MAX_TOOL_ARGUMENT_LENGTH = 1_000_000;
 
 const globalResponsesState = globalThis as typeof globalThis & {
   __codebuddy2apiResponseSessions__?: Map<string, ResponseSession>;
+  __codebuddy2apiResponseSessionBytes__?: Map<string, number>;
+  __codebuddy2apiResponseSessionTotalBytes__?: number;
 };
 
 const getSessionStore = (): Map<string, ResponseSession> => {
@@ -144,36 +147,87 @@ const getSessionStore = (): Map<string, ResponseSession> => {
   return globalResponsesState.__codebuddy2apiResponseSessions__;
 };
 
+const getSessionByteStore = (): Map<string, number> => {
+  if (!globalResponsesState.__codebuddy2apiResponseSessionBytes__) {
+    globalResponsesState.__codebuddy2apiResponseSessionBytes__ = new Map();
+  }
+
+  return globalResponsesState.__codebuddy2apiResponseSessionBytes__;
+};
+
+const getSessionTotalBytes = (): number => {
+  return globalResponsesState.__codebuddy2apiResponseSessionTotalBytes__ ?? 0;
+};
+
+const setSessionTotalBytes = (value: number): void => {
+  globalResponsesState.__codebuddy2apiResponseSessionTotalBytes__ = value;
+};
+
+const removeLocalResponseSession = (id: string): void => {
+  const byteStore = getSessionByteStore();
+  const store = getSessionStore();
+  const bytes = byteStore.get(id) ?? 0;
+  store.delete(id);
+  byteStore.delete(id);
+  setSessionTotalBytes(Math.max(0, getSessionTotalBytes() - bytes));
+};
+
 const pruneResponseSessions = (): void => {
   const store = getSessionStore();
   const expiresBefore = Date.now() - RESPONSE_SESSION_TTL_MS;
 
   for (const [id, session] of store) {
     if (session.createdAt <= expiresBefore) {
-      store.delete(id);
+      removeLocalResponseSession(id);
     }
   }
-
-  const getStoreBytes = (): number => {
-    let bytes = 0;
-    for (const session of store.values()) {
-      bytes += Buffer.byteLength(JSON.stringify(session), 'utf8');
-    }
-    return bytes;
-  };
 
   while (
     store.size > MAX_RESPONSE_SESSIONS ||
-    getStoreBytes() > MAX_RESPONSE_SESSION_TOTAL_BYTES
+    getSessionTotalBytes() > MAX_RESPONSE_SESSION_TOTAL_BYTES
   ) {
     const oldestId = store.keys().next().value;
-
-    if (!oldestId) {
-      return;
-    }
-
-    store.delete(oldestId);
+    removeLocalResponseSession(oldestId!);
   }
+};
+
+const prunePgResponseSessions = async (): Promise<void> => {
+  const documents = await listStorageJson<ResponseSession>(
+    RESPONSE_SESSION_NAMESPACE,
+  );
+  const expiresBefore = Date.now() - RESPONSE_SESSION_TTL_MS;
+  const candidates = documents
+    .map((document) => ({
+      bytes: Buffer.byteLength(JSON.stringify(document.value), 'utf8'),
+      createdAt: document.value.createdAt,
+      key: document.key,
+    }))
+    .sort((left, right) => left.createdAt - right.createdAt);
+  let totalBytes = candidates.reduce(
+    (total, candidate) => total + candidate.bytes,
+    0,
+  );
+  const toDelete = candidates.filter(
+    (candidate) => candidate.createdAt <= expiresBefore,
+  );
+  const remaining = candidates.filter(
+    (candidate) => candidate.createdAt > expiresBefore,
+  );
+
+  while (
+    remaining.length > MAX_RESPONSE_SESSIONS ||
+    totalBytes > MAX_RESPONSE_SESSION_TOTAL_BYTES
+  ) {
+    const candidate = remaining.shift();
+    toDelete.push(candidate!);
+    totalBytes -= candidate!.bytes;
+  }
+
+  await Promise.all(
+    toDelete.map((candidate) =>
+      deleteStorageJson(RESPONSE_SESSION_NAMESPACE, candidate.key),
+    ),
+  );
 };
 
 const isPgResponseSessionStore = (): boolean => {
@@ -224,16 +278,26 @@ const storeResponseSession = async (
 ): Promise<void> => {
   const serialized = JSON.stringify(session);
   if (Buffer.byteLength(serialized, 'utf8') > MAX_RESPONSE_SESSION_BYTES) {
-    return;
+    throw new Error('Response session exceeds the maximum size');
   }
 
   if (isPgResponseSessionStore()) {
     await writeStorageJson(RESPONSE_SESSION_NAMESPACE, session.id, session);
+    try {
+      await prunePgResponseSessions();
+    } catch (error) {
+      console.warn('[CodeBuddy2API] Unable to prune Responses sessions', error);
+    }
     return;
   }
 
   const store = getSessionStore();
+  const byteStore = getSessionByteStore();
+  const previousBytes = byteStore.get(session.id) ?? 0;
+  const sessionBytes = Buffer.byteLength(serialized, 'utf8');
   store.set(session.id, session);
+  byteStore.set(session.id, sessionBytes);
+  setSessionTotalBytes(getSessionTotalBytes() - previousBytes + sessionBytes);
   pruneResponseSessions();
 };
 
@@ -864,11 +928,12 @@ const prepareTranscript = async (
     previousSession ??
     (await getValidatedPreviousSession(previousResponseId, accessKeyId));
 
-  const transcript = [
-    ...(resolvedPreviousSession?.transcript ?? []).slice(
-      -MAX_RESPONSE_TRANSCRIPT_MESSAGES,
-    ),
-  ];
+  const transcript = (resolvedPreviousSession?.transcript ?? []).slice(
+    -MAX_RESPONSE_TRANSCRIPT_MESSAGES,
+  );
+  while (transcript[0]?.role === 'tool') {
+    transcript.shift();
+  }
   const model =
     typeof body.model === 'string' && body.model.trim()
       ? body.model
@@ -1086,6 +1151,7 @@ const createResponsesEventStream = async (
       const upstreamReader = upstreamResponse.body!.getReader();
       reader = upstreamReader;
       let buffer = '';
+      let streamRejected = false;
 
       const enqueueEvent = (payload: Record<string, unknown>): void => {
         const eventType =
@@ -1210,27 +1276,42 @@ const createResponsesEventStream = async (
                 [...toolCallStates.values()],
                 defaults.tools,
               );
-            await storeResponseSession({
-              accessKeyId: proxyContext.accessKeyId,
-              credentialFilename: proxyContext.credentialFilename,
-              createdAt: Date.now(),
-              id: responseId,
-              model,
-              transcript: [
-                ...transcript,
-                {
-                  role: 'assistant',
-                  content: getAssistantTranscriptContent(
-                    outputText,
-                    transcriptToolCalls,
-                  ),
-                  ...(transcriptToolCalls
-                    ? { tool_calls: transcriptToolCalls }
-                    : {}),
-                },
-              ],
-              defaults,
-            });
+            try {
+              await storeResponseSession({
+                accessKeyId: proxyContext.accessKeyId,
+                credentialFilename: proxyContext.credentialFilename,
+                createdAt: Date.now(),
+                id: responseId,
+                model,
+                transcript: [
+                  ...transcript,
+                  {
+                    role: 'assistant',
+                    content: getAssistantTranscriptContent(
+                      outputText,
+                      transcriptToolCalls,
+                    ),
+                    ...(transcriptToolCalls
+                      ? { tool_calls: transcriptToolCalls }
+                      : {}),
+                  },
+                ],
+                defaults,
+              });
+            } catch (error) {
+              console.error(
+                '[CodeBuddy2API] Failed to persist Responses session',
+                error,
+              );
+              enqueueEvent({
+                type: 'response.error',
+                error: { message: 'Failed to persist response session' },
+              });
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              releaseReader();
+              controller.close();
+              return;
+            }
             [...toolCallStates.values()].forEach((toolCallState) => {
               maybeEmitToolCallAdded(toolCallState, true);
               enqueueEvent({
@@ -1302,13 +1383,16 @@ const createResponsesEventStream = async (
           }
 
           buffer += decoder.decode(value, { stream: true });
-          if (buffer.length > MAX_STREAM_BUFFER_LENGTH) {
-            buffer = buffer.slice(-MAX_STREAM_BUFFER_LENGTH);
-          }
           const frames = buffer.split('\n\n');
           buffer = frames.pop()!;
+          if (buffer.length > MAX_STREAM_BUFFER_LENGTH) {
+            buffer = '';
+          }
 
           frames.forEach((frame) => {
+            if (frame.length > MAX_STREAM_BUFFER_LENGTH) {
+              return;
+            }
             const line = frame
               .split('\n')
               .find((segment) => segment.startsWith('data: '));
@@ -1337,9 +1421,10 @@ const createResponsesEventStream = async (
 
               if (delta?.content) {
                 ensureMessageAdded();
-                outputText = `${outputText}${delta.content}`.slice(
-                  -MAX_STREAM_TEXT_LENGTH,
-                );
+                outputText = `${outputText}${delta.content}`;
+                if (outputText.length > MAX_STREAM_TEXT_LENGTH) {
+                  throw new Error('Response output exceeds the maximum size');
+                }
                 enqueueEvent({
                   type: 'response.output_text.delta',
                   delta: delta.content,
@@ -1388,10 +1473,16 @@ const createResponsesEventStream = async (
                 maybeEmitToolCallAdded(current);
 
                 if (toolCall.function?.arguments) {
-                  current.arguments =
-                    `${current.arguments}${toolCall.function.arguments}`.slice(
-                      -MAX_TOOL_ARGUMENT_LENGTH,
+                  if (
+                    current.arguments.length +
+                      toolCall.function.arguments.length >
+                    MAX_TOOL_ARGUMENT_LENGTH
+                  ) {
+                    throw new Error(
+                      'Response tool arguments exceed the maximum size',
                     );
+                  }
+                  current.arguments = `${current.arguments}${toolCall.function.arguments}`;
                   if (current.addedEmitted) {
                     enqueueEvent({
                       type: getResponsesToolCallArgumentDeltaEventType(
@@ -1405,9 +1496,7 @@ const createResponsesEventStream = async (
                     });
                   } else {
                     current.pendingArgumentDeltas.push(
-                      toolCall.function.arguments.slice(
-                        -MAX_TOOL_ARGUMENT_LENGTH,
-                      ),
+                      toolCall.function.arguments,
                     );
                   }
                 }
@@ -1417,7 +1506,13 @@ const createResponsesEventStream = async (
                   toolCallStateKeys.set(key, current.canonicalKey);
                 });
               });
-            } catch {
+            } catch (error) {
+              if (
+                error instanceof Error &&
+                error.message.includes('exceed the maximum size')
+              ) {
+                streamRejected = true;
+              }
               console.error(
                 '[CodeBuddy2API] Failed to parse upstream SSE frame',
                 {
@@ -1433,6 +1528,12 @@ const createResponsesEventStream = async (
               });
             }
           });
+
+          if (streamRejected) {
+            releaseReader();
+            controller.close();
+            return;
+          }
         }
       };
 
@@ -1616,7 +1717,10 @@ export const handleResponsesRequest = async (
     return createErrorResponse(
       error instanceof Error && error.message.includes('previous_response_id')
         ? 400
-        : 500,
+        : error instanceof Error &&
+            error.message.includes('Response session exceeds')
+          ? 413
+          : 500,
       error instanceof Error ? error.message : 'Unexpected responses error',
     );
   }
