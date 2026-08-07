@@ -257,40 +257,43 @@ const trackResponsesUsageStream = async ({
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await upstreamReader.read();
+        while (true) {
+          const { done, value } = await upstreamReader.read();
 
-        if (cancelled) {
-          return;
-        }
-
-        if (done) {
-          if (buffer) {
-            inspectFrame(buffer);
-            controller.enqueue(encoder.encode(buffer));
+          if (cancelled) {
+            return;
           }
 
-          await recordProxyUsage({
-            model,
-            proxyContext,
-            route: '/v1/responses',
-            usage: latestUsage,
+          if (done) {
+            if (buffer) {
+              inspectFrame(buffer);
+              controller.enqueue(encoder.encode(buffer));
+            }
+
+            await recordProxyUsage({
+              model,
+              proxyContext,
+              route: '/v1/responses',
+              usage: latestUsage,
+            });
+            releaseReader();
+            controller.close();
+            return;
+          }
+
+          const text = decoder.decode(value, { stream: true });
+          buffer += text;
+          if (buffer.length > 1_000_000) {
+            buffer = buffer.slice(-1_000_000);
+          }
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() ?? '';
+
+          frames.forEach((frame) => {
+            inspectFrame(frame);
+            controller.enqueue(encoder.encode(`${frame}\n\n`));
           });
-          releaseReader();
-          controller.close();
-          return;
         }
-
-        const text = decoder.decode(value, { stream: true });
-        buffer += text;
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-
-        frames.forEach((frame) => {
-          inspectFrame(frame);
-          controller.enqueue(encoder.encode(`${frame}\n\n`));
-        });
-
-        await pump();
       };
 
       void pump();
@@ -955,34 +958,38 @@ const normalizeStreamingResponse = ({
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await upstreamReader.read();
+        while (true) {
+          const { done, value } = await upstreamReader.read();
 
-        if (cancelled) {
-          return;
-        }
-
-        if (done) {
-          if (buffer.trim()) {
-            flushFrames([buffer]);
+          if (cancelled) {
+            return;
           }
 
-          await recordProxyUsage({
-            model,
-            proxyContext,
-            route,
-            usage: latestUsage,
-          });
+          if (done) {
+            if (buffer.trim()) {
+              flushFrames([buffer]);
+            }
 
-          releaseReader();
-          controller.close();
-          return;
+            await recordProxyUsage({
+              model,
+              proxyContext,
+              route,
+              usage: latestUsage,
+            });
+
+            releaseReader();
+            controller.close();
+            return;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          if (buffer.length > 1_000_000) {
+            buffer = buffer.slice(-1_000_000);
+          }
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() ?? '';
+          flushFrames(frames);
         }
-
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-        flushFrames(frames);
-        await pump();
       };
 
       void pump();

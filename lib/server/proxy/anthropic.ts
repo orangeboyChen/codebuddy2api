@@ -852,28 +852,32 @@ const mapOpenAIStreamToAnthropicSSE = (
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await upstreamReader.read();
+        while (true) {
+          const { done, value } = await upstreamReader.read();
 
-        if (cancelled) {
-          return;
-        }
-
-        if (done) {
-          if (buffer.trim()) {
-            flushFrames([buffer]);
+          if (cancelled) {
+            return;
           }
 
-          finalize();
-          releaseReader();
-          controller.close();
-          return;
-        }
+          if (done) {
+            if (buffer.trim()) {
+              flushFrames([buffer]);
+            }
 
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-        flushFrames(frames);
-        await pump();
+            finalize();
+            releaseReader();
+            controller.close();
+            return;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          if (buffer.length > 1_000_000) {
+            buffer = buffer.slice(-1_000_000);
+          }
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() ?? '';
+          flushFrames(frames);
+        }
       };
 
       void pump();
