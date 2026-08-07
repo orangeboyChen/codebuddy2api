@@ -404,7 +404,7 @@ describe('Responses memory bounds', () => {
       'x'.repeat(300_001),
     ];
     const oversizedArguments = ['x'.repeat(900_000), 'x'.repeat(100_001)];
-    const aggregateToolCalls = Array.from({ length: 73 }, (_, index) => ({
+    const aggregateToolCalls = Array.from({ length: 75 }, (_, index) => ({
       function: { arguments: 'x'.repeat(900_000) },
       index,
     }));
@@ -476,6 +476,27 @@ describe('Responses memory bounds', () => {
     expect(text).toContain('"name":"function"');
     expect(text).toContain('"arguments":"{}"');
     expect(text).toContain('response.function_call_arguments.done');
+  });
+
+  it('rejects unbounded streamed tool names and stops processing the frame batch', async () => {
+    const oversizedName = 'x'.repeat(257);
+    const trailingContent = 'should not be emitted';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: oversizedName } }] } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: { content: trailingContent } }] })}\n\n`,
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'oversized tool name',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+    const text = await response.text();
+
+    expect(text).toContain('response.error');
+    expect(text).not.toContain(trailingContent);
   });
 
   it('emits argument deltas after a streaming tool call is registered', async () => {

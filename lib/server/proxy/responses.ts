@@ -132,6 +132,7 @@ const RESPONSE_SESSION_NAMESPACE = 'responses';
 const MAX_STREAM_BUFFER_LENGTH = 1_000_000;
 const MAX_STREAM_TEXT_LENGTH = 2_000_000;
 const MAX_TOOL_ARGUMENT_LENGTH = 1_000_000;
+const MAX_TOOL_NAME_LENGTH = 256;
 
 const globalResponsesState = globalThis as typeof globalThis & {
   __codebuddy2apiResponseSessions__?: Map<string, ResponseSession>;
@@ -1390,22 +1391,25 @@ const createResponsesEventStream = async (
             buffer = '';
           }
 
-          frames.forEach((frame) => {
+          for (const frame of frames) {
+            if (streamRejected) {
+              break;
+            }
             if (frame.length > MAX_STREAM_BUFFER_LENGTH) {
-              return;
+              continue;
             }
             const line = frame
               .split('\n')
               .find((segment) => segment.startsWith('data: '));
 
             if (!line) {
-              return;
+              continue;
             }
 
             const raw = line.slice(6).trim();
 
             if (!raw || raw === '[DONE]') {
-              return;
+              continue;
             }
 
             try {
@@ -1469,6 +1473,14 @@ const createResponsesEventStream = async (
                 };
 
                 if (toolCall.function?.name) {
+                  if (
+                    current.name.length + toolCall.function.name.length >
+                    MAX_TOOL_NAME_LENGTH
+                  ) {
+                    throw new Error(
+                      'Response tool name exceeds the maximum size',
+                    );
+                  }
                   current.name += toolCall.function.name;
                 }
                 maybeEmitToolCallAdded(current);
@@ -1520,7 +1532,7 @@ const createResponsesEventStream = async (
             } catch (error) {
               if (
                 error instanceof Error &&
-                error.message.includes('exceed the maximum size')
+                error.message.includes('maximum size')
               ) {
                 streamRejected = true;
               }
@@ -1538,7 +1550,7 @@ const createResponsesEventStream = async (
                 },
               });
             }
-          });
+          }
 
           if (streamRejected) {
             try {
