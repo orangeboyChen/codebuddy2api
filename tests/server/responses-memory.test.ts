@@ -164,6 +164,29 @@ describe('Responses memory bounds', () => {
     );
     expect(readPgSession).toHaveBeenCalledWith('responses', firstPayload.id);
 
+    const directlyExpiredId = 'resp_directly_expired';
+    pgSessions.set(directlyExpiredId, {
+      accessKeyId: null,
+      createdAt: Date.now() - 60 * 60 * 1000 - 1,
+      defaults: { instructions: null, tools: [] },
+      id: directlyExpiredId,
+      model: 'gpt-5.5',
+      transcript: [],
+    });
+    const directlyExpiredResponse = await handleResponsesRequest(
+      makeRequest(),
+      {
+        input: 'expired directly',
+        model: 'gpt-5.5',
+        previous_response_id: directlyExpiredId,
+      },
+    );
+    expect(directlyExpiredResponse.status).toBe(400);
+    expect(deletePgSession).toHaveBeenCalledWith(
+      'responses',
+      directlyExpiredId,
+    );
+
     const expiredId = 'resp_expired';
     pgSessions.set(expiredId, {
       accessKeyId: null,
@@ -189,6 +212,34 @@ describe('Responses memory bounds', () => {
     expect(expiredResponse.status).toBe(400);
     expect(deletePgSession).toHaveBeenCalledWith('responses', expiredId);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('prunes expired PostgreSQL sessions before enforcing the byte budget', async () => {
+    const expiredContent = 'x'.repeat(8 * 1024 * 1024);
+    const expiredCreatedAt = Date.now() - 60 * 60 * 1000 - 1;
+    Array.from({ length: 9 }).forEach((_, index) => {
+      const id = `resp_expired_${index}`;
+      pgSessions.set(id, {
+        accessKeyId: null,
+        createdAt: expiredCreatedAt,
+        defaults: { instructions: null, tools: [] },
+        id,
+        model: 'gpt-5.5',
+        transcript: [{ content: expiredContent, role: 'assistant' }],
+      });
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeChatResponse('pruned response'),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'trigger byte-budget prune',
+      model: 'gpt-5.5',
+    });
+
+    expect(response.status).toBe(200);
+    expect(deletePgSession).toHaveBeenCalledTimes(9);
+    expect(pgSessions.size).toBe(1);
   });
 
   it('completes the stream when session persistence fails', async () => {
@@ -353,6 +404,16 @@ describe('Responses memory bounds', () => {
       'x'.repeat(300_001),
     ];
     const oversizedArguments = ['x'.repeat(900_000), 'x'.repeat(100_001)];
+    const aggregateToolCalls = Array.from({ length: 73 }, (_, index) => ({
+      function: { arguments: 'x'.repeat(900_000) },
+      index,
+    }));
+    const aggregateToolPayload = aggregateToolCalls
+      .map(
+        (toolCall) =>
+          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [toolCall] } }] })}\n\n`,
+      )
+      .join('');
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
         new Response(
@@ -365,6 +426,11 @@ describe('Responses memory bounds', () => {
           `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"${oversizedArguments[0]}"}}]}}]}\n\ndata: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"${oversizedArguments[1]}"}}]}}]}\n\n`,
           { headers: { 'Content-Type': 'text/event-stream' } },
         ),
+      )
+      .mockResolvedValueOnce(
+        new Response(aggregateToolPayload, {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
       );
 
     const textResponse = await handleResponsesRequest(makeRequest(), {
@@ -380,6 +446,16 @@ describe('Responses memory bounds', () => {
       stream: true,
     });
     expect(await argumentResponse.text()).toContain('response.error');
+
+    const aggregateArgumentResponse = await handleResponsesRequest(
+      makeRequest(),
+      {
+        input: 'aggregate oversized arguments',
+        model: 'gpt-5.5',
+        stream: true,
+      },
+    );
+    expect(await aggregateArgumentResponse.text()).toContain('response.error');
   });
 
   it('retains tool argument deltas until an unnamed streaming tool is finalized', async () => {
@@ -400,5 +476,24 @@ describe('Responses memory bounds', () => {
     expect(text).toContain('"name":"function"');
     expect(text).toContain('"arguments":"{}"');
     expect(text).toContain('response.function_call_arguments.done');
+  });
+
+  it('emits argument deltas after a streaming tool call is registered', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_registered","function":{"name":"lookup","arguments":"{}"}}]}}]}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'stream registered tool',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+
+    expect(await response.text()).toContain(
+      'response.function_call_arguments.delta',
+    );
   });
 });

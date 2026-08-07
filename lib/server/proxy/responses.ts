@@ -203,24 +203,24 @@ const prunePgResponseSessions = async (): Promise<void> => {
       key: document.key,
     }))
     .sort((left, right) => left.createdAt - right.createdAt);
-  let totalBytes = candidates.reduce(
-    (total, candidate) => total + candidate.bytes,
-    0,
-  );
   const toDelete = candidates.filter(
     (candidate) => candidate.createdAt <= expiresBefore,
   );
   const remaining = candidates.filter(
     (candidate) => candidate.createdAt > expiresBefore,
   );
+  let totalBytes = remaining.reduce(
+    (total, candidate) => total + candidate.bytes,
+    0,
+  );
 
   while (
     remaining.length > MAX_RESPONSE_SESSIONS ||
     totalBytes > MAX_RESPONSE_SESSION_TOTAL_BYTES
   ) {
-    const candidate = remaining.shift();
-    toDelete.push(candidate!);
-    totalBytes -= candidate!.bytes;
+    const candidate = remaining.shift()!;
+    toDelete.push(candidate);
+    totalBytes -= candidate.bytes;
   }
 
   await Promise.all(
@@ -1151,6 +1151,7 @@ const createResponsesEventStream = async (
       const upstreamReader = upstreamResponse.body!.getReader();
       reader = upstreamReader;
       let buffer = '';
+      let totalToolArgumentLength = 0;
       let streamRejected = false;
 
       const enqueueEvent = (payload: Record<string, unknown>): void => {
@@ -1482,6 +1483,16 @@ const createResponsesEventStream = async (
                       'Response tool arguments exceed the maximum size',
                     );
                   }
+                  if (
+                    totalToolArgumentLength +
+                      toolCall.function.arguments.length >
+                    MAX_RESPONSE_SESSION_TOTAL_BYTES
+                  ) {
+                    throw new Error(
+                      'Response tool arguments exceed the maximum size',
+                    );
+                  }
+                  totalToolArgumentLength += toolCall.function.arguments.length;
                   current.arguments = `${current.arguments}${toolCall.function.arguments}`;
                   if (current.addedEmitted) {
                     enqueueEvent({
@@ -1530,8 +1541,12 @@ const createResponsesEventStream = async (
           });
 
           if (streamRejected) {
-            releaseReader();
-            controller.close();
+            try {
+              await reader!.cancel();
+            } finally {
+              releaseReader();
+              controller.close();
+            }
             return;
           }
         }
@@ -1728,4 +1743,6 @@ export const handleResponsesRequest = async (
 
 export const resetResponseSessions = (): void => {
   getSessionStore().clear();
+  getSessionByteStore().clear();
+  setSessionTotalBytes(0);
 };

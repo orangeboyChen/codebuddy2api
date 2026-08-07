@@ -985,7 +985,11 @@ const normalizeStreamingResponse = ({
             });
 
             releaseReader();
-            controller.close();
+            try {
+              controller.close();
+            } catch {
+              // The downstream stream may have been cancelled while the pump was completing.
+            }
             return;
           }
 
