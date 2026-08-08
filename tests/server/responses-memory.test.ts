@@ -3,25 +3,32 @@ import path from 'node:path';
 
 import { NextRequest } from 'next/server';
 
-const { deletePgSession, pgSessions, readPgSession, writePgSession } =
-  vi.hoisted(() => {
-    const sessions = new Map<string, unknown>();
+const {
+  deletePgSession,
+  pgIndexSessions,
+  pgSessions,
+  readPgSession,
+  writePgSession,
+} = vi.hoisted(() => {
+  const sessions = new Map<string, unknown>();
+  const indexSessions = new Map<string, unknown>();
 
-    return {
-      deletePgSession: vi.fn(async (_namespace: string, key: string) => {
-        sessions.delete(key);
-      }),
-      pgSessions: sessions,
-      readPgSession: vi.fn(async (_namespace: string, key: string) => {
-        return sessions.get(key) ?? null;
-      }),
-      writePgSession: vi.fn(
-        async (_namespace: string, key: string, value: unknown) => {
-          sessions.set(key, value);
-        },
-      ),
-    };
-  });
+  return {
+    deletePgSession: vi.fn(async (_namespace: string, key: string) => {
+      sessions.delete(key);
+    }),
+    pgSessions: sessions,
+    pgIndexSessions: indexSessions,
+    readPgSession: vi.fn(async (_namespace: string, key: string) => {
+      return sessions.get(key) ?? null;
+    }),
+    writePgSession: vi.fn(
+      async (_namespace: string, key: string, value: unknown) => {
+        sessions.set(key, value);
+      },
+    ),
+  };
+});
 
 vi.mock('@/lib/server/storage', async (importOriginal) => {
   const storage = await importOriginal<typeof import('@/lib/server/storage')>();
@@ -30,7 +37,11 @@ vi.mock('@/lib/server/storage', async (importOriginal) => {
     ...storage,
     deleteStorageJson: async (namespace: string, key: string) => {
       if (namespace === 'responses' || namespace === 'response-session-index') {
-        await deletePgSession(namespace, key);
+        if (namespace === 'response-session-index') {
+          pgIndexSessions.delete(key);
+        } else {
+          await deletePgSession(namespace, key);
+        }
         return;
       }
 
@@ -43,7 +54,9 @@ vi.mock('@/lib/server/storage', async (importOriginal) => {
     }),
     listStorageJson: async <T>(namespace: string) => {
       if (namespace === 'responses' || namespace === 'response-session-index') {
-        return [...pgSessions.entries()].map(([key, value]) => ({
+        const sessions =
+          namespace === 'response-session-index' ? pgIndexSessions : pgSessions;
+        return [...sessions.entries()].map(([key, value]) => ({
           key,
           value: value as T,
         }));
@@ -53,14 +66,22 @@ vi.mock('@/lib/server/storage', async (importOriginal) => {
     },
     readStorageJson: async <T>(namespace: string, key: string) => {
       if (namespace === 'responses' || namespace === 'response-session-index') {
-        return (await readPgSession(namespace, key)) as T | null;
+        return (
+          namespace === 'response-session-index'
+            ? pgIndexSessions.get(key)
+            : await readPgSession(namespace, key)
+        ) as T | null;
       }
 
       return storage.readStorageJson<T>(namespace, key);
     },
     writeStorageJson: async <T>(namespace: string, key: string, value: T) => {
       if (namespace === 'responses' || namespace === 'response-session-index') {
-        await writePgSession(namespace, key, value);
+        if (namespace === 'response-session-index') {
+          pgIndexSessions.set(key, value);
+        } else {
+          await writePgSession(namespace, key, value);
+        }
         return;
       }
 
@@ -121,6 +142,7 @@ describe('Responses memory bounds', () => {
     resetCredentialRuntimeState();
     resetResponseSessions();
     pgSessions.clear();
+    pgIndexSessions.clear();
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
@@ -189,7 +211,6 @@ describe('Responses memory bounds', () => {
 
     const expiredId = 'resp_expired';
     resetResponseSessions();
-    pgSessions.delete('metadata');
     await writePgSession('responses', expiredId, {
       accessKeyId: null,
       createdAt: Date.now() - 60 * 60 * 1000 - 1,
@@ -197,6 +218,10 @@ describe('Responses memory bounds', () => {
       id: expiredId,
       model: 'gpt-5.5',
       transcript: [],
+    });
+    pgIndexSessions.set(expiredId, {
+      bytes: 0,
+      createdAt: Date.now() - 60 * 60 * 1000 - 1,
     });
 
     const pruneResponse = await handleResponsesRequest(makeRequest(), {
@@ -230,7 +255,13 @@ describe('Responses memory bounds', () => {
         transcript: [{ content: expiredContent, role: 'assistant' }],
       });
     });
-    pgSessions.delete('metadata');
+    pgIndexSessions.clear();
+    for (const id of Array.from(pgSessions.keys())) {
+      pgIndexSessions.set(id, {
+        bytes: 8 * 1024 * 1024,
+        createdAt: expiredCreatedAt,
+      });
+    }
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeChatResponse('pruned response'),
     );
@@ -242,7 +273,8 @@ describe('Responses memory bounds', () => {
 
     expect(response.status).toBe(200);
     expect(deletePgSession).toHaveBeenCalledTimes(9);
-    expect(pgSessions.size).toBe(2);
+    expect(pgSessions.size).toBe(1);
+    expect(pgIndexSessions.size).toBe(1);
   });
 
   it('completes the stream when session persistence fails', async () => {
