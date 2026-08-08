@@ -553,6 +553,7 @@ class DatabaseStorageBackend implements StorageBackend {
   ): Promise<void> {
     const sensitive =
       namespace === 'credentials' ||
+      namespace === 'responses' ||
       (namespace === 'access-keys' && key === 'store');
 
     if (sensitive) {

@@ -115,6 +115,11 @@ interface StreamingMessageState {
   outputItemId: string;
 }
 
+interface ResponseSessionMetadata {
+  bytes: number;
+  createdAt: number;
+}
+
 type SupportedResponsesTool = NonNullable<
   ResponsesRequestBody['tools']
 >[number];
@@ -129,6 +134,8 @@ const MAX_RESPONSE_SESSION_BYTES = 8 * 1024 * 1024;
 const MAX_RESPONSE_SESSION_TOTAL_BYTES = 64 * 1024 * 1024;
 const MAX_RESPONSE_TRANSCRIPT_MESSAGES = 200;
 const RESPONSE_SESSION_NAMESPACE = 'responses';
+const RESPONSE_SESSION_INDEX_NAMESPACE = 'response-session-index';
+const RESPONSE_SESSION_INDEX_KEY = 'metadata';
 const MAX_STREAM_BUFFER_LENGTH = 1_000_000;
 const MAX_STREAM_TEXT_LENGTH = 2_000_000;
 const MAX_TOOL_ARGUMENT_LENGTH = 1_000_000;
@@ -192,17 +199,40 @@ const pruneResponseSessions = (): void => {
   }
 };
 
-const prunePgResponseSessions = async (): Promise<void> => {
+const getPgResponseSessionMetadata = async (): Promise<
+  Record<string, ResponseSessionMetadata>
+> => {
+  const metadata = await readStorageJson<
+    Record<string, ResponseSessionMetadata>
+  >(RESPONSE_SESSION_INDEX_NAMESPACE, RESPONSE_SESSION_INDEX_KEY);
+  if (metadata) {
+    return metadata;
+  }
+
   const documents = await listStorageJson<ResponseSession>(
     RESPONSE_SESSION_NAMESPACE,
   );
-  const expiresBefore = Date.now() - RESPONSE_SESSION_TTL_MS;
-  const candidates = documents
-    .map((document) => ({
+  const initializedMetadata: Record<string, ResponseSessionMetadata> = {};
+  for (const document of documents) {
+    initializedMetadata[document.key] = {
       bytes: Buffer.byteLength(JSON.stringify(document.value), 'utf8'),
       createdAt: document.value.createdAt,
-      key: document.key,
-    }))
+    };
+  }
+
+  await writeStorageJson(
+    RESPONSE_SESSION_INDEX_NAMESPACE,
+    RESPONSE_SESSION_INDEX_KEY,
+    initializedMetadata,
+  );
+  return initializedMetadata;
+};
+
+const prunePgResponseSessions = async (): Promise<void> => {
+  const metadata = await getPgResponseSessionMetadata();
+  const expiresBefore = Date.now() - RESPONSE_SESSION_TTL_MS;
+  const candidates = Object.entries(metadata)
+    .map(([key, value]) => ({ key, ...value }))
     .sort((left, right) => left.createdAt - right.createdAt);
   const toDelete = candidates.filter(
     (candidate) => candidate.createdAt <= expiresBefore,
@@ -229,6 +259,12 @@ const prunePgResponseSessions = async (): Promise<void> => {
       deleteStorageJson(RESPONSE_SESSION_NAMESPACE, candidate.key),
     ),
   );
+  toDelete.forEach((candidate) => delete metadata[candidate.key]);
+  await writeStorageJson(
+    RESPONSE_SESSION_INDEX_NAMESPACE,
+    RESPONSE_SESSION_INDEX_KEY,
+    metadata,
+  );
 };
 
 const isPgResponseSessionStore = (): boolean => {
@@ -246,6 +282,13 @@ const getResponseSession = async (
     if (!session || session.createdAt <= Date.now() - RESPONSE_SESSION_TTL_MS) {
       if (session) {
         await deleteStorageJson(RESPONSE_SESSION_NAMESPACE, id);
+        const metadata = await getPgResponseSessionMetadata();
+        delete metadata[id];
+        await writeStorageJson(
+          RESPONSE_SESSION_INDEX_NAMESPACE,
+          RESPONSE_SESSION_INDEX_KEY,
+          metadata,
+        );
       }
       return undefined;
     }
@@ -283,7 +326,17 @@ const storeResponseSession = async (
   }
 
   if (isPgResponseSessionStore()) {
+    const metadata = await getPgResponseSessionMetadata();
     await writeStorageJson(RESPONSE_SESSION_NAMESPACE, session.id, session);
+    metadata[session.id] = {
+      bytes: Buffer.byteLength(serialized, 'utf8'),
+      createdAt: session.createdAt,
+    };
+    await writeStorageJson(
+      RESPONSE_SESSION_INDEX_NAMESPACE,
+      RESPONSE_SESSION_INDEX_KEY,
+      metadata,
+    );
     try {
       await prunePgResponseSessions();
     } catch (error) {

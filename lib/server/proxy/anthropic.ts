@@ -85,6 +85,10 @@ interface OpenAIChatChoice {
   finish_reason?: string | null;
 }
 
+interface OpenAIStreamError {
+  error?: { message?: string };
+}
+
 interface OpenAIUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
@@ -817,6 +821,7 @@ const mapOpenAIStreamToAnthropicSSE = (
 
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
+  let streamRejected = false;
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
@@ -827,11 +832,22 @@ const mapOpenAIStreamToAnthropicSSE = (
       const upstreamReader = upstreamResponse.body!.getReader();
       reader = upstreamReader;
       let buffer = '';
+      const rejectStream = (): void => {
+        streamRejected = true;
+        enqueueEvent({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'Upstream SSE frame exceeds the maximum size',
+          },
+        });
+      };
 
       const flushFrames = (frames: string[]): void => {
         for (const frame of frames) {
           if (frame.length > MAX_STREAM_FRAME_LENGTH) {
-            continue;
+            rejectStream();
+            return;
           }
           const line = frame
             .split('\n')
@@ -849,6 +865,11 @@ const mapOpenAIStreamToAnthropicSSE = (
 
           try {
             const chunk = JSON.parse(raw) as OpenAIStreamChunk;
+            const upstreamError = chunk as OpenAIStreamError;
+            if (upstreamError.error?.message) {
+              rejectStream();
+              return;
+            }
             processChunk(chunk);
           } catch {
             // Skip unparseable frames
@@ -868,8 +889,9 @@ const mapOpenAIStreamToAnthropicSSE = (
             if (buffer.trim()) {
               flushFrames([buffer]);
             }
-
-            finalize();
+            if (!streamRejected) {
+              finalize();
+            }
             releaseReader();
             controller.close();
             return;
@@ -879,9 +901,19 @@ const mapOpenAIStreamToAnthropicSSE = (
           const frames = buffer.split('\n\n');
           buffer = frames.pop()!;
           if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
-            buffer = '';
+            rejectStream();
+          } else {
+            flushFrames(frames);
           }
-          flushFrames(frames);
+          if (streamRejected) {
+            try {
+              await reader!.cancel();
+            } finally {
+              releaseReader();
+              controller.close();
+            }
+            return;
+          }
         }
       };
 

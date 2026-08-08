@@ -566,6 +566,28 @@ describe('anthropic messages api', () => {
     expect(text).toContain('event: message_stop');
   });
 
+  it('terminates streaming when the upstream rejects an oversized SSE frame', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeSseResponse([
+        'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}',
+      ]),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: 'user', content: 'Hi' }],
+      },
+    );
+
+    const text = await response.text();
+    expect(text).toContain('event: error');
+    expect(text).not.toContain('event: message_stop');
+  });
+
   it('cancels the upstream Chat stream when an Anthropic client disconnects', async () => {
     const cancel = vi.fn();
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(

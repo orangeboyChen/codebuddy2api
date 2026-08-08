@@ -958,6 +958,11 @@ const normalizeStreamingResponse = ({
       const flushFrames = (frames: string[]): void => {
         frames.forEach((frame) => {
           if (frame.length > MAX_STREAM_FRAME_LENGTH) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}\n\n',
+              ),
+            );
             return;
           }
           controller.enqueue(encoder.encode(`${processFrame(frame)}\n\n`));
@@ -997,7 +1002,18 @@ const normalizeStreamingResponse = ({
           const frames = buffer.split('\n\n');
           buffer = frames.pop()!;
           if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
-            buffer = '';
+            controller.enqueue(
+              encoder.encode(
+                'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}\n\n',
+              ),
+            );
+            try {
+              await reader!.cancel();
+            } finally {
+              releaseReader();
+              controller.close();
+            }
+            return;
           }
           flushFrames(frames);
         }

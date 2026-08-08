@@ -29,7 +29,7 @@ vi.mock('@/lib/server/storage', async (importOriginal) => {
   return {
     ...storage,
     deleteStorageJson: async (namespace: string, key: string) => {
-      if (namespace === 'responses') {
+      if (namespace === 'responses' || namespace === 'response-session-index') {
         await deletePgSession(namespace, key);
         return;
       }
@@ -42,7 +42,7 @@ vi.mock('@/lib/server/storage', async (importOriginal) => {
       schema: 'codebuddy2api',
     }),
     listStorageJson: async <T>(namespace: string) => {
-      if (namespace === 'responses') {
+      if (namespace === 'responses' || namespace === 'response-session-index') {
         return [...pgSessions.entries()].map(([key, value]) => ({
           key,
           value: value as T,
@@ -52,14 +52,14 @@ vi.mock('@/lib/server/storage', async (importOriginal) => {
       return storage.listStorageJson<T>(namespace);
     },
     readStorageJson: async <T>(namespace: string, key: string) => {
-      if (namespace === 'responses') {
+      if (namespace === 'responses' || namespace === 'response-session-index') {
         return (await readPgSession(namespace, key)) as T | null;
       }
 
       return storage.readStorageJson<T>(namespace, key);
     },
     writeStorageJson: async <T>(namespace: string, key: string, value: T) => {
-      if (namespace === 'responses') {
+      if (namespace === 'responses' || namespace === 'response-session-index') {
         await writePgSession(namespace, key, value);
         return;
       }
@@ -188,7 +188,9 @@ describe('Responses memory bounds', () => {
     );
 
     const expiredId = 'resp_expired';
-    pgSessions.set(expiredId, {
+    resetResponseSessions();
+    pgSessions.delete('metadata');
+    await writePgSession('responses', expiredId, {
       accessKeyId: null,
       createdAt: Date.now() - 60 * 60 * 1000 - 1,
       defaults: { instructions: null, tools: [] },
@@ -228,6 +230,7 @@ describe('Responses memory bounds', () => {
         transcript: [{ content: expiredContent, role: 'assistant' }],
       });
     });
+    pgSessions.delete('metadata');
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeChatResponse('pruned response'),
     );
@@ -239,7 +242,7 @@ describe('Responses memory bounds', () => {
 
     expect(response.status).toBe(200);
     expect(deletePgSession).toHaveBeenCalledTimes(9);
-    expect(pgSessions.size).toBe(1);
+    expect(pgSessions.size).toBe(2);
   });
 
   it('completes the stream when session persistence fails', async () => {
@@ -355,7 +358,7 @@ describe('Responses memory bounds', () => {
         stream: true,
       },
     );
-    expect(await anthropicStream.text()).toContain('"text":"anthropic"');
+    expect(await anthropicStream.text()).toContain('event: error');
 
     const credential = (await listCredentials()).credentials[0];
     const context = await resolveProxyContextByCredentialFilename(
