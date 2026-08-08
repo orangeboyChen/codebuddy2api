@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+
+set -eu
+
+bun run lint
+bun run format:check
+bun run typecheck
+bun run test:ci
+
+base_sha="$(git merge-base HEAD origin/main)"
+bun run test:patch-branches --base "$base_sha"
+bun run build

@@ -12,6 +12,13 @@ import {
 } from './codebuddy';
 import { resolveRequestAccessKey } from './auth';
 import { createErrorResponse } from '../shared/http';
+import {
+  deleteStorageJson,
+  getStorageBackendMeta,
+  listStorageJson,
+  readStorageJson,
+  writeStorageJson,
+} from '../storage';
 
 interface ResponsesInputItem {
   type?: string;
@@ -108,6 +115,11 @@ interface StreamingMessageState {
   outputItemId: string;
 }
 
+interface ResponseSessionMetadata {
+  bytes: number;
+  createdAt: number;
+}
+
 type SupportedResponsesTool = NonNullable<
   ResponsesRequestBody['tools']
 >[number];
@@ -118,9 +130,20 @@ const CUSTOM_TOOL_INPUT_DESCRIPTION =
   'Raw string input for the original custom tool.';
 const MAX_RESPONSE_SESSIONS = 1_000;
 const RESPONSE_SESSION_TTL_MS = 60 * 60 * 1000;
+const MAX_RESPONSE_SESSION_BYTES = 8 * 1024 * 1024;
+const MAX_RESPONSE_SESSION_TOTAL_BYTES = 64 * 1024 * 1024;
+const MAX_RESPONSE_TRANSCRIPT_MESSAGES = 200;
+const RESPONSE_SESSION_NAMESPACE = 'responses';
+const RESPONSE_SESSION_INDEX_NAMESPACE = 'response-session-index';
+const MAX_STREAM_BUFFER_LENGTH = 1_000_000;
+const MAX_STREAM_TEXT_LENGTH = 2_000_000;
+const MAX_TOOL_ARGUMENT_LENGTH = 1_000_000;
+const MAX_TOOL_NAME_LENGTH = 256;
 
 const globalResponsesState = globalThis as typeof globalThis & {
   __codebuddy2apiResponseSessions__?: Map<string, ResponseSession>;
+  __codebuddy2apiResponseSessionBytes__?: Map<string, number>;
+  __codebuddy2apiResponseSessionTotalBytes__?: number;
 };
 
 const getSessionStore = (): Map<string, ResponseSession> => {
@@ -131,38 +154,118 @@ const getSessionStore = (): Map<string, ResponseSession> => {
   return globalResponsesState.__codebuddy2apiResponseSessions__;
 };
 
+const getSessionByteStore = (): Map<string, number> => {
+  if (!globalResponsesState.__codebuddy2apiResponseSessionBytes__) {
+    globalResponsesState.__codebuddy2apiResponseSessionBytes__ = new Map();
+  }
+
+  return globalResponsesState.__codebuddy2apiResponseSessionBytes__;
+};
+
+const getSessionTotalBytes = (): number => {
+  return globalResponsesState.__codebuddy2apiResponseSessionTotalBytes__ ?? 0;
+};
+
+const setSessionTotalBytes = (value: number): void => {
+  globalResponsesState.__codebuddy2apiResponseSessionTotalBytes__ = value;
+};
+
+const removeLocalResponseSession = (id: string): void => {
+  const byteStore = getSessionByteStore();
+  const store = getSessionStore();
+  const bytes = byteStore.get(id) ?? 0;
+  store.delete(id);
+  byteStore.delete(id);
+  setSessionTotalBytes(Math.max(0, getSessionTotalBytes() - bytes));
+};
+
 const pruneResponseSessions = (): void => {
   const store = getSessionStore();
   const expiresBefore = Date.now() - RESPONSE_SESSION_TTL_MS;
 
   for (const [id, session] of store) {
     if (session.createdAt <= expiresBefore) {
-      store.delete(id);
+      removeLocalResponseSession(id);
     }
   }
 
-  while (store.size > MAX_RESPONSE_SESSIONS) {
+  while (
+    store.size > MAX_RESPONSE_SESSIONS ||
+    getSessionTotalBytes() > MAX_RESPONSE_SESSION_TOTAL_BYTES
+  ) {
     const oldestId = store.keys().next().value;
-
-    if (!oldestId) {
-      return;
-    }
-
-    store.delete(oldestId);
+    removeLocalResponseSession(oldestId!);
   }
 };
 
-const getResponseSession = (id: string): ResponseSession | undefined => {
+const prunePgResponseSessions = async (): Promise<void> => {
+  const metadataDocuments = await listStorageJson<ResponseSessionMetadata>(
+    RESPONSE_SESSION_INDEX_NAMESPACE,
+  );
+  const expiresBefore = Date.now() - RESPONSE_SESSION_TTL_MS;
+  const candidates = metadataDocuments
+    .map((document) => ({ key: document.key, ...document.value }))
+    .sort((left, right) => left.createdAt - right.createdAt);
+  const toDelete = candidates.filter(
+    (candidate) => candidate.createdAt <= expiresBefore,
+  );
+  const remaining = candidates.filter(
+    (candidate) => candidate.createdAt > expiresBefore,
+  );
+  let totalBytes = remaining.reduce(
+    (total, candidate) => total + candidate.bytes,
+    0,
+  );
+
+  while (
+    remaining.length > MAX_RESPONSE_SESSIONS ||
+    totalBytes > MAX_RESPONSE_SESSION_TOTAL_BYTES
+  ) {
+    const candidate = remaining.shift()!;
+    toDelete.push(candidate);
+    totalBytes -= candidate.bytes;
+  }
+
+  await Promise.all(
+    toDelete.flatMap((candidate) => [
+      deleteStorageJson(RESPONSE_SESSION_NAMESPACE, candidate.key),
+      deleteStorageJson(RESPONSE_SESSION_INDEX_NAMESPACE, candidate.key),
+    ]),
+  );
+};
+
+const isPgResponseSessionStore = (): boolean => {
+  return getStorageBackendMeta().backend === 'pg';
+};
+
+const getResponseSession = async (
+  id: string,
+): Promise<ResponseSession | undefined> => {
+  if (isPgResponseSessionStore()) {
+    const session = await readStorageJson<ResponseSession>(
+      RESPONSE_SESSION_NAMESPACE,
+      id,
+    );
+    if (!session || session.createdAt <= Date.now() - RESPONSE_SESSION_TTL_MS) {
+      if (session) {
+        await deleteStorageJson(RESPONSE_SESSION_NAMESPACE, id);
+        await deleteStorageJson(RESPONSE_SESSION_INDEX_NAMESPACE, id);
+      }
+      return undefined;
+    }
+    return session;
+  }
+
   pruneResponseSessions();
   return getSessionStore().get(id);
 };
 
-const getValidatedPreviousSession = (
+const getValidatedPreviousSession = async (
   previousResponseId: string | null,
   accessKeyId: string | null,
-): ResponseSession | undefined => {
+): Promise<ResponseSession | undefined> => {
   const previousSession = previousResponseId
-    ? getResponseSession(previousResponseId)
+    ? await getResponseSession(previousResponseId)
     : undefined;
 
   if (
@@ -175,9 +278,35 @@ const getValidatedPreviousSession = (
   return previousSession;
 };
 
-const storeResponseSession = (session: ResponseSession): void => {
+const storeResponseSession = async (
+  session: ResponseSession,
+): Promise<void> => {
+  const serialized = JSON.stringify(session);
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_RESPONSE_SESSION_BYTES) {
+    throw new Error('Response session exceeds the maximum size');
+  }
+
+  if (isPgResponseSessionStore()) {
+    await writeStorageJson(RESPONSE_SESSION_NAMESPACE, session.id, session);
+    await writeStorageJson(RESPONSE_SESSION_INDEX_NAMESPACE, session.id, {
+      bytes: Buffer.byteLength(serialized, 'utf8'),
+      createdAt: session.createdAt,
+    });
+    try {
+      await prunePgResponseSessions();
+    } catch (error) {
+      console.warn('[CodeBuddy2API] Unable to prune Responses sessions', error);
+    }
+    return;
+  }
+
   const store = getSessionStore();
+  const byteStore = getSessionByteStore();
+  const previousBytes = byteStore.get(session.id) ?? 0;
+  const sessionBytes = Buffer.byteLength(serialized, 'utf8');
   store.set(session.id, session);
+  byteStore.set(session.id, sessionBytes);
+  setSessionTotalBytes(getSessionTotalBytes() - previousBytes + sessionBytes);
   pruneResponseSessions();
 };
 
@@ -806,9 +935,14 @@ const prepareTranscript = async (
   const previousResponseId = body.previous_response_id ?? null;
   const resolvedPreviousSession =
     previousSession ??
-    getValidatedPreviousSession(previousResponseId, accessKeyId);
+    (await getValidatedPreviousSession(previousResponseId, accessKeyId));
 
-  const transcript = [...(resolvedPreviousSession?.transcript ?? [])];
+  const transcript = (resolvedPreviousSession?.transcript ?? []).slice(
+    -MAX_RESPONSE_TRANSCRIPT_MESSAGES,
+  );
+  while (transcript[0]?.role === 'tool') {
+    transcript.shift();
+  }
   const model =
     typeof body.model === 'string' && body.model.trim()
       ? body.model
@@ -879,7 +1013,7 @@ const normalizeTranscriptMessageToolNames = (
   });
 };
 
-const mapChatResponseToResponsesPayload = (
+const mapChatResponseToResponsesPayload = async (
   accessKeyId: string | null,
   credentialFilename: string | null,
   defaults: ResponseSessionDefaults,
@@ -887,7 +1021,7 @@ const mapChatResponseToResponsesPayload = (
   model: string,
   previousResponseId: string | null,
   upstreamPayload: Record<string, unknown>,
-): Record<string, unknown> => {
+): Promise<Record<string, unknown>> => {
   const responseId = createResponseId();
   const choices = Array.isArray(upstreamPayload.choices)
     ? upstreamPayload.choices
@@ -934,7 +1068,7 @@ const mapChatResponseToResponsesPayload = (
     );
   });
 
-  storeResponseSession({
+  await storeResponseSession({
     accessKeyId,
     credentialFilename,
     createdAt: Date.now(),
@@ -971,8 +1105,8 @@ const createResponsesEventStream = async (
   transcript: TranscriptMessage[],
   model: string,
   previousResponseId: string | null,
-  maxOutputTokens?: number,
-  proxyContext?: ProxyContext,
+  maxOutputTokens: number | undefined,
+  proxyContext: ProxyContext,
   debugTrace?: DebugTrace,
 ): Promise<Response> => {
   const upstreamResponse = await proxyChatCompletions(
@@ -1026,6 +1160,8 @@ const createResponsesEventStream = async (
       const upstreamReader = upstreamResponse.body!.getReader();
       reader = upstreamReader;
       let buffer = '';
+      let totalToolArgumentLength = 0;
+      let streamRejected = false;
 
       const enqueueEvent = (payload: Record<string, unknown>): void => {
         const eventType =
@@ -1137,231 +1273,303 @@ const createResponsesEventStream = async (
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await upstreamReader.read();
+        while (true) {
+          const { done, value } = await upstreamReader.read();
 
-        if (cancelled) {
-          return;
-        }
+          if (cancelled) {
+            return;
+          }
 
-        if (done) {
-          const transcriptToolCalls =
-            buildStreamingAssistantTranscriptToolCalls(
-              [...toolCallStates.values()],
-              defaults.tools,
-            );
-          storeResponseSession({
-            accessKeyId: proxyContext?.accessKeyId ?? null,
-            credentialFilename: proxyContext?.credentialFilename ?? null,
-            createdAt: Date.now(),
-            id: responseId,
-            model,
-            transcript: [
-              ...transcript,
-              {
-                role: 'assistant',
-                content: getAssistantTranscriptContent(
-                  outputText,
-                  transcriptToolCalls,
-                ),
-                ...(transcriptToolCalls
-                  ? { tool_calls: transcriptToolCalls }
-                  : {}),
-              },
-            ],
-            defaults,
-          });
-          [...toolCallStates.values()].forEach((toolCallState) => {
-            maybeEmitToolCallAdded(toolCallState, true);
-            enqueueEvent({
-              type: 'response.output_item.done',
-              item: buildResponsesToolCallOutputItem(defaults.tools, {
-                arguments: toolCallState.arguments,
-                callId: toolCallState.callId,
-                id: toolCallState.outputItemId,
-                name: toolCallState.name || 'function',
-                status: 'completed',
-              }),
-              output_index: toolCallState.outputIndex,
-              response_id: responseId,
-            });
-            enqueueEvent({
-              type: getResponsesToolCallArgumentDeltaEventType(
+          if (done) {
+            const transcriptToolCalls =
+              buildStreamingAssistantTranscriptToolCalls(
+                [...toolCallStates.values()],
                 defaults.tools,
-                toolCallState.name,
-              ).replace('.delta', '.done'),
-              arguments: toolCallState.arguments,
-              item_id: toolCallState.outputItemId,
-              output_index: toolCallState.outputIndex,
-              response_id: responseId,
-            });
-          });
-          if (outputText) {
-            ensureMessageAdded();
-            enqueueEvent({
-              type: 'response.output_text.done',
-              item: buildStreamingMessageItem('completed'),
-              output_index: messageState.outputIndex,
-              response_id: responseId,
-              text: outputText,
-            });
-            enqueueEvent({
-              type: 'response.output_item.done',
-              item: buildStreamingMessageItem('completed'),
-              output_index: messageState.outputIndex,
-              response_id: responseId,
-            });
-          }
-          enqueueEvent({
-            type: 'response.completed',
-            response: {
-              id: responseId,
-              status: 'completed',
-              output_text: outputText,
-              previous_response_id: previousResponseId,
-              output: [
-                ...(outputText ? [buildStreamingMessageItem('completed')] : []),
-                ...[...toolCallStates.values()].map((toolCallState) =>
-                  buildResponsesToolCallOutputItem(defaults.tools, {
-                    arguments: toolCallState.arguments,
-                    callId: toolCallState.callId,
-                    id: toolCallState.outputItemId,
-                    name: toolCallState.name || 'function',
-                    status: 'completed',
-                  }),
-                ),
-              ],
-            },
-          });
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          releaseReader();
-          controller.close();
-          return;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-
-        frames.forEach((frame) => {
-          const line = frame
-            .split('\n')
-            .find((segment) => segment.startsWith('data: '));
-
-          if (!line) {
-            return;
-          }
-
-          const raw = line.slice(6).trim();
-
-          if (!raw || raw === '[DONE]') {
-            return;
-          }
-
-          try {
-            const payload = JSON.parse(raw) as {
-              choices?: Array<{
-                delta?: {
-                  content?: string;
-                  reasoning_content?: string;
-                  tool_calls?: ChatResponseToolCall[];
-                };
-              }>;
-            };
-            const delta = payload.choices?.[0]?.delta;
-
-            if (delta?.content) {
-              ensureMessageAdded();
-              outputText += delta.content;
+              );
+            try {
+              await storeResponseSession({
+                accessKeyId: proxyContext.accessKeyId,
+                credentialFilename: proxyContext.credentialFilename,
+                createdAt: Date.now(),
+                id: responseId,
+                model,
+                transcript: [
+                  ...transcript,
+                  {
+                    role: 'assistant',
+                    content: getAssistantTranscriptContent(
+                      outputText,
+                      transcriptToolCalls,
+                    ),
+                    ...(transcriptToolCalls
+                      ? { tool_calls: transcriptToolCalls }
+                      : {}),
+                  },
+                ],
+                defaults,
+              });
+            } catch (error) {
+              console.error(
+                '[CodeBuddy2API] Failed to persist Responses session',
+                error,
+              );
               enqueueEvent({
-                type: 'response.output_text.delta',
-                delta: delta.content,
-                item: buildStreamingMessageItem('in_progress'),
+                type: 'response.error',
+                error: { message: 'Failed to persist response session' },
+              });
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              releaseReader();
+              controller.close();
+              return;
+            }
+            [...toolCallStates.values()].forEach((toolCallState) => {
+              maybeEmitToolCallAdded(toolCallState, true);
+              enqueueEvent({
+                type: 'response.output_item.done',
+                item: buildResponsesToolCallOutputItem(defaults.tools, {
+                  arguments: toolCallState.arguments,
+                  callId: toolCallState.callId,
+                  id: toolCallState.outputItemId,
+                  name: toolCallState.name || 'function',
+                  status: 'completed',
+                }),
+                output_index: toolCallState.outputIndex,
+                response_id: responseId,
+              });
+              enqueueEvent({
+                type: getResponsesToolCallArgumentDeltaEventType(
+                  defaults.tools,
+                  toolCallState.name,
+                ).replace('.delta', '.done'),
+                arguments: toolCallState.arguments,
+                item_id: toolCallState.outputItemId,
+                output_index: toolCallState.outputIndex,
+                response_id: responseId,
+              });
+            });
+            if (outputText) {
+              ensureMessageAdded();
+              enqueueEvent({
+                type: 'response.output_text.done',
+                item: buildStreamingMessageItem('completed'),
+                output_index: messageState.outputIndex,
+                response_id: responseId,
+                text: outputText,
+              });
+              enqueueEvent({
+                type: 'response.output_item.done',
+                item: buildStreamingMessageItem('completed'),
                 output_index: messageState.outputIndex,
                 response_id: responseId,
               });
             }
+            enqueueEvent({
+              type: 'response.completed',
+              response: {
+                id: responseId,
+                status: 'completed',
+                output_text: outputText,
+                previous_response_id: previousResponseId,
+                output: [
+                  ...(outputText
+                    ? [buildStreamingMessageItem('completed')]
+                    : []),
+                  ...[...toolCallStates.values()].map((toolCallState) =>
+                    buildResponsesToolCallOutputItem(defaults.tools, {
+                      arguments: toolCallState.arguments,
+                      callId: toolCallState.callId,
+                      id: toolCallState.outputItemId,
+                      name: toolCallState.name || 'function',
+                      status: 'completed',
+                    }),
+                  ),
+                ],
+              },
+            });
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            releaseReader();
+            controller.close();
+            return;
+          }
 
-            if (delta?.reasoning_content) {
-              enqueueEvent({
-                type: 'response.reasoning_text.delta',
-                delta: delta.reasoning_content,
-                response_id: responseId,
-              });
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop()!;
+          if (buffer.length > MAX_STREAM_BUFFER_LENGTH) {
+            buffer = '';
+          }
+
+          for (const frame of frames) {
+            if (streamRejected) {
+              break;
+            }
+            if (frame.length > MAX_STREAM_BUFFER_LENGTH) {
+              continue;
+            }
+            const line = frame
+              .split('\n')
+              .find((segment) => segment.startsWith('data: '));
+
+            if (!line) {
+              continue;
             }
 
-            delta?.tool_calls?.forEach((toolCall, position) => {
-              const lookupKeys = getStreamingToolCallLookupKeys(
-                toolCall,
-                position,
-              );
-              const existingCanonicalKey = lookupKeys
-                .map((key) => toolCallStateKeys.get(key) ?? key)
-                .find((key) => toolCallStates.has(key));
-              const canonicalKey =
-                existingCanonicalKey ??
-                getStreamingToolCallCanonicalKey(toolCall, position);
-              const current = toolCallStates.get(canonicalKey) ?? {
-                addedEmitted: false,
-                arguments: '',
-                canonicalKey,
-                callId: normalizeToolCallId(
-                  toolCall.id,
-                  nextToolCallOutputIndex,
-                ),
-                name: '',
-                outputIndex: nextToolCallOutputIndex++,
-                outputItemId: createResponseOutputId(),
-                pendingArgumentDeltas: [],
+            const raw = line.slice(6).trim();
+
+            if (!raw || raw === '[DONE]') {
+              continue;
+            }
+
+            try {
+              const payload = JSON.parse(raw) as {
+                choices?: Array<{
+                  delta?: {
+                    content?: string;
+                    reasoning_content?: string;
+                    tool_calls?: ChatResponseToolCall[];
+                  };
+                }>;
               };
+              const delta = payload.choices?.[0]?.delta;
 
-              if (toolCall.function?.name) {
-                current.name += toolCall.function.name;
-              }
-              maybeEmitToolCallAdded(current);
-
-              if (toolCall.function?.arguments) {
-                current.arguments += toolCall.function.arguments;
-                if (current.addedEmitted) {
-                  enqueueEvent({
-                    type: getResponsesToolCallArgumentDeltaEventType(
-                      defaults.tools,
-                      current.name,
-                    ),
-                    delta: toolCall.function.arguments,
-                    item_id: current.outputItemId,
-                    output_index: current.outputIndex,
-                    response_id: responseId,
-                  });
-                } else {
-                  current.pendingArgumentDeltas.push(
-                    toolCall.function.arguments,
-                  );
+              if (delta?.content) {
+                ensureMessageAdded();
+                outputText = `${outputText}${delta.content}`;
+                if (outputText.length > MAX_STREAM_TEXT_LENGTH) {
+                  throw new Error('Response output exceeds the maximum size');
                 }
+                enqueueEvent({
+                  type: 'response.output_text.delta',
+                  delta: delta.content,
+                  item: buildStreamingMessageItem('in_progress'),
+                  output_index: messageState.outputIndex,
+                  response_id: responseId,
+                });
               }
 
-              toolCallStates.set(canonicalKey, current);
-              lookupKeys.forEach((key) => {
-                toolCallStateKeys.set(key, current.canonicalKey);
-              });
-            });
-          } catch {
-            console.error(
-              '[CodeBuddy2API] Failed to parse upstream SSE frame',
-              {
-                route: '/v1/responses',
-                frame: raw.slice(0, 1000),
-              },
-            );
-            enqueueEvent({
-              type: 'response.error',
-              error: {
-                message: 'Failed to parse upstream SSE frame',
-              },
-            });
-          }
-        });
+              if (delta?.reasoning_content) {
+                enqueueEvent({
+                  type: 'response.reasoning_text.delta',
+                  delta: delta.reasoning_content,
+                  response_id: responseId,
+                });
+              }
 
-        await pump();
+              delta?.tool_calls?.forEach((toolCall, position) => {
+                const lookupKeys = getStreamingToolCallLookupKeys(
+                  toolCall,
+                  position,
+                );
+                const existingCanonicalKey = lookupKeys
+                  .map((key) => toolCallStateKeys.get(key) ?? key)
+                  .find((key) => toolCallStates.has(key));
+                const canonicalKey =
+                  existingCanonicalKey ??
+                  getStreamingToolCallCanonicalKey(toolCall, position);
+                const current = toolCallStates.get(canonicalKey) ?? {
+                  addedEmitted: false,
+                  arguments: '',
+                  canonicalKey,
+                  callId: normalizeToolCallId(
+                    toolCall.id,
+                    nextToolCallOutputIndex,
+                  ),
+                  name: '',
+                  outputIndex: nextToolCallOutputIndex++,
+                  outputItemId: createResponseOutputId(),
+                  pendingArgumentDeltas: [],
+                };
+
+                if (toolCall.function?.name) {
+                  if (
+                    current.name.length + toolCall.function.name.length >
+                    MAX_TOOL_NAME_LENGTH
+                  ) {
+                    throw new Error(
+                      'Response tool name exceeds the maximum size',
+                    );
+                  }
+                  current.name += toolCall.function.name;
+                }
+                maybeEmitToolCallAdded(current);
+
+                if (toolCall.function?.arguments) {
+                  if (
+                    current.arguments.length +
+                      toolCall.function.arguments.length >
+                    MAX_TOOL_ARGUMENT_LENGTH
+                  ) {
+                    throw new Error(
+                      'Response tool arguments exceed the maximum size',
+                    );
+                  }
+                  if (
+                    totalToolArgumentLength +
+                      toolCall.function.arguments.length >
+                    MAX_RESPONSE_SESSION_TOTAL_BYTES
+                  ) {
+                    throw new Error(
+                      'Response tool arguments exceed the maximum size',
+                    );
+                  }
+                  totalToolArgumentLength += toolCall.function.arguments.length;
+                  current.arguments = `${current.arguments}${toolCall.function.arguments}`;
+                  if (current.addedEmitted) {
+                    enqueueEvent({
+                      type: getResponsesToolCallArgumentDeltaEventType(
+                        defaults.tools,
+                        current.name,
+                      ),
+                      delta: toolCall.function.arguments,
+                      item_id: current.outputItemId,
+                      output_index: current.outputIndex,
+                      response_id: responseId,
+                    });
+                  } else {
+                    current.pendingArgumentDeltas.push(
+                      toolCall.function.arguments,
+                    );
+                  }
+                }
+
+                toolCallStates.set(canonicalKey, current);
+                lookupKeys.forEach((key) => {
+                  toolCallStateKeys.set(key, current.canonicalKey);
+                });
+              });
+            } catch (error) {
+              if (
+                error instanceof Error &&
+                error.message.includes('maximum size')
+              ) {
+                streamRejected = true;
+              }
+              console.error(
+                '[CodeBuddy2API] Failed to parse upstream SSE frame',
+                {
+                  route: '/v1/responses',
+                  frame: raw.slice(0, 1000),
+                },
+              );
+              enqueueEvent({
+                type: 'response.error',
+                error: {
+                  message: 'Failed to parse upstream SSE frame',
+                },
+              });
+            }
+          }
+
+          if (streamRejected) {
+            try {
+              await reader!.cancel();
+            } finally {
+              releaseReader();
+              controller.close();
+            }
+            return;
+          }
+        }
       };
 
       void pump();
@@ -1395,7 +1603,7 @@ export const handleResponsesRequest = async (
     const previousResponseId = body.previous_response_id ?? null;
     const accessKey = await resolveRequestAccessKey(request);
     const storedPreviousSession = previousResponseId
-      ? getResponseSession(previousResponseId)
+      ? await getResponseSession(previousResponseId)
       : undefined;
 
     if (
@@ -1456,7 +1664,7 @@ export const handleResponsesRequest = async (
       );
     }
 
-    const previousSession = getValidatedPreviousSession(
+    const previousSession = await getValidatedPreviousSession(
       previousResponseId,
       accessKey?.id ?? null,
     );
@@ -1526,7 +1734,7 @@ export const handleResponsesRequest = async (
     >;
 
     return Response.json(
-      mapChatResponseToResponsesPayload(
+      await mapChatResponseToResponsesPayload(
         proxyContext.accessKeyId,
         proxyContext.credentialFilename,
         prepared.defaults,
@@ -1544,7 +1752,10 @@ export const handleResponsesRequest = async (
     return createErrorResponse(
       error instanceof Error && error.message.includes('previous_response_id')
         ? 400
-        : 500,
+        : error instanceof Error &&
+            error.message.includes('Response session exceeds')
+          ? 413
+          : 500,
       error instanceof Error ? error.message : 'Unexpected responses error',
     );
   }
@@ -1552,4 +1763,6 @@ export const handleResponsesRequest = async (
 
 export const resetResponseSessions = (): void => {
   getSessionStore().clear();
+  getSessionByteStore().clear();
+  setSessionTotalBytes(0);
 };

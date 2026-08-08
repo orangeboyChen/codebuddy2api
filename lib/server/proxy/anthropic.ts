@@ -5,6 +5,8 @@ import type { DebugTrace } from '../domain/debug';
 
 import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
 
+const MAX_STREAM_FRAME_LENGTH = 1_000_000;
+
 // ---------------------------------------------------------------------------
 // Anthropic Messages API types
 // ---------------------------------------------------------------------------
@@ -81,6 +83,10 @@ interface OpenAIChatChoice {
   message?: OpenAIChatMessage;
   delta?: OpenAIChatMessage;
   finish_reason?: string | null;
+}
+
+interface OpenAIStreamError {
+  error?: { message?: string };
 }
 
 interface OpenAIUsage {
@@ -815,6 +821,7 @@ const mapOpenAIStreamToAnthropicSSE = (
 
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
+  let streamRejected = false;
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
@@ -825,9 +832,23 @@ const mapOpenAIStreamToAnthropicSSE = (
       const upstreamReader = upstreamResponse.body!.getReader();
       reader = upstreamReader;
       let buffer = '';
+      const rejectStream = (): void => {
+        streamRejected = true;
+        enqueueEvent({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'Upstream SSE frame exceeds the maximum size',
+          },
+        });
+      };
 
       const flushFrames = (frames: string[]): void => {
         for (const frame of frames) {
+          if (frame.length > MAX_STREAM_FRAME_LENGTH) {
+            rejectStream();
+            return;
+          }
           const line = frame
             .split('\n')
             .find((segment) => segment.startsWith('data: '));
@@ -844,6 +865,11 @@ const mapOpenAIStreamToAnthropicSSE = (
 
           try {
             const chunk = JSON.parse(raw) as OpenAIStreamChunk;
+            const upstreamError = chunk as OpenAIStreamError;
+            if (upstreamError.error?.message) {
+              rejectStream();
+              return;
+            }
             processChunk(chunk);
           } catch {
             // Skip unparseable frames
@@ -852,28 +878,43 @@ const mapOpenAIStreamToAnthropicSSE = (
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await upstreamReader.read();
+        while (true) {
+          const { done, value } = await upstreamReader.read();
 
-        if (cancelled) {
-          return;
-        }
-
-        if (done) {
-          if (buffer.trim()) {
-            flushFrames([buffer]);
+          if (cancelled) {
+            return;
           }
 
-          finalize();
-          releaseReader();
-          controller.close();
-          return;
-        }
+          if (done) {
+            if (buffer.trim()) {
+              flushFrames([buffer]);
+            }
+            if (!streamRejected) {
+              finalize();
+            }
+            releaseReader();
+            controller.close();
+            return;
+          }
 
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-        flushFrames(frames);
-        await pump();
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop()!;
+          if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
+            rejectStream();
+          } else {
+            flushFrames(frames);
+          }
+          if (streamRejected) {
+            try {
+              await reader!.cancel();
+            } finally {
+              releaseReader();
+              controller.close();
+            }
+            return;
+          }
+        }
       };
 
       void pump();

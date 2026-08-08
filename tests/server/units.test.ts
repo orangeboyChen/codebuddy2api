@@ -2844,6 +2844,66 @@ describe('server units', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps local response byte accounting valid across stale indexes and resets', async () => {
+    const responseState = globalThis as typeof globalThis & {
+      __codebuddy2apiResponseSessionBytes__?: Map<string, number>;
+      __codebuddy2apiResponseSessionTotalBytes__?: number;
+      __codebuddy2apiResponseSessions__?: Map<string, { createdAt: number }>;
+    };
+    delete responseState.__codebuddy2apiResponseSessionTotalBytes__;
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'first local response' } }],
+          model: 'gpt-5.5',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'second local response' } }],
+          model: 'gpt-5.5',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'third local response' } }],
+          model: 'gpt-5.5',
+        }),
+      );
+
+    const first = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'first local response', model: 'gpt-5.5' },
+    );
+    const firstId = (await first.json()).id as string;
+    const firstSession =
+      responseState.__codebuddy2apiResponseSessions__!.get(firstId)!;
+    firstSession.createdAt = Date.now() - 60 * 60 * 1000 - 1;
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'prune indexed response', model: 'gpt-5.5' },
+    );
+
+    const second = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'second local response', model: 'gpt-5.5' },
+    );
+    const secondId = (await second.json()).id as string;
+    const secondSession =
+      responseState.__codebuddy2apiResponseSessions__!.get(secondId)!;
+    secondSession.createdAt = Date.now() - 60 * 60 * 1000 - 1;
+    responseState.__codebuddy2apiResponseSessionBytes__?.delete(secondId);
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'prune stale index', model: 'gpt-5.5' },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    resetResponseSessions();
+    expect(responseState.__codebuddy2apiResponseSessionTotalBytes__).toBe(0);
+  });
+
   it('updates saved credentials by index and normalizes string boolean flags', async () => {
     const createdCredential = await addCredential({
       bearer_token: 'token-original',

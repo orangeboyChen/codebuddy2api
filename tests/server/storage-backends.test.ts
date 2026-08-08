@@ -322,6 +322,9 @@ describe('storage backends', () => {
     await storage.writeStorageJson('credentials', 'cred-b.json', {
       bearer_token: 'token-b',
     });
+    await storage.writeStorageJson('responses', 'resp-a', {
+      transcript: [{ content: 'sensitive prompt' }],
+    });
     await storage.writeStorageJson('config', 'runtime', {
       CODEBUDDY_AUTH_MODE: 'auto',
     });
@@ -332,6 +335,15 @@ describe('storage backends', () => {
         encryptionMode: 'aes-256-gcm',
         key: 'cred-b.json',
         namespace: 'credentials',
+        payload: null,
+      }),
+    );
+    expect(putDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encryptedPayload: expect.any(String),
+        encryptionMode: 'aes-256-gcm',
+        key: 'resp-a',
+        namespace: 'responses',
         payload: null,
       }),
     );

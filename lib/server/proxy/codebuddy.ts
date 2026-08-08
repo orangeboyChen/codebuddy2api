@@ -36,6 +36,7 @@ interface CacheableTextBlock {
 }
 
 const MIN_AUTO_CACHE_TEXT_LENGTH = 1024;
+const MAX_STREAM_FRAME_LENGTH = 1_000_000;
 
 export interface ChatRequestBody {
   model?: string;
@@ -257,40 +258,46 @@ const trackResponsesUsageStream = async ({
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await upstreamReader.read();
+        while (true) {
+          const { done, value } = await upstreamReader.read();
 
-        if (cancelled) {
-          return;
-        }
-
-        if (done) {
-          if (buffer) {
-            inspectFrame(buffer);
-            controller.enqueue(encoder.encode(buffer));
+          if (cancelled) {
+            return;
           }
 
-          await recordProxyUsage({
-            model,
-            proxyContext,
-            route: '/v1/responses',
-            usage: latestUsage,
+          if (done) {
+            if (buffer) {
+              inspectFrame(buffer);
+              controller.enqueue(encoder.encode(buffer));
+            }
+
+            await recordProxyUsage({
+              model,
+              proxyContext,
+              route: '/v1/responses',
+              usage: latestUsage,
+            });
+            releaseReader();
+            controller.close();
+            return;
+          }
+
+          const text = decoder.decode(value, { stream: true });
+          buffer += text;
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop()!;
+          if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
+            buffer = '';
+          }
+
+          frames.forEach((frame) => {
+            if (frame.length > MAX_STREAM_FRAME_LENGTH) {
+              return;
+            }
+            inspectFrame(frame);
+            controller.enqueue(encoder.encode(`${frame}\n\n`));
           });
-          releaseReader();
-          controller.close();
-          return;
         }
-
-        const text = decoder.decode(value, { stream: true });
-        buffer += text;
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-
-        frames.forEach((frame) => {
-          inspectFrame(frame);
-          controller.enqueue(encoder.encode(`${frame}\n\n`));
-        });
-
-        await pump();
       };
 
       void pump();
@@ -950,39 +957,66 @@ const normalizeStreamingResponse = ({
 
       const flushFrames = (frames: string[]): void => {
         frames.forEach((frame) => {
+          if (frame.length > MAX_STREAM_FRAME_LENGTH) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}\n\n',
+              ),
+            );
+            return;
+          }
           controller.enqueue(encoder.encode(`${processFrame(frame)}\n\n`));
         });
       };
 
       const pump = async (): Promise<void> => {
-        const { done, value } = await upstreamReader.read();
+        while (true) {
+          const { done, value } = await upstreamReader.read();
 
-        if (cancelled) {
-          return;
-        }
-
-        if (done) {
-          if (buffer.trim()) {
-            flushFrames([buffer]);
+          if (cancelled) {
+            return;
           }
 
-          await recordProxyUsage({
-            model,
-            proxyContext,
-            route,
-            usage: latestUsage,
-          });
+          if (done) {
+            if (buffer.trim()) {
+              flushFrames([buffer]);
+            }
 
-          releaseReader();
-          controller.close();
-          return;
+            await recordProxyUsage({
+              model,
+              proxyContext,
+              route,
+              usage: latestUsage,
+            });
+
+            releaseReader();
+            try {
+              controller.close();
+            } catch {
+              // The downstream stream may have been cancelled while the pump was completing.
+            }
+            return;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop()!;
+          if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}\n\n',
+              ),
+            );
+            try {
+              await reader!.cancel();
+            } finally {
+              releaseReader();
+              controller.close();
+            }
+            return;
+          }
+          flushFrames(frames);
         }
-
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-        flushFrames(frames);
-        await pump();
       };
 
       void pump();
