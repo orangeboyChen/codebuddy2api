@@ -507,58 +507,41 @@ const AdminPageLayoutContent = ({
     }));
   }, [setCredentials]);
 
-  const refreshCredentialModels = useCallback(
-    async (filename?: string) => {
-      setCredentials((current) => ({ ...current, modelsLoading: true }));
-      const result = await requestJson<CredentialModelsResponse>(
-        '/admin-api/credentials/models',
-        filename
-          ? {
-              body: JSON.stringify({ filename }),
-              headers: { 'Content-Type': 'application/json' },
-              method: 'POST',
-            }
-          : undefined,
-      );
-      const modelRows = Object.fromEntries(
-        Object.entries(result.data?.models ?? {}).map(([key, value]) => [
-          key,
-          {
-            error: value.error ?? null,
-            models: (value.models ?? [])
-              .map((model) => model.id)
-              .filter((model): model is string => Boolean(model)),
-          },
-        ]),
-      );
+  const loadCredentialModels = useCallback(async () => {
+    setCredentials((current) => ({ ...current, modelsLoading: true }));
+    const result = await requestJson<CredentialModelsResponse>(
+      '/admin-api/credentials/models',
+    );
+    const modelRows = Object.fromEntries(
+      Object.entries(result.data?.models ?? {}).map(([key, value]) => [
+        key,
+        {
+          error: value.error ?? null,
+          models: (value.models ?? [])
+            .map((model) => model.id)
+            .filter((model): model is string => Boolean(model)),
+        },
+      ]),
+    );
 
-      setCredentials((current) => ({
+    setCredentials((current) => ({
+      ...current,
+      modelRows,
+      modelsLoading: false,
+    }));
+    setApiTest((current) => {
+      const models = modelRows[current.credentialFilename]?.models;
+
+      if (!models) return current;
+
+      return {
         ...current,
-        modelRows: filename
-          ? { ...current.modelRows, ...modelRows }
-          : modelRows,
-        modelsLoading: false,
-      }));
-      setApiTest((current) => {
-        if (filename && current.credentialFilename !== filename) {
-          return current;
-        }
-
-        const selectedFilename = filename ?? current.credentialFilename;
-        const models = modelRows[selectedFilename]?.models;
-
-        if (!models) return current;
-
-        return {
-          ...current,
-          model: models.includes(current.model)
-            ? current.model
-            : (models[0] ?? ''),
-        };
-      });
-    },
-    [setApiTest, setCredentials],
-  );
+        model: models.includes(current.model)
+          ? current.model
+          : (models[0] ?? ''),
+      };
+    });
+  }, [setApiTest, setCredentials]);
 
   const refreshCredentialList = useCallback(async () => {
     setCredentials((current) => ({
@@ -829,8 +812,8 @@ const AdminPageLayoutContent = ({
 
   const refreshAdminData = useCallback(async () => {
     await Promise.all([loadDashboard(), loadCredentials()]);
-    await refreshCredentialModels();
-  }, [loadCredentials, loadDashboard, refreshCredentialModels]);
+    await loadCredentialModels();
+  }, [loadCredentialModels, loadCredentials, loadDashboard]);
 
   const clearUsageHistory = async () => {
     setUsage((current) => ({
@@ -1538,7 +1521,11 @@ const AdminPageLayoutContent = ({
   useEffect(() => {
     if (!initialData) {
       if (activeTab === 'api-test') {
-        void Promise.all([loadCredentials(), loadSettings()]);
+        void Promise.all([
+          loadCredentialModels(),
+          loadCredentials(),
+          loadSettings(),
+        ]);
       } else if (activeTab === 'credentials') {
         void loadCredentials();
       } else if (activeTab === 'dashboard') {
@@ -1562,6 +1549,7 @@ const AdminPageLayoutContent = ({
     clearDebugAutoRefreshTimer,
     initialData,
     loadCredentials,
+    loadCredentialModels,
     loadDashboard,
     loadDebug,
     loadSettings,
@@ -1963,7 +1951,6 @@ const AdminPageLayoutContent = ({
                     credentialFilename: value,
                     model: models[0] ?? '',
                   }));
-                  void refreshCredentialModels(value);
                 },
                 onMessageChange: (value) => {
                   setApiTest((current) => ({ ...current, message: value }));
