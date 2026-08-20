@@ -68,6 +68,7 @@ interface ResponseSession {
   model: string;
   transcript: TranscriptMessage[];
   defaults: ResponseSessionDefaults;
+  upstreamProtocol?: 'chat' | 'responses';
 }
 
 interface ChatResponseToolCall {
@@ -308,6 +309,27 @@ const storeResponseSession = async (
   byteStore.set(session.id, sessionBytes);
   setSessionTotalBytes(getSessionTotalBytes() - previousBytes + sessionBytes);
   pruneResponseSessions();
+};
+
+const storeUpstreamResponseBinding = async ({
+  model,
+  proxyContext,
+  responseId,
+}: {
+  model: string;
+  proxyContext: ProxyContext;
+  responseId: string;
+}): Promise<void> => {
+  await storeResponseSession({
+    accessKeyId: proxyContext.accessKeyId,
+    credentialFilename: proxyContext.credentialFilename,
+    createdAt: Date.now(),
+    defaults: {},
+    id: responseId,
+    model,
+    transcript: [],
+    upstreamProtocol: 'responses',
+  });
 };
 
 const flattenNamespaceToolName = (namespace: string, name: string): string => {
@@ -1083,6 +1105,7 @@ const mapChatResponseToResponsesPayload = async (
       },
     ],
     defaults,
+    upstreamProtocol: 'chat',
   });
 
   return {
@@ -1307,6 +1330,7 @@ const createResponsesEventStream = async (
                   },
                 ],
                 defaults,
+                upstreamProtocol: 'chat',
               });
             } catch (error) {
               console.error(
@@ -1624,7 +1648,7 @@ export const handleResponsesRequest = async (
       throw new Error('Unknown or expired previous_response_id');
     }
 
-    const proxyContext = storedPreviousSession?.credentialFilename
+    const resolvedProxyContext = storedPreviousSession?.credentialFilename
       ? await resolveProxyContextByCredentialFilename(
           storedPreviousSession.credentialFilename,
           {
@@ -1642,25 +1666,45 @@ export const handleResponsesRequest = async (
           request,
           typeof body.model === 'string' ? body.model : undefined,
         );
+    const proxyContext = storedPreviousSession?.upstreamProtocol
+      ? {
+          ...resolvedProxyContext,
+          preferences: {
+            ...resolvedProxyContext.preferences,
+            upstreamProtocol: storedPreviousSession.upstreamProtocol,
+          },
+        }
+      : resolvedProxyContext;
 
     const scopedBody =
-      !storedPreviousSession &&
-      (typeof body.model !== 'string' || !body.model.trim())
+      typeof body.model !== 'string' || !body.model.trim()
         ? {
             ...body,
             model:
+              storedPreviousSession?.model ??
               getCredentialSupportedModels(
                 proxyContext.auth.credentialData,
-              )[0] ?? (await getDefaultModel()),
+              )[0] ??
+              (await getDefaultModel()),
           }
         : body;
 
-    if (proxyContext.preferences.responsesPassthrough) {
+    if (proxyContext.preferences.upstreamProtocol === 'responses') {
+      const model = String(
+        (scopedBody as ResponsesRequestBody).model ?? 'unknown',
+      );
       return proxyResponsesUpstream(
         request,
         scopedBody as Record<string, unknown>,
         proxyContext,
         debugTrace,
+        async (responseId) => {
+          await storeUpstreamResponseBinding({
+            model,
+            proxyContext,
+            responseId,
+          });
+        },
       );
     }
 

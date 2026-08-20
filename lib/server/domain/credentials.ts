@@ -30,6 +30,7 @@ export type CredentialData = Record<string, unknown> & {
   user_id?: string;
   user_info?: Record<string, unknown>;
   responses_passthrough?: boolean;
+  upstream_protocol?: 'chat' | 'responses';
   first_message_role_to_system?: boolean;
   supported_models?: string;
 };
@@ -473,6 +474,8 @@ export const listCredentials = async (): Promise<{
         responses_passthrough: getBooleanSetting(
           record.data.responses_passthrough,
         ),
+        upstream_protocol: getCredentialProxySettings(record.data)
+          .upstreamProtocol,
         first_message_role_to_system: getBooleanSetting(
           record.data.first_message_role_to_system,
         ),
@@ -559,6 +562,21 @@ export const addCredential = async (
     existingPayload = storedPayload;
   }
 
+  const upstreamProtocol =
+    credentialData.upstream_protocol === 'responses'
+      ? 'responses'
+      : credentialData.upstream_protocol === 'chat'
+        ? 'chat'
+        : credentialData.responses_passthrough !== undefined
+          ? getBooleanSetting(credentialData.responses_passthrough)
+            ? 'responses'
+            : 'chat'
+          : existingPayload.upstream_protocol === 'responses'
+            ? 'responses'
+            : getBooleanSetting(existingPayload.responses_passthrough)
+              ? 'responses'
+              : 'chat';
+
   const payload = {
     ...existingPayload,
     ...credentialData,
@@ -566,10 +584,8 @@ export const addCredential = async (
       typeof existingPayload.created_at === 'number'
         ? existingPayload.created_at
         : now,
-    responses_passthrough: getBooleanSetting(
-      credentialData.responses_passthrough ??
-        existingPayload.responses_passthrough,
-    ),
+    responses_passthrough: upstreamProtocol === 'responses',
+    upstream_protocol: upstreamProtocol,
     first_message_role_to_system: getBooleanSetting(
       credentialData.first_message_role_to_system ??
         existingPayload.first_message_role_to_system,
@@ -779,12 +795,17 @@ export const getCredentialProxySettings = (
   credential: CredentialData | null | undefined,
 ): {
   firstMessageRoleToSystem: boolean;
-  responsesPassthrough: boolean;
+  upstreamProtocol: 'chat' | 'responses';
 } => {
   return {
     firstMessageRoleToSystem: getBooleanSetting(
       credential?.first_message_role_to_system,
     ),
-    responsesPassthrough: getBooleanSetting(credential?.responses_passthrough),
+    upstreamProtocol:
+      credential?.upstream_protocol === 'responses' ||
+      (credential?.upstream_protocol !== 'chat' &&
+        getBooleanSetting(credential?.responses_passthrough))
+        ? 'responses'
+        : 'chat',
   };
 };

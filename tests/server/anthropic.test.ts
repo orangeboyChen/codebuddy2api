@@ -4,6 +4,7 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 
 import { handleMessagesRequest } from '@/lib/server/proxy/anthropic';
+import { createAccessKey } from '@/lib/server/domain/access-keys';
 import { addCredential } from '@/lib/server/domain/credentials';
 
 const repoRoot = process.cwd();
@@ -70,6 +71,137 @@ describe('anthropic messages api', () => {
     expect(response.status).toBe(400);
     const json = (await response.json()) as Record<string, unknown>;
     expect(json.type).toBe('error');
+  });
+
+  it('uses Anthropic errors and converts thinking for Responses upstream', async () => {
+    const credential = await addCredential({
+      bearer_token: 'anthropic-responses-token',
+      upstream_protocol: 'responses',
+      user_id: 'anthropic-responses@example.com',
+    });
+    const accessKey = await createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Anthropic Responses Key',
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          id: 'resp_anthropic_reasoning',
+          output: [
+            {
+              type: 'reasoning',
+              summary: [{ text: 'Think first', type: 'summary_text' }],
+            },
+          ],
+          output_text: 'answerENDignored',
+          status: 'completed',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          error: { message: 'Responses model failed' },
+          id: 'resp_anthropic_failed',
+          status: 'failed',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse(
+          { error: { message: 'Responses tenant is rate limited' } },
+          429,
+        ),
+      );
+    const request = makeNextRequest('http://localhost/v1/messages', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${accessKey.secret}` },
+    });
+
+    const response = await handleMessagesRequest(request, {
+      model: 'hy3',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: 'Think' }],
+      stop_sequences: ['END'],
+      thinking: { type: 'adaptive' },
+      tool_choice: { disable_parallel_tool_use: true, type: 'auto' },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      content: [
+        { thinking: 'Think first', type: 'thinking' },
+        { text: 'answer', type: 'text' },
+      ],
+      type: 'message',
+    });
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)),
+    ).toMatchObject({
+      parallel_tool_calls: false,
+      reasoning: { summary: 'auto' },
+    });
+
+    const failedResponse = await handleMessagesRequest(request, {
+      model: 'hy3',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: 'Fail' }],
+    });
+    expect(failedResponse.status).toBe(502);
+    expect(await failedResponse.json()).toMatchObject({
+      error: {
+        message: 'Responses model failed',
+        type: 'api_error',
+      },
+      type: 'error',
+    });
+
+    const limitedResponse = await handleMessagesRequest(request, {
+      model: 'hy3',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: 'Retry later' }],
+    });
+    expect(limitedResponse.status).toBe(429);
+    expect(await limitedResponse.json()).toMatchObject({
+      error: {
+        message: 'Responses tenant is rate limited',
+        type: 'rate_limit_error',
+      },
+      type: 'error',
+    });
+  });
+
+  it('preserves Responses usage in Anthropic streams', async () => {
+    const credential = await addCredential({
+      bearer_token: 'anthropic-responses-stream-token',
+      upstream_protocol: 'responses',
+      user_id: 'anthropic-responses-stream@example.com',
+    });
+    const accessKey = await createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Anthropic Responses Stream Key',
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeSseResponse([
+        'data: {"type":"response.output_text.delta","delta":"answer"}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}',
+        'data: [DONE]',
+      ]),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${accessKey.secret}` },
+      }),
+      {
+        model: 'hy3',
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: 'user', content: 'Count usage' }],
+      },
+    );
+    const payload = await response.text();
+
+    expect(payload).toContain('"text":"answer"');
+    expect(payload).toContain('"usage":{"input_tokens":3,"output_tokens":2');
   });
 
   it('translates a simple non-streaming request and response', async () => {
@@ -586,6 +718,28 @@ describe('anthropic messages api', () => {
     const text = await response.text();
     expect(text).toContain('event: error');
     expect(text).not.toContain('event: message_stop');
+  });
+
+  it('preserves upstream Chat stream errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeSseResponse([
+        'data: {"error":{"message":"Responses upstream is unavailable"}}',
+      ]),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: 'user', content: 'Hi' }],
+      },
+    );
+
+    const text = await response.text();
+    expect(text).toContain('event: error');
+    expect(text).toContain('Responses upstream is unavailable');
   });
 
   it('cancels the upstream Chat stream when an Anthropic client disconnects', async () => {
