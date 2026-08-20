@@ -78,11 +78,6 @@ const pruneAccessKeyStore = async (
         changed = true;
       }
 
-      if (!remainingFilenames.length) {
-        changed = true;
-        return null;
-      }
-
       if (
         remainingFilenames.some(
           (filename, index) => filename !== record.credentialFilenames[index],
@@ -101,9 +96,7 @@ const pruneAccessKeyStore = async (
   return {
     changed,
     store: {
-      accessKeys: accessKeys.filter(
-        (record): record is AccessKeyRecord => record !== null,
-      ),
+      accessKeys,
     },
   };
 };
@@ -297,10 +290,6 @@ export const createAccessKey = async ({
     throw new Error('Access key name is required');
   }
 
-  if (!normalizedCredentialFilenames.length) {
-    throw new Error('At least one credential must be selected');
-  }
-
   return mutateAccessKeyStore((store) => {
     const now = new Date().toISOString();
     const record: AccessKeyRecord = {
@@ -338,10 +327,6 @@ export const updateAccessKey = async (
     throw new Error('Access key name is required');
   }
 
-  if (!normalizedCredentialFilenames.length) {
-    throw new Error('At least one credential must be selected');
-  }
-
   return mutateAccessKeyStore((store) => {
     const record = store.accessKeys.find((item) => item.id === id);
 
@@ -375,18 +360,13 @@ export const removeCredentialReferencesFromAccessKeys = async (
 ): Promise<boolean> => {
   return mutateAccessKeyStore((store) => {
     let changed = false;
-    const accessKeys = store.accessKeys.flatMap((record) => {
+    const accessKeys = store.accessKeys.map((record) => {
       const credentialFilenames = normalizeCredentialFilenames(
         record.credentialFilenames,
       ).filter((filename) => filename !== credentialFilename);
 
       if (credentialFilenames.length !== record.credentialFilenames.length) {
         changed = true;
-      }
-
-      if (!credentialFilenames.length) {
-        changed = true;
-        return [];
       }
 
       if (
@@ -397,7 +377,7 @@ export const removeCredentialReferencesFromAccessKeys = async (
         changed = true;
       }
 
-      return [{ ...record, credentialFilenames }];
+      return { ...record, credentialFilenames };
     });
 
     if (!changed) {

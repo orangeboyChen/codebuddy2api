@@ -76,6 +76,7 @@ describe('anthropic messages api', () => {
   it('uses Anthropic errors and converts thinking for Responses upstream', async () => {
     const credential = await addCredential({
       bearer_token: 'anthropic-responses-token',
+      first_system_message_role_to_user: true,
       upstream_protocol: 'responses',
       user_id: 'anthropic-responses@example.com',
     });
@@ -120,6 +121,7 @@ describe('anthropic messages api', () => {
       model: 'hy3',
       max_tokens: 4096,
       messages: [{ role: 'user', content: 'Think' }],
+      system: 'Anthropic system prompt',
       stop_sequences: ['END'],
       thinking: { type: 'adaptive' },
       tool_choice: { disable_parallel_tool_use: true, type: 'auto' },
@@ -135,6 +137,16 @@ describe('anthropic messages api', () => {
     expect(
       JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)),
     ).toMatchObject({
+      input: [
+        {
+          content: [{ text: 'Anthropic system prompt', type: 'input_text' }],
+          role: 'user',
+        },
+        {
+          content: [{ text: 'Think', type: 'input_text' }],
+          role: 'user',
+        },
+      ],
       parallel_tool_calls: false,
       reasoning: { summary: 'auto' },
     });
