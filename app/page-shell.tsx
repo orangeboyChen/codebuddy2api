@@ -984,14 +984,14 @@ const AdminPageLayoutContent = ({
                 index: credentials.form.editingIndex,
                 first_message_role_to_system:
                   credentials.form.firstMessageRoleToSystem,
-                responses_passthrough: credentials.form.responsesPassthrough,
+                upstream_protocol: credentials.form.upstreamProtocol,
               }
             : {
                 access_token: credentials.form.bearerToken.trim(),
                 bearer_token: credentials.form.bearerToken.trim(),
                 first_message_role_to_system:
                   credentials.form.firstMessageRoleToSystem,
-                responses_passthrough: credentials.form.responsesPassthrough,
+                upstream_protocol: credentials.form.upstreamProtocol,
                 user_id: credentials.form.userId.trim() || undefined,
               },
         ),
@@ -1021,7 +1021,7 @@ const AdminPageLayoutContent = ({
         bearerToken: '',
         editingIndex: null,
         firstMessageRoleToSystem: false,
-        responsesPassthrough: false,
+        upstreamProtocol: 'chat',
         userId: '',
       },
     }));
@@ -1736,12 +1736,12 @@ const AdminPageLayoutContent = ({
                     },
                   }));
                 },
-                onCredentialResponsesPassthroughChange: (value) => {
+                onCredentialUpstreamProtocolChange: (value) => {
                   setCredentials((current) => ({
                     ...current,
                     form: {
                       ...current.form,
-                      responsesPassthrough: value,
+                      upstreamProtocol: value,
                     },
                   }));
                 },
@@ -1774,7 +1774,7 @@ const AdminPageLayoutContent = ({
                       editingIndex: credential.index,
                       firstMessageRoleToSystem:
                         credential.first_message_role_to_system,
-                      responsesPassthrough: credential.responses_passthrough,
+                      upstreamProtocol: credential.upstream_protocol,
                       userId: credential.user_id ?? '',
                     },
                   }));
@@ -1827,7 +1827,7 @@ const AdminPageLayoutContent = ({
                       bearerToken: '',
                       editingIndex: null,
                       firstMessageRoleToSystem: false,
-                      responsesPassthrough: false,
+                      upstreamProtocol: 'chat',
                       userId: '',
                     },
                   }));

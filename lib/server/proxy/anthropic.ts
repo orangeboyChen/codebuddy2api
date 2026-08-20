@@ -392,6 +392,11 @@ const buildChatRequestBody = async (
   const chatMessages = mapAnthropicMessagesToChat(body.messages ?? []);
 
   const messages: ChatMessage[] = [];
+  const disableParallelToolUse =
+    body.tool_choice && typeof body.tool_choice === 'object'
+      ? (body.tool_choice as { disable_parallel_tool_use?: unknown })
+          .disable_parallel_tool_use
+      : undefined;
 
   if (systemText) {
     messages.push({ role: 'system', content: systemText });
@@ -412,6 +417,10 @@ const buildChatRequestBody = async (
     stop: body.stop_sequences,
     tools: mapAnthropicToolsToChat(body.tools),
     tool_choice: mapAnthropicToolChoiceToChat(body.tool_choice),
+    parallel_tool_calls:
+      typeof disableParallelToolUse === 'boolean'
+        ? !disableParallelToolUse
+        : undefined,
   };
 
   // Pass through thinking/reasoning config so upstream models that support
@@ -832,13 +841,15 @@ const mapOpenAIStreamToAnthropicSSE = (
       const upstreamReader = upstreamResponse.body!.getReader();
       reader = upstreamReader;
       let buffer = '';
-      const rejectStream = (): void => {
+      const rejectStream = (
+        message = 'Upstream SSE frame exceeds the maximum size',
+      ): void => {
         streamRejected = true;
         enqueueEvent({
           type: 'error',
           error: {
             type: 'invalid_request_error',
-            message: 'Upstream SSE frame exceeds the maximum size',
+            message,
           },
         });
       };
@@ -867,7 +878,7 @@ const mapOpenAIStreamToAnthropicSSE = (
             const chunk = JSON.parse(raw) as OpenAIStreamChunk;
             const upstreamError = chunk as OpenAIStreamError;
             if (upstreamError.error?.message) {
-              rejectStream();
+              rejectStream(upstreamError.error.message);
               return;
             }
             processChunk(chunk);
@@ -939,6 +950,38 @@ const mapOpenAIStreamToAnthropicSSE = (
   });
 };
 
+const extractErrorMessage = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    try {
+      return extractErrorMessage(JSON.parse(value) as unknown) ?? value;
+    } catch {
+      return value;
+    }
+  }
+  if (!value || typeof value !== 'object') return null;
+
+  const payload = value as {
+    detail?: unknown;
+    error?: unknown;
+    message?: unknown;
+  };
+  const detail = extractErrorMessage(payload.detail);
+  if (detail) return detail;
+  if (typeof payload.message === 'string') return payload.message;
+  return extractErrorMessage(payload.error);
+};
+
+const getUpstreamErrorMessage = async (response: Response): Promise<string> => {
+  const text = await response.text();
+  if (!text) return 'Upstream CodeBuddy request failed';
+
+  try {
+    return extractErrorMessage(JSON.parse(text) as unknown) ?? text;
+  } catch {
+    return text;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
@@ -963,7 +1006,10 @@ export const handleMessagesRequest = async (
     );
 
     if (!upstreamResponse.ok) {
-      return upstreamResponse;
+      return createAnthropicError(
+        upstreamResponse.status,
+        await getUpstreamErrorMessage(upstreamResponse),
+      );
     }
 
     const model = String(chatBody.model ?? 'unknown');
@@ -984,11 +1030,28 @@ export const handleMessagesRequest = async (
 };
 
 const createAnthropicError = (status: number, message: string): Response => {
+  const type =
+    status === 401
+      ? 'authentication_error'
+      : status === 403
+        ? 'permission_error'
+        : status === 404
+          ? 'not_found_error'
+          : status === 413
+            ? 'request_too_large'
+            : status === 429
+              ? 'rate_limit_error'
+              : status === 529
+                ? 'overloaded_error'
+                : status >= 500
+                  ? 'api_error'
+                  : 'invalid_request_error';
+
   return Response.json(
     {
       type: 'error',
       error: {
-        type: 'invalid_request_error',
+        type,
         message,
       },
     },

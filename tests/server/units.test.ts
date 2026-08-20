@@ -1320,6 +1320,7 @@ describe('server units', () => {
       '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
     );
     expect(upstreamHeaders.get('tracestate')).toBe('vendor=value');
+    expect(upstreamHeaders.get('Authorization')).toBe('Bearer token-a');
     expect(
       JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body))
         .max_tokens,
@@ -1332,6 +1333,987 @@ describe('server units', () => {
       JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body))
         .response_format,
     ).toBeUndefined();
+  });
+
+  it('uses the Responses upstream protocol for Chat Completions requests', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses@example.com',
+      },
+      filePath: '/tmp/responses.json',
+      filename: 'responses.json',
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        created_at: 123,
+        id: 'resp_123',
+        output: [],
+        output_text: 'hello from responses',
+        usage: {
+          input_tokens: 2,
+          input_tokens_details: {
+            cached_tokens: 1,
+            cache_creation_tokens: 1,
+          },
+          output_tokens: 3,
+          total_tokens: 5,
+        },
+      }),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [
+          { content: 'Follow instructions', role: 'system' },
+          {
+            content: [
+              { text: 'Say hello', type: 'text' },
+              {
+                image_url: { detail: 'high', url: 'https://example.com/a.png' },
+                type: 'image_url',
+              },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'hy3',
+        reasoning_effort: 'high',
+        parallel_tool_calls: false,
+        response_format: {
+          json_schema: {
+            name: 'answer',
+            schema: { properties: {}, type: 'object' },
+            strict: true,
+          },
+          type: 'json_schema',
+        },
+        tool_choice: {
+          function: { name: 'lookup_weather' },
+          type: 'function',
+        },
+        temperature: 0.2,
+        top_p: 0.8,
+        tools: [
+          {
+            function: {
+              name: 'lookup_weather',
+              parameters: { properties: {}, type: 'object' },
+            },
+            type: 'function',
+          },
+        ],
+      },
+      context,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      choices: [
+        { message: { content: 'hello from responses', role: 'assistant' } },
+      ],
+      model: 'hy3',
+      object: 'chat.completion',
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'https://copilot.tencent.com/responses',
+    );
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)),
+    ).toMatchObject({
+      input: [
+        {
+          content: [
+            { text: 'Say hello', type: 'input_text' },
+            {
+              detail: 'high',
+              image_url: 'https://example.com/a.png',
+              type: 'input_image',
+            },
+          ],
+          role: 'user',
+        },
+      ],
+      instructions: 'Follow instructions',
+      model: 'hy3',
+      parallel_tool_calls: false,
+      reasoning: { effort: 'high' },
+      stream: false,
+      temperature: 0.2,
+      text: {
+        format: {
+          name: 'answer',
+          schema: { properties: {}, type: 'object' },
+          strict: true,
+          type: 'json_schema',
+        },
+      },
+      tool_choice: { name: 'lookup_weather', type: 'function' },
+      tools: [
+        {
+          name: 'lookup_weather',
+          parameters: { properties: {}, type: 'object' },
+          type: 'function',
+        },
+      ],
+      top_p: 0.8,
+    });
+    expect((await getUsageAnalytics({ range: 'today' })).tableRows).toEqual([
+      {
+        callCount: 1,
+        cacheHitTokens: 1,
+        model: 'hy3',
+        totalTokens: 5,
+      },
+    ]);
+    const usageStore = JSON.parse(
+      fs.readFileSync(path.join(tempDataDir, 'usage-history.json'), 'utf8'),
+    ) as { events: Array<Record<string, unknown>> };
+    expect(usageStore.events[0]).toMatchObject({
+      cacheCreationTokens: 1,
+      cacheReadTokens: 1,
+    });
+  });
+
+  it('covers Responses upstream compatibility input variants', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-compatibility-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-compatibility@example.com',
+      },
+      filePath: '/tmp/responses-compatibility.json',
+      filename: 'responses-compatibility.json',
+    });
+    const upstreamPayload = {
+      incomplete_details: { reason: 'content_filter' },
+      output: [
+        null,
+        1,
+        { type: 'other' },
+        { type: 'function_call' },
+        { content: null, type: 'message' },
+        {
+          content: [
+            null,
+            1,
+            { text: 1, type: 'output_text' },
+            { text: 'from output', type: 'output_text' },
+          ],
+          type: 'message',
+        },
+        {
+          content: [{ text: 'summary content' }],
+          summary: [null, 1, { text: 1 }, { text: 'summary' }],
+          type: 'reasoning',
+        },
+      ],
+      status: 'incomplete',
+      usage: { input_tokens: 2, output_tokens: 3 },
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => makeJsonResponse(upstreamPayload));
+    const request = async (
+      body: Parameters<typeof proxyChatCompletions>[1],
+    ) => {
+      const response = await proxyChatCompletions(
+        makeNextRequest('http://localhost/v1/chat/completions', {
+          method: 'POST',
+        }),
+        body,
+        context,
+      );
+      await response.text();
+      return response.status;
+    };
+
+    expect(
+      await request({
+        messages: [
+          { content: null, role: 'system' },
+          {
+            content: [
+              'plain',
+              null,
+              { text: null },
+              { unknown: true },
+              {
+                image_url: 'https://example.com/string.png',
+                type: 'image_url',
+              },
+              {
+                image_url: { url: 'https://example.com/object.png' },
+                type: 'image_url',
+              },
+              {
+                image_url: 'https://example.com/input.png',
+                type: 'input_image',
+              },
+              { text: 'text part' },
+              { image_url: { url: 1 }, type: 'image_url' },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'hy3',
+        response_format: { type: 'json_object' },
+        thinking: { type: 'disabled' },
+        tool_choice: 'auto',
+        tools: [
+          null,
+          1,
+          { name: 'direct_tool' },
+          { function: { description: 'missing name' }, type: 'function' },
+        ],
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [
+          {
+            content: null,
+            role: 'assistant',
+            tool_calls: [
+              null,
+              1,
+              { function: {} },
+              { function: { name: 'lookup' } },
+            ],
+          },
+          { content: { result: true }, role: 'tool', tool_call_id: 'call_1' },
+        ],
+        model: 'hy3',
+        response_format: 1,
+        thinking: { budget_tokens: 1_000, type: 'adaptive' },
+        tool_choice: 1,
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [
+          {
+            content: 'assistant text',
+            role: 'assistant',
+            tool_calls: [
+              {
+                function: { arguments: '{}', name: 'lookup' },
+                id: 'call_lookup',
+              },
+            ],
+          },
+        ],
+        model: 'hy3',
+        response_format: {
+          json_schema: { description: 'schema', name: 'answer' },
+          type: 'json_schema',
+        },
+        thinking: { budget_tokens: 5_000, type: 'enabled' },
+        tool_choice: { name: 'lookup', type: 'function' },
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [{ content: undefined, role: 'user' }],
+        model: 'hy3',
+        response_format: { json_schema: {}, type: 'json_schema' },
+        thinking: { budget_tokens: 10_000, type: 'adaptive' },
+        tool_choice: { type: 'function' },
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [{ content: 'reason', role: 'user' }],
+        model: 'hy3',
+        reasoning_effort: 'medium',
+        response_format: { type: 'text' },
+        thinking: { type: 'enabled' },
+        tool_choice: { type: 'required' },
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [{ content: 'unsupported', role: 'user' }],
+        model: 'hy3',
+        thinking: { type: 'unknown' },
+      }),
+    ).toBe(400);
+    expect(
+      await request({
+        frequency_penalty: 0,
+        messages: [{ content: 'unsupported', role: 'user' }],
+        model: 'hy3',
+        presence_penalty: 0,
+      }),
+    ).toBe(400);
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    const firstBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as Record<string, unknown>;
+    expect(firstBody).toMatchObject({
+      reasoning: { effort: 'none' },
+      text: { format: { type: 'json_object' } },
+      tool_choice: 'auto',
+    });
+  });
+
+  it('covers Responses payload fallback and stop variants', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-payload-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-payload@example.com',
+      },
+      filePath: '/tmp/responses-payload.json',
+      filename: 'responses-payload.json',
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          output: [
+            null,
+            1,
+            { content: null, type: 'message' },
+            {
+              content: [
+                null,
+                1,
+                { text: 1, type: 'output_text' },
+                { text: 'zSTOPaEND', type: 'output_text' },
+              ],
+              type: 'message',
+            },
+          ],
+          status: 'incomplete',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          output: [
+            {
+              arguments: undefined,
+              id: 'fc_fallback',
+              name: undefined,
+              type: 'function_call',
+            },
+          ],
+          output_text: '',
+          status: 'completed',
+          usage: {},
+        }),
+      );
+
+    const incompleteResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'fallback', role: 'user' }],
+        model: 'hy3',
+        stop: ['', 'END', 'STOP'],
+      },
+      context,
+    );
+    expect(await incompleteResponse.json()).toMatchObject({
+      choices: [
+        {
+          finish_reason: 'length',
+          message: { content: 'z' },
+        },
+      ],
+      usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 },
+    });
+
+    const toolResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'tool fallback', role: 'user' }],
+        model: 'hy3',
+      },
+      context,
+    );
+    expect(await toolResponse.json()).toMatchObject({
+      choices: [
+        {
+          finish_reason: 'tool_calls',
+          message: {
+            content: null,
+            tool_calls: [
+              {
+                function: { arguments: '', name: 'function' },
+                id: 'fc_fallback',
+              },
+            ],
+          },
+        },
+      ],
+    });
+  });
+
+  it('applies Chat stop sequences locally for the Responses upstream', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-options-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-options@example.com',
+      },
+      filePath: '/tmp/responses-options.json',
+      filename: 'responses-options.json',
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        id: 'resp_stopped',
+        output: [],
+        output_text: 'beforeENDafter',
+        status: 'completed',
+      }),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Stop early', role: 'user' }],
+        model: 'hy3',
+        stop: ['END'],
+      },
+      context,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { content: 'before' },
+        },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)),
+    ).not.toHaveProperty('stop');
+  });
+
+  it('maps Responses reasoning and semantic failures to Chat', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-reasoning-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-reasoning@example.com',
+      },
+      filePath: '/tmp/responses-reasoning.json',
+      filename: 'responses-reasoning.json',
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          id: 'resp_reasoning',
+          output: [
+            {
+              type: 'reasoning',
+              summary: [{ text: 'Reasoning summary', type: 'summary_text' }],
+            },
+          ],
+          output_text: 'answer',
+          status: 'completed',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          error: { code: 'server_error', message: 'model failed' },
+          id: 'resp_failed',
+          status: 'failed',
+        }),
+      );
+
+    const reasoningResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Think', role: 'user' }],
+        model: 'hy3',
+        thinking: { type: 'adaptive' },
+      },
+      context,
+    );
+    expect(await reasoningResponse.json()).toMatchObject({
+      choices: [
+        {
+          message: {
+            content: 'answer',
+            reasoning_content: 'Reasoning summary',
+          },
+        },
+      ],
+    });
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)),
+    ).toMatchObject({ reasoning: { summary: 'auto' } });
+
+    const failedResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Fail', role: 'user' }],
+        model: 'hy3',
+      },
+      context,
+    );
+    expect(failedResponse.status).toBe(502);
+    expect(await failedResponse.text()).toContain('model failed');
+  });
+
+  it('maps Responses content filtering and split stop sequences in streams', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-stream-stop-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-stream-stop@example.com',
+      },
+      filePath: '/tmp/responses-stream-stop.json',
+      filename: 'responses-stream-stop.json',
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.output_text.delta","delta":"beforeEN"}\n\n' +
+            'data: {"type":"response.output_text.delta","delta":"Dafter"}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+    const stoppedResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Stop', role: 'user' }],
+        model: 'hy3',
+        stop: 'END',
+        stream: true,
+      },
+      context,
+    );
+    const stoppedText = await stoppedResponse.text();
+    expect(stoppedText).toContain('"content":"before"');
+    expect(stoppedText).not.toContain('after');
+    expect(stoppedText).toContain('"finish_reason":"stop"');
+
+    const filteredResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Filter', role: 'user' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+    expect(await filteredResponse.text()).toContain(
+      '"finish_reason":"content_filter"',
+    );
+  });
+
+  it('emits Responses usage for Chat streams and preserves it after local stops', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-stream-usage-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-stream-usage@example.com',
+      },
+      filePath: '/tmp/responses-stream-usage.json',
+      filename: 'responses-stream-usage.json',
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.output_text.delta","delta":"normal"}\n\n' +
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.output_text.delta","delta":"beforeENDafter"}\n\n' +
+            'data: {"type":"response.output_text.delta","delta":"ignored"}\n\n' +
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+    const normalResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Normal usage', role: 'user' }],
+        model: 'hy3',
+        stream: true,
+        stream_options: { include_usage: true },
+      },
+      context,
+    );
+    const normalPayload = await normalResponse.text();
+    expect(normalPayload).toContain('"choices":[]');
+    expect(normalPayload).toContain(
+      '"prompt_tokens":3,"prompt_tokens_details"',
+    );
+    expect(normalPayload).toContain('"completion_tokens":2');
+
+    const stoppedResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Stopped usage', role: 'user' }],
+        model: 'hy3',
+        stop: 'END',
+        stream: true,
+        stream_options: { include_usage: true },
+      },
+      context,
+    );
+    const stoppedPayload = await stoppedResponse.text();
+    expect(stoppedPayload).toContain('"content":"before"');
+    expect(stoppedPayload).not.toContain('after');
+    expect(stoppedPayload).not.toContain('ignored');
+    expect(stoppedPayload.match(/"finish_reason":"stop"/g)).toHaveLength(1);
+    expect(stoppedPayload).toContain('"completion_tokens":3');
+    expect(stoppedPayload).toContain('"total_tokens":7');
+
+    expect((await getUsageAnalytics({ range: 'today' })).tableRows).toEqual([
+      {
+        callCount: 2,
+        cacheHitTokens: 0,
+        model: 'hy3',
+        totalTokens: 12,
+      },
+    ]);
+  });
+
+  it('records Responses usage when a Chat stream is cancelled', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-cancel-usage-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-cancel-usage@example.com',
+      },
+      filePath: '/tmp/responses-cancel-usage.json',
+      filename: 'responses-cancel-usage.json',
+    });
+    const cancel = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'x-codebuddy-usage': JSON.stringify({
+            input_tokens: 6,
+            input_tokens_details: { cached_tokens: 4 },
+            output_tokens: 2,
+            total_tokens: 8,
+          }),
+        },
+      }),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Cancel this stream', role: 'user' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+
+    await response.body?.cancel('client disconnected');
+
+    expect(cancel).toHaveBeenCalledWith('client disconnected');
+    expect((await getUsageAnalytics({ range: 'today' })).tableRows).toEqual([
+      {
+        callCount: 1,
+        cacheHitTokens: 4,
+        model: 'hy3',
+        totalTokens: 8,
+      },
+    ]);
+  });
+
+  it('covers Responses Chat stream terminal variants', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-stream-terminal-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-stream-terminal@example.com',
+      },
+      filePath: '/tmp/responses-stream-terminal.json',
+      filename: 'responses-stream-terminal.json',
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.reasoning_summary_text.delta"}\n\n' +
+            'data: {"type":"response.reasoning_text.delta","delta":"reason"}\n\n' +
+            'data: {"type":"response.output_item.added","item":{"type":"function_call"}}\n\n' +
+            'data: {"type":"response.function_call_arguments.delta","output_index":0}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.output_text.delta","delta":"tailZ"}\n\n' +
+            'data: {"type":"response.completed","response":{"usage":{}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.output_text.delta","delta":"partialQ"}\n\n' +
+            'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.error","response":{"error":"response error"}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response('data: {"type":"error","error":{}}\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('data: {"type":"response.failed"}\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.completed","response":{"usage":{"input_tokens":4,"output_tokens":3,"input_tokens_details":{"cached_tokens":1,"cache_creation_tokens":2},"output_tokens_details":{"reasoning_tokens":2}}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.completed","response":{"usage":"invalid"}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+    const stream = async (
+      options: Partial<Parameters<typeof proxyChatCompletions>[1]> = {},
+    ): Promise<string> => {
+      const response = await proxyChatCompletions(
+        makeNextRequest('http://localhost/v1/chat/completions', {
+          method: 'POST',
+        }),
+        {
+          messages: [{ content: 'Stream terminal', role: 'user' }],
+          model: 'hy3',
+          stream: true,
+          ...options,
+        },
+        context,
+      );
+      return response.text();
+    };
+
+    const toolPayload = await stream();
+    expect(toolPayload).toContain('"reasoning_content":""');
+    expect(toolPayload).toContain('"reasoning_content":"reason"');
+    expect(toolPayload).toContain('"name":"function"');
+    expect(toolPayload).toContain('"finish_reason":"tool_calls"');
+
+    const completedPayload = await stream({
+      stop: 'ZZ',
+      stream_options: { include_usage: true },
+    });
+    expect(completedPayload).toContain('"content":"tail"');
+    expect(completedPayload).toContain('"content":"Z"');
+    expect(completedPayload).toContain('"total_tokens":0');
+
+    const incompletePayload = await stream({ stop: 'QQ' });
+    expect(incompletePayload).toContain('"content":"partial"');
+    expect(incompletePayload).toContain('"content":"Q"');
+    expect(incompletePayload).toContain('"finish_reason":"content_filter"');
+
+    expect(await stream()).toContain('response error');
+    expect(await stream()).toContain('[object Object]');
+    expect(await stream()).toContain('Upstream Responses stream failed');
+
+    const detailedUsagePayload = await stream({
+      stream_options: { include_usage: true },
+    });
+    expect(detailedUsagePayload).toContain('"cached_tokens":1');
+    expect(detailedUsagePayload).toContain('"cache_creation_tokens":2');
+    expect(detailedUsagePayload).toContain('"reasoning_tokens":2');
+
+    const invalidUsagePayload = await stream({
+      stream_options: { include_usage: true },
+    });
+    expect(invalidUsagePayload).not.toContain('"usage":');
+    expect(invalidUsagePayload).toContain('data: [DONE]');
+  });
+
+  it('maps Responses function call events back to Chat Completions SSE', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-stream-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-stream@example.com',
+      },
+      filePath: '/tmp/responses-stream.json',
+      filename: 'responses-stream.json',
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'event: response.output_item.added\n' +
+          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup_weather","arguments":""}}\n\n' +
+          'event: response.function_call_arguments.delta\n' +
+          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"city\\":\\"Shanghai\\"}"}\n\n' +
+          'event: response.incomplete\n' +
+          'data: {"type":"response.incomplete"}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Use the weather tool', role: 'user' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+    const payload = await response.text();
+
+    expect(payload).toContain('"name":"lookup_weather"');
+    expect(payload).toContain('"arguments":"{\\"city\\":\\"Shanghai\\"}"');
+    expect(payload.match(/"id":"call_1"/g)).toHaveLength(2);
+    expect(payload).toContain('"finish_reason":"length"');
+    expect(payload).toContain('data: [DONE]');
+  });
+
+  it('surfaces Responses stream failures as Chat Completions errors', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-error-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-error@example.com',
+      },
+      filePath: '/tmp/responses-error.json',
+      filename: 'responses-error.json',
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'event: response.failed\n' +
+          'data: {"type":"response.failed","response":{"error":{"message":"upstream failed"}}}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Fail upstream', role: 'user' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+    const payload = await response.text();
+
+    expect(payload).toContain('"message":"upstream failed"');
+    expect(payload).not.toContain('"finish_reason":"stop"');
+    expect(payload).toContain('data: [DONE]');
+  });
+
+  it('records Responses usage when a Chat stream reader fails', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-reader-failure-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-reader-failure@example.com',
+      },
+      filePath: '/tmp/responses-reader-failure.json',
+      filename: 'responses-reader-failure.json',
+    });
+    const encoder = new TextEncoder();
+    let pullCount = 0;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (pullCount === 0) {
+              pullCount += 1;
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"response.output_text.delta","delta":"partial","response":{"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}}\n\n',
+                ),
+              );
+              return;
+            }
+
+            controller.error(new Error('Responses reader failed'));
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Fail after usage', role: 'user' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+
+    await expect(response.text()).rejects.toThrow('Responses reader failed');
+    expect((await getUsageAnalytics({ range: 'today' })).tableRows).toEqual([
+      {
+        callCount: 1,
+        cacheHitTokens: 0,
+        model: 'hy3',
+        totalTokens: 7,
+      },
+    ]);
   });
 
   it('persists successful proxy calls without upstream usage across runtime restarts', async () => {
@@ -2116,7 +3098,8 @@ describe('server units', () => {
             },
           },
         ),
-      );
+      )
+      .mockResolvedValueOnce(makeJsonResponse({ output_text: 'normalized' }));
 
     const tools = [
       {
@@ -2418,6 +3401,10 @@ describe('server units', () => {
           response: {
             usage: {
               input_tokens: 4,
+              input_tokens_details: {
+                cached_tokens: 1,
+                cache_creation_tokens: 1,
+              },
               output_tokens: 2,
               total_tokens: 6,
             },
@@ -2431,7 +3418,7 @@ describe('server units', () => {
             'data: {"type":"response.created","response":{"id":"resp_1"}}',
             '',
             'event: response.completed',
-            'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}}',
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":2,"cache_creation_tokens":1},"output_tokens":3,"total_tokens":8}}}',
             '',
           ].join('\n'),
           {
@@ -2458,17 +3445,80 @@ describe('server units', () => {
     });
     await streamResponse.text();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const normalizedResponse = await proxyResponsesUpstream(request, {
+      messages: [
+        { content: 'System compatibility instruction', role: 'system' },
+        { content: 'messages compatibility input', role: 'user' },
+      ],
+      model: 'gpt-5.5',
+    });
+    await normalizedResponse.text();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body)),
+    ).toMatchObject({
+      input: [
+        {
+          content: [
+            { text: 'messages compatibility input', type: 'input_text' },
+          ],
+          role: 'user',
+        },
+      ],
+      instructions: 'System compatibility instruction',
+      model: 'gpt-5.5',
+    });
     await waitForAsync(async () => {
       expect((await getUsageAnalytics({ range: 'today' })).tableRows).toEqual([
         {
-          callCount: 2,
-          cacheHitTokens: 0,
+          callCount: 3,
+          cacheHitTokens: 3,
           model: 'gpt-5.5',
           totalTokens: 14,
         },
       ]);
     });
+  });
+
+  it('waits for streamed response bindings before forwarding response ids', async () => {
+    let resolveBinding: (() => void) | undefined;
+    const binding = new Promise<void>((resolve) => {
+      resolveBinding = resolve;
+    });
+    const onResponseId = vi.fn(async () => binding);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'data: {"type":"response.created","response":{"id":"resp_delayed_binding"}}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyResponsesUpstream(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'bind before forwarding', model: 'gpt-5.5', stream: true },
+      undefined,
+      undefined,
+      onResponseId,
+    );
+    const reader = response.body!.getReader();
+    let readSettled = false;
+    const readPromise = reader.read().then((result) => {
+      readSettled = true;
+      return result;
+    });
+
+    await waitForAsync(async () => {
+      expect(onResponseId).toHaveBeenCalledWith('resp_delayed_binding');
+    });
+    expect(readSettled).toBe(false);
+
+    resolveBinding?.();
+    const firstChunk = await readPromise;
+    expect(new TextDecoder().decode(firstChunk.value)).toContain(
+      'resp_delayed_binding',
+    );
+    expect((await reader.read()).done).toBe(true);
   });
 
   it('cancels the upstream Responses stream when the client disconnects', async () => {
@@ -2494,6 +3544,30 @@ describe('server units', () => {
     await response.body?.cancel('client disconnected');
 
     expect(cancel).toHaveBeenCalledWith('client disconnected');
+  });
+
+  it('errors the downstream Responses stream when the upstream reader fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new Error('upstream connection reset'));
+          },
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+          },
+        },
+      ),
+    );
+
+    const response = await proxyResponsesUpstream(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'fail while streaming', model: 'gpt-5.5', stream: true },
+    );
+
+    await expect(response.text()).rejects.toThrow('upstream connection reset');
   });
 
   it('covers responses passthrough header fallback, raw body passthrough, and upstream errors', async () => {
@@ -2718,6 +3792,137 @@ describe('server units', () => {
     ).toBe('resp_from_upstream');
   });
 
+  it('pins upstream Responses follow-ups to the original credential', async () => {
+    const firstCredential = await addCredential({
+      bearer_token: 'token-response-binding-a',
+      upstream_protocol: 'responses',
+      user_id: 'response-binding-a@example.com',
+    });
+    const secondCredential = await addCredential({
+      bearer_token: 'token-response-binding-b',
+      upstream_protocol: 'responses',
+      user_id: 'response-binding-b@example.com',
+    });
+    const accessKey = await createAccessKey({
+      credentialFilenames: [
+        firstCredential.filename,
+        secondCredential.filename,
+      ],
+      name: 'Responses Binding Key',
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          id: 'resp_bound_upstream',
+          object: 'response',
+          output_text: 'first',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          id: 'resp_bound_follow_up',
+          object: 'response',
+          output_text: 'second',
+        }),
+      );
+    const request = makeNextRequest('http://localhost/v1/responses', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${accessKey.secret}` },
+    });
+
+    const firstResponse = await handleResponsesRequest(request, {
+      input: 'first',
+      model: 'hy3',
+    });
+    expect(firstResponse.status).toBe(200);
+    await firstResponse.text();
+
+    await addCredential(
+      { upstream_protocol: 'chat' },
+      firstCredential.filename,
+    );
+
+    const followUpResponse = await handleResponsesRequest(request, {
+      input: 'second',
+      previous_response_id: 'resp_bound_upstream',
+    });
+    expect(followUpResponse.status).toBe(200);
+    await followUpResponse.text();
+
+    const firstAuthorization = new Headers(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).headers,
+    ).get('authorization');
+    const secondAuthorization = new Headers(
+      (fetchMock.mock.calls[1]?.[1] as RequestInit).headers,
+    ).get('authorization');
+    expect(secondAuthorization).toBe(firstAuthorization);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      'https://copilot.tencent.com/responses',
+    );
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body)),
+    ).toMatchObject({ model: 'hy3' });
+  });
+
+  it('keeps Chat-backed Responses sessions on Chat after protocol changes', async () => {
+    const credential = await addCredential({
+      bearer_token: 'token-chat-session-binding',
+      upstream_protocol: 'chat',
+      user_id: 'chat-session-binding@example.com',
+    });
+    const accessKey = await createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Chat Session Binding Key',
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'first answer' } }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          choices: [{ message: { content: 'second answer' } }],
+        }),
+      );
+    const request = makeNextRequest('http://localhost/v1/responses', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${accessKey.secret}` },
+    });
+
+    const firstResponse = await handleResponsesRequest(request, {
+      input: 'first question',
+      model: 'hy3',
+    });
+    const firstPayload = (await firstResponse.json()) as { id: string };
+
+    await addCredential(
+      { upstream_protocol: 'responses' },
+      credential.filename,
+    );
+
+    const followUpResponse = await handleResponsesRequest(request, {
+      input: 'second question',
+      previous_response_id: firstPayload.id,
+    });
+    expect(followUpResponse.status).toBe(200);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      'https://copilot.tencent.com/v2/chat/completions',
+    );
+    expect(
+      JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body)),
+    ).toMatchObject({
+      messages: [
+        { content: 'first question', role: 'user' },
+        { content: 'first answer', role: 'assistant' },
+        { content: 'second question', role: 'user' },
+      ],
+      model: 'hy3',
+    });
+  });
+
   it('covers proxy context helpers for saved credentials', async () => {
     const createdCredential = await addCredential({
       bearer_token: 'token-from-bearer-token',
@@ -2938,7 +4143,41 @@ describe('server units', () => {
     );
     expect(resolved.auth.bearerToken).toBe('token-updated');
     expect(resolved.preferences.firstMessageRoleToSystem).toBe(true);
-    expect(resolved.preferences.responsesPassthrough).toBe(false);
+    expect(resolved.preferences.upstreamProtocol).toBe('chat');
+  });
+
+  it('keeps legacy and current upstream protocol fields synchronized', async () => {
+    const created = await addCredential({
+      bearer_token: 'token-protocol-sync',
+      upstream_protocol: 'responses',
+      user_id: 'protocol-sync@example.com',
+    });
+
+    let record = (await readCredentialRecords()).find(
+      (credential) => credential.filename === created.filename,
+    );
+    expect(record?.data).toMatchObject({
+      responses_passthrough: true,
+      upstream_protocol: 'responses',
+    });
+
+    await addCredential({ upstream_protocol: 'chat' }, created.filename);
+    record = (await readCredentialRecords()).find(
+      (credential) => credential.filename === created.filename,
+    );
+    expect(record?.data).toMatchObject({
+      responses_passthrough: false,
+      upstream_protocol: 'chat',
+    });
+
+    await addCredential({ responses_passthrough: true }, created.filename);
+    record = (await readCredentialRecords()).find(
+      (credential) => credential.filename === created.filename,
+    );
+    expect(record?.data).toMatchObject({
+      responses_passthrough: true,
+      upstream_protocol: 'responses',
+    });
   });
 
   it('discovers models per credential without live upstream requests', async () => {

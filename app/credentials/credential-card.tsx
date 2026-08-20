@@ -1,5 +1,5 @@
 import { Avatar, Block, Flexbox, Tag } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import {
   CalendarDays,
   Clock3,
@@ -24,7 +24,7 @@ interface CredentialCardProps {
   current: CurrentCredentialInfo | null;
   form: CredentialFormState;
   onCredentialFirstMessageRoleToSystemChange: (value: boolean) => void;
-  onCredentialResponsesPassthroughChange: (value: boolean) => void;
+  onCredentialUpstreamProtocolChange: (value: 'chat' | 'responses') => void;
   onDelete: () => void;
   onEdit: () => void;
   onResetCredentialForm: () => void;
@@ -36,7 +36,7 @@ export const CredentialCard = ({
   current,
   form,
   onCredentialFirstMessageRoleToSystemChange,
-  onCredentialResponsesPassthroughChange,
+  onCredentialUpstreamProtocolChange,
   onDelete,
   onEdit,
   onResetCredentialForm,
@@ -104,9 +104,9 @@ export const CredentialCard = ({
           </div>
           <div className="credential-card-routing-tags flex flex-wrap gap-2 py-2">
             <Tag>
-              {credential.responses_passthrough
-                ? text('credentials.credentialResponsesDirect')
-                : text('credentials.credentialResponsesProxyTag')}
+              {credential.upstream_protocol === 'responses'
+                ? text('credentials.credentialUpstreamResponsesTag')
+                : text('credentials.credentialUpstreamChatTag')}
             </Tag>
             <Tag>
               {credential.first_message_role_to_system
@@ -130,12 +130,30 @@ export const CredentialCard = ({
             {text('credentials.credentialEditTitle')}
           </div>
           <div className="mb-4 grid gap-3">
-            <ToggleOption
-              checked={form.responsesPassthrough}
-              description={text('credentials.credentialResponsesDirectHelp')}
-              onChange={onCredentialResponsesPassthroughChange}
-              title={text('credentials.credentialResponsesDirect')}
-            />
+            <label className="flex flex-col gap-1 text-sm text-secondary">
+              <span>{text('credentials.credentialUpstreamProtocol')}</span>
+              <Select
+                aria-label={text('credentials.credentialUpstreamProtocol')}
+                className="w-full"
+                onChange={(value) =>
+                  onCredentialUpstreamProtocolChange(
+                    value === 'responses' ? 'responses' : 'chat',
+                  )
+                }
+                options={[
+                  {
+                    label: text('credentials.credentialUpstreamChat'),
+                    value: 'chat',
+                  },
+                  {
+                    label: text('credentials.credentialUpstreamResponses'),
+                    value: 'responses',
+                  },
+                ]}
+                value={form.upstreamProtocol}
+              />
+              <span>{text('credentials.credentialUpstreamProtocolHelp')}</span>
+            </label>
             <ToggleOption
               checked={form.firstMessageRoleToSystem}
               description={text('credentials.credentialRoleAsSystemHelp')}

@@ -3,7 +3,7 @@
 import { atom } from 'jotai';
 import { createContext, useContext, useState } from 'react';
 import { Block, Flexbox, Input, TextArea } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import {
   Copy,
   ExternalLink,
@@ -40,6 +40,7 @@ export interface CredentialSummary {
   is_expired: boolean;
   name: string | null;
   responses_passthrough: boolean;
+  upstream_protocol: 'chat' | 'responses';
   scope: string | null;
   session_state: string | null;
   tenant_id: string | number | null;
@@ -92,7 +93,7 @@ export interface CredentialFormState {
   bearerToken: string;
   editingIndex: number | null;
   firstMessageRoleToSystem: boolean;
-  responsesPassthrough: boolean;
+  upstreamProtocol: 'chat' | 'responses';
   userId: string;
 }
 
@@ -146,7 +147,7 @@ export const defaultCredentialsState: CredentialsState = {
     bearerToken: '',
     editingIndex: null,
     firstMessageRoleToSystem: false,
-    responsesPassthrough: false,
+    upstreamProtocol: 'chat',
     userId: '',
   },
   items: [],
@@ -187,7 +188,7 @@ export interface CredentialsTabController {
   onCallbackUrlChange: (value: string) => void;
   onCopyAuthUrl: () => void;
   onCredentialFirstMessageRoleToSystemChange: (value: boolean) => void;
-  onCredentialResponsesPassthroughChange: (value: boolean) => void;
+  onCredentialUpstreamProtocolChange: (value: 'chat' | 'responses') => void;
   onCredentialTokenChange: (value: string) => void;
   onCredentialUserIdChange: (value: string) => void;
   onDeleteCredential: (index: number) => void;
@@ -234,7 +235,7 @@ const Credentials = () => {
     onCallbackUrlChange,
     onCopyAuthUrl,
     onCredentialFirstMessageRoleToSystemChange,
-    onCredentialResponsesPassthroughChange,
+    onCredentialUpstreamProtocolChange,
     onCredentialTokenChange,
     onCredentialUserIdChange,
     onDeleteAccessKey,
@@ -452,14 +453,40 @@ const Credentials = () => {
             />
           </div>
           <div className="mb-4 grid gap-3">
-            <ToggleOption
-              checked={credentials.form.responsesPassthrough}
-              description={credentialsText(
-                'credentials.credentialResponsesDirectHelp',
-              )}
-              onChange={onCredentialResponsesPassthroughChange}
-              title={credentialsText('credentials.credentialResponsesDirect')}
-            />
+            <label className="flex flex-col gap-1 text-sm text-secondary">
+              <span>
+                {credentialsText('credentials.credentialUpstreamProtocol')}
+              </span>
+              <Select
+                aria-label={credentialsText(
+                  'credentials.credentialUpstreamProtocol',
+                )}
+                className="w-full"
+                onChange={(value) =>
+                  onCredentialUpstreamProtocolChange(
+                    value === 'responses' ? 'responses' : 'chat',
+                  )
+                }
+                options={[
+                  {
+                    label: credentialsText(
+                      'credentials.credentialUpstreamChat',
+                    ),
+                    value: 'chat',
+                  },
+                  {
+                    label: credentialsText(
+                      'credentials.credentialUpstreamResponses',
+                    ),
+                    value: 'responses',
+                  },
+                ]}
+                value={credentials.form.upstreamProtocol}
+              />
+              <span>
+                {credentialsText('credentials.credentialUpstreamProtocolHelp')}
+              </span>
+            </label>
             <ToggleOption
               checked={credentials.form.firstMessageRoleToSystem}
               description={credentialsText(
@@ -593,8 +620,8 @@ const Credentials = () => {
                 onCredentialFirstMessageRoleToSystemChange={
                   onCredentialFirstMessageRoleToSystemChange
                 }
-                onCredentialResponsesPassthroughChange={
-                  onCredentialResponsesPassthroughChange
+                onCredentialUpstreamProtocolChange={
+                  onCredentialUpstreamProtocolChange
                 }
                 onDelete={onDeleteCredential}
                 onEdit={onEditCredential}
@@ -608,8 +635,8 @@ const Credentials = () => {
                 onCredentialFirstMessageRoleToSystemChange={
                   onCredentialFirstMessageRoleToSystemChange
                 }
-                onCredentialResponsesPassthroughChange={
-                  onCredentialResponsesPassthroughChange
+                onCredentialUpstreamProtocolChange={
+                  onCredentialUpstreamProtocolChange
                 }
                 onDelete={onDeleteCredential}
                 onEdit={onEditCredential}

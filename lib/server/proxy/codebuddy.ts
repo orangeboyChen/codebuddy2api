@@ -42,6 +42,9 @@ export interface ChatRequestBody {
   model?: string;
   messages?: OpenAIMessage[];
   stream?: boolean;
+  stream_options?: {
+    include_usage?: boolean;
+  };
   temperature?: number;
   max_tokens?: number;
   max_completion_tokens?: number;
@@ -52,6 +55,7 @@ export interface ChatRequestBody {
   stop?: string | string[];
   tools?: unknown[];
   tool_choice?: unknown;
+  parallel_tool_calls?: boolean;
   thinking?: Record<string, unknown>;
   reasoning_effort?: string;
 }
@@ -111,7 +115,7 @@ export interface ProxyContext {
   credentialFilename: string | null;
   preferences: {
     firstMessageRoleToSystem: boolean;
-    responsesPassthrough: boolean;
+    upstreamProtocol: 'chat' | 'responses';
   };
 }
 
@@ -182,6 +186,65 @@ const extractResponsesUsage = (value: unknown): unknown => {
   return payload.response?.usage ?? payload.usage ?? null;
 };
 
+const mapResponsesUsageToChat = (
+  usage: unknown,
+): Record<string, unknown> | null => {
+  if (!usage || typeof usage !== 'object') return null;
+
+  const value = usage as {
+    cache_creation_input_tokens?: unknown;
+    cache_read_input_tokens?: unknown;
+    input_tokens?: unknown;
+    input_tokens_details?: {
+      cache_creation_tokens?: unknown;
+      cached_tokens?: unknown;
+    };
+    output_tokens?: unknown;
+    output_tokens_details?: {
+      reasoning_tokens?: unknown;
+    };
+    total_tokens?: unknown;
+  };
+  const inputTokens = Number(value.input_tokens ?? 0);
+  const outputTokens = Number(value.output_tokens ?? 0);
+  const cachedTokens = Number(
+    value.input_tokens_details?.cached_tokens ??
+      value.cache_read_input_tokens ??
+      0,
+  );
+  const cacheCreationTokens = Number(
+    value.input_tokens_details?.cache_creation_tokens ??
+      value.cache_creation_input_tokens ??
+      0,
+  );
+  const reasoningTokens = Number(
+    value.output_tokens_details?.reasoning_tokens ?? 0,
+  );
+
+  return {
+    completion_tokens: outputTokens,
+    completion_tokens_details: {
+      reasoning_tokens: reasoningTokens,
+    },
+    prompt_tokens: inputTokens,
+    prompt_tokens_details: {
+      cache_creation_tokens: cacheCreationTokens,
+      cached_tokens: cachedTokens,
+    },
+    total_tokens: Number(value.total_tokens ?? inputTokens + outputTokens),
+  };
+};
+
+const extractResponsesId = (value: unknown): string | null => {
+  if (!value || typeof value !== 'object') return null;
+  const payload = value as {
+    id?: unknown;
+    response?: { id?: unknown };
+  };
+  const id = payload.response?.id ?? payload.id;
+  return typeof id === 'string' && id ? id : null;
+};
+
 const parseUsageHeader = (response: Response): unknown => {
   const usageHeader = response.headers.get('x-codebuddy-usage');
 
@@ -199,11 +262,13 @@ const parseUsageHeader = (response: Response): unknown => {
 const trackResponsesUsageStream = async ({
   fallbackUsage,
   model,
+  onResponseId,
   proxyContext,
   upstreamResponse,
 }: {
   fallbackUsage: unknown;
   model: string;
+  onResponseId?: (responseId: string) => Promise<void>;
   proxyContext: ProxyContext;
   upstreamResponse: Response;
 }): Promise<Response> => {
@@ -225,36 +290,71 @@ const trackResponsesUsageStream = async ({
   const encoder = new TextEncoder();
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
+  let latestUsage = fallbackUsage;
+  let responseBinding: Promise<void> | null = null;
+  let usageRecorded = false;
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
+  };
+  const recordStreamUsage = async (): Promise<void> => {
+    if (usageRecorded) return;
+    usageRecorded = true;
+    try {
+      await recordProxyUsage({
+        model,
+        proxyContext,
+        route: '/v1/responses',
+        usage: latestUsage,
+      });
+    } catch (error) {
+      console.error('[CodeBuddy2API] Failed to record Responses stream usage', {
+        error,
+        route: '/v1/responses',
+      });
+    }
+  };
+  const bindResponseId = (id: string): Promise<void> => {
+    if (!onResponseId) return Promise.resolve();
+    responseBinding ??= onResponseId(id).catch((error) => {
+      console.error(
+        '[CodeBuddy2API] Failed to bind upstream Responses session',
+        {
+          error,
+          responseId: id,
+        },
+      );
+    });
+    return responseBinding;
   };
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
       const upstreamReader = upstreamResponse.body!.getReader();
       reader = upstreamReader;
       let buffer = '';
-      let latestUsage = fallbackUsage;
+      let responseId: string | null = null;
 
-      const inspectFrame = (frame: string): void => {
-        frame.split('\n').forEach((line) => {
+      const inspectFrame = async (frame: string): Promise<void> => {
+        for (const line of frame.split('\n')) {
           if (!line.startsWith('data:')) {
-            return;
+            continue;
           }
 
           const raw = line.slice(5).trim();
 
           if (!raw || raw === '[DONE]') {
-            return;
+            continue;
           }
 
           try {
-            latestUsage =
-              extractResponsesUsage(JSON.parse(raw) as unknown) ?? latestUsage;
+            const event = JSON.parse(raw) as unknown;
+            latestUsage = extractResponsesUsage(event) ?? latestUsage;
+            responseId = extractResponsesId(event) ?? responseId;
+            if (responseId) await bindResponseId(responseId);
           } catch {
             // Preserve malformed upstream frames without recording them.
           }
-        });
+        }
       };
 
       const pump = async (): Promise<void> => {
@@ -267,16 +367,12 @@ const trackResponsesUsageStream = async ({
 
           if (done) {
             if (buffer) {
-              inspectFrame(buffer);
+              await inspectFrame(buffer);
               controller.enqueue(encoder.encode(buffer));
             }
 
-            await recordProxyUsage({
-              model,
-              proxyContext,
-              route: '/v1/responses',
-              usage: latestUsage,
-            });
+            await recordStreamUsage();
+            await responseBinding;
             releaseReader();
             controller.close();
             return;
@@ -290,23 +386,36 @@ const trackResponsesUsageStream = async ({
             buffer = '';
           }
 
-          frames.forEach((frame) => {
+          for (const frame of frames) {
             if (frame.length > MAX_STREAM_FRAME_LENGTH) {
-              return;
+              continue;
             }
-            inspectFrame(frame);
+            await inspectFrame(frame);
+            if (cancelled) return;
             controller.enqueue(encoder.encode(`${frame}\n\n`));
-          });
+          }
         }
       };
 
-      void pump();
+      void pump().catch(async (error) => {
+        if (cancelled) return;
+        console.error('[CodeBuddy2API] Responses upstream stream failed', {
+          error,
+          route: '/v1/responses',
+        });
+        await responseBinding;
+        await recordStreamUsage();
+        releaseReader();
+        controller.error(error);
+      });
     },
     async cancel(reason): Promise<void> {
       cancelled = true;
       try {
         await reader?.cancel(reason);
       } finally {
+        await responseBinding;
+        await recordStreamUsage();
         releaseReader();
       }
     },
@@ -707,11 +816,930 @@ const buildUpstreamBody = async (
     frequency_penalty: body.frequency_penalty,
     presence_penalty: body.presence_penalty,
     stop: body.stop,
+    stream_options: body.stream_options,
     tools: body.tools,
     tool_choice: body.tool_choice,
+    parallel_tool_calls: body.parallel_tool_calls,
     thinking: body.thinking,
     reasoning_effort: body.reasoning_effort,
   };
+};
+
+const stringifyResponsesInputContent = (content: unknown): string => {
+  if (typeof content === 'string') return content;
+  if (content === null || content === undefined) return '';
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object' && 'text' in part) {
+          return String((part as { text?: unknown }).text ?? '');
+        }
+        return JSON.stringify(part);
+      })
+      .join('');
+  }
+  return JSON.stringify(content);
+};
+
+const mapChatContentToResponses = (
+  content: unknown,
+): Array<Record<string, unknown>> => {
+  if (!Array.isArray(content)) {
+    return [
+      {
+        text: stringifyResponsesInputContent(content),
+        type: 'input_text',
+      },
+    ];
+  }
+
+  return content.flatMap((part): Array<Record<string, unknown>> => {
+    if (typeof part === 'string') {
+      return [{ text: part, type: 'input_text' }];
+    }
+    if (!part || typeof part !== 'object') {
+      return [{ text: JSON.stringify(part), type: 'input_text' }];
+    }
+    const value = part as {
+      image_url?: string | { detail?: unknown; url?: unknown };
+      text?: unknown;
+      type?: unknown;
+    };
+    if (value.type === 'image_url') {
+      const imageUrl =
+        typeof value.image_url === 'string'
+          ? value.image_url
+          : value.image_url?.url;
+      if (typeof imageUrl === 'string' && imageUrl) {
+        const detail =
+          typeof value.image_url === 'object' &&
+          typeof value.image_url.detail === 'string'
+            ? value.image_url.detail
+            : undefined;
+        return [
+          {
+            image_url: imageUrl,
+            ...(detail ? { detail } : {}),
+            type: 'input_image',
+          },
+        ];
+      }
+    }
+    if (value.type === 'input_image' && typeof value.image_url === 'string') {
+      return [{ image_url: value.image_url, type: 'input_image' }];
+    }
+    if (typeof value.text === 'string') {
+      return [{ text: value.text, type: 'input_text' }];
+    }
+    return [{ text: JSON.stringify(value), type: 'input_text' }];
+  });
+};
+
+const translateChatToolChoiceToResponses = (toolChoice: unknown): unknown => {
+  if (typeof toolChoice === 'string') return toolChoice;
+  if (!toolChoice || typeof toolChoice !== 'object') return undefined;
+  const value = toolChoice as {
+    function?: { name?: unknown };
+    name?: unknown;
+    type?: unknown;
+  };
+  if (value.type !== 'function') return toolChoice;
+  const name = value.function?.name ?? value.name;
+  return typeof name === 'string' ? { name, type: 'function' } : toolChoice;
+};
+
+const translateChatResponseFormatToResponses = (
+  responseFormat: unknown,
+): Record<string, unknown> | undefined => {
+  if (!responseFormat || typeof responseFormat !== 'object') return undefined;
+  const value = responseFormat as {
+    json_schema?: Record<string, unknown>;
+    type?: unknown;
+  };
+  if (value.type === 'json_object') {
+    return { format: { type: 'json_object' } };
+  }
+  if (value.type !== 'json_schema' || !value.json_schema) return undefined;
+  const schema = value.json_schema;
+  if (typeof schema.name !== 'string' || !schema.name) return undefined;
+  return {
+    format: {
+      ...(schema.description ? { description: schema.description } : {}),
+      name: schema.name,
+      schema: schema.schema ?? { type: 'object', properties: {} },
+      ...(typeof schema.strict === 'boolean' ? { strict: schema.strict } : {}),
+      type: 'json_schema',
+    },
+  };
+};
+
+const translateChatThinkingToResponses = (
+  thinking: Record<string, unknown> | undefined,
+  reasoningEffort: string | undefined,
+): Record<string, unknown> | undefined => {
+  if (!thinking)
+    return reasoningEffort ? { effort: reasoningEffort } : undefined;
+
+  if (thinking.type === 'disabled') return { effort: 'none' };
+  if (thinking.type !== 'adaptive' && thinking.type !== 'enabled') {
+    return undefined;
+  }
+
+  const budgetTokens =
+    typeof thinking.budget_tokens === 'number'
+      ? thinking.budget_tokens
+      : Number.NaN;
+  const effort = reasoningEffort
+    ? reasoningEffort
+    : Number.isFinite(budgetTokens)
+      ? budgetTokens <= 2_048
+        ? 'low'
+        : budgetTokens <= 8_192
+          ? 'medium'
+          : 'high'
+      : undefined;
+
+  return {
+    ...(effort ? { effort } : {}),
+    summary: 'auto',
+  };
+};
+
+const normalizeStopSequences = (
+  stop: string | string[] | undefined,
+): string[] => {
+  return (Array.isArray(stop) ? stop : stop ? [stop] : []).filter(Boolean);
+};
+
+const findFirstStopSequence = (
+  text: string,
+  stopSequences: string[],
+): number | null => {
+  return stopSequences.reduce<number | null>((earliest, stopSequence) => {
+    const index = text.indexOf(stopSequence);
+    if (index < 0) return earliest;
+    return earliest === null ? index : Math.min(earliest, index);
+  }, null);
+};
+
+const getPendingStopPrefixLength = (
+  text: string,
+  stopSequences: string[],
+): number => {
+  const maximumLength = Math.min(
+    text.length,
+    Math.max(
+      0,
+      ...stopSequences.map((stopSequence) => stopSequence.length - 1),
+    ),
+  );
+
+  for (let length = maximumLength; length > 0; length -= 1) {
+    const suffix = text.slice(-length);
+    if (stopSequences.some((stopSequence) => stopSequence.startsWith(suffix))) {
+      return length;
+    }
+  }
+
+  return 0;
+};
+
+const normalizeResponsesUpstreamBody = (
+  body: Record<string, unknown>,
+): Record<string, unknown> => {
+  const { messages, ...rest } = body;
+
+  if (rest.input !== undefined || !Array.isArray(messages)) {
+    return rest;
+  }
+
+  const systemInstructions = messages
+    .filter((message) => {
+      return (
+        message &&
+        typeof message === 'object' &&
+        ((message as { role?: unknown }).role === 'system' ||
+          (message as { role?: unknown }).role === 'developer')
+      );
+    })
+    .map((message) => {
+      return stringifyResponsesInputContent(
+        (message as { content?: unknown }).content,
+      );
+    })
+    .filter(Boolean)
+    .join('\n\n');
+  const input = messages.flatMap((message) => {
+    if (!message || typeof message !== 'object') return [];
+    const value = message as { content?: unknown; role?: unknown };
+    if (value.role === 'system' || value.role === 'developer') return [];
+    const role = value.role === 'assistant' ? 'assistant' : 'user';
+    return [
+      {
+        content: mapChatContentToResponses(value.content),
+        role,
+      },
+    ];
+  });
+
+  const existingInstructions =
+    typeof rest.instructions === 'string' ? rest.instructions.trim() : '';
+  const instructions = [existingInstructions, systemInstructions]
+    .filter(Boolean)
+    .join('\n\n');
+
+  return { ...rest, ...(instructions ? { instructions } : {}), input };
+};
+
+const buildResponsesBodyFromChat = (
+  body: ChatRequestBody,
+): Record<string, unknown> => {
+  const instructions = body.messages
+    ?.filter(
+      (message) => message.role === 'system' || message.role === 'developer',
+    )
+    .map((message) => stringifyResponsesInputContent(message.content))
+    .filter(Boolean)
+    .join('\n\n');
+  const input =
+    body.messages
+      ?.filter(
+        (message) => message.role !== 'system' && message.role !== 'developer',
+      )
+      .map((message) => {
+        if (message.role === 'tool') {
+          return {
+            call_id: message.tool_call_id,
+            output: stringifyResponsesInputContent(message.content),
+            type: 'function_call_output',
+          };
+        }
+        const toolCalls = Array.isArray(message.tool_calls)
+          ? message.tool_calls
+          : [];
+        const functionCalls = toolCalls.flatMap((toolCall) => {
+          if (!toolCall || typeof toolCall !== 'object') return [];
+          const call = toolCall as {
+            function?: { arguments?: unknown; name?: unknown };
+            id?: unknown;
+          };
+          if (typeof call.function?.name !== 'string') return [];
+          return [
+            {
+              arguments: String(call.function.arguments ?? ''),
+              call_id: String(call.id ?? crypto.randomUUID()),
+              name: call.function.name,
+              type: 'function_call',
+            },
+          ];
+        });
+        const content = mapChatContentToResponses(message.content);
+        const hasContent = content.some((part) => {
+          return (
+            (part.type === 'input_text' && Boolean(part.text)) ||
+            (part.type === 'input_image' && Boolean(part.image_url))
+          );
+        });
+        const shouldOmitMessage =
+          message.role === 'assistant' &&
+          functionCalls.length > 0 &&
+          !hasContent;
+
+        return [
+          ...(shouldOmitMessage
+            ? []
+            : [
+                {
+                  content,
+                  role: message.role === 'assistant' ? 'assistant' : 'user',
+                },
+              ]),
+          ...functionCalls,
+        ];
+      })
+      .flat() ?? [];
+  const tools = body.tools?.flatMap((tool) => {
+    if (!tool || typeof tool !== 'object') return [];
+    const value = tool as {
+      function?: Record<string, unknown>;
+      type?: unknown;
+    };
+    const definition: Record<string, unknown> =
+      value.type === 'function' && value.function ? value.function : value;
+    if (typeof definition.name !== 'string') return [];
+    return [
+      {
+        ...definition,
+        parameters: definition.parameters ?? { type: 'object', properties: {} },
+        type: 'function',
+      },
+    ];
+  });
+  const text = translateChatResponseFormatToResponses(body.response_format);
+  const reasoning = translateChatThinkingToResponses(
+    body.thinking,
+    body.reasoning_effort,
+  );
+
+  return {
+    ...(instructions ? { instructions } : {}),
+    input,
+    max_output_tokens: body.max_tokens ?? body.max_completion_tokens,
+    model: body.model,
+    parallel_tool_calls: body.parallel_tool_calls,
+    reasoning,
+    stream: Boolean(body.stream),
+    temperature: body.temperature,
+    top_p: body.top_p,
+    ...(tools?.length ? { tools } : {}),
+    ...(body.tool_choice
+      ? { tool_choice: translateChatToolChoiceToResponses(body.tool_choice) }
+      : {}),
+    ...(text ? { text } : {}),
+  };
+};
+
+const getUnsupportedResponsesChatOptions = (
+  body: ChatRequestBody,
+): string[] => {
+  return [
+    body.frequency_penalty !== undefined ? 'frequency_penalty' : null,
+    body.presence_penalty !== undefined ? 'presence_penalty' : null,
+    body.thinking !== undefined &&
+    !translateChatThinkingToResponses(body.thinking, body.reasoning_effort)
+      ? 'thinking'
+      : null,
+  ].filter((name): name is string => Boolean(name));
+};
+
+const extractResponsesReasoningText = (output: unknown[]): string => {
+  return output
+    .flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const value = item as {
+        content?: unknown;
+        summary?: unknown;
+        type?: unknown;
+      };
+      if (value.type !== 'reasoning') return [];
+      return [value.summary, value.content].flatMap((parts) => {
+        if (!Array.isArray(parts)) return [];
+        return parts.flatMap((part) => {
+          if (!part || typeof part !== 'object') return [];
+          const text = (part as { text?: unknown }).text;
+          return typeof text === 'string' ? [text] : [];
+        });
+      });
+    })
+    .join('');
+};
+
+const mapResponsesPayloadToChat = (
+  payload: Record<string, unknown>,
+  model: string,
+  stop: string | string[] | undefined,
+): Record<string, unknown> => {
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  const toolCalls = output.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const value = item as Record<string, unknown>;
+    if (value.type !== 'function_call') return [];
+    return [
+      {
+        function: {
+          arguments: String(value.arguments ?? ''),
+          name: String(value.name ?? 'function'),
+        },
+        id: String(value.call_id ?? value.id ?? crypto.randomUUID()),
+        type: 'function',
+      },
+    ];
+  });
+  const usage =
+    payload.usage && typeof payload.usage === 'object'
+      ? (payload.usage as Record<string, unknown>)
+      : undefined;
+  const inputTokens = Number(usage?.input_tokens ?? 0);
+  const outputTokens = Number(usage?.output_tokens ?? 0);
+
+  const rawOutputText =
+    typeof payload.output_text === 'string'
+      ? payload.output_text
+      : output
+          .flatMap((item) => {
+            if (!item || typeof item !== 'object') return [];
+            const content = (item as { content?: unknown }).content;
+            if (!Array.isArray(content)) return [];
+            return content.flatMap((part) => {
+              if (!part || typeof part !== 'object') return [];
+              const value = part as { text?: unknown; type?: unknown };
+              return value.type === 'output_text' &&
+                typeof value.text === 'string'
+                ? [value.text]
+                : [];
+            });
+          })
+          .join('');
+  const stopIndex = findFirstStopSequence(
+    rawOutputText,
+    normalizeStopSequences(stop),
+  );
+  const outputText =
+    stopIndex === null ? rawOutputText : rawOutputText.slice(0, stopIndex);
+  const reasoningText = extractResponsesReasoningText(output);
+  const incompleteReason =
+    payload.incomplete_details && typeof payload.incomplete_details === 'object'
+      ? (payload.incomplete_details as { reason?: unknown }).reason
+      : undefined;
+  const finishReason =
+    payload.status === 'incomplete'
+      ? incompleteReason === 'content_filter'
+        ? 'content_filter'
+        : 'length'
+      : toolCalls.length
+        ? 'tool_calls'
+        : 'stop';
+
+  return {
+    choices: [
+      {
+        finish_reason: finishReason,
+        index: 0,
+        message: {
+          content: outputText || null,
+          role: 'assistant',
+          ...(reasoningText ? { reasoning_content: reasoningText } : {}),
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        },
+      },
+    ],
+    created: Number(payload.created_at ?? Math.floor(Date.now() / 1000)),
+    id: String(payload.id ?? `chatcmpl-${crypto.randomUUID()}`),
+    model,
+    object: 'chat.completion',
+    usage: {
+      completion_tokens: outputTokens,
+      prompt_tokens: inputTokens,
+      total_tokens: Number(usage?.total_tokens ?? inputTokens + outputTokens),
+    },
+  };
+};
+
+const mapResponsesStreamToChat = (
+  upstreamResponse: Response,
+  model: string,
+  proxyContext: ProxyContext,
+  route: string,
+  stop: string | string[] | undefined,
+  includeUsage: boolean,
+): Response => {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const responseId = `chatcmpl-${crypto.randomUUID()}`;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null =
+    upstreamResponse.body?.getReader() ?? null;
+  const fallbackUsage = parseUsageHeader(upstreamResponse);
+  let buffer = '';
+  let emittedFinish = false;
+  let emittedUsage = false;
+  let hasToolCalls = false;
+  let latestUsage = fallbackUsage;
+  let usageRecorded = false;
+  const stopSequences = normalizeStopSequences(stop);
+  let pendingStopText = '';
+  const toolIndexes = new Map<string, number>();
+  const toolCallIds = new Map<string, string>();
+  let nextToolIndex = 0;
+  let stoppedLocally = false;
+
+  const getToolIndex = (itemId: string): number => {
+    const existing = toolIndexes.get(itemId);
+    if (existing !== undefined) return existing;
+    const index = nextToolIndex;
+    nextToolIndex += 1;
+    toolIndexes.set(itemId, index);
+    return index;
+  };
+
+  const encodeChunk = (choice: Record<string, unknown>): Uint8Array => {
+    return encoder.encode(
+      `data: ${JSON.stringify({
+        choices: [choice],
+        created: Math.floor(Date.now() / 1000),
+        id: responseId,
+        model,
+        object: 'chat.completion.chunk',
+      })}\n\n`,
+    );
+  };
+
+  const enqueueUsage = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+  ): void => {
+    if (!includeUsage || emittedUsage) return;
+    const usage = mapResponsesUsageToChat(latestUsage);
+    if (!usage) return;
+
+    emittedUsage = true;
+    controller.enqueue(
+      encoder.encode(
+        `data: ${JSON.stringify({
+          choices: [],
+          created: Math.floor(Date.now() / 1000),
+          id: responseId,
+          model,
+          object: 'chat.completion.chunk',
+          usage,
+        })}\n\n`,
+      ),
+    );
+  };
+
+  const recordStreamUsage = async (): Promise<void> => {
+    if (usageRecorded) return;
+    usageRecorded = true;
+    try {
+      await recordProxyUsage({
+        model,
+        proxyContext,
+        route,
+        usage: latestUsage,
+      });
+    } catch (error) {
+      console.error('[CodeBuddy2API] Failed to record Responses stream usage', {
+        error,
+        route,
+      });
+    }
+  };
+
+  const cancelAndReleaseReader = async (reason?: unknown): Promise<void> => {
+    try {
+      await reader?.cancel(reason);
+    } catch (error) {
+      console.error('[CodeBuddy2API] Failed to cancel Responses stream', {
+        error,
+        route,
+      });
+    } finally {
+      reader?.releaseLock();
+      reader = null;
+    }
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!reader) {
+        await recordStreamUsage();
+        controller.close();
+        return;
+      }
+      while (true) {
+        let readResult: ReadableStreamReadResult<Uint8Array>;
+        try {
+          readResult = await reader.read();
+        } catch (error) {
+          await recordStreamUsage();
+          reader.releaseLock();
+          reader = null;
+          controller.error(error);
+          return;
+        }
+        const { done, value } = readResult;
+        if (done) {
+          if (pendingStopText) {
+            controller.enqueue(
+              encodeChunk({
+                delta: { content: pendingStopText },
+                index: 0,
+              }),
+            );
+            pendingStopText = '';
+          }
+          if (!emittedFinish) {
+            controller.enqueue(
+              encodeChunk({
+                delta: {},
+                finish_reason: hasToolCalls ? 'tool_calls' : 'stop',
+                index: 0,
+              }),
+            );
+          }
+          enqueueUsage(controller);
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          await recordStreamUsage();
+          reader.releaseLock();
+          reader = null;
+          controller.close();
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() ?? '';
+        if (buffer.length > MAX_STREAM_FRAME_LENGTH) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}\n\n',
+            ),
+          );
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          await cancelAndReleaseReader();
+          await recordStreamUsage();
+          controller.close();
+          return;
+        }
+        let emitted = false;
+        for (const frame of frames) {
+          if (frame.length > MAX_STREAM_FRAME_LENGTH) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}\n\n',
+              ),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            await cancelAndReleaseReader();
+            await recordStreamUsage();
+            controller.close();
+            return;
+          }
+          const dataLine = frame
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('data: '));
+          if (!dataLine || dataLine === 'data: [DONE]') continue;
+          try {
+            const event = JSON.parse(dataLine.slice(6)) as {
+              delta?: unknown;
+              item?: unknown;
+              item_id?: unknown;
+              output_index?: unknown;
+              error?: unknown;
+              response?: unknown;
+              type?: unknown;
+            };
+            latestUsage = extractResponsesUsage(event) ?? latestUsage;
+            if (
+              stoppedLocally &&
+              event.type !== 'response.completed' &&
+              event.type !== 'response.incomplete'
+            ) {
+              continue;
+            }
+            if (event.type === 'response.output_text.delta') {
+              const delta = String(event.delta ?? '');
+              if (stopSequences.length) {
+                pendingStopText += delta;
+                const stopIndex = findFirstStopSequence(
+                  pendingStopText,
+                  stopSequences,
+                );
+                if (stopIndex !== null) {
+                  const content = pendingStopText.slice(0, stopIndex);
+                  if (content) {
+                    controller.enqueue(
+                      encodeChunk({ delta: { content }, index: 0 }),
+                    );
+                  }
+                  pendingStopText = '';
+                  controller.enqueue(
+                    encodeChunk({
+                      delta: {},
+                      finish_reason: 'stop',
+                      index: 0,
+                    }),
+                  );
+                  emittedFinish = true;
+                  stoppedLocally = true;
+                  emitted = true;
+                  continue;
+                }
+
+                const pendingLength = getPendingStopPrefixLength(
+                  pendingStopText,
+                  stopSequences,
+                );
+                const content = pendingStopText.slice(
+                  0,
+                  pendingStopText.length - pendingLength,
+                );
+                pendingStopText = pendingLength
+                  ? pendingStopText.slice(-pendingLength)
+                  : '';
+                if (!content) continue;
+                controller.enqueue(
+                  encodeChunk({ delta: { content }, index: 0 }),
+                );
+                emitted = true;
+                continue;
+              }
+              controller.enqueue(
+                encodeChunk({
+                  delta: { content: delta },
+                  index: 0,
+                }),
+              );
+              emitted = true;
+              continue;
+            }
+            if (
+              event.type === 'response.reasoning_summary_text.delta' ||
+              event.type === 'response.reasoning_text.delta'
+            ) {
+              controller.enqueue(
+                encodeChunk({
+                  delta: { reasoning_content: String(event.delta ?? '') },
+                  index: 0,
+                }),
+              );
+              emitted = true;
+              continue;
+            }
+            if (
+              event.type === 'response.output_item.added' &&
+              event.item &&
+              typeof event.item === 'object'
+            ) {
+              const item = event.item as {
+                arguments?: unknown;
+                call_id?: unknown;
+                id?: unknown;
+                name?: unknown;
+                type?: unknown;
+              };
+              if (item.type !== 'function_call') continue;
+              const itemId = String(item.id ?? item.call_id ?? nextToolIndex);
+              const index = getToolIndex(itemId);
+              const callId = String(item.call_id ?? item.id ?? itemId);
+              toolCallIds.set(itemId, callId);
+              hasToolCalls = true;
+              controller.enqueue(
+                encodeChunk({
+                  delta: {
+                    tool_calls: [
+                      {
+                        function: {
+                          arguments: String(item.arguments ?? ''),
+                          name: String(item.name ?? 'function'),
+                        },
+                        id: callId,
+                        index,
+                        type: 'function',
+                      },
+                    ],
+                  },
+                  index: 0,
+                }),
+              );
+              emitted = true;
+              continue;
+            }
+            if (event.type === 'response.function_call_arguments.delta') {
+              const itemId = String(
+                event.item_id ?? event.output_index ?? nextToolIndex,
+              );
+              const index = getToolIndex(itemId);
+              const callId = toolCallIds.get(itemId) ?? `call_${index + 1}`;
+              toolCallIds.set(itemId, callId);
+              hasToolCalls = true;
+              controller.enqueue(
+                encodeChunk({
+                  delta: {
+                    tool_calls: [
+                      {
+                        function: { arguments: String(event.delta ?? '') },
+                        id: callId,
+                        index,
+                      },
+                    ],
+                  },
+                  index: 0,
+                }),
+              );
+              emitted = true;
+              continue;
+            }
+            if (event.type === 'response.completed') {
+              if (pendingStopText) {
+                controller.enqueue(
+                  encodeChunk({
+                    delta: { content: pendingStopText },
+                    index: 0,
+                  }),
+                );
+                pendingStopText = '';
+              }
+              if (!emittedFinish) {
+                controller.enqueue(
+                  encodeChunk({
+                    delta: {},
+                    finish_reason: hasToolCalls ? 'tool_calls' : 'stop',
+                    index: 0,
+                  }),
+                );
+              }
+              enqueueUsage(controller);
+              emittedFinish = true;
+              emitted = true;
+              if (stoppedLocally) {
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                await cancelAndReleaseReader('Stop sequence matched');
+                await recordStreamUsage();
+                controller.close();
+                return;
+              }
+              continue;
+            }
+            if (event.type === 'response.incomplete') {
+              if (pendingStopText) {
+                controller.enqueue(
+                  encodeChunk({
+                    delta: { content: pendingStopText },
+                    index: 0,
+                  }),
+                );
+                pendingStopText = '';
+              }
+              const incompleteReason =
+                event.response && typeof event.response === 'object'
+                  ? (
+                      (event.response as { incomplete_details?: unknown })
+                        .incomplete_details as { reason?: unknown } | undefined
+                    )?.reason
+                  : undefined;
+              if (!emittedFinish) {
+                controller.enqueue(
+                  encodeChunk({
+                    delta: {},
+                    finish_reason:
+                      incompleteReason === 'content_filter'
+                        ? 'content_filter'
+                        : 'length',
+                    index: 0,
+                  }),
+                );
+              }
+              enqueueUsage(controller);
+              emittedFinish = true;
+              emitted = true;
+              if (stoppedLocally) {
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                await cancelAndReleaseReader('Stop sequence matched');
+                await recordStreamUsage();
+                controller.close();
+                return;
+              }
+              continue;
+            }
+            if (
+              event.type === 'response.failed' ||
+              event.type === 'response.error' ||
+              event.type === 'error'
+            ) {
+              const failure =
+                event.error ??
+                (event.response && typeof event.response === 'object'
+                  ? (event.response as { error?: unknown }).error
+                  : undefined);
+              const message =
+                failure && typeof failure === 'object'
+                  ? String(
+                      (failure as { message?: unknown }).message ?? failure,
+                    )
+                  : String(failure ?? 'Upstream Responses stream failed');
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ error: { message } })}\n\n`,
+                ),
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              await cancelAndReleaseReader();
+              await recordStreamUsage();
+              controller.close();
+              return;
+            }
+          } catch {
+            // Ignore malformed upstream events and continue reading.
+          }
+        }
+        if (stoppedLocally) continue;
+        if (emitted) return;
+      }
+    },
+    async cancel(reason) {
+      await cancelAndReleaseReader(reason);
+      await recordStreamUsage();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+    },
+    status: upstreamResponse.status,
+  });
 };
 
 const aggregateToolCalls = (
@@ -1383,6 +2411,107 @@ export const proxyChatCompletions = async (
       context ?? (await resolveProxyContext(request, body.model));
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
     const upstreamBody = await buildUpstreamBody(body, resolvedContext);
+
+    if (resolvedContext.preferences.upstreamProtocol === 'responses') {
+      const unsupportedOptions = getUnsupportedResponsesChatOptions(body);
+      if (unsupportedOptions.length) {
+        return createErrorResponse(
+          400,
+          `Unsupported Chat options for Responses upstream: ${unsupportedOptions.join(', ')}`,
+        );
+      }
+      const apiEndpoint = await getCodeBuddyApiEndpoint();
+      const upstreamUrl = `${apiEndpoint}/responses`;
+      const upstreamHeaders = new Headers(
+        await buildUpstreamHeaders(request, resolvedContext.auth),
+      );
+      upstreamHeaders.set('User-Agent', 'TCodex/0.0.16 CLI/0.144.5');
+      upstreamHeaders.set('X-IDE-Name', 'TCodex');
+      upstreamHeaders.set('X-IDE-Version', '0.144.5');
+      upstreamHeaders.set('X-Product-Version', '0.0.16');
+      const responsesBody = {
+        ...buildResponsesBodyFromChat(upstreamBody),
+        stream: Boolean(body.stream),
+      };
+
+      setDebugUpstreamRequest(debugTrace, {
+        body: responsesBody,
+        headers: headersToRecord(upstreamHeaders),
+        method: 'POST',
+        url: upstreamUrl,
+      });
+
+      let upstreamResponse = await fetch(upstreamUrl, {
+        method: 'POST',
+        headers: upstreamHeaders,
+        body: JSON.stringify(responsesBody),
+        cache: 'no-store',
+      });
+      upstreamResponse = enqueueUpstreamResponseSnapshot(
+        debugTrace,
+        upstreamResponse,
+      );
+
+      if (!upstreamResponse.ok) {
+        const detail = await upstreamResponse.text();
+        logUpstreamFailure({
+          detail,
+          route: usageRoute,
+          status: upstreamResponse.status,
+          url: upstreamUrl,
+        });
+        setDebugTraceError(debugTrace, detail);
+        return createErrorResponse(
+          upstreamResponse.status,
+          'Upstream CodeBuddy request failed',
+          detail,
+        );
+      }
+
+      if (body.stream) {
+        return mapResponsesStreamToChat(
+          upstreamResponse,
+          String(upstreamBody.model ?? 'unknown'),
+          resolvedContext,
+          usageRoute,
+          body.stop,
+          Boolean(body.stream_options?.include_usage) ||
+            usageRoute === '/v1/messages',
+        );
+      }
+
+      const payload = (await upstreamResponse.json()) as Record<
+        string,
+        unknown
+      >;
+      await recordProxyUsage({
+        model: String(upstreamBody.model ?? 'unknown'),
+        proxyContext: resolvedContext,
+        route: usageRoute,
+        usage: payload.usage ?? null,
+      });
+      if (payload.status === 'failed' || payload.error) {
+        const error =
+          payload.error && typeof payload.error === 'object'
+            ? (payload.error as { message?: unknown })
+            : undefined;
+        return createErrorResponse(
+          502,
+          typeof error?.message === 'string'
+            ? error.message
+            : 'Upstream Responses request failed',
+          payload.error,
+        );
+      }
+      return Response.json(
+        mapResponsesPayloadToChat(
+          payload,
+          String(upstreamBody.model ?? 'unknown'),
+          body.stop,
+        ),
+      );
+    }
+
     const apiEndpoint = await getCodeBuddyApiEndpoint();
     const upstreamUrl = `${apiEndpoint}/v2/chat/completions`;
     const upstreamHeaders = await buildUpstreamHeaders(
@@ -1493,6 +2622,7 @@ export const proxyResponsesUpstream = async (
   body: Record<string, unknown>,
   context?: ProxyContext,
   debugTrace?: DebugTrace,
+  onResponseId?: (responseId: string) => Promise<void>,
 ): Promise<Response> => {
   try {
     const resolvedContext =
@@ -1503,18 +2633,21 @@ export const proxyResponsesUpstream = async (
       ));
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
     const upstreamBody = {
-      ...body,
+      ...normalizeResponsesUpstreamBody(body),
       model:
         typeof body.model === 'string' && body.model.trim()
           ? body.model
           : await getDefaultModel(),
     };
     const apiEndpoint = await getCodeBuddyApiEndpoint();
-    const upstreamUrl = `${apiEndpoint}/v1/responses`;
-    const upstreamHeaders = await buildUpstreamHeaders(
-      request,
-      resolvedContext.auth,
+    const upstreamUrl = `${apiEndpoint}/responses`;
+    const upstreamHeaders = new Headers(
+      await buildUpstreamHeaders(request, resolvedContext.auth),
     );
+    upstreamHeaders.set('User-Agent', 'TCodex/0.0.16 CLI/0.144.5');
+    upstreamHeaders.set('X-IDE-Name', 'TCodex');
+    upstreamHeaders.set('X-IDE-Version', '0.144.5');
+    upstreamHeaders.set('X-Product-Version', '0.0.16');
 
     setDebugUpstreamRequest(debugTrace, {
       body: upstreamBody,
@@ -1558,13 +2691,18 @@ export const proxyResponsesUpstream = async (
     if (contentType.toLowerCase().includes('application/json')) {
       const payloadText = await upstreamResponse.text();
       let usage = fallbackUsage;
+      let responseId: string | null = null;
 
       try {
-        usage =
-          extractResponsesUsage(JSON.parse(payloadText) as unknown) ??
-          fallbackUsage;
+        const payload = JSON.parse(payloadText) as unknown;
+        usage = extractResponsesUsage(payload) ?? fallbackUsage;
+        responseId = extractResponsesId(payload);
       } catch {
         // Preserve malformed upstream JSON while retaining header usage.
+      }
+
+      if (responseId && onResponseId) {
+        await onResponseId(responseId);
       }
 
       await recordProxyUsage({
@@ -1584,6 +2722,7 @@ export const proxyResponsesUpstream = async (
       return trackResponsesUsageStream({
         fallbackUsage,
         model,
+        onResponseId,
         proxyContext: resolvedContext,
         upstreamResponse,
       });
@@ -1605,7 +2744,7 @@ export const proxyResponsesUpstream = async (
     logUpstreamFailure({
       error,
       route: '/v1/responses',
-      url: `${await getCodeBuddyApiEndpoint()}/v1/responses`,
+      url: `${await getCodeBuddyApiEndpoint()}/responses`,
     });
     return createErrorResponse(
       500,

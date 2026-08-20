@@ -32,3 +32,13 @@
 - Run `bun run test:patch-branches --base "$(git merge-base HEAD origin/main)"` after coverage; changed branch coverage must be at least 90%.
 - Confirm Codecov's `patch` status is successful and meets the target configured in `codecov.yml`; do not lower the patch target or threshold to bypass a coverage failure.
 - Use the Codecov PR report as the source of truth for patch coverage because it compares the uploaded `lcov.info` against the PR base commit.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
