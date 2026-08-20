@@ -1456,6 +1456,289 @@ describe('server units', () => {
     });
   });
 
+  it('covers Responses upstream compatibility input variants', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-compatibility-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-compatibility@example.com',
+      },
+      filePath: '/tmp/responses-compatibility.json',
+      filename: 'responses-compatibility.json',
+    });
+    const upstreamPayload = {
+      incomplete_details: { reason: 'content_filter' },
+      output: [
+        null,
+        1,
+        { type: 'other' },
+        { type: 'function_call' },
+        { content: null, type: 'message' },
+        {
+          content: [
+            null,
+            1,
+            { text: 1, type: 'output_text' },
+            { text: 'from output', type: 'output_text' },
+          ],
+          type: 'message',
+        },
+        {
+          content: [{ text: 'summary content' }],
+          summary: [null, 1, { text: 1 }, { text: 'summary' }],
+          type: 'reasoning',
+        },
+      ],
+      status: 'incomplete',
+      usage: { input_tokens: 2, output_tokens: 3 },
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => makeJsonResponse(upstreamPayload));
+    const request = async (
+      body: Parameters<typeof proxyChatCompletions>[1],
+    ) => {
+      const response = await proxyChatCompletions(
+        makeNextRequest('http://localhost/v1/chat/completions', {
+          method: 'POST',
+        }),
+        body,
+        context,
+      );
+      await response.text();
+      return response.status;
+    };
+
+    expect(
+      await request({
+        messages: [
+          { content: null, role: 'system' },
+          {
+            content: [
+              'plain',
+              null,
+              { text: null },
+              { unknown: true },
+              {
+                image_url: 'https://example.com/string.png',
+                type: 'image_url',
+              },
+              {
+                image_url: { url: 'https://example.com/object.png' },
+                type: 'image_url',
+              },
+              {
+                image_url: 'https://example.com/input.png',
+                type: 'input_image',
+              },
+              { text: 'text part' },
+              { image_url: { url: 1 }, type: 'image_url' },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'hy3',
+        response_format: { type: 'json_object' },
+        thinking: { type: 'disabled' },
+        tool_choice: 'auto',
+        tools: [
+          null,
+          1,
+          { name: 'direct_tool' },
+          { function: { description: 'missing name' }, type: 'function' },
+        ],
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [
+          {
+            content: null,
+            role: 'assistant',
+            tool_calls: [
+              null,
+              1,
+              { function: {} },
+              { function: { name: 'lookup' } },
+            ],
+          },
+          { content: { result: true }, role: 'tool', tool_call_id: 'call_1' },
+        ],
+        model: 'hy3',
+        response_format: 1,
+        thinking: { budget_tokens: 1_000, type: 'adaptive' },
+        tool_choice: 1,
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [
+          {
+            content: 'assistant text',
+            role: 'assistant',
+            tool_calls: [
+              {
+                function: { arguments: '{}', name: 'lookup' },
+                id: 'call_lookup',
+              },
+            ],
+          },
+        ],
+        model: 'hy3',
+        response_format: {
+          json_schema: { description: 'schema', name: 'answer' },
+          type: 'json_schema',
+        },
+        thinking: { budget_tokens: 5_000, type: 'enabled' },
+        tool_choice: { name: 'lookup', type: 'function' },
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [{ content: undefined, role: 'user' }],
+        model: 'hy3',
+        response_format: { json_schema: {}, type: 'json_schema' },
+        thinking: { budget_tokens: 10_000, type: 'adaptive' },
+        tool_choice: { type: 'function' },
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [{ content: 'reason', role: 'user' }],
+        model: 'hy3',
+        reasoning_effort: 'medium',
+        response_format: { type: 'text' },
+        thinking: { type: 'enabled' },
+        tool_choice: { type: 'required' },
+      }),
+    ).toBe(200);
+
+    expect(
+      await request({
+        messages: [{ content: 'unsupported', role: 'user' }],
+        model: 'hy3',
+        thinking: { type: 'unknown' },
+      }),
+    ).toBe(400);
+    expect(
+      await request({
+        frequency_penalty: 0,
+        messages: [{ content: 'unsupported', role: 'user' }],
+        model: 'hy3',
+        presence_penalty: 0,
+      }),
+    ).toBe(400);
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    const firstBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as Record<string, unknown>;
+    expect(firstBody).toMatchObject({
+      reasoning: { effort: 'none' },
+      text: { format: { type: 'json_object' } },
+      tool_choice: 'auto',
+    });
+  });
+
+  it('covers Responses payload fallback and stop variants', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-payload-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-payload@example.com',
+      },
+      filePath: '/tmp/responses-payload.json',
+      filename: 'responses-payload.json',
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          output: [
+            null,
+            1,
+            { content: null, type: 'message' },
+            {
+              content: [
+                null,
+                1,
+                { text: 1, type: 'output_text' },
+                { text: 'zSTOPaEND', type: 'output_text' },
+              ],
+              type: 'message',
+            },
+          ],
+          status: 'incomplete',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          output: [
+            {
+              arguments: undefined,
+              id: 'fc_fallback',
+              name: undefined,
+              type: 'function_call',
+            },
+          ],
+          output_text: '',
+          status: 'completed',
+          usage: {},
+        }),
+      );
+
+    const incompleteResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'fallback', role: 'user' }],
+        model: 'hy3',
+        stop: ['', 'END', 'STOP'],
+      },
+      context,
+    );
+    expect(await incompleteResponse.json()).toMatchObject({
+      choices: [
+        {
+          finish_reason: 'length',
+          message: { content: 'z' },
+        },
+      ],
+      usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 },
+    });
+
+    const toolResponse = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'tool fallback', role: 'user' }],
+        model: 'hy3',
+      },
+      context,
+    );
+    expect(await toolResponse.json()).toMatchObject({
+      choices: [
+        {
+          finish_reason: 'tool_calls',
+          message: {
+            content: null,
+            tool_calls: [
+              {
+                function: { arguments: '', name: 'function' },
+                id: 'fc_fallback',
+              },
+            ],
+          },
+        },
+      ],
+    });
+  });
+
   it('applies Chat stop sequences locally for the Responses upstream', async () => {
     const context = createProxyContextFromCredential({
       data: {
@@ -1707,6 +1990,123 @@ describe('server units', () => {
         totalTokens: 12,
       },
     ]);
+  });
+
+  it('covers Responses Chat stream terminal variants', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-stream-terminal-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-stream-terminal@example.com',
+      },
+      filePath: '/tmp/responses-stream-terminal.json',
+      filename: 'responses-stream-terminal.json',
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.reasoning_summary_text.delta"}\n\n' +
+            'data: {"type":"response.reasoning_text.delta","delta":"reason"}\n\n' +
+            'data: {"type":"response.output_item.added","item":{"type":"function_call"}}\n\n' +
+            'data: {"type":"response.function_call_arguments.delta","output_index":0}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.output_text.delta","delta":"tailZ"}\n\n' +
+            'data: {"type":"response.completed","response":{"usage":{}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.output_text.delta","delta":"partialQ"}\n\n' +
+            'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.error","response":{"error":"response error"}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response('data: {"type":"error","error":{}}\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('data: {"type":"response.failed"}\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.completed","response":{"usage":{"input_tokens":4,"output_tokens":3,"input_tokens_details":{"cached_tokens":1,"cache_creation_tokens":2},"output_tokens_details":{"reasoning_tokens":2}}}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"type":"response.completed","response":{"usage":"invalid"}}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+    const stream = async (
+      options: Partial<Parameters<typeof proxyChatCompletions>[1]> = {},
+    ): Promise<string> => {
+      const response = await proxyChatCompletions(
+        makeNextRequest('http://localhost/v1/chat/completions', {
+          method: 'POST',
+        }),
+        {
+          messages: [{ content: 'Stream terminal', role: 'user' }],
+          model: 'hy3',
+          stream: true,
+          ...options,
+        },
+        context,
+      );
+      return response.text();
+    };
+
+    const toolPayload = await stream();
+    expect(toolPayload).toContain('"reasoning_content":""');
+    expect(toolPayload).toContain('"reasoning_content":"reason"');
+    expect(toolPayload).toContain('"name":"function"');
+    expect(toolPayload).toContain('"finish_reason":"tool_calls"');
+
+    const completedPayload = await stream({
+      stop: 'ZZ',
+      stream_options: { include_usage: true },
+    });
+    expect(completedPayload).toContain('"content":"tail"');
+    expect(completedPayload).toContain('"content":"Z"');
+    expect(completedPayload).toContain('"total_tokens":0');
+
+    const incompletePayload = await stream({ stop: 'QQ' });
+    expect(incompletePayload).toContain('"content":"partial"');
+    expect(incompletePayload).toContain('"content":"Q"');
+    expect(incompletePayload).toContain('"finish_reason":"content_filter"');
+
+    expect(await stream()).toContain('response error');
+    expect(await stream()).toContain('[object Object]');
+    expect(await stream()).toContain('Upstream Responses stream failed');
+
+    const detailedUsagePayload = await stream({
+      stream_options: { include_usage: true },
+    });
+    expect(detailedUsagePayload).toContain('"cached_tokens":1');
+    expect(detailedUsagePayload).toContain('"cache_creation_tokens":2');
+    expect(detailedUsagePayload).toContain('"reasoning_tokens":2');
+
+    const invalidUsagePayload = await stream({
+      stream_options: { include_usage: true },
+    });
+    expect(invalidUsagePayload).not.toContain('"usage":');
+    expect(invalidUsagePayload).toContain('data: [DONE]');
   });
 
   it('maps Responses function call events back to Chat Completions SSE', async () => {

@@ -168,6 +168,37 @@ describe('anthropic messages api', () => {
     });
   });
 
+  it('maps upstream failures to Anthropic error types', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
+      .mockResolvedValueOnce(new Response('missing', { status: 404 }))
+      .mockResolvedValueOnce(new Response('too large', { status: 413 }))
+      .mockResolvedValueOnce(new Response('overloaded', { status: 529 }))
+      .mockResolvedValueOnce(new Response('bad request', { status: 400 }));
+    const request = makeNextRequest('http://localhost/v1/messages', {
+      method: 'POST',
+    });
+    const expected = [
+      [401, 'authentication_error'],
+      [403, 'permission_error'],
+      [404, 'not_found_error'],
+      [413, 'request_too_large'],
+      [529, 'overloaded_error'],
+      [400, 'invalid_request_error'],
+    ] as const;
+
+    for (const [status, type] of expected) {
+      const response = await handleMessagesRequest(request, {
+        model: 'hy3',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'Fail' }],
+      });
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ error: { type } });
+    }
+  });
+
   it('preserves Responses usage in Anthropic streams', async () => {
     const credential = await addCredential({
       bearer_token: 'anthropic-responses-stream-token',
