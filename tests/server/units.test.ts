@@ -1351,7 +1351,15 @@ describe('server units', () => {
         id: 'resp_123',
         output: [],
         output_text: 'hello from responses',
-        usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+        usage: {
+          input_tokens: 2,
+          input_tokens_details: {
+            cached_tokens: 1,
+            cache_creation_tokens: 1,
+          },
+          output_tokens: 3,
+          total_tokens: 5,
+        },
       }),
     );
 
@@ -1453,6 +1461,21 @@ describe('server units', () => {
         },
       ],
       top_p: 0.8,
+    });
+    expect((await getUsageAnalytics({ range: 'today' })).tableRows).toEqual([
+      {
+        callCount: 1,
+        cacheHitTokens: 1,
+        model: 'hy3',
+        totalTokens: 5,
+      },
+    ]);
+    const usageStore = JSON.parse(
+      fs.readFileSync(path.join(tempDataDir, 'usage-history.json'), 'utf8'),
+    ) as { events: Array<Record<string, unknown>> };
+    expect(usageStore.events[0]).toMatchObject({
+      cacheCreationTokens: 1,
+      cacheReadTokens: 1,
     });
   });
 
@@ -1988,6 +2011,56 @@ describe('server units', () => {
         cacheHitTokens: 0,
         model: 'hy3',
         totalTokens: 12,
+      },
+    ]);
+  });
+
+  it('records Responses usage when a Chat stream is cancelled', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-cancel-usage-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-cancel-usage@example.com',
+      },
+      filePath: '/tmp/responses-cancel-usage.json',
+      filename: 'responses-cancel-usage.json',
+    });
+    const cancel = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'x-codebuddy-usage': JSON.stringify({
+            input_tokens: 6,
+            input_tokens_details: { cached_tokens: 4 },
+            output_tokens: 2,
+            total_tokens: 8,
+          }),
+        },
+      }),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Cancel this stream', role: 'user' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+
+    await response.body?.cancel('client disconnected');
+
+    expect(cancel).toHaveBeenCalledWith('client disconnected');
+    expect((await getUsageAnalytics({ range: 'today' })).tableRows).toEqual([
+      {
+        callCount: 1,
+        cacheHitTokens: 4,
+        model: 'hy3',
+        totalTokens: 8,
       },
     ]);
   });
@@ -3328,6 +3401,10 @@ describe('server units', () => {
           response: {
             usage: {
               input_tokens: 4,
+              input_tokens_details: {
+                cached_tokens: 1,
+                cache_creation_tokens: 1,
+              },
               output_tokens: 2,
               total_tokens: 6,
             },
@@ -3341,7 +3418,7 @@ describe('server units', () => {
             'data: {"type":"response.created","response":{"id":"resp_1"}}',
             '',
             'event: response.completed',
-            'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}}',
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":2,"cache_creation_tokens":1},"output_tokens":3,"total_tokens":8}}}',
             '',
           ].join('\n'),
           {
@@ -3396,12 +3473,52 @@ describe('server units', () => {
       expect((await getUsageAnalytics({ range: 'today' })).tableRows).toEqual([
         {
           callCount: 3,
-          cacheHitTokens: 0,
+          cacheHitTokens: 3,
           model: 'gpt-5.5',
           totalTokens: 14,
         },
       ]);
     });
+  });
+
+  it('waits for streamed response bindings before forwarding response ids', async () => {
+    let resolveBinding: (() => void) | undefined;
+    const binding = new Promise<void>((resolve) => {
+      resolveBinding = resolve;
+    });
+    const onResponseId = vi.fn(async () => binding);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'data: {"type":"response.created","response":{"id":"resp_delayed_binding"}}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyResponsesUpstream(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'bind before forwarding', model: 'gpt-5.5', stream: true },
+      undefined,
+      undefined,
+      onResponseId,
+    );
+    const reader = response.body!.getReader();
+    let readSettled = false;
+    const readPromise = reader.read().then((result) => {
+      readSettled = true;
+      return result;
+    });
+
+    await waitForAsync(async () => {
+      expect(onResponseId).toHaveBeenCalledWith('resp_delayed_binding');
+    });
+    expect(readSettled).toBe(false);
+
+    resolveBinding?.();
+    const firstChunk = await readPromise;
+    expect(new TextDecoder().decode(firstChunk.value)).toContain(
+      'resp_delayed_binding',
+    );
+    expect((await reader.read()).done).toBe(true);
   });
 
   it('cancels the upstream Responses stream when the client disconnects', async () => {

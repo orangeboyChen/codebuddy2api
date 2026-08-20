@@ -22,6 +22,10 @@ export type UsageRange =
 export interface UsageSnapshot {
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  input_tokens_details?: {
+    cached_tokens?: number | null;
+    cache_creation_tokens?: number | null;
+  } | null;
   prompt_cache_hit_tokens?: number | null;
   prompt_cache_miss_tokens?: number | null;
   prompt_cache_write_tokens?: number | null;
@@ -155,14 +159,17 @@ const getLargestTokenCount = (...values: unknown[]): number => {
 const normalizeUsage = (usage: UsageSnapshot): UsageEventRecord => {
   const inputTokens = toNumber(usage.input_tokens ?? usage.prompt_tokens);
   const outputTokens = toNumber(usage.output_tokens ?? usage.completion_tokens);
+  const inputTokenDetails = usage.input_tokens_details;
   const promptTokenDetails = usage.prompt_tokens_details;
   const cacheReadTokens = getLargestTokenCount(
     usage.cache_read_input_tokens,
+    inputTokenDetails?.cached_tokens,
     promptTokenDetails?.cached_tokens,
     usage.prompt_cache_hit_tokens,
   );
   const cacheCreationTokens = getLargestTokenCount(
     usage.cache_creation_input_tokens,
+    inputTokenDetails?.cache_creation_tokens,
     promptTokenDetails?.cache_creation_tokens,
     usage.prompt_cache_write_tokens,
   );
@@ -171,7 +178,9 @@ const normalizeUsage = (usage: UsageSnapshot): UsageEventRecord => {
     explicitTotal ||
     inputTokens +
       outputTokens +
-      (promptTokenDetails ? 0 : cacheReadTokens + cacheCreationTokens);
+      (inputTokenDetails || promptTokenDetails
+        ? 0
+        : cacheReadTokens + cacheCreationTokens);
 
   return {
     accessKeyId: null,

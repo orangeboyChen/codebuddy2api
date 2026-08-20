@@ -314,9 +314,9 @@ const trackResponsesUsageStream = async ({
       });
     }
   };
-  const bindResponseId = (id: string): void => {
-    if (!onResponseId || responseBinding) return;
-    responseBinding = onResponseId(id).catch((error) => {
+  const bindResponseId = (id: string): Promise<void> => {
+    if (!onResponseId) return Promise.resolve();
+    responseBinding ??= onResponseId(id).catch((error) => {
       console.error(
         '[CodeBuddy2API] Failed to bind upstream Responses session',
         {
@@ -325,6 +325,7 @@ const trackResponsesUsageStream = async ({
         },
       );
     });
+    return responseBinding;
   };
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
@@ -333,27 +334,27 @@ const trackResponsesUsageStream = async ({
       let buffer = '';
       let responseId: string | null = null;
 
-      const inspectFrame = (frame: string): void => {
-        frame.split('\n').forEach((line) => {
+      const inspectFrame = async (frame: string): Promise<void> => {
+        for (const line of frame.split('\n')) {
           if (!line.startsWith('data:')) {
-            return;
+            continue;
           }
 
           const raw = line.slice(5).trim();
 
           if (!raw || raw === '[DONE]') {
-            return;
+            continue;
           }
 
           try {
             const event = JSON.parse(raw) as unknown;
             latestUsage = extractResponsesUsage(event) ?? latestUsage;
             responseId = extractResponsesId(event) ?? responseId;
-            if (responseId) bindResponseId(responseId);
+            if (responseId) await bindResponseId(responseId);
           } catch {
             // Preserve malformed upstream frames without recording them.
           }
-        });
+        }
       };
 
       const pump = async (): Promise<void> => {
@@ -366,7 +367,7 @@ const trackResponsesUsageStream = async ({
 
           if (done) {
             if (buffer) {
-              inspectFrame(buffer);
+              await inspectFrame(buffer);
               controller.enqueue(encoder.encode(buffer));
             }
 
@@ -385,13 +386,14 @@ const trackResponsesUsageStream = async ({
             buffer = '';
           }
 
-          frames.forEach((frame) => {
+          for (const frame of frames) {
             if (frame.length > MAX_STREAM_FRAME_LENGTH) {
-              return;
+              continue;
             }
-            inspectFrame(frame);
+            await inspectFrame(frame);
+            if (cancelled) return;
             controller.enqueue(encoder.encode(`${frame}\n\n`));
-          });
+          }
         }
       };
 
@@ -1725,6 +1727,7 @@ const mapResponsesStreamToChat = (
     },
     async cancel(reason) {
       await cancelAndReleaseReader(reason);
+      await recordStreamUsage();
     },
   });
 
