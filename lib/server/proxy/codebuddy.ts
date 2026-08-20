@@ -37,6 +37,8 @@ interface CacheableTextBlock {
 
 const MIN_AUTO_CACHE_TEXT_LENGTH = 1024;
 const MAX_STREAM_FRAME_LENGTH = 1_000_000;
+const CODEBUDDY_CLI_VERSION = '2.137.1';
+const CODEBUDDY_USER_AGENT = `CLI/${CODEBUDDY_CLI_VERSION} CodeBuddy/${CODEBUDDY_CLI_VERSION}`;
 
 export interface ChatRequestBody {
   model?: string;
@@ -115,6 +117,7 @@ export interface ProxyContext {
   credentialFilename: string | null;
   preferences: {
     firstMessageRoleToSystem: boolean;
+    firstSystemMessageRoleToUser: boolean;
     upstreamProtocol: 'chat' | 'responses';
   };
 }
@@ -560,24 +563,24 @@ const applyPromptCacheControl = (
 const normalizeMessages = (
   messages: OpenAIMessage[],
   firstMessageRoleToSystem: boolean,
+  firstSystemMessageRoleToUser: boolean,
 ): OpenAIMessage[] => {
   const filtered = messages.filter(
     (item) => item.role && item.content !== undefined,
   );
 
-  if (!firstMessageRoleToSystem) {
-    return applyPromptCacheControl(filtered);
-  }
-
-  const normalized = filtered.map((message) => {
-    if (message.role !== 'developer') {
-      return message;
+  const firstSystemIndex = firstSystemMessageRoleToUser
+    ? filtered.findIndex((message) => message.role === 'system')
+    : -1;
+  const normalized = filtered.map((message, index) => {
+    if (
+      (firstMessageRoleToSystem && message.role === 'developer') ||
+      index === firstSystemIndex
+    ) {
+      return { ...message, role: 'user' };
     }
 
-    return {
-      ...message,
-      role: 'user',
-    };
+    return message;
   });
 
   // Preserve role:'tool' messages so the OpenAI-compatible upstream
@@ -729,35 +732,31 @@ const buildUpstreamHeaders = async (
   const conversationMessageId =
     incoming['x-conversation-message-id'] ??
     crypto.randomUUID().replaceAll('-', '');
-  const headers = new Headers({
-    Accept: 'application/json',
-    Authorization: `Bearer ${auth.bearerToken}`,
-    'Content-Type': 'application/json',
-    Host: baseUrl.host,
-    'User-Agent': 'CLI/1.0.7 CodeBuddy/1.0.7',
-    'X-Agent-Intent': 'craft',
-    'X-Conversation-ID': conversationId,
-    'X-Conversation-Message-ID': conversationMessageId,
-    'X-Conversation-Request-ID': conversationRequestId,
-    'X-IDE-Name': 'CLI',
-    'X-IDE-Type': 'CLI',
-    'X-IDE-Version': '1.0.7',
-    'X-Product': 'SaaS',
-    'X-Request-ID': requestId,
-    'X-Requested-With': 'XMLHttpRequest',
-    'X-User-Id': auth.userId,
-    'x-stainless-arch': 'x64',
-    'x-stainless-lang': 'js',
-    'x-stainless-os': 'macOS',
-    'x-stainless-package-version': '5.10.1',
-    'x-stainless-retry-count': '0',
-    'x-stainless-runtime': 'node',
-    'x-stainless-runtime-version': process.version,
-  });
-
-  for (const [name, value] of Object.entries(incoming)) {
-    headers.set(name, value);
-  }
+  const headers = new Headers(incoming);
+  headers.set('Accept', 'application/json');
+  headers.set('Authorization', `Bearer ${auth.bearerToken}`);
+  headers.set('Content-Type', 'application/json');
+  headers.set('Host', baseUrl.host);
+  headers.set('User-Agent', CODEBUDDY_USER_AGENT);
+  headers.set('X-Agent-Intent', 'craft');
+  headers.set('X-Conversation-ID', conversationId);
+  headers.set('X-Conversation-Message-ID', conversationMessageId);
+  headers.set('X-Conversation-Request-ID', conversationRequestId);
+  headers.set('X-IDE-Name', 'CLI');
+  headers.set('X-IDE-Type', 'CLI');
+  headers.set('X-IDE-Version', CODEBUDDY_CLI_VERSION);
+  headers.set('X-Product', 'SaaS');
+  headers.set('X-Product-Version', CODEBUDDY_CLI_VERSION);
+  headers.set('X-Request-ID', requestId);
+  headers.set('X-Requested-With', 'XMLHttpRequest');
+  headers.set('X-User-Id', auth.userId);
+  headers.set('x-stainless-arch', process.arch);
+  headers.set('x-stainless-lang', 'js');
+  headers.set('x-stainless-os', process.platform);
+  headers.set('x-stainless-package-version', CODEBUDDY_CLI_VERSION);
+  headers.set('x-stainless-retry-count', '0');
+  headers.set('x-stainless-runtime', 'node');
+  headers.set('x-stainless-runtime-version', process.version);
 
   const domain = getCredentialValue(auth.credentialData, ['domain']);
   const enterpriseId = getCredentialValue(auth.credentialData, [
@@ -794,6 +793,7 @@ const buildUpstreamBody = async (
   const normalizedMessages = normalizeMessages(
     body.messages ?? [],
     context.preferences.firstMessageRoleToSystem,
+    context.preferences.firstSystemMessageRoleToUser,
   );
   const maxTokens = body.max_tokens ?? body.max_completion_tokens;
   const credentialModels = getCredentialSupportedModels(
@@ -2425,10 +2425,6 @@ export const proxyChatCompletions = async (
       const upstreamHeaders = new Headers(
         await buildUpstreamHeaders(request, resolvedContext.auth),
       );
-      upstreamHeaders.set('User-Agent', 'TCodex/0.0.16 CLI/0.144.5');
-      upstreamHeaders.set('X-IDE-Name', 'TCodex');
-      upstreamHeaders.set('X-IDE-Version', '0.144.5');
-      upstreamHeaders.set('X-Product-Version', '0.0.16');
       const responsesBody = {
         ...buildResponsesBodyFromChat(upstreamBody),
         stream: Boolean(body.stream),
@@ -2644,10 +2640,6 @@ export const proxyResponsesUpstream = async (
     const upstreamHeaders = new Headers(
       await buildUpstreamHeaders(request, resolvedContext.auth),
     );
-    upstreamHeaders.set('User-Agent', 'TCodex/0.0.16 CLI/0.144.5');
-    upstreamHeaders.set('X-IDE-Name', 'TCodex');
-    upstreamHeaders.set('X-IDE-Version', '0.144.5');
-    upstreamHeaders.set('X-Product-Version', '0.0.16');
 
     setDebugUpstreamRequest(debugTrace, {
       body: upstreamBody,

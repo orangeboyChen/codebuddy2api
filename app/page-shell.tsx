@@ -984,6 +984,8 @@ const AdminPageLayoutContent = ({
                 index: credentials.form.editingIndex,
                 first_message_role_to_system:
                   credentials.form.firstMessageRoleToSystem,
+                first_system_message_role_to_user:
+                  credentials.form.firstSystemMessageRoleToUser,
                 upstream_protocol: credentials.form.upstreamProtocol,
               }
             : {
@@ -991,6 +993,8 @@ const AdminPageLayoutContent = ({
                 bearer_token: credentials.form.bearerToken.trim(),
                 first_message_role_to_system:
                   credentials.form.firstMessageRoleToSystem,
+                first_system_message_role_to_user:
+                  credentials.form.firstSystemMessageRoleToUser,
                 upstream_protocol: credentials.form.upstreamProtocol,
                 user_id: credentials.form.userId.trim() || undefined,
               },
@@ -1021,6 +1025,7 @@ const AdminPageLayoutContent = ({
         bearerToken: '',
         editingIndex: null,
         firstMessageRoleToSystem: false,
+        firstSystemMessageRoleToUser: false,
         upstreamProtocol: 'chat',
         userId: '',
       },
@@ -1736,6 +1741,15 @@ const AdminPageLayoutContent = ({
                     },
                   }));
                 },
+                onCredentialFirstSystemMessageRoleToUserChange: (value) => {
+                  setCredentials((current) => ({
+                    ...current,
+                    form: {
+                      ...current.form,
+                      firstSystemMessageRoleToUser: value,
+                    },
+                  }));
+                },
                 onCredentialUpstreamProtocolChange: (value) => {
                   setCredentials((current) => ({
                     ...current,
@@ -1774,6 +1788,9 @@ const AdminPageLayoutContent = ({
                       editingIndex: credential.index,
                       firstMessageRoleToSystem:
                         credential.first_message_role_to_system,
+                      firstSystemMessageRoleToUser: Boolean(
+                        credential.first_system_message_role_to_user,
+                      ),
                       upstreamProtocol: credential.upstream_protocol,
                       userId: credential.user_id ?? '',
                     },
@@ -1827,6 +1844,7 @@ const AdminPageLayoutContent = ({
                       bearerToken: '',
                       editingIndex: null,
                       firstMessageRoleToSystem: false,
+                      firstSystemMessageRoleToUser: false,
                       upstreamProtocol: 'chat',
                       userId: '',
                     },

@@ -87,7 +87,9 @@ describe('access key credential reconciliation', () => {
     expect((await deleteCredentialByIndex(refreshedSingleIndex)).success).toBe(
       true,
     );
-    expect(await findAccessKeyById(singleKey.access_key.id)).toBeNull();
+    expect(await findAccessKeyById(singleKey.access_key.id)).toMatchObject({
+      credentialFilenames: [],
+    });
   });
 
   it('prunes missing credential references while retaining corrupt ones', async () => {
@@ -126,14 +128,21 @@ describe('access key credential reconciliation', () => {
         credentialFilenames: [firstCredential.filename],
         id: 'stale-and-valid',
       }),
+      expect.objectContaining({
+        credentialFilenames: [],
+        id: 'stale-only',
+      }),
     ]);
     expect(await hasAccessKeys()).toBe(true);
-    expect(await findAccessKeyBySecret('cb2_stalesecret')).toBeNull();
+    expect(await findAccessKeyBySecret('cb2_stalesecret')).toMatchObject({
+      credentialFilenames: [],
+      id: 'stale-only',
+    });
 
     const persisted = JSON.parse(
       fs.readFileSync(path.join(tempDataDir, 'access-keys.json'), 'utf8'),
     ) as { accessKeys: Array<{ credentialFilenames: string[]; id: string }> };
-    expect(persisted.accessKeys).toHaveLength(1);
+    expect(persisted.accessKeys).toHaveLength(2);
 
     const corruptCredential = await addCredential({
       bearer_token: 'token-corrupt',

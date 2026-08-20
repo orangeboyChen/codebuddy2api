@@ -35,6 +35,7 @@ export interface CredentialSummary {
   expires_in: number | null;
   filename: string;
   first_message_role_to_system: boolean;
+  first_system_message_role_to_user?: boolean;
   has_refresh_token: boolean;
   index: number;
   is_expired: boolean;
@@ -93,6 +94,7 @@ export interface CredentialFormState {
   bearerToken: string;
   editingIndex: number | null;
   firstMessageRoleToSystem: boolean;
+  firstSystemMessageRoleToUser: boolean;
   upstreamProtocol: 'chat' | 'responses';
   userId: string;
 }
@@ -147,6 +149,7 @@ export const defaultCredentialsState: CredentialsState = {
     bearerToken: '',
     editingIndex: null,
     firstMessageRoleToSystem: false,
+    firstSystemMessageRoleToUser: false,
     upstreamProtocol: 'chat',
     userId: '',
   },
@@ -188,6 +191,7 @@ export interface CredentialsTabController {
   onCallbackUrlChange: (value: string) => void;
   onCopyAuthUrl: () => void;
   onCredentialFirstMessageRoleToSystemChange: (value: boolean) => void;
+  onCredentialFirstSystemMessageRoleToUserChange: (value: boolean) => void;
   onCredentialUpstreamProtocolChange: (value: 'chat' | 'responses') => void;
   onCredentialTokenChange: (value: string) => void;
   onCredentialUserIdChange: (value: string) => void;
@@ -235,6 +239,7 @@ const Credentials = () => {
     onCallbackUrlChange,
     onCopyAuthUrl,
     onCredentialFirstMessageRoleToSystemChange,
+    onCredentialFirstSystemMessageRoleToUserChange,
     onCredentialUpstreamProtocolChange,
     onCredentialTokenChange,
     onCredentialUserIdChange,
@@ -495,6 +500,14 @@ const Credentials = () => {
               onChange={onCredentialFirstMessageRoleToSystemChange}
               title={credentialsText('credentials.credentialRoleAsSystem')}
             />
+            <ToggleOption
+              checked={credentials.form.firstSystemMessageRoleToUser}
+              description={credentialsText(
+                'credentials.credentialFirstSystemAsUserHelp',
+              )}
+              onChange={onCredentialFirstSystemMessageRoleToUserChange}
+              title={credentialsText('credentials.credentialFirstSystemAsUser')}
+            />
           </div>
           <Flexbox horizontal>
             <Button icon={Save} onClick={onAddCredential} type="primary">
@@ -620,6 +633,9 @@ const Credentials = () => {
                 onCredentialFirstMessageRoleToSystemChange={
                   onCredentialFirstMessageRoleToSystemChange
                 }
+                onCredentialFirstSystemMessageRoleToUserChange={
+                  onCredentialFirstSystemMessageRoleToUserChange
+                }
                 onCredentialUpstreamProtocolChange={
                   onCredentialUpstreamProtocolChange
                 }
@@ -634,6 +650,9 @@ const Credentials = () => {
                 items={expiredCredentials}
                 onCredentialFirstMessageRoleToSystemChange={
                   onCredentialFirstMessageRoleToSystemChange
+                }
+                onCredentialFirstSystemMessageRoleToUserChange={
+                  onCredentialFirstSystemMessageRoleToUserChange
                 }
                 onCredentialUpstreamProtocolChange={
                   onCredentialUpstreamProtocolChange

@@ -23,10 +23,6 @@ const validateCredentialFilenames = (
     .map((item) => item.trim())
     .filter(Boolean);
 
-  if (!normalized.length) {
-    throw new Error('At least one credential must be selected');
-  }
-
   if (normalized.some((item) => !available.has(item))) {
     throw new Error('Selected credentials must exist');
   }

@@ -32,6 +32,7 @@ export type CredentialData = Record<string, unknown> & {
   responses_passthrough?: boolean;
   upstream_protocol?: 'chat' | 'responses';
   first_message_role_to_system?: boolean;
+  first_system_message_role_to_user?: boolean;
   supported_models?: string;
 };
 
@@ -368,7 +369,7 @@ const getEligibleRecords = (
   records: CredentialRecord[],
   allowedCredentialFilenames?: string[],
 ): CredentialRecord[] => {
-  const allowedSet = allowedCredentialFilenames?.length
+  const allowedSet = allowedCredentialFilenames
     ? new Set(allowedCredentialFilenames)
     : null;
 
@@ -478,6 +479,9 @@ export const listCredentials = async (): Promise<{
           .upstreamProtocol,
         first_message_role_to_system: getBooleanSetting(
           record.data.first_message_role_to_system,
+        ),
+        first_system_message_role_to_user: getBooleanSetting(
+          record.data.first_system_message_role_to_user,
         ),
         user_id:
           record.data.user_id ?? record.data.user_info?.email ?? 'unknown',
@@ -589,6 +593,10 @@ export const addCredential = async (
     first_message_role_to_system: getBooleanSetting(
       credentialData.first_message_role_to_system ??
         existingPayload.first_message_role_to_system,
+    ),
+    first_system_message_role_to_user: getBooleanSetting(
+      credentialData.first_system_message_role_to_user ??
+        existingPayload.first_system_message_role_to_user,
     ),
   };
 
@@ -795,11 +803,15 @@ export const getCredentialProxySettings = (
   credential: CredentialData | null | undefined,
 ): {
   firstMessageRoleToSystem: boolean;
+  firstSystemMessageRoleToUser: boolean;
   upstreamProtocol: 'chat' | 'responses';
 } => {
   return {
     firstMessageRoleToSystem: getBooleanSetting(
       credential?.first_message_role_to_system,
+    ),
+    firstSystemMessageRoleToUser: getBooleanSetting(
+      credential?.first_system_message_role_to_user,
     ),
     upstreamProtocol:
       credential?.upstream_protocol === 'responses' ||

@@ -976,12 +976,18 @@ describe('server units', () => {
       }),
     );
 
-    expect(await hasAccessKeys()).toBe(false);
-    expect(await findAccessKeyById('valid-id')).toBeNull();
-    expect(await findAccessKeyBySecret('shortsecret')).toBeNull();
-    expect(await getAccessKeySecret('valid-id')).toBeNull();
-    expect(await listStoredAccessKeys()).toEqual([]);
-    expect((await listAccessKeys()).access_keys).toEqual([]);
+    expect(await hasAccessKeys()).toBe(true);
+    expect(await findAccessKeyById('valid-id')).toMatchObject({
+      credentialFilenames: [],
+    });
+    expect(await findAccessKeyBySecret('shortsecret')).toMatchObject({
+      id: 'valid-id',
+    });
+    expect(await getAccessKeySecret('valid-id')).toMatchObject({
+      id: 'valid-id',
+    });
+    expect(await listStoredAccessKeys()).toHaveLength(1);
+    expect((await listAccessKeys()).access_keys).toHaveLength(1);
 
     fs.writeFileSync(path.join(tempDataDir, 'access-keys.json'), '{');
     expect(await listStoredAccessKeys()).toEqual([]);
@@ -1035,12 +1041,11 @@ describe('server units', () => {
         name: '   ',
       }),
     ).rejects.toThrow('Access key name is required');
-    await expect(
-      createAccessKey({
-        credentialFilenames: ['   '],
-        name: 'Missing Credentials',
-      }),
-    ).rejects.toThrow('At least one credential must be selected');
+    const emptyKey = await createAccessKey({
+      credentialFilenames: ['   '],
+      name: 'Missing Credentials',
+    });
+    expect(emptyKey.access_key.credentialFilenames).toEqual([]);
 
     const created = await createAccessKey({
       credentialFilenames: [
@@ -1067,9 +1072,9 @@ describe('server units', () => {
     await expect(
       updateAccessKey(created.access_key.id, {
         credentialFilenames: [],
-        name: 'Still Bad',
+        name: 'No Credentials',
       }),
-    ).rejects.toThrow('At least one credential must be selected');
+    ).resolves.toMatchObject({ credentialFilenames: [] });
     await expect(
       updateAccessKey('missing-id', {
         credentialFilenames: [firstCredential.filename],
@@ -1131,7 +1136,9 @@ describe('server units', () => {
     expect((await deleteCredentialByIndex(refreshedSingleIndex)).success).toBe(
       true,
     );
-    expect(await findAccessKeyById(singleKey.access_key.id)).toBeNull();
+    expect(await findAccessKeyById(singleKey.access_key.id)).toMatchObject({
+      credentialFilenames: [],
+    });
   });
 
   it('prunes stale credential references when reading access keys', async () => {
@@ -1170,14 +1177,21 @@ describe('server units', () => {
         credentialFilenames: [firstCredential.filename],
         id: 'stale-and-valid',
       }),
+      expect.objectContaining({
+        credentialFilenames: [],
+        id: 'stale-only',
+      }),
     ]);
     expect(await hasAccessKeys()).toBe(true);
-    expect(await findAccessKeyBySecret('cb2_stalesecret')).toBeNull();
+    expect(await findAccessKeyBySecret('cb2_stalesecret')).toMatchObject({
+      credentialFilenames: [],
+      id: 'stale-only',
+    });
 
     const persisted = JSON.parse(
       fs.readFileSync(path.join(tempDataDir, 'access-keys.json'), 'utf8'),
     ) as { accessKeys: Array<{ credentialFilenames: string[]; id: string }> };
-    expect(persisted.accessKeys).toHaveLength(1);
+    expect(persisted.accessKeys).toHaveLength(2);
   });
 
   it('supports direct credential reference cleanup helper', async () => {
@@ -1321,6 +1335,11 @@ describe('server units', () => {
     );
     expect(upstreamHeaders.get('tracestate')).toBe('vendor=value');
     expect(upstreamHeaders.get('Authorization')).toBe('Bearer token-a');
+    expect(upstreamHeaders.get('User-Agent')).toBe(
+      'CLI/2.137.1 CodeBuddy/2.137.1',
+    );
+    expect(upstreamHeaders.get('X-IDE-Version')).toBe('2.137.1');
+    expect(upstreamHeaders.get('X-Product-Version')).toBe('2.137.1');
     expect(
       JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body))
         .max_tokens,
@@ -1422,6 +1441,14 @@ describe('server units', () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
       'https://copilot.tencent.com/responses',
     );
+    const upstreamHeaders = new Headers(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).headers,
+    );
+    expect(upstreamHeaders.get('User-Agent')).toBe(
+      'CLI/2.137.1 CodeBuddy/2.137.1',
+    );
+    expect(upstreamHeaders.get('X-IDE-Name')).toBe('CLI');
+    expect(upstreamHeaders.get('X-IDE-Version')).toBe('2.137.1');
     expect(
       JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)),
     ).toMatchObject({
@@ -2527,6 +2554,7 @@ describe('server units', () => {
       bearer_token: 'token-dev-role',
       created_at: Math.floor(Date.now() / 1000),
       first_message_role_to_system: true,
+      first_system_message_role_to_user: true,
       user_id: 'developer-role@example.com',
     });
 
@@ -2578,7 +2606,7 @@ describe('server units', () => {
       { role: 'user', content: 'first developer' },
       { role: 'user', content: 'hello' },
       { role: 'user', content: 'later developer' },
-      { role: 'system', content: 'existing system' },
+      { role: 'user', content: 'existing system' },
       { role: 'user', content: 'after system developer' },
     ]);
   });
@@ -3927,6 +3955,7 @@ describe('server units', () => {
     const createdCredential = await addCredential({
       bearer_token: 'token-from-bearer-token',
       first_message_role_to_system: true,
+      first_system_message_role_to_user: true,
       user_id: 'helper@example.com',
     });
 
@@ -3942,6 +3971,7 @@ describe('server units', () => {
     const created = createProxyContextFromCredential(credentialRecord);
     expect(created.auth.bearerToken).toBe('token-from-bearer-token');
     expect(created.preferences.firstMessageRoleToSystem).toBe(true);
+    expect(created.preferences.firstSystemMessageRoleToUser).toBe(true);
     expect(created.accessKeyId).toBeNull();
 
     const resolved = await resolveProxyContextByCredentialFilename(

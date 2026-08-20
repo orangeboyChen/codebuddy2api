@@ -14,6 +14,7 @@ interface CredentialGroupProps {
   form: CredentialFormState;
   items: CredentialSummary[];
   onCredentialFirstMessageRoleToSystemChange: (value: boolean) => void;
+  onCredentialFirstSystemMessageRoleToUserChange: (value: boolean) => void;
   onCredentialUpstreamProtocolChange: (value: 'chat' | 'responses') => void;
   onDelete: (index: number) => void;
   onEdit: (credential: CredentialSummary) => void;
@@ -27,6 +28,7 @@ export const CredentialGroup = ({
   form,
   items,
   onCredentialFirstMessageRoleToSystemChange,
+  onCredentialFirstSystemMessageRoleToUserChange,
   onCredentialUpstreamProtocolChange,
   onDelete,
   onEdit,
@@ -46,6 +48,9 @@ export const CredentialGroup = ({
           key={credential.filename}
           onCredentialFirstMessageRoleToSystemChange={
             onCredentialFirstMessageRoleToSystemChange
+          }
+          onCredentialFirstSystemMessageRoleToUserChange={
+            onCredentialFirstSystemMessageRoleToUserChange
           }
           onCredentialUpstreamProtocolChange={
             onCredentialUpstreamProtocolChange

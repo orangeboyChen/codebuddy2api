@@ -24,6 +24,7 @@ interface CredentialCardProps {
   current: CurrentCredentialInfo | null;
   form: CredentialFormState;
   onCredentialFirstMessageRoleToSystemChange: (value: boolean) => void;
+  onCredentialFirstSystemMessageRoleToUserChange: (value: boolean) => void;
   onCredentialUpstreamProtocolChange: (value: 'chat' | 'responses') => void;
   onDelete: () => void;
   onEdit: () => void;
@@ -36,6 +37,7 @@ export const CredentialCard = ({
   current,
   form,
   onCredentialFirstMessageRoleToSystemChange,
+  onCredentialFirstSystemMessageRoleToUserChange,
   onCredentialUpstreamProtocolChange,
   onDelete,
   onEdit,
@@ -108,6 +110,9 @@ export const CredentialCard = ({
                 ? text('credentials.credentialUpstreamResponsesTag')
                 : text('credentials.credentialUpstreamChatTag')}
             </Tag>
+            {credential.first_system_message_role_to_user ? (
+              <Tag>{text('credentials.credentialFirstSystemAsUserTag')}</Tag>
+            ) : null}
             <Tag>
               {credential.first_message_role_to_system
                 ? text('credentials.credentialRoleAsSystemTag')
@@ -159,6 +164,12 @@ export const CredentialCard = ({
               description={text('credentials.credentialRoleAsSystemHelp')}
               onChange={onCredentialFirstMessageRoleToSystemChange}
               title={text('credentials.credentialRoleAsSystem')}
+            />
+            <ToggleOption
+              checked={form.firstSystemMessageRoleToUser}
+              description={text('credentials.credentialFirstSystemAsUserHelp')}
+              onChange={onCredentialFirstSystemMessageRoleToUserChange}
+              title={text('credentials.credentialFirstSystemAsUser')}
             />
           </div>
           <Flexbox gap={8} horizontal>
