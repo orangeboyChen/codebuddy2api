@@ -4233,6 +4233,15 @@ describe('server units', () => {
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ code: 0, data: { models: [] } })),
       )
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: { models: [{ id: 'fallback-model', name: 'Fallback' }] },
+          }),
+        ),
+      )
       .mockRejectedValue(new Error('Upstream unavailable'));
 
     await expect(
@@ -4260,6 +4269,9 @@ describe('server units', () => {
     ).rejects.toThrow('Model discovery returned an unsuccessful response');
     await expect(
       getModelsForCredential({ bearerToken: 'token-d', credentialData: {} }),
+    ).resolves.toEqual([]);
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-e', credentialData: {} }),
     ).resolves.toEqual([]);
 
     const records = [

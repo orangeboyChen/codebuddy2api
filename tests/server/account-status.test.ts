@@ -15,8 +15,12 @@ const { getCodeBuddyApiEndpoint } = await import('@/lib/server/domain/config');
 const { listCredentials, listEligibleCredentialRecords } =
   await import('@/lib/server/domain/credentials');
 const { getModelsForCredential } = await import('@/lib/server/proxy/codebuddy');
-const { checkinAccount, checkinAccounts, getAccountStatus } =
-  await import('@/lib/server/domain/account-status');
+const {
+  checkinAccount,
+  checkinAccounts,
+  getAccountStatus,
+  getAccountStatusCredentials,
+} = await import('@/lib/server/domain/account-status');
 
 const credential = (filename: string) => ({
   data: { bearer_token: `token-${filename}` },
@@ -107,6 +111,36 @@ describe('account status domain', () => {
         used: 2,
       },
     });
+  });
+
+  it('searches nested arrays and supports access-token credentials', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValueOnce([
+      {
+        data: { access_token: 'access-token-only' },
+        filePath: '/tmp/array.json',
+        filename: 'array.json',
+      },
+    ] as never);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        jsonResponse({ items: [{ total: 12, used: 4, remaining: 8 }] }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [{ claimed: true }] }));
+
+    const [result] = await getAccountStatus();
+
+    expect(result.credits).toMatchObject({ total: 12, used: 4, remaining: 8 });
+    expect(result.checkin.claimed).toBe(true);
+  });
+
+  it('returns the configured credential summaries', async () => {
+    vi.mocked(listCredentials).mockResolvedValueOnce({
+      credentials: [{ filename: 'summary.json' }],
+    } as never);
+
+    await expect(getAccountStatusCredentials()).resolves.toEqual([
+      { filename: 'summary.json' },
+    ]);
   });
 
   it('handles non-Error upstream failures without discarding other results', async () => {
