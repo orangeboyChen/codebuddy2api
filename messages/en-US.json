@@ -50,7 +50,9 @@
       "refresh": "Refresh",
       "refreshAll": "Refresh all",
       "checkinAll": "Check in all",
-      "empty": "No credentials"
+      "empty": "No credentials",
+      "quotaUnknown": "Unknown quota",
+      "quotaUsed": "{percent}% quota used"
     },
     "dashboard": {
       "welcomeTitle": "Ready to crank through some tokens?",

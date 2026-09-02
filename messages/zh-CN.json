@@ -50,7 +50,9 @@
       "refresh": "刷新",
       "refreshAll": "刷新全部",
       "checkinAll": "全部签到",
-      "empty": "暂无凭据"
+      "empty": "暂无凭据",
+      "quotaUnknown": "额度未知",
+      "quotaUsed": "已使用 {percent}% 额度"
     },
     "dashboard": {
       "welcomeTitle": "做好蹬的准备了吗？",

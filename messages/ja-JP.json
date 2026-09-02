@@ -50,7 +50,9 @@
       "refresh": "更新",
       "refreshAll": "すべて更新",
       "checkinAll": "すべてチェックイン",
-      "empty": "認証情報がありません"
+      "empty": "認証情報がありません",
+      "quotaUnknown": "使用量不明",
+      "quotaUsed": "使用量 {percent}%"
     },
     "dashboard": {
       "welcomeTitle": "トークンをぶん回す準備はできた？",

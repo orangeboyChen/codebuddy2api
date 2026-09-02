@@ -75,7 +75,15 @@ const quotaPercent = (snapshot: AccountStatusSnapshot): number | null => {
   return Math.min(100, Math.max(0, (used / total) * 100));
 };
 
-const QuotaProgress = ({ snapshot }: { snapshot: AccountStatusSnapshot }) => {
+const QuotaProgress = ({
+  snapshot,
+  unknownLabel,
+  usedLabel,
+}: {
+  snapshot: AccountStatusSnapshot;
+  unknownLabel: string;
+  usedLabel: (percent: number) => string;
+}) => {
   const percent = quotaPercent(snapshot);
   const tone =
     percent === null
@@ -94,9 +102,7 @@ const QuotaProgress = ({ snapshot }: { snapshot: AccountStatusSnapshot }) => {
         </Text>
       </Flexbox>
       <progress
-        aria-label={
-          percent === null ? 'Unknown quota' : `${percent.toFixed(0)}% used`
-        }
+        aria-label={percent === null ? unknownLabel : usedLabel(percent)}
         className={`account-status-progress account-status-progress-${tone}`}
         max={100}
         value={percent ?? 0}
@@ -130,6 +136,7 @@ const AccountStatusCard = ({
 }) => {
   const text = useTranslations('Admin');
   const percent = quotaPercent(snapshot);
+  const quotaUnknown = text('accountStatus.quotaUnknown');
   const models = snapshot.models.slice(0, 8);
   const hasMoreModels = snapshot.models.length > models.length;
   return (
@@ -157,7 +164,13 @@ const AccountStatusCard = ({
       {snapshot.error ? <Alert type="error" title={snapshot.error} /> : null}
       <Flexbox direction="vertical" gap={8}>
         <Text strong>{text('accountStatus.quota')}</Text>
-        <QuotaProgress snapshot={snapshot} />
+        <QuotaProgress
+          snapshot={snapshot}
+          unknownLabel={quotaUnknown}
+          usedLabel={(value) =>
+            text('accountStatus.quotaUsed', { percent: value.toFixed(0) })
+          }
+        />
         <Flexbox
           className="account-status-quota-values"
           gap={16}
