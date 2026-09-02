@@ -55,6 +55,20 @@ const initialSnapshot = (filename: string): AccountStatusSnapshot => ({
   queriedAt: '',
 });
 
+const unavailableSnapshot = (filename: string): AccountStatusSnapshot => ({
+  ...initialSnapshot(filename),
+  error: 'Credential is unavailable',
+});
+
+const failedSnapshot = (
+  filename: string,
+  error: unknown,
+): AccountStatusSnapshot => ({
+  ...initialSnapshot(filename),
+  error: error instanceof Error ? error.message : 'Account status query failed',
+  queriedAt: new Date().toISOString(),
+});
+
 const quotaPercent = (snapshot: AccountStatusSnapshot): number | null => {
   const { total, used } = snapshot.credits;
   if (total === null || total <= 0 || used === null) return null;
@@ -253,6 +267,9 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
           headers: { 'Content-Type': 'application/json' },
           method: 'POST',
         });
+        if (!response.ok) {
+          throw new Error(`Account status request failed (${response.status})`);
+        }
         const payload = (await response.json()) as {
           status?: AccountStatusSnapshot;
           statuses?: AccountStatusSnapshot[];
@@ -260,6 +277,11 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
         const snapshot = payload.status ?? payload.statuses?.[0];
         if (snapshot)
           setSnapshots((current) => ({ ...current, [filename]: snapshot }));
+      } catch (error) {
+        setSnapshots((current) => ({
+          ...current,
+          [filename]: current[filename] ?? failedSnapshot(filename, error),
+        }));
       } finally {
         setBusy((current) => {
           const next = { ...current };
@@ -273,10 +295,15 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
   const loadAll = useCallback(
     async (action: 'refresh' | 'checkin') => {
       setBatchBusy(action);
-      await Promise.all(
-        credentials.map((credential) => loadOne(credential.filename, action)),
-      );
-      setBatchBusy(null);
+      try {
+        await Promise.all(
+          credentials
+            .filter((credential) => !credential.is_expired)
+            .map((credential) => loadOne(credential.filename, action)),
+        );
+      } finally {
+        setBatchBusy(null);
+      }
     },
     [credentials, loadOne],
   );
@@ -322,23 +349,22 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
           </Button>
         </Flexbox>
       </Flexbox>
-      {snapshots && Object.keys(snapshots).length === 0 ? (
-        <AccountStatusSkeleton />
-      ) : (
-        pageCredentials.map((credential) => (
+      {pageCredentials.map((credential) => {
+        const snapshot = snapshots[credential.filename];
+        if (!snapshot && !credential.is_expired) {
+          return <AccountStatusSkeleton key={credential.filename} />;
+        }
+        return (
           <AccountStatusCard
             credential={credential}
             key={credential.filename}
-            snapshot={
-              snapshots[credential.filename] ??
-              initialSnapshot(credential.filename)
-            }
+            snapshot={snapshot ?? unavailableSnapshot(credential.filename)}
             busy={busy[credential.filename] ?? null}
             onCheckin={() => void loadOne(credential.filename, 'checkin')}
             onRefresh={() => void loadOne(credential.filename)}
           />
-        ))
-      )}
+        );
+      })}
       {pageCount > 1 ? (
         <Flexbox align="center" gap={8} horizontal>
           <Button
