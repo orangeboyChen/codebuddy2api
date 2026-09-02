@@ -266,6 +266,77 @@ textarea {
   padding: 24px 32px 48px;
 }
 
+.account-status-progress {
+  display: block;
+  height: 8px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--lobe-border-radius-sm);
+  background: var(--lobe-color-fill-secondary);
+}
+
+.account-status-progress::-webkit-progress-bar {
+  border-radius: inherit;
+  background: var(--lobe-color-fill-secondary);
+}
+
+.account-status-progress::-webkit-progress-value {
+  border-radius: inherit;
+  background: var(--lobe-color-primary);
+  transition: width 180ms ease;
+}
+
+.account-status-progress::-moz-progress-bar {
+  border-radius: inherit;
+  background: var(--lobe-color-primary);
+}
+
+.account-status-progress-warning::-webkit-progress-value {
+  background: var(--lobe-color-warning, #d97706);
+}
+
+.account-status-progress-warning::-moz-progress-bar {
+  background: var(--lobe-color-warning, #d97706);
+}
+
+.account-status-progress-exhausted::-webkit-progress-value {
+  background: var(--lobe-color-error);
+}
+
+.account-status-progress-exhausted::-moz-progress-bar {
+  background: var(--lobe-color-error);
+}
+
+.account-status-progress-unknown::-webkit-progress-value,
+.account-status-progress-unknown::-moz-progress-bar {
+  background: var(--lobe-color-fill);
+}
+
+.account-status-card-busy {
+  opacity: 0.72;
+}
+
+@media (max-width: 767px) {
+  .console-main {
+    padding-inline: 16px;
+  }
+
+  .account-status-quota-values {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .account-status-card button {
+    flex: 1 1 0;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1199px) {
+  .console-main {
+    padding-inline: 24px;
+  }
+}
+
 .usage-auto-refresh-control {
   align-items: center;
   display: inline-flex;

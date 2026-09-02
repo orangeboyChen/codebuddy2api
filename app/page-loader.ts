@@ -141,6 +141,14 @@ export const getInitialData = async ({
         tab,
       };
     }
+    case 'account-status': {
+      const credentials = await listCredentials();
+
+      return {
+        credentials: credentials.credentials as unknown as CredentialSummary[],
+        tab,
+      };
+    }
     case 'api-test': {
       const eligibleCredentials = await listEligibleCredentialRecords();
       const [credentials, currentCredential, models] = await Promise.all([

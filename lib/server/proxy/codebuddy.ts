@@ -2203,10 +2203,7 @@ export const getModelsForCredential = async ({
   bearerToken: string;
   credentialData: CredentialData;
 }): Promise<DiscoveredModel[]> => {
-  const endpoint = new URL(
-    '/console/enterprises/personal/models',
-    await getCodeBuddyApiEndpoint(),
-  );
+  const apiEndpoint = await getCodeBuddyApiEndpoint();
   const headers = new Headers({
     Accept: 'application/json',
     Authorization: `Bearer ${bearerToken}`,
@@ -2232,10 +2229,16 @@ export const getModelsForCredential = async ({
     headers.set('X-Tenant-Id', String(tenantId));
   }
 
-  const response = await fetch(endpoint, {
-    headers,
-    signal: AbortSignal.timeout(15_000),
-  });
+  const fetchModels = async (path: string): Promise<Response> =>
+    fetch(new URL(path, apiEndpoint), {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+  let response = await fetchModels('/v3/config');
+
+  if (response.status === 404 || response.status === 405) {
+    response = await fetchModels('/console/enterprises/personal/models');
+  }
 
   if (!response.ok) {
     throw new Error(`Model discovery failed with status ${response.status}`);
