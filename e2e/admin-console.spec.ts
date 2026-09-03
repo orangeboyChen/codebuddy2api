@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const filename = 'admin-console-e2e.json';
+const filename = `admin-console-e2e-${process.pid}.json`;
 const json = (body: unknown) => ({
   data: body,
   headers: { 'Content-Type': 'application/json' },
@@ -173,10 +173,15 @@ test.describe('Admin console essentials', () => {
       .last();
     await expect(credentialCard).toBeVisible();
     await credentialCard.getByRole('button', { name: 'Edit' }).click();
-    const saveButton = page.getByRole('button', {
-      name: 'Save',
-      exact: true,
-    });
+    const saveButton = page
+      .locator('.credential-card')
+      .filter({
+        hasText: filename,
+      })
+      .getByRole('button', {
+        name: 'Save',
+        exact: true,
+      });
     await expect(saveButton).toBeVisible();
     await saveButton.click();
     await expect(page.getByText('Credential saved:')).toBeVisible();
