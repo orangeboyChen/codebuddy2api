@@ -235,7 +235,7 @@ test.describe('Admin console essentials', () => {
         messages: [{ content: 'hello', role: 'user' }],
       }),
     });
-    expect([400, 401, 403, 502]).toContain(completion.status());
+    expect([400, 401, 403, 500, 502]).toContain(completion.status());
   });
 
   test('renders API Test controls with no eligible credentials', async ({

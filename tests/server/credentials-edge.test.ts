@@ -16,7 +16,11 @@ import {
   resolveCredentialForRequest,
   updateCredentialSupportedModels,
 } from '@/lib/server/domain/credentials';
-import { resetStorageRuntime, writeStorageJson } from '@/lib/server/storage';
+import {
+  getCredsDir,
+  resetStorageRuntime,
+  writeStorageJson,
+} from '@/lib/server/storage';
 
 const tempRootDir = path.join(process.cwd(), '.tmp-test-credentials-edge');
 
@@ -57,6 +61,13 @@ describe('credential lifecycle edge cases', () => {
         (record) => record.data.bearer_token,
       ),
     ).toBe(true);
+  });
+
+  it('honors an explicit credentials directory for isolated runtimes', () => {
+    process.env.CODEBUDDY_CREDENTIALS_DIR = '.tmp-explicit-creds';
+    expect(getCredsDir()).toBe(path.join(process.cwd(), '.tmp-explicit-creds'));
+    delete process.env.CODEBUDDY_CREDENTIALS_DIR;
+    expect(getCredsDir()).toBe(path.join(process.cwd(), '.codebuddy_creds'));
   });
 
   it('normalizes supported models and proxy settings', async () => {
