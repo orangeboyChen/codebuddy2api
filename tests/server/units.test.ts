@@ -4717,6 +4717,126 @@ describe('server units', () => {
     });
   });
 
+  it('extracts additional_tools input items before proxying responses', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        choices: [{ message: { content: 'done' } }],
+      }),
+    );
+
+    await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: [
+          {
+            role: 'developer',
+            type: 'additional_tools',
+            tools: [
+              {
+                name: 'workspace',
+                tools: [
+                  {
+                    name: 'read_file',
+                    parameters: { type: 'object', properties: {} },
+                    type: 'function',
+                  },
+                ],
+                type: 'namespace',
+              },
+            ],
+          },
+          { role: 'user', content: 'read the file' },
+        ],
+        model: 'gpt-5.5',
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as {
+      messages: Array<{ content: string; role: string }>;
+      tools: Array<{ function: { name: string } }>;
+    };
+
+    expect(upstreamBody.tools).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'workspace__read_file',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+    ]);
+    expect(upstreamBody.messages).toEqual([
+      { role: 'user', content: 'read the file' },
+    ]);
+  });
+
+  it('appends additional tools to tools inherited from a response session', async () => {
+    process.env.CODEBUDDY_AUTH_MODE = 'api_key';
+    process.env.CODEBUDDY_API_KEY = 'cb-key';
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'first' } }] }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'second' } }] }),
+      );
+    const request = makeNextRequest('http://localhost/v1/responses', {
+      method: 'POST',
+    });
+
+    const firstResponse = await handleResponsesRequest(request, {
+      input: 'start',
+      model: 'gpt-5.5',
+      tools: [
+        {
+          name: 'tool_search',
+          type: 'tool_search',
+        },
+      ],
+    });
+    const firstPayload = (await firstResponse.json()) as { id: string };
+
+    await handleResponsesRequest(request, {
+      input: [
+        {
+          role: 'developer',
+          type: 'additional_tools',
+          tools: [
+            {
+              name: 'workspace',
+              tools: [
+                {
+                  name: 'read_file',
+                  parameters: { type: 'object', properties: {} },
+                  type: 'function',
+                },
+              ],
+              type: 'namespace',
+            },
+          ],
+        },
+        { role: 'user', content: 'continue' },
+      ],
+      previous_response_id: firstPayload.id,
+    });
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    ) as { tools: Array<{ function: { name: string } }> };
+
+    expect(upstreamBody.tools.map((tool) => tool.function.name)).toEqual([
+      'tool_search',
+      'workspace__read_file',
+    ]);
+  });
+
   it('flattens tools with function semantics into chat function tools', () => {
     const result = translateResponsesToolsToChat([
       { type: 'file_search' },

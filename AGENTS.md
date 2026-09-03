@@ -3,7 +3,6 @@
 ## Commit Rules
 
 - Use English conventional commits, for example `feat: reorganize source layout`.
-- Use the Codex identity for Codex-authored commits: `codex <codex@users.noreply.github.com>`.
 - Do not commit until `bun run lint`, `bun run format:check`, `bun run typecheck`, `bun run test:coverage`, and `bun run build` all pass.
 - Unit test coverage must stay at or above 90%; do not commit code below the enforced coverage threshold.
 
