@@ -2,10 +2,13 @@ name: Build and Release
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: write
   packages: write
+  pull-requests: write
   id-token: write
 
 concurrency:
@@ -14,211 +17,128 @@ concurrency:
 
 env:
   BUN_CACHE_PATH: ~/.bun/install/cache
+  BUN_VERSION: 1.3.14
   CI: true
   NEXT_TELEMETRY_DISABLED: '1'
-  BUN_VERSION: 1.3.14
 
 jobs:
-  prepare:
+  create-version-pr:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      release_tag: ${{ steps.version.outputs.release_tag }}
-      owner: ${{ steps.owner.outputs.owner }}
-      image: ghcr.io/${{ steps.owner.outputs.owner }}/codebuddy2api
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Determine next version
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - name: Prepare version branch
         id: version
         shell: bash
         run: |
           set -euo pipefail
-
           current_version="$(node -p "require('./package.json').version")"
           IFS='.' read -r major minor patch <<< "$current_version"
-          if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
-            echo "package.json version '$current_version' is not in X.Y.Z format." >&2
-            exit 1
-          fi
           version="${major}.${minor}.$((patch + 1))"
+          branch="release/v${version}"
+          node -e "const fs=require('fs'); const p='package.json'; const x=JSON.parse(fs.readFileSync(p,'utf8')); x.version=process.argv[1]; fs.writeFileSync(p,JSON.stringify(x,null,2)+'\\n')" "$version"
+          git switch -c "$branch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json
+          git commit -m "chore: prepare release v${version}"
+          git push --set-upstream origin "$branch"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "release_tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - name: Open version pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          existing="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')"
+          if [[ -n "$existing" ]]; then exit 0; fi
+          gh pr create --base main --head "$BRANCH" --label release --title "chore: prepare release v${VERSION}" --body "Automated version bump for release v${VERSION}. Merge this PR to trigger the release workflow."
 
-      - name: Determine lowercase owner
-        id: owner
+  detect-release:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.detect.outputs.should_release }}
+      version: ${{ steps.detect.outputs.version }}
+      release_tag: ${{ steps.detect.outputs.release_tag }}
+      image: ghcr.io/${{ steps.owner.outputs.owner }}/codebuddy2api
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - id: detect
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          lower_owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          echo "owner=$lower_owner" >> "$GITHUB_OUTPUT"
+          version="$(node -p "require('./package.json').version")"
+          release_pr="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[] | select(.base.ref == "main" and (.title | startswith("chore: prepare release v")) and (.head.ref | startswith("release/v"))) | .number' | head -n 1 || true)"
+          if [[ -z "$release_pr" ]]; then
+            echo 'should_release=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          echo 'should_release=true' >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v${version}" >> "$GITHUB_OUTPUT"
+      - id: owner
+        run: echo "owner=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
   verify:
-    needs: prepare
+    needs: detect-release
+    if: ${{ needs.detect-release.outputs.should_release == 'true' }}
     name: Verify Bun / TypeScript / Coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache Bun package downloads
-        uses: actions/cache@v6
+      - uses: actions/cache@v6
         with:
           path: ${{ env.BUN_CACHE_PATH }}
           key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
             ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Run ESLint
-        run: bun run lint
-
-      - name: Check Prettier formatting
-        run: bun run format:check
-
-      - name: Run TypeScript type checks
-        run: bun run typecheck
-
-      - name: Run unit tests with coverage gate
-        run: bun run test:coverage
-
-      - name: Build Next.js app
-        run: bun run build
-
-  commit_version:
-    needs:
-      - prepare
-      - verify
-    runs-on: ubuntu-latest
-    outputs:
-      commit_sha: ${{ steps.commit.outputs.commit_sha }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Commit package version
-        id: commit
-        shell: bash
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.argv[1]; fs.writeFileSync(path, JSON.stringify(pkg,null,2)+'\\n');" "$VERSION"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add package.json
-          git commit -m "chore: bump version to v${VERSION}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
-          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run format:check
+      - run: bun run typecheck
+      - run: bun run test:coverage
+      - run: bun run build
 
   publish-image:
-    needs:
-      - prepare
-      - commit_version
-      - verify
+    needs: [detect-release, verify]
+    if: ${{ needs.detect-release.outputs.should_release == 'true' }}
     name: Publish ${{ matrix.arch }} image
     runs-on: ${{ matrix.runs_on }}
-    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            platform: linux/amd64
-            runs_on: ubuntu-24.04
-          - arch: arm64
-            platform: linux/arm64
-            runs_on: ubuntu-24.04-arm
-
+          - { arch: amd64, platform: linux/amd64, runs_on: ubuntu-24.04 }
+          - { arch: arm64, platform: linux/arm64, runs_on: ubuntu-24.04-arm }
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.commit_version.outputs.commit_sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-
-      - name: Detect Docker Hub credentials
-        id: dockerhub
-        shell: bash
+      - id: tags
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+          IMAGE: ${{ needs.detect-release.outputs.image }}
+          VERSION: ${{ needs.detect-release.outputs.version }}
         run: |
-          set -euo pipefail
-
-          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_PASSWORD}" ]]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Log in to Docker Hub
-        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
-        uses: docker/login-action@v4
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${IMAGE}:${VERSION}-${{ matrix.arch }}" "${IMAGE}:latest-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+          echo EOF >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v7
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      - name: Determine image tags
-        id: tags
-        shell: bash
-        env:
-          GHCR_IMAGE: ${{ needs.prepare.outputs.image }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          tags=(
-            "${GHCR_IMAGE}:${VERSION}-${{ matrix.arch }}"
-            "${GHCR_IMAGE}:latest-${{ matrix.arch }}"
-          )
-
-          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_PASSWORD}" ]]; then
-            tags+=(
-              "docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${VERSION}-${{ matrix.arch }}"
-              "docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:latest-${{ matrix.arch }}"
-            )
-          fi
-
-          {
-            echo 'tags<<EOF'
-            printf '%s\n' "${tags[@]}"
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build and push release image
-        uses: docker/build-push-action@v7
-        with:
-          cache-from: type=gha,scope=codebuddy2api-docker-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=codebuddy2api-docker-${{ matrix.arch }}
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
@@ -226,120 +146,31 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
 
   merge-image-manifests:
-    needs:
-      - prepare
-      - commit_version
-      - publish-image
-    name: Merge multi-arch manifests
+    needs: [detect-release, publish-image]
+    if: ${{ needs.detect-release.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-
-      - name: Detect Docker Hub credentials
-        id: dockerhub
-        shell: bash
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_PASSWORD}" ]]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Log in to Docker Hub
-        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      - name: Create multi-arch manifests
-        shell: bash
-        env:
-          GHCR_IMAGE: ${{ needs.prepare.outputs.image }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          docker buildx imagetools create \
-            -t "${GHCR_IMAGE}:${VERSION}" \
-            -t "${GHCR_IMAGE}:latest" \
-            "${GHCR_IMAGE}:${VERSION}-amd64" \
-            "${GHCR_IMAGE}:${VERSION}-arm64"
-
-          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_PASSWORD}" ]]; then
-            docker buildx imagetools create \
-              -t "docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${VERSION}" \
-              -t "docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:latest" \
-              "docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${VERSION}-amd64" \
-              "docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${VERSION}-arm64"
-          fi
+      - env:
+          IMAGE: ${{ needs.detect-release.outputs.image }}
+          VERSION: ${{ needs.detect-release.outputs.version }}
+        run: docker buildx imagetools create -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" "${IMAGE}:${VERSION}-amd64" "${IMAGE}:${VERSION}-arm64"
 
   release:
-    needs:
-      - prepare
-      - commit_version
-      - merge-image-manifests
+    needs: [detect-release, merge-image-manifests]
+    if: ${{ needs.detect-release.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.commit_version.outputs.commit_sha }}
-
-      - name: Create GitHub release
-        env:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          IMAGE_NAME: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
-          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          RELEASE_TITLE: ${{ needs.prepare.outputs.release_tag }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TAG: ${{ needs.detect-release.outputs.release_tag }}
+          IMAGE: ${{ needs.detect-release.outputs.image }}:${{ needs.detect-release.outputs.version }}
         run: |
-          set -euo pipefail
-
-          latest_tag="$(git tag --list 'v*' --sort=-v:refname | grep -Fxv "${RELEASE_TAG}" | head -n 1 || true)"
-          commit_range="${{ needs.commit_version.outputs.commit_sha }}"
-
-          if [[ -n "${latest_tag}" ]]; then
-            commit_range="${latest_tag}..${{ needs.commit_version.outputs.commit_sha }}"
-          fi
-
-          commit_notes="$(git log "${commit_range}" --pretty=format:'- %s (%h)' || true)"
-
-          if [[ -z "${commit_notes}" ]]; then
-            commit_notes='- No commit summary available.'
-          fi
-
-          release_notes="## Images"$'\n'"- Docker image: \`${IMAGE_NAME}\`"
-
-          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
-            release_notes="${release_notes}"$'\n'"- Docker Hub image: \`docker.io/${DOCKERHUB_USERNAME}/codebuddy2api:${RELEASE_VERSION}\`"
-          fi
-
-          release_notes="${release_notes}"$'\n\n'"## Commits"$'\n'"${commit_notes}"
-
-          gh release create "$RELEASE_TAG" \
-            --target "${{ needs.commit_version.outputs.commit_sha }}" \
-            --title "$RELEASE_TITLE" \
-            --latest \
-            --notes "$release_notes"
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --latest --notes "Docker image: \`$IMAGE\`"
