@@ -325,15 +325,26 @@ textarea {
 .dashboard-github-link {
   align-items: center;
   align-self: center;
-  color: var(--lobe-color-text-secondary);
   display: inline-flex;
   gap: 8px;
   justify-content: center;
+}
+
+.dashboard-github-repository {
+  align-items: center;
+  color: var(--lobe-color-text-secondary);
+  display: inline-flex;
+  gap: 8px;
   transition: color 160ms ease;
 }
 
-.dashboard-github-link:hover {
+.dashboard-github-repository:hover {
   color: var(--lobe-color-text);
+}
+
+.dashboard-version {
+  color: var(--lobe-color-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .account-status-card-busy {
