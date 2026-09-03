@@ -335,7 +335,6 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
   );
   const pageCount =
     credentials.length > 50 ? Math.ceil(credentials.length / 12) : 1;
-  if (!credentials.length) return <Empty title={text('accountStatus.empty')} />;
   return (
     <Flexbox direction="vertical" gap={24}>
       <Flexbox
@@ -348,36 +347,40 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
         <Flexbox gap={8} horizontal>
           <Button
             loading={batchBusy === 'refresh'}
-            disabled={Boolean(batchBusy)}
+            disabled={Boolean(batchBusy) || !credentials.length}
             onClick={() => void loadAll('refresh')}
           >
             {text('accountStatus.refreshAll')}
           </Button>
           <Button
             loading={batchBusy === 'checkin'}
-            disabled={Boolean(batchBusy)}
+            disabled={Boolean(batchBusy) || !credentials.length}
             onClick={() => void loadAll('checkin')}
           >
             {text('accountStatus.checkinAll')}
           </Button>
         </Flexbox>
       </Flexbox>
-      {pageCredentials.map((credential) => {
-        const snapshot = snapshots[credential.filename];
-        if (!snapshot && !credential.is_expired) {
-          return <AccountStatusSkeleton key={credential.filename} />;
-        }
-        return (
-          <AccountStatusCard
-            credential={credential}
-            key={credential.filename}
-            snapshot={snapshot ?? unavailableSnapshot(credential.filename)}
-            busy={busy[credential.filename] ?? null}
-            onCheckin={() => void loadOne(credential.filename, 'checkin')}
-            onRefresh={() => void loadOne(credential.filename)}
-          />
-        );
-      })}
+      {credentials.length ? (
+        pageCredentials.map((credential) => {
+          const snapshot = snapshots[credential.filename];
+          if (!snapshot && !credential.is_expired) {
+            return <AccountStatusSkeleton key={credential.filename} />;
+          }
+          return (
+            <AccountStatusCard
+              credential={credential}
+              key={credential.filename}
+              snapshot={snapshot ?? unavailableSnapshot(credential.filename)}
+              busy={busy[credential.filename] ?? null}
+              onCheckin={() => void loadOne(credential.filename, 'checkin')}
+              onRefresh={() => void loadOne(credential.filename)}
+            />
+          );
+        })
+      ) : (
+        <Empty title={text('accountStatus.empty')} />
+      )}
       {pageCount > 1 ? (
         <Flexbox align="center" gap={8} horizontal>
           <Button
