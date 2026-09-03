@@ -278,14 +278,18 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
       try {
         await Promise.all(
           credentials
-            .filter((credential) => !credential.is_expired)
+            .filter((credential) => {
+              if (credential.is_expired) return false;
+              if (action !== 'checkin') return true;
+              return snapshots[credential.filename]?.checkin.claimed !== true;
+            })
             .map((credential) => loadOne(credential.filename, action)),
         );
       } finally {
         setBatchBusy(null);
       }
     },
-    [credentials, loadOne],
+    [credentials, loadOne, snapshots],
   );
   useEffect(() => {
     const timer = window.setTimeout(() => {
