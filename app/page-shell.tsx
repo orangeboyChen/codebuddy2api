@@ -10,6 +10,7 @@ import { Button, ToastHost, toast } from '@lobehub/ui/base-ui';
 import {
   Bug,
   ChartLine,
+  CircleUserRound,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -83,7 +84,7 @@ const tabs: Array<{
   { icon: LayoutDashboard, key: 'dashboard', labelKey: 'dashboard' },
   { icon: ChartLine, key: 'usage', labelKey: 'usage' },
   { icon: KeyRound, key: 'credentials', labelKey: 'credentials' },
-  { icon: KeyRound, key: 'account-status', labelKey: 'accountStatus' },
+  { icon: CircleUserRound, key: 'account-status', labelKey: 'accountStatus' },
   { icon: Send, key: 'api-test', labelKey: 'apiTest' },
   { icon: Bug, key: 'debug', labelKey: 'debug' },
   { icon: Settings2, key: 'settings', labelKey: 'settings' },

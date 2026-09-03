@@ -220,6 +220,8 @@ const loadAccountStatus = async (
     'claimed',
     'isClaimed',
     'checkedIn',
+    'today_checked_in',
+    'todayCheckedIn',
     'status',
   ]);
   const claimed =
@@ -258,11 +260,21 @@ const loadAccountStatus = async (
       ),
       plan:
         String(
-          findValue(creditsPayload, ['plan', 'planName', 'userType']) ?? '',
+          findValue(creditsPayload, [
+            'plan',
+            'planName',
+            'userType',
+            'PackageName',
+          ]) ?? '',
         ) || null,
       resetAt:
         String(
-          findValue(creditsPayload, ['resetAt', 'reset_at', 'resetTime']) ?? '',
+          findValue(creditsPayload, [
+            'resetAt',
+            'reset_at',
+            'resetTime',
+            'CycleEndTime',
+          ]) ?? '',
         ) || null,
     },
     error: errors.length ? errors.join('; ') : null,

@@ -52,7 +52,7 @@
       "checkinAll": "全部签到",
       "empty": "暂无凭据",
       "quotaUnknown": "额度未知",
-      "quotaUsed": "已使用 {percent}% 额度"
+      "quotaUsed": "剩余额度 {percent}%"
     },
     "dashboard": {
       "welcomeTitle": "做好蹬的准备了吗？",

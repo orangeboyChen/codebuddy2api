@@ -745,6 +745,7 @@ const buildUpstreamHeaders = async (
   headers.set('X-IDE-Name', 'CLI');
   headers.set('X-IDE-Type', 'CLI');
   headers.set('X-IDE-Version', CODEBUDDY_CLI_VERSION);
+  headers.set('X-Client-Platform', 'web');
   headers.set('X-Product', 'SaaS');
   headers.set('X-Product-Version', CODEBUDDY_CLI_VERSION);
   headers.set('X-Request-ID', requestId);
@@ -2260,7 +2261,7 @@ export const getModelsForCredential = async ({
     });
   let response = await fetchModels('/v3/config');
 
-  if (response.status === 404 || response.status === 405) {
+  if ([400, 404, 405].includes(response.status)) {
     response = await fetchModels('/console/enterprises/personal/models');
   }
 
@@ -2305,6 +2306,11 @@ export const getModelsForCredential = async ({
       ];
     }),
   );
+  const declaredModelIds = new Set(
+    (payload.data?.models ?? [])
+      .map((model) => (typeof model.id === 'string' ? model.id.trim() : ''))
+      .filter(Boolean),
+  );
 
   if (!Array.isArray(cliModels)) {
     return [];
@@ -2316,7 +2322,15 @@ export const getModelsForCredential = async ({
     }
 
     const model = modelsById.get(modelId);
-    return model ? [model] : [];
+    if (!model && declaredModelIds.has(modelId)) {
+      return [];
+    }
+    return [
+      model ?? {
+        displayName: modelId,
+        id: modelId,
+      },
+    ];
   });
 };
 

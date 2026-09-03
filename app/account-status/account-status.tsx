@@ -3,7 +3,6 @@
 import {
   Alert,
   Block,
-  Collapse,
   Empty,
   Flexbox,
   SkeletonButton,
@@ -70,39 +69,39 @@ const failedSnapshot = (
 });
 
 const quotaPercent = (snapshot: AccountStatusSnapshot): number | null => {
-  const { total, used } = snapshot.credits;
-  if (total === null || total <= 0 || used === null) return null;
-  return Math.min(100, Math.max(0, (used / total) * 100));
+  const { total, remaining } = snapshot.credits;
+  if (total === null || total <= 0 || remaining === null) return null;
+  return Math.min(100, Math.max(0, (remaining / total) * 100));
 };
 
 const QuotaProgress = ({
   snapshot,
   unknownLabel,
-  usedLabel,
+  remainingLabel,
 }: {
   snapshot: AccountStatusSnapshot;
   unknownLabel: string;
-  usedLabel: (percent: number) => string;
+  remainingLabel: (percent: number) => string;
 }) => {
   const percent = quotaPercent(snapshot);
   const tone =
     percent === null
       ? 'unknown'
-      : percent >= 100
+      : percent <= 0
         ? 'exhausted'
-        : percent >= 80
+        : percent <= 20
           ? 'warning'
           : 'normal';
   return (
     <Flexbox direction="vertical" gap={8}>
       <Flexbox align="center" distribution="space-between" horizontal>
-        <Text>{percent === null ? '—' : `${percent.toFixed(0)}%`}</Text>
         <Text type="secondary">
-          {snapshot.credits.used ?? '—'} / {snapshot.credits.total ?? '—'}
+          {snapshot.credits.remaining ?? '—'} / {snapshot.credits.total ?? '—'}
         </Text>
+        <Text>{percent === null ? '—' : `${percent.toFixed(0)}%`}</Text>
       </Flexbox>
       <progress
-        aria-label={percent === null ? unknownLabel : usedLabel(percent)}
+        aria-label={percent === null ? unknownLabel : remainingLabel(percent)}
         className={`account-status-progress account-status-progress-${tone}`}
         max={100}
         value={percent ?? 0}
@@ -135,10 +134,7 @@ const AccountStatusCard = ({
   onCheckin: () => void;
 }) => {
   const text = useTranslations('Admin');
-  const percent = quotaPercent(snapshot);
   const quotaUnknown = text('accountStatus.quotaUnknown');
-  const models = snapshot.models.slice(0, 8);
-  const hasMoreModels = snapshot.models.length > models.length;
   return (
     <Block
       className={
@@ -151,15 +147,26 @@ const AccountStatusCard = ({
       padding={20}
       variant="outlined"
     >
-      <Flexbox direction="vertical" gap={4}>
-        <Tooltip title={credential.email || credential.user_id}>
-          <Text strong>{credential.email || credential.user_id}</Text>
-        </Tooltip>
-        <Tooltip title={credential.filename}>
-          <Text ellipsis type="secondary">
-            {credential.filename}
-          </Text>
-        </Tooltip>
+      <Flexbox align="flex-start" distribution="space-between" horizontal>
+        <Flexbox direction="vertical" gap={4}>
+          <Tooltip title={credential.email || credential.user_id}>
+            <Text strong>{credential.email || credential.user_id}</Text>
+          </Tooltip>
+          <Tooltip title={credential.filename}>
+            <Text ellipsis type="secondary">
+              {credential.filename}
+            </Text>
+          </Tooltip>
+        </Flexbox>
+        <Button
+          aria-label={text('accountStatus.refresh')}
+          icon={RefreshCw}
+          loading={busy === 'refresh'}
+          disabled={Boolean(busy)}
+          onClick={onRefresh}
+        >
+          {text('accountStatus.refresh')}
+        </Button>
       </Flexbox>
       {snapshot.error ? <Alert type="error" title={snapshot.error} /> : null}
       <Flexbox direction="vertical" gap={8}>
@@ -167,36 +174,16 @@ const AccountStatusCard = ({
         <QuotaProgress
           snapshot={snapshot}
           unknownLabel={quotaUnknown}
-          usedLabel={(value) =>
+          remainingLabel={(value) =>
             text('accountStatus.quotaUsed', { percent: value.toFixed(0) })
           }
         />
-        <Flexbox
-          className="account-status-quota-values"
-          gap={16}
-          horizontal
-          wrap="wrap"
-        >
-          <Text type="secondary">
-            {text('accountStatus.total')}: {snapshot.credits.total ?? '—'}
-          </Text>
-          <Text type="secondary">
-            {text('accountStatus.used')}: {snapshot.credits.used ?? '—'}
-          </Text>
-          <Text type="secondary">
-            {text('accountStatus.remaining')}:{' '}
-            {snapshot.credits.remaining ?? '—'}
-          </Text>
-        </Flexbox>
         <Text type="secondary">
           {text('accountStatus.plan')}: {snapshot.credits.plan ?? '—'}
         </Text>
         <Text type="secondary">
           {text('accountStatus.resetAt')}: {snapshot.credits.resetAt ?? '—'}
         </Text>
-        {percent !== null && percent >= 100 ? (
-          <Text type="secondary">{text('accountStatus.exhausted')}</Text>
-        ) : null}
       </Flexbox>
       <Flexbox align="center" distribution="space-between" horizontal>
         <Text type="secondary">
@@ -217,47 +204,15 @@ const AccountStatusCard = ({
       </Flexbox>
       <Flexbox direction="vertical" gap={8}>
         <Text strong>{text('accountStatus.models')}</Text>
-        {models.length ? (
-          <Collapse
-            items={[
-              {
-                key: 'models',
-                label: hasMoreModels
-                  ? text('accountStatus.showModels', {
-                      count: snapshot.models.length,
-                    })
-                  : text('accountStatus.modelCount', {
-                      count: snapshot.models.length,
-                    }),
-                children: (
-                  <Flexbox gap={8} wrap="wrap">
-                    {snapshot.models.map((model) => (
-                      <Tag key={model}>{model}</Tag>
-                    ))}
-                  </Flexbox>
-                ),
-              },
-            ]}
-            variant="borderless"
-          />
+        {snapshot.models.length ? (
+          <Flexbox gap={8} horizontal wrap="wrap">
+            {snapshot.models.map((model) => (
+              <Tag key={model}>{model}</Tag>
+            ))}
+          </Flexbox>
         ) : (
           <Text type="secondary">{text('accountStatus.noModels')}</Text>
         )}
-      </Flexbox>
-      <Flexbox align="center" distribution="space-between" horizontal>
-        <Text type="secondary">
-          {snapshot.queriedAt
-            ? new Date(snapshot.queriedAt).toLocaleString()
-            : '—'}
-        </Text>
-        <Button
-          icon={RefreshCw}
-          loading={busy === 'refresh'}
-          disabled={Boolean(busy)}
-          onClick={onRefresh}
-        >
-          {text('accountStatus.refresh')}
-        </Button>
       </Flexbox>
     </Block>
   );
