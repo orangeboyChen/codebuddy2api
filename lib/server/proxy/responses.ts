@@ -29,6 +29,7 @@ interface ResponsesInputItem {
   output?: unknown;
   name?: string;
   call_id?: string;
+  tools?: Array<{ type?: string; name?: string } & Record<string, unknown>>;
 }
 
 interface SupportedChatTool {
@@ -969,6 +970,15 @@ const prepareTranscript = async (
     typeof body.model === 'string' && body.model.trim()
       ? body.model
       : (resolvedPreviousSession?.model ?? (await getDefaultModel()));
+  const additionalTools = Array.isArray(body.input)
+    ? body.input.flatMap((item) =>
+        item?.type === 'additional_tools' && Array.isArray(item.tools)
+          ? item.tools
+          : [],
+      )
+    : [];
+  const baseTools = body.tools ?? resolvedPreviousSession?.defaults.tools;
+  const requestTools = [...(baseTools ?? []), ...additionalTools];
   const defaults = {
     instructions:
       body.instructions ??
@@ -976,7 +986,7 @@ const prepareTranscript = async (
       undefined,
     metadata:
       body.metadata ?? resolvedPreviousSession?.defaults.metadata ?? undefined,
-    tools: body.tools ?? resolvedPreviousSession?.defaults.tools ?? undefined,
+    tools: requestTools.length > 0 ? requestTools : baseTools,
     tool_choice:
       body.tool_choice ??
       resolvedPreviousSession?.defaults.tool_choice ??
@@ -994,6 +1004,7 @@ const prepareTranscript = async (
     transcript.push({ role: 'user', content: body.input });
   } else if (Array.isArray(body.input)) {
     body.input.forEach((item) => {
+      if (item.type === 'additional_tools') return;
       transcript.push(mapInputItemToMessage(item));
     });
   }
