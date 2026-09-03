@@ -52,7 +52,7 @@
       "checkinAll": "すべてチェックイン",
       "empty": "認証情報がありません",
       "quotaUnknown": "使用量不明",
-      "quotaUsed": "使用量 {percent}%"
+      "quotaUsed": "残り容量 {percent}%"
     },
     "dashboard": {
       "welcomeTitle": "トークンをぶん回す準備はできた？",

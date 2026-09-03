@@ -60,17 +60,104 @@ const fetchJson = async (
   credential: CredentialRecord,
   path: string,
   method = 'GET',
+  body?: unknown,
 ): Promise<unknown> => {
-  const response = await fetch(new URL(path, await getCodeBuddyApiEndpoint()), {
-    method,
+  const domain = String(credential.data.domain ?? '')
+    .trim()
+    .toLowerCase();
+  const endpoint = domain.endsWith('workbuddy.ai')
+    ? 'https://www.workbuddy.ai'
+    : await getCodeBuddyApiEndpoint();
+  const origin = domain.endsWith('workbuddy.ai')
+    ? 'https://www.workbuddy.ai'
+    : 'https://www.codebuddy.cn';
+  const userId = String(
+    credential.data.user_id ?? credential.data.user_info?.email ?? '',
+  ).trim();
+  const enterpriseId = String(
+    credential.data.enterprise_id ?? credential.data.enterpriseId ?? '',
+  ).trim();
+  const tenantId = String(
+    credential.data.tenant_id ?? credential.data.tenantId ?? enterpriseId,
+  ).trim();
+  const response = await fetch(new URL(path, endpoint), {
+    body: body === undefined ? undefined : JSON.stringify(body),
     headers: {
-      Accept: 'application/json',
+      Accept: 'application/json, text/plain, */*',
       Authorization: `Bearer ${getBearerToken(credential)}`,
+      'Content-Type': 'application/json',
+      Origin: origin,
+      Referer: `${origin}/`,
+      'User-Agent': 'CLI/2.137.1 CodeBuddy/2.137.1',
+      'X-IDE-Name': 'CLI',
+      'X-IDE-Type': 'CLI',
+      'X-IDE-Version': '2.137.1',
+      'X-Product': 'SaaS',
+      'X-Requested-With': 'XMLHttpRequest',
+      ...(userId ? { 'X-User-Id': userId } : {}),
+      ...(enterpriseId ? { 'X-Enterprise-Id': enterpriseId } : {}),
+      ...(tenantId ? { 'X-Tenant-Id': tenantId } : {}),
+      ...(domain ? { 'X-Domain': domain } : {}),
     },
+    method,
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
   return response.json();
+};
+
+const fetchCheckinStatus = async (
+  credential: CredentialRecord,
+): Promise<unknown> => {
+  try {
+    return await fetchJson(
+      credential,
+      '/v2/billing/meter/checkin-activity-status',
+      'POST',
+      {},
+    );
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      (!error.message.endsWith('returned 404') &&
+        !error.message.endsWith('returned 405'))
+    ) {
+      throw error;
+    }
+    return fetchJson(
+      credential,
+      '/v2/billing/meter/checkin-status',
+      'POST',
+      {},
+    );
+  }
+};
+
+const normalizeQuotaPayload = (payload: unknown): unknown => {
+  const accounts = findValue(payload, ['Accounts']);
+  if (!Array.isArray(accounts)) return payload;
+  let total = 0;
+  let used = 0;
+  let remaining = 0;
+  let hasValues = false;
+  for (const account of accounts) {
+    const size = toNumber(
+      findValue(account, ['CycleCapacitySize', 'CapacitySize']),
+    );
+    const accountRemaining = toNumber(
+      findValue(account, ['CycleCapacityRemain', 'CapacityRemain']),
+    );
+    const accountUsed = toNumber(
+      findValue(account, ['CycleCapacityUsed', 'CapacityUsed']),
+    );
+    if (size !== null || accountRemaining !== null || accountUsed !== null) {
+      hasValues = true;
+      total += size ?? (accountRemaining ?? 0) + (accountUsed ?? 0);
+      remaining += accountRemaining ?? 0;
+      used += accountUsed ?? (size ?? 0) - (accountRemaining ?? 0);
+    }
+  }
+  return hasValues ? { total, used, remaining } : payload;
 };
 
 const loadAccountStatus = async (
@@ -82,29 +169,49 @@ const loadAccountStatus = async (
   let models: string[] = [];
 
   try {
-    creditsPayload = await fetchJson(credential, '/api/v2/quota/usage');
+    const now = new Date();
+    const formatDate = (value: Date) =>
+      value.toISOString().slice(0, 19).replace('T', ' ');
+    creditsPayload = await fetchJson(
+      credential,
+      '/v2/billing/meter/get-user-resource',
+      'POST',
+      {
+        PageNumber: 1,
+        PageSize: 100,
+        ProductCode: 'p_tcaca',
+        Status: [0, 3],
+        PackageEndTimeRangeBegin: formatDate(now),
+        PackageEndTimeRangeEnd: formatDate(
+          new Date(now.getTime() + 365 * 101 * 24 * 60 * 60 * 1000),
+        ),
+      },
+    );
   } catch (error) {
     errors.push(
       error instanceof Error ? error.message : 'Credits query failed',
     );
   }
   try {
-    checkinPayload = await fetchJson(
-      credential,
-      '/sash/api/v1/me/daily-check-in/status',
-    );
+    checkinPayload = await fetchCheckinStatus(credential);
   } catch (error) {
     errors.push(
       error instanceof Error ? error.message : 'Check-in query failed',
     );
   }
   try {
-    models = (
-      await getModelsForCredential({
-        bearerToken: getBearerToken(credential),
-        credentialData: credential.data,
-      })
-    ).map((model) => model.id);
+    const savedModels = String(credential.data.supported_models ?? '')
+      .split(',')
+      .map((model) => model.trim())
+      .filter(Boolean);
+    models = savedModels.length
+      ? savedModels
+      : (
+          await getModelsForCredential({
+            bearerToken: getBearerToken(credential),
+            credentialData: credential.data,
+          })
+        ).map((model) => model.id);
   } catch (error) {
     errors.push(error instanceof Error ? error.message : 'Model query failed');
   }
@@ -113,6 +220,8 @@ const loadAccountStatus = async (
     'claimed',
     'isClaimed',
     'checkedIn',
+    'today_checked_in',
+    'todayCheckedIn',
     'status',
   ]);
   const claimed =
@@ -130,19 +239,42 @@ const loadAccountStatus = async (
     },
     credits: {
       total: toNumber(
-        findValue(creditsPayload, ['total', 'total_size', 'quota']),
+        findValue(normalizeQuotaPayload(creditsPayload), [
+          'total',
+          'total_size',
+          'quota',
+          'TotalDosage',
+        ]),
       ),
-      used: toNumber(findValue(creditsPayload, ['used', 'total_used'])),
+      used: toNumber(
+        findValue(normalizeQuotaPayload(creditsPayload), [
+          'used',
+          'total_used',
+        ]),
+      ),
       remaining: toNumber(
-        findValue(creditsPayload, ['remaining', 'total_remain']),
+        findValue(normalizeQuotaPayload(creditsPayload), [
+          'remaining',
+          'total_remain',
+        ]),
       ),
       plan:
         String(
-          findValue(creditsPayload, ['plan', 'planName', 'userType']) ?? '',
+          findValue(creditsPayload, [
+            'plan',
+            'planName',
+            'userType',
+            'PackageName',
+          ]) ?? '',
         ) || null,
       resetAt:
         String(
-          findValue(creditsPayload, ['resetAt', 'reset_at', 'resetTime']) ?? '',
+          findValue(creditsPayload, [
+            'resetAt',
+            'reset_at',
+            'resetTime',
+            'CycleEndTime',
+          ]) ?? '',
         ) || null,
     },
     error: errors.length ? errors.join('; ') : null,
@@ -175,11 +307,15 @@ export const checkinAccount = async (
   const credential = (await listEligibleCredentialRecords([filename]))[0];
   if (!credential) throw new Error('Credential is unavailable');
   try {
-    await fetchJson(credential, '/sash/api/v1/me/daily-check-in/claim', 'POST');
+    await fetchJson(credential, '/v2/billing/meter/daily-checkin', 'POST', {});
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Check-in failed';
     return {
       ...(await loadAccountStatus(credential)),
-      error: error instanceof Error ? error.message : 'Check-in failed',
+      error: message.replace(
+        '/v2/billing/meter/daily-checkin returned',
+        'claim returned',
+      ),
     };
   }
   return loadAccountStatus(credential);

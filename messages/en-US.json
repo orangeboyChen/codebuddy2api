@@ -52,7 +52,7 @@
       "checkinAll": "Check in all",
       "empty": "No credentials",
       "quotaUnknown": "Unknown quota",
-      "quotaUsed": "{percent}% quota used"
+      "quotaUsed": "{percent}% quota remaining"
     },
     "dashboard": {
       "welcomeTitle": "Ready to crank through some tokens?",

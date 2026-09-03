@@ -70,6 +70,7 @@ describe('account status domain', () => {
   it('records partial upstream errors', async () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(jsonResponse({ userQuota: { total: 0 } }))
+      .mockResolvedValueOnce(jsonResponse({}, 404))
       .mockResolvedValueOnce(jsonResponse({}, 404));
     vi.mocked(getModelsForCredential).mockRejectedValueOnce(
       new Error('models unavailable'),

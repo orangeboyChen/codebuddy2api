@@ -2,7 +2,12 @@
 
 import { ConfigProvider, ThemeProvider } from '@lobehub/ui';
 import { motion } from 'motion/react';
-import { useEffect, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 
 import { themeChangeEventName, type ThemeMode } from '@/lib/theme';
 
@@ -16,6 +21,11 @@ const resolveThemeMode = (theme: ThemeMode) => {
 };
 
 const LobeUiProvider = ({ children, initialTheme }: LobeUiProviderProps) => {
+  const mounted = useSyncExternalStore(
+    () => () => undefined,
+    () => true,
+    () => false,
+  );
   const [appearance, setAppearance] = useState<'dark' | 'light'>(
     initialTheme === 'dark' ? 'dark' : 'light',
   );
@@ -50,14 +60,18 @@ const LobeUiProvider = ({ children, initialTheme }: LobeUiProviderProps) => {
 
   return (
     <ConfigProvider motion={motion}>
-      <ThemeProvider
-        appearance={appearance}
-        enableCustomFonts={false}
-        enableGlobalStyle={false}
-        themeMode={resolveThemeMode(appearance)}
-      >
-        {children}
-      </ThemeProvider>
+      {mounted ? (
+        <ThemeProvider
+          appearance={appearance}
+          enableCustomFonts={false}
+          enableGlobalStyle={false}
+          themeMode={resolveThemeMode(appearance)}
+        >
+          {children}
+        </ThemeProvider>
+      ) : (
+        children
+      )}
     </ConfigProvider>
   );
 };

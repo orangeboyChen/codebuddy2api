@@ -176,7 +176,6 @@ const CredentialModels = () => {
   const [refreshingFilename, setRefreshingFilename] = useState<string | null>(
     null,
   );
-  const [savingFilename, setSavingFilename] = useState<string | null>(null);
   const [rows, setRows] = useState<CredentialModelRow[]>([]);
   const saveTimersRef = useRef(new Map<string, number>());
 
@@ -215,20 +214,14 @@ const CredentialModels = () => {
   };
 
   const saveModels = async (filename: string, models: string[]) => {
-    setSavingFilename(filename);
+    const response = await fetch('/admin-api/credentials/models', {
+      body: JSON.stringify({ filename, models: models.join(', ') }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'PUT',
+    });
 
-    try {
-      const response = await fetch('/admin-api/credentials/models', {
-        body: JSON.stringify({ filename, models: models.join(', ') }),
-        headers: { 'Content-Type': 'application/json' },
-        method: 'PUT',
-      });
-
-      if (!response.ok) {
-        throw new Error('Unable to save supported models');
-      }
-    } finally {
-      setSavingFilename(null);
+    if (!response.ok) {
+      throw new Error('Unable to save supported models');
     }
   };
 
@@ -298,7 +291,6 @@ const CredentialModels = () => {
         ) : (
           <TextArea
             className="credential-models-input"
-            disabled={savingFilename === row.filename}
             onBlur={(event) =>
               saveImmediately(row.filename, event.currentTarget.value)
             }
