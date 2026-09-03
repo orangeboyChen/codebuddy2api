@@ -195,6 +195,12 @@ textarea {
   margin-left: 24px;
   max-width: none;
   min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.admin-header-navigation::-webkit-scrollbar {
+  display: none;
 }
 
 .admin-header-navigation-compact {
@@ -205,6 +211,8 @@ textarea {
   background: transparent !important;
   border-color: transparent !important;
   box-shadow: none !important;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .admin-header-tab[data-active] {
@@ -219,7 +227,9 @@ textarea {
 }
 
 .admin-header-controls {
+  flex: 0 0 auto;
   margin-left: auto;
+  min-width: 0;
 }
 
 .admin-header-select > *:last-child {
@@ -310,6 +320,20 @@ textarea {
 .account-status-progress-unknown::-webkit-progress-value,
 .account-status-progress-unknown::-moz-progress-bar {
   background: var(--lobe-color-fill);
+}
+
+.dashboard-github-link {
+  align-items: center;
+  align-self: center;
+  color: var(--lobe-color-text-secondary);
+  display: inline-flex;
+  gap: 8px;
+  justify-content: center;
+  transition: color 160ms ease;
+}
+
+.dashboard-github-link:hover {
+  color: var(--lobe-color-text);
 }
 
 .account-status-card-busy {
