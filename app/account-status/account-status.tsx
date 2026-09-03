@@ -94,7 +94,7 @@ const QuotaProgress = ({
           : 'normal';
   return (
     <Flexbox direction="vertical" gap={8}>
-      <Flexbox align="center" distribution="space-between" horizontal>
+      <Flexbox align="center" distribution="flex-end" gap={8} horizontal>
         <Text type="secondary">
           {snapshot.credits.remaining ?? '—'} / {snapshot.credits.total ?? '—'}
         </Text>
@@ -248,7 +248,13 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
       } catch (error) {
         setSnapshots((current) => ({
           ...current,
-          [filename]: current[filename] ?? failedSnapshot(filename, error),
+          [filename]: {
+            ...(current[filename] ?? failedSnapshot(filename, error)),
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Account status query failed',
+          },
         }));
       } finally {
         setBusy((current) => {
@@ -298,7 +304,6 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
         horizontal
         wrap="wrap"
       >
-        <Text strong>{text('accountStatus.title')}</Text>
         <Flexbox gap={8} horizontal>
           <Button
             loading={batchBusy === 'refresh'}
