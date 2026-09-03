@@ -164,7 +164,6 @@ test.describe('Admin console essentials', () => {
       },
     });
     expect(createResponse.ok()).toBe(true);
-    await page.waitForTimeout(1000);
     await page.goto('/credentials');
     const credentialCard = page
       .locator('.credential-card')
@@ -174,9 +173,12 @@ test.describe('Admin console essentials', () => {
       .last();
     await expect(credentialCard).toBeVisible();
     await credentialCard.getByRole('button', { name: 'Edit' }).click();
-    await credentialCard
-      .getByRole('button', { name: 'Save', exact: true })
-      .click();
+    const saveButton = credentialCard.getByRole('button', {
+      name: 'Save',
+      exact: true,
+    });
+    await expect(saveButton).toBeVisible();
+    await saveButton.click();
     await expect(page.getByText('Credential saved:')).toBeVisible();
 
     await credentialCard.getByRole('button', { name: 'Delete' }).click();
