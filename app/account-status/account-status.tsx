@@ -16,15 +16,16 @@ import {
 import { Button } from '@lobehub/ui/base-ui';
 import { RefreshCw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import type { CredentialSummary } from '@/app/credentials/credentials';
 
 interface AccountStatusProps {
   credentials: CredentialSummary[];
+  initialStatuses?: AccountStatusSnapshot[];
 }
 
-interface AccountStatusSnapshot {
+export interface AccountStatusSnapshot {
   checkin: { claimed: boolean | null; message: string | null };
   credits: {
     total: number | null;
@@ -224,11 +225,18 @@ const AccountStatusCard = ({
   );
 };
 
-const AccountStatus = ({ credentials }: AccountStatusProps) => {
+const AccountStatus = ({
+  credentials,
+  initialStatuses = [],
+}: AccountStatusProps) => {
   const text = useTranslations('Admin');
   const [snapshots, setSnapshots] = useState<
     Record<string, AccountStatusSnapshot>
-  >({});
+  >(() =>
+    Object.fromEntries(
+      initialStatuses.map((status) => [status.filename, status]),
+    ),
+  );
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [page, setPage] = useState(1);
   const [batchBusy, setBatchBusy] = useState<string | null>(null);
@@ -291,12 +299,6 @@ const AccountStatus = ({ credentials }: AccountStatusProps) => {
     },
     [credentials, loadOne, snapshots],
   );
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadAll('refresh');
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadAll]);
   const pageCredentials = useMemo(
     () =>
       credentials.length > 50
