@@ -73,7 +73,7 @@ test.describe('Account Status tab', () => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
       origin: 'http://127.0.0.1:8001',
     });
-    const filename = 'account-status-copy.json';
+    const filename = `account-status-copy-${process.pid}.json`;
     const createResponse = await page.request.post('/admin-api/credentials', {
       data: {
         bearer_token: 'e2e-token',

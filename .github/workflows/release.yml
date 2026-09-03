@@ -39,21 +39,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          latest_tag="$(git tag --list 'v*' --sort=-v:refname | head -n 1 || true)"
-          if [[ -z "$latest_tag" ]]; then
-            version="1.0.0"
-          else
-            current_version="${latest_tag#v}"
-            IFS='.' read -r major minor patch <<< "$current_version"
-
-            if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
-              echo "Latest tag '$latest_tag' is not in vX.Y.Z format." >&2
-              exit 1
-            fi
-
-            version="${major}.${minor}.$((patch + 1))"
+          current_version="$(node -p "require('./package.json').version")"
+          IFS='.' read -r major minor patch <<< "$current_version"
+          if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
+            echo "package.json version '$current_version' is not in X.Y.Z format." >&2
+            exit 1
           fi
-
+          version="${major}.${minor}.$((patch + 1))"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "release_tag=v${version}" >> "$GITHUB_OUTPUT"
 
@@ -67,6 +59,7 @@ jobs:
           echo "owner=$lower_owner" >> "$GITHUB_OUTPUT"
 
   verify:
+    needs: prepare
     name: Verify Bun / TypeScript / Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -107,9 +100,38 @@ jobs:
       - name: Build Next.js app
         run: bun run build
 
+  commit_version:
+    needs:
+      - prepare
+      - verify
+    runs-on: ubuntu-latest
+    outputs:
+      commit_sha: ${{ steps.commit.outputs.commit_sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Commit package version
+        id: commit
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.argv[1]; fs.writeFileSync(path, JSON.stringify(pkg,null,2)+'\\n');" "$VERSION"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json
+          git commit -m "chore: bump version to v${VERSION}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   publish-image:
     needs:
       - prepare
+      - commit_version
       - verify
     name: Publish ${{ matrix.arch }} image
     runs-on: ${{ matrix.runs_on }}
@@ -128,6 +150,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.commit_version.outputs.commit_sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -204,6 +228,7 @@ jobs:
   merge-image-manifests:
     needs:
       - prepare
+      - commit_version
       - publish-image
     name: Merge multi-arch manifests
     runs-on: ubuntu-latest
@@ -269,6 +294,7 @@ jobs:
   release:
     needs:
       - prepare
+      - commit_version
       - merge-image-manifests
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -278,6 +304,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ needs.commit_version.outputs.commit_sha }}
 
       - name: Create GitHub release
         env:
@@ -291,10 +318,10 @@ jobs:
           set -euo pipefail
 
           latest_tag="$(git tag --list 'v*' --sort=-v:refname | grep -Fxv "${RELEASE_TAG}" | head -n 1 || true)"
-          commit_range="${GITHUB_SHA}"
+          commit_range="${{ needs.commit_version.outputs.commit_sha }}"
 
           if [[ -n "${latest_tag}" ]]; then
-            commit_range="${latest_tag}..${GITHUB_SHA}"
+            commit_range="${latest_tag}..${{ needs.commit_version.outputs.commit_sha }}"
           fi
 
           commit_notes="$(git log "${commit_range}" --pretty=format:'- %s (%h)' || true)"
@@ -312,7 +339,7 @@ jobs:
           release_notes="${release_notes}"$'\n\n'"## Commits"$'\n'"${commit_notes}"
 
           gh release create "$RELEASE_TAG" \
-            --target "$GITHUB_SHA" \
+            --target "${{ needs.commit_version.outputs.commit_sha }}" \
             --title "$RELEASE_TITLE" \
             --latest \
             --notes "$release_notes"

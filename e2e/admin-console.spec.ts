@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const filename = 'admin-console-e2e.json';
+const filename = `admin-console-e2e-${process.pid}.json`;
 const json = (body: unknown) => ({
   data: body,
   headers: { 'Content-Type': 'application/json' },
@@ -165,12 +165,9 @@ test.describe('Admin console essentials', () => {
     });
     expect(createResponse.ok()).toBe(true);
     await page.goto('/credentials');
-    const credentialCard = page
-      .locator('.credential-card')
-      .filter({
-        hasText: filename,
-      })
-      .last();
+    const credentialCard = page.locator(
+      `[data-credential-filename="${filename}"]`,
+    );
     await expect(credentialCard).toBeVisible();
     await credentialCard.getByRole('button', { name: 'Edit' }).click();
     const saveButton = credentialCard.getByRole('button', {
