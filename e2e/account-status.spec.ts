@@ -18,7 +18,9 @@ test.describe('Account Status tab', () => {
     await expect(
       page.getByRole('button', { name: 'Account Status' }),
     ).toBeVisible();
-    await expect(page.getByText('No credentials')).toBeVisible();
+    await expect(
+      page.getByText('No credentials', { exact: true }),
+    ).toBeVisible();
     await expect(
       page.getByRole('button', { name: 'Refresh all' }),
     ).toBeVisible();
@@ -38,7 +40,9 @@ test.describe('Account Status tab', () => {
         ),
       )
       .toBe(true);
-    await expect(page.getByText('No credentials')).toBeVisible();
+    await expect(
+      page.getByText('No credentials', { exact: true }),
+    ).toBeVisible();
   });
 
   test('renders account status from SSR without a client refresh request', async ({
