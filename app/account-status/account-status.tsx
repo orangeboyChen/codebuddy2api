@@ -14,7 +14,7 @@ import {
   Tooltip,
 } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import { RefreshCw } from 'lucide-react';
+import { Check, Copy, RefreshCw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState } from 'react';
 
@@ -120,6 +120,27 @@ const QuotaProgress = ({
   );
 };
 
+const CopyableModel = ({ model }: { model: string }) => {
+  const [copied, setCopied] = useState(false);
+  const text = useTranslations('Admin');
+  const copy = async () => {
+    if (!navigator.clipboard) return;
+    await navigator.clipboard.writeText(model);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  };
+  return (
+    <Tooltip title={copied ? text('common.copy') : text('common.copy')}>
+      <Tag onClick={() => void copy()}>
+        <Flexbox align="center" gap={4} horizontal>
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          <span data-model-id={model}>{model}</span>
+        </Flexbox>
+      </Tag>
+    </Tooltip>
+  );
+};
+
 const AccountStatusSkeleton = () => (
   <Block direction="vertical" gap={16} padding={20} variant="outlined">
     <SkeletonTitle />
@@ -214,7 +235,7 @@ const AccountStatusCard = ({
         {snapshot.models.length ? (
           <Flexbox gap={8} horizontal wrap="wrap">
             {snapshot.models.map((model) => (
-              <Tag key={model}>{model}</Tag>
+              <CopyableModel key={model} model={model} />
             ))}
           </Flexbox>
         ) : (

@@ -7,7 +7,12 @@ import { cookies, headers } from 'next/headers';
 import './globals.scss';
 import LobeUiProvider from '@/app/lobe-ui-provider';
 import LobeStyleRegistry from '@/app/lobe-style-registry';
-import { resolveThemeMode, resolvedThemeCookieName } from '@/lib/theme';
+import {
+  parseThemeMode,
+  resolveThemeMode,
+  resolvedThemeCookieName,
+  themeCookieName,
+} from '@/lib/theme';
 import {
   localeCookieName,
   localePreferenceCookieName,
@@ -38,6 +43,9 @@ const RootLayout = async ({
       : localePreference,
   );
   const messages = getMessages(locale);
+  const themePreference = parseThemeMode(
+    cookieStore.get(themeCookieName)?.value,
+  );
   const theme = resolveThemeMode(
     cookieStore.get(resolvedThemeCookieName)?.value,
   );
@@ -52,7 +60,7 @@ const RootLayout = async ({
       <body>
         <AntdRegistry>
           <LobeStyleRegistry>
-            <LobeUiProvider initialTheme={theme}>
+            <LobeUiProvider initialTheme={themePreference}>
               <NextIntlClientProvider locale={locale} messages={messages}>
                 {children}
               </NextIntlClientProvider>
