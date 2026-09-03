@@ -779,6 +779,21 @@ const buildUpstreamHeaders = async (
     headers.set('X-Tenant-Id', String(tenantId));
   }
 
+  const origin = String(domain ?? '')
+    .toLowerCase()
+    .endsWith('workbuddy.ai')
+    ? 'https://www.workbuddy.ai'
+    : 'https://www.codebuddy.cn';
+  headers.set('Content-Type', 'application/json');
+  headers.set('Origin', origin);
+  headers.set('Referer', `${origin}/`);
+  headers.set('User-Agent', CODEBUDDY_USER_AGENT);
+  headers.set('X-Product', 'SaaS');
+  headers.set('X-Requested-With', 'XMLHttpRequest');
+  headers.set('X-IDE-Name', 'CLI');
+  headers.set('X-IDE-Type', 'CLI');
+  headers.set('X-IDE-Version', CODEBUDDY_CLI_VERSION);
+
   return headers;
 };
 
@@ -2203,12 +2218,17 @@ export const getModelsForCredential = async ({
   bearerToken: string;
   credentialData: CredentialData;
 }): Promise<DiscoveredModel[]> => {
-  const apiEndpoint = await getCodeBuddyApiEndpoint();
+  const configuredEndpoint = await getCodeBuddyApiEndpoint();
   const headers = new Headers({
     Accept: 'application/json',
     Authorization: `Bearer ${bearerToken}`,
   });
   const domain = getCredentialValue(credentialData, ['domain']);
+  const apiEndpoint = String(domain ?? '')
+    .toLowerCase()
+    .endsWith('workbuddy.ai')
+    ? 'https://www.workbuddy.ai'
+    : configuredEndpoint;
   const enterpriseId = getCredentialValue(credentialData, [
     'enterprise_id',
     'enterpriseId',
@@ -2216,6 +2236,7 @@ export const getModelsForCredential = async ({
   const tenantId =
     getCredentialValue(credentialData, ['tenant_id', 'tenantId']) ??
     enterpriseId;
+  const userId = getCredentialValue(credentialData, ['user_id', 'userId']);
 
   if (domain) {
     headers.set('X-Domain', String(domain));
@@ -2227,6 +2248,9 @@ export const getModelsForCredential = async ({
 
   if (tenantId) {
     headers.set('X-Tenant-Id', String(tenantId));
+  }
+  if (userId) {
+    headers.set('X-User-Id', String(userId));
   }
 
   const fetchModels = async (path: string): Promise<Response> =>
