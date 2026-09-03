@@ -8,7 +8,13 @@ import type {
 import type { AdminDebugSnapshot } from '@/app/debug/debug';
 
 export type TabKey =
-  'dashboard' | 'usage' | 'credentials' | 'api-test' | 'debug' | 'settings';
+  | 'dashboard'
+  | 'usage'
+  | 'credentials'
+  | 'account-status'
+  | 'api-test'
+  | 'debug'
+  | 'settings';
 
 export interface AdminSettingsSnapshot {
   labels: Record<string, string>;
@@ -35,6 +41,11 @@ export interface CredentialsTabInitialData {
   tab: 'credentials';
 }
 
+export interface AccountStatusTabInitialData {
+  credentials: CredentialSummary[];
+  tab: 'account-status';
+}
+
 export interface ApiTestInitialData {
   credentialModels: Record<string, string[]>;
   credentials: CredentialSummary[];
@@ -55,6 +66,7 @@ export interface SettingsTabInitialData {
 
 export type AdminConsoleInitialData =
   | ApiTestInitialData
+  | AccountStatusTabInitialData
   | CredentialsTabInitialData
   | DashboardInitialData
   | DebugTabInitialData

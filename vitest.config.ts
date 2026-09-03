@@ -25,7 +25,13 @@ const vitestConfig = defineConfig({
     clearMocks: true,
     setupFiles: ['./vitest.setup.ts'],
     testTimeout: 15_000,
-    exclude: ['.next/**', 'coverage/**', 'dist/**', 'node_modules/**'],
+    exclude: [
+      '.next/**',
+      'coverage/**',
+      'dist/**',
+      'e2e/**',
+      'node_modules/**',
+    ],
     coverage: {
       provider: 'v8',
       include: ['lib/server/**/*.ts'],

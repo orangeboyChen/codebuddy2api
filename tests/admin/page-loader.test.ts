@@ -106,6 +106,7 @@ describe('tab-scoped initial data', () => {
       'credentials',
       ['listAccessKeys', 'listCredentials', 'getCurrentCredentialInfo'],
     ],
+    ['account-status', ['listCredentials']],
     [
       'api-test',
       [
@@ -123,18 +124,19 @@ describe('tab-scoped initial data', () => {
       const initialData = await getInitialData({ locale: 'en-US', tab });
 
       expect(initialData.tab).toBe(tab);
+      const forbiddenKeys = [
+        'accessKeys',
+        'apiEndpoint',
+        'credentials',
+        'currentCredential',
+        'debug',
+        'health',
+        'settings',
+        'stats',
+        'usage',
+      ].filter((key) => !(tab === 'account-status' && key === 'credentials'));
       expect(Object.keys(initialData).sort()).not.toEqual(
-        expect.arrayContaining([
-          'accessKeys',
-          'apiEndpoint',
-          'credentials',
-          'currentCredential',
-          'debug',
-          'health',
-          'settings',
-          'stats',
-          'usage',
-        ]),
+        expect.arrayContaining(forbiddenKeys),
       );
 
       for (const [name, loader] of Object.entries(domainLoaders)) {

@@ -72,11 +72,18 @@ const tabs: Array<{
   icon: typeof LayoutDashboard;
   key: TabKey;
   labelKey:
-    'apiTest' | 'credentials' | 'dashboard' | 'debug' | 'settings' | 'usage';
+    | 'apiTest'
+    | 'credentials'
+    | 'dashboard'
+    | 'accountStatus'
+    | 'debug'
+    | 'settings'
+    | 'usage';
 }> = [
   { icon: LayoutDashboard, key: 'dashboard', labelKey: 'dashboard' },
   { icon: ChartLine, key: 'usage', labelKey: 'usage' },
   { icon: KeyRound, key: 'credentials', labelKey: 'credentials' },
+  { icon: KeyRound, key: 'account-status', labelKey: 'accountStatus' },
   { icon: Send, key: 'api-test', labelKey: 'apiTest' },
   { icon: Bug, key: 'debug', labelKey: 'debug' },
   { icon: Settings2, key: 'settings', labelKey: 'settings' },
@@ -1913,6 +1920,7 @@ const AdminPageLayoutContent = ({
               {children}
             </CredentialsProvider>
           ) : null}
+          {activeTab === 'account-status' ? children : null}
           {activeTab === 'usage' ? (
             <UsageProvider
               value={{
