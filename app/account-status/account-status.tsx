@@ -84,6 +84,8 @@ const QuotaProgress = ({
   remainingLabel: (percent: number) => string;
 }) => {
   const percent = quotaPercent(snapshot);
+  const hasQuota =
+    snapshot.credits.total !== null && snapshot.credits.total > 0;
   const tone =
     percent === null
       ? 'unknown'
@@ -96,7 +98,9 @@ const QuotaProgress = ({
     <Flexbox direction="vertical" gap={8}>
       <Flexbox align="center" distribution="flex-end" gap={8} horizontal>
         <Text type="secondary">
-          {snapshot.credits.remaining ?? '—'} / {snapshot.credits.total ?? '—'}
+          {hasQuota && snapshot.credits.remaining !== null
+            ? `${snapshot.credits.remaining} / ${snapshot.credits.total}`
+            : '— / —'}
         </Text>
         <Text>{percent === null ? '—' : `${percent.toFixed(0)}%`}</Text>
       </Flexbox>
@@ -170,7 +174,9 @@ const AccountStatusCard = ({
       </Flexbox>
       {snapshot.error ? <Alert type="error" title={snapshot.error} /> : null}
       <Flexbox direction="vertical" gap={8}>
-        <Text strong>{text('accountStatus.quota')}</Text>
+        <Text strong>
+          {text('accountStatus.quota')}: {snapshot.credits.plan ?? '—'}
+        </Text>
         <QuotaProgress
           snapshot={snapshot}
           unknownLabel={quotaUnknown}
@@ -178,9 +184,6 @@ const AccountStatusCard = ({
             text('accountStatus.quotaUsed', { percent: value.toFixed(0) })
           }
         />
-        <Text type="secondary">
-          {text('accountStatus.plan')}: {snapshot.credits.plan ?? '—'}
-        </Text>
         <Text type="secondary">
           {text('accountStatus.resetAt')}: {snapshot.credits.resetAt ?? '—'}
         </Text>
