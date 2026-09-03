@@ -75,10 +75,12 @@ const quotaPercent = (snapshot: AccountStatusSnapshot): number | null => {
 };
 
 const QuotaProgress = ({
+  plan,
   snapshot,
   unknownLabel,
   remainingLabel,
 }: {
+  plan: string;
   snapshot: AccountStatusSnapshot;
   unknownLabel: string;
   remainingLabel: (percent: number) => string;
@@ -96,13 +98,16 @@ const QuotaProgress = ({
           : 'normal';
   return (
     <Flexbox direction="vertical" gap={8}>
-      <Flexbox align="center" distribution="flex-end" gap={8} horizontal>
-        <Text type="secondary">
-          {hasQuota && snapshot.credits.remaining !== null
-            ? `${snapshot.credits.remaining} / ${snapshot.credits.total}`
-            : '— / —'}
-        </Text>
-        <Text>{percent === null ? '—' : `${percent.toFixed(0)}%`}</Text>
+      <Flexbox align="center" distribution="space-between" horizontal>
+        <Text strong>{plan}</Text>
+        <Flexbox align="center" distribution="flex-end" gap={8} horizontal>
+          <Text type="secondary">
+            {hasQuota && snapshot.credits.remaining !== null
+              ? `${snapshot.credits.remaining} / ${snapshot.credits.total}`
+              : '— / —'}
+          </Text>
+          <Text>{percent === null ? '—' : `${percent.toFixed(0)}%`}</Text>
+        </Flexbox>
       </Flexbox>
       <progress
         aria-label={percent === null ? unknownLabel : remainingLabel(percent)}
@@ -174,10 +179,8 @@ const AccountStatusCard = ({
       </Flexbox>
       {snapshot.error ? <Alert type="error" title={snapshot.error} /> : null}
       <Flexbox direction="vertical" gap={8}>
-        <Text strong>
-          {text('accountStatus.quota')}: {snapshot.credits.plan ?? '—'}
-        </Text>
         <QuotaProgress
+          plan={snapshot.credits.plan ?? '—'}
           snapshot={snapshot}
           unknownLabel={quotaUnknown}
           remainingLabel={(value) =>
