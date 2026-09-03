@@ -70,6 +70,7 @@ export const CredentialCard = ({
   return (
     <Block
       className="credential-card"
+      data-credential-filename={credential.filename}
       direction="vertical"
       gap={16}
       padding={24}
