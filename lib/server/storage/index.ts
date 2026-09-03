@@ -55,6 +55,7 @@ const STORAGE_IMPORT_ENV = 'CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES';
 const STORAGE_ENCRYPTION_KEY_ENV = 'CODEBUDDY_STORAGE_ENCRYPTION_KEY';
 const STORAGE_PERSISTENCE_ENV = 'CODEBUDDY_STORAGE_PERSISTENCE';
 const STORAGE_FILE_DIR_ENV = 'CODEBUDDY_STORAGE_FILE_DIR';
+const CREDENTIALS_DIR_ENV = 'CODEBUDDY_CREDENTIALS_DIR';
 const LEGACY_CONFIG_PATH_ENV = 'CODEBUDDY_CONFIG_PATH';
 
 const CREDENTIAL_MANAGER_STATE_FILENAME = 'manager_state.json';
@@ -104,6 +105,12 @@ export const getConfigDir = (): string => {
 };
 
 export const getCredsDir = (): string => {
+  const explicitDir = process.env[CREDENTIALS_DIR_ENV]?.trim();
+
+  if (explicitDir) {
+    return path.resolve('.', explicitDir);
+  }
+
   return path.resolve('.', '.codebuddy_creds');
 };
 

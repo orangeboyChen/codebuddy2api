@@ -31,6 +31,7 @@ config/usage/
 .tmp-test-creds/
 .tmp-test-debug-usage-root/
 .tmp-test-runtime-root/
+.tmp-e2e/
 
 # Credentials
 .codebuddy_creds/
