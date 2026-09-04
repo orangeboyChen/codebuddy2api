@@ -1220,11 +1220,23 @@ const mapResponsesPayloadToChat = (
   const toolCalls = output.flatMap((item) => {
     if (!item || typeof item !== 'object') return [];
     const value = item as Record<string, unknown>;
-    if (value.type !== 'function_call') return [];
+    if (
+      value.type !== 'function_call' &&
+      value.type !== 'mcp_call' &&
+      value.type !== 'custom_tool_call'
+    ) {
+      return [];
+    }
+    const isCustomToolCall = value.type === 'custom_tool_call';
+    const customArguments = JSON.stringify({
+      input: String(value.input ?? value.arguments ?? ''),
+    });
     return [
       {
         function: {
-          arguments: String(value.arguments ?? ''),
+          arguments: String(
+            isCustomToolCall ? customArguments : (value.arguments ?? ''),
+          ),
           name: String(value.name ?? 'function'),
         },
         id: String(value.call_id ?? value.id ?? crypto.randomUUID()),
@@ -1326,6 +1338,7 @@ const mapResponsesStreamToChat = (
   let pendingStopText = '';
   const toolIndexes = new Map<string, number>();
   const toolCallIds = new Map<string, string>();
+  const customToolCallIds = new Set<string>();
   let nextToolIndex = 0;
   let stoppedLocally = false;
 
@@ -1579,14 +1592,30 @@ const mapResponsesStreamToChat = (
                 arguments?: unknown;
                 call_id?: unknown;
                 id?: unknown;
+                input?: unknown;
                 name?: unknown;
                 type?: unknown;
               };
-              if (item.type !== 'function_call') continue;
+              if (
+                item.type !== 'function_call' &&
+                item.type !== 'mcp_call' &&
+                item.type !== 'custom_tool_call'
+              ) {
+                continue;
+              }
+              const isCustomToolCall = item.type === 'custom_tool_call';
+              const initialArguments = String(
+                isCustomToolCall
+                  ? `{"input":${JSON.stringify(String(item.input ?? item.arguments ?? ''))}`
+                  : (item.arguments ?? ''),
+              );
               const itemId = String(item.id ?? item.call_id ?? nextToolIndex);
               const index = getToolIndex(itemId);
               const callId = String(item.call_id ?? item.id ?? itemId);
               toolCallIds.set(itemId, callId);
+              if (isCustomToolCall) {
+                customToolCallIds.add(itemId);
+              }
               hasToolCalls = true;
               controller.enqueue(
                 encodeChunk({
@@ -1594,7 +1623,7 @@ const mapResponsesStreamToChat = (
                     tool_calls: [
                       {
                         function: {
-                          arguments: String(item.arguments ?? ''),
+                          arguments: initialArguments,
                           name: String(item.name ?? 'function'),
                         },
                         id: callId,
@@ -1609,7 +1638,11 @@ const mapResponsesStreamToChat = (
               emitted = true;
               continue;
             }
-            if (event.type === 'response.function_call_arguments.delta') {
+            if (
+              event.type === 'response.function_call_arguments.delta' ||
+              event.type === 'response.mcp_call_arguments.delta' ||
+              event.type === 'response.custom_tool_call_input.delta'
+            ) {
               const itemId = String(
                 event.item_id ?? event.output_index ?? nextToolIndex,
               );
@@ -1617,12 +1650,16 @@ const mapResponsesStreamToChat = (
               const callId = toolCallIds.get(itemId) ?? `call_${index + 1}`;
               toolCallIds.set(itemId, callId);
               hasToolCalls = true;
+              const argumentDelta =
+                event.type === 'response.custom_tool_call_input.delta'
+                  ? JSON.stringify(String(event.delta ?? '')).slice(1, -1)
+                  : String(event.delta ?? '');
               controller.enqueue(
                 encodeChunk({
                   delta: {
                     tool_calls: [
                       {
-                        function: { arguments: String(event.delta ?? '') },
+                        function: { arguments: argumentDelta },
                         id: callId,
                         index,
                       },
@@ -1645,6 +1682,20 @@ const mapResponsesStreamToChat = (
                 pendingStopText = '';
               }
               if (!emittedFinish) {
+                customToolCallIds.forEach((itemId) => {
+                  const index = getToolIndex(itemId);
+                  const callId = toolCallIds.get(itemId) ?? `call_${index + 1}`;
+                  controller.enqueue(
+                    encodeChunk({
+                      delta: {
+                        tool_calls: [
+                          { function: { arguments: '"}' }, id: callId, index },
+                        ],
+                      },
+                      index: 0,
+                    }),
+                  );
+                });
                 controller.enqueue(
                   encodeChunk({
                     delta: {},
