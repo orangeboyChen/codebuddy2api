@@ -7,6 +7,13 @@ hero:
   image:
     src: /codebuddy-dashboard.png
     alt: CodeBuddy 管理界面
+  actions:
+    - theme: brand
+      text: 开始使用
+      link: /guide/quick-start
+    - theme: alt
+      text: 查看 GitHub
+      link: https://github.com/orangeboyChen/codebuddy2api
 
 features:
   - title: 多协议兼容

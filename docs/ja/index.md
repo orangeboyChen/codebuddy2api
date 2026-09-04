@@ -7,6 +7,13 @@ hero:
   image:
     src: /codebuddy-dashboard.png
     alt: CodeBuddy 管理コンソール
+  actions:
+    - theme: brand
+      text: はじめる
+      link: /ja/guide/quick-start
+    - theme: alt
+      text: GitHub
+      link: https://github.com/orangeboyChen/codebuddy2api
 
 features:
   - title: 互換 API

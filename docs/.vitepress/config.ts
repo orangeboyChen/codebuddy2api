@@ -91,7 +91,7 @@ export default defineConfig({
         ['仪表盘', '用量', '凭据', '账号状态', 'API 测试', '调试', '设置'],
         {
           footer:
-            'Released under the <a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE">MIT License</a>.',
+            'Released under the <a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>.',
           menu: '目录',
           top: '返回顶部',
           prev: '上一页',
@@ -122,7 +122,7 @@ export default defineConfig({
         ],
         {
           footer:
-            'Released under the <a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE">MIT License</a>.',
+            'Released under the <a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>.',
           menu: 'On this page',
           top: 'Return to top',
           prev: 'Previous page',
@@ -153,7 +153,7 @@ export default defineConfig({
         ],
         {
           footer:
-            'MIT License（<a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE">ライセンス全文</a>）',
+            'MIT License（<a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE" target="_blank" rel="noreferrer">ライセンス全文</a>）。',
           menu: 'このページの内容',
           top: 'トップへ戻る',
           prev: '前のページ',

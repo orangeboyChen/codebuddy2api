@@ -7,6 +7,13 @@ hero:
   image:
     src: /codebuddy-dashboard.png
     alt: CodeBuddy admin console
+  actions:
+    - theme: brand
+      text: Get started
+      link: /en/guide/quick-start
+    - theme: alt
+      text: View on GitHub
+      link: https://github.com/orangeboyChen/codebuddy2api
 
 features:
   - title: Compatible APIs
