@@ -16,4 +16,4 @@ Credentials manages CodeBuddy accounts and the API keys used by clients.
 3. Copy the secret immediately. Use **Reveal key** later only when necessary.
 4. Send it as `Authorization: Bearer <access-key>` or `x-api-key: <access-key>`.
 
-The saved-credentials list shows active state, expiry, domain, and upstream protocol. Use **Edit** to change an entry and **Delete** to remove it. Never commit credential JSON files or API keys.
+The saved-credentials list shows active state, expiry, domain, and upstream protocol. Use **Edit** to change an entry and **Delete** to remove it. Reauthorize an account after it expires.
