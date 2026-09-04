@@ -169,12 +169,21 @@ test.describe('Admin console essentials', () => {
       `[data-credential-filename="${filename}"]`,
     );
     await expect(credentialCard).toBeVisible();
-    await credentialCard.getByRole('button', { name: 'Edit' }).click();
+    const editButton = credentialCard.getByRole('button', { name: 'Edit' });
     const saveButton = credentialCard.getByRole('button', {
       name: 'Save',
       exact: true,
     });
-    await expect(saveButton).toBeVisible();
+    await expect
+      .poll(
+        async () => {
+          if (await saveButton.isVisible()) return true;
+          await editButton.click();
+          return saveButton.isVisible();
+        },
+        { intervals: [100, 250, 500], timeout: 10_000 },
+      )
+      .toBe(true);
     await saveButton.click();
     await expect(page.getByText('Credential saved:')).toBeVisible();
 

@@ -35,6 +35,8 @@ config/usage/
 .tmp-test-debug-usage-root/
 .tmp-test-runtime-root/
 .tmp-e2e/
+playwright-report/
+test-results/
 
 # Credentials
 .codebuddy_creds/
