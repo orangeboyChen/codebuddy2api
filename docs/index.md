@@ -3,11 +3,14 @@ layout: home
 
 hero:
   name: CodeBuddy2API
-  text: OpenAI-compatible CodeBuddy gateway
-  tagline: Self-host CodeBuddy behind a familiar API surface.
+  text: CodeBuddy 管理与 API 服务
+  tagline: 自托管 CodeBuddy，统一管理凭据、密钥和用量。
+  image:
+    src: /codebuddy2api/codebuddy-dashboard.png
+    alt: CodeBuddy 管理界面
   actions:
     - theme: brand
-      text: 快速开始
+      text: 开始使用
       link: /guide/quick-start
     - theme: alt
       text: 查看 GitHub
@@ -24,7 +27,7 @@ features:
 
 ## 这是什么？
 
-CodeBuddy2API 将 CodeBuddy 接入常见的 LLM 客户端和 SDK。你可以在本地、Docker 或 Kubernetes 中运行它，并通过统一的 API 地址接入现有工具。
+CodeBuddy2API 提供 CodeBuddy 的 OpenAI-compatible 和 Anthropic-compatible API，并配套一个管理控制台。你可以在本地、Docker 或 Kubernetes 中运行它。
 
 ## 开始使用
 
@@ -33,9 +36,13 @@ docker run -d \
   --name codebuddy2api \
   --restart unless-stopped \
   -p 8001:8001 \
+  -e CODEBUDDY_STORAGE_BACKEND=sqlite \
+  -e CODEBUDDY_STORAGE_ENCRYPTION_KEY='replace-with-a-long-random-secret' \
   -v "$(pwd)/.codebuddy_data:/app/.codebuddy_data" \
   -v "$(pwd)/.codebuddy_creds:/app/.codebuddy_creds" \
   ghcr.io/orangeboychen/codebuddy2api:latest
 ```
 
 启动后访问 `http://127.0.0.1:8001/dashboard`。
+
+SQLite 是单实例部署的推荐选择。多实例部署请改用 PostgreSQL。
