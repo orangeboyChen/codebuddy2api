@@ -18,10 +18,11 @@ const sharedTheme = {
 const createSidebar = (
   prefix: string,
   guide: string,
-  console: string,
   config: string,
   quickStart: string,
   configPage: string,
+  storagePage: string,
+  localPage: string,
   labels: string[],
 ) => [
   {
@@ -29,20 +30,16 @@ const createSidebar = (
     items: [
       { text: quickStart, link: `${prefix}/guide/quick-start` },
       { text: configPage, link: `${prefix}/config/docker` },
+      { text: storagePage, link: `${prefix}/config/storage` },
+      { text: localPage, link: `${prefix}/config/local` },
     ],
   },
   {
     text: guide,
-    items: [
-      {
-        text: console,
-        collapsed: false,
-        items: consolePaths.map((path, index) => ({
-          text: labels[index],
-          link: `${prefix}/guide/${path}`,
-        })),
-      },
-    ],
+    items: consolePaths.map((path, index) => ({
+      text: labels[index],
+      link: `${prefix}/guide/${path}`,
+    })),
   },
 ];
 
@@ -51,8 +48,9 @@ const createTheme = (
   guide: string,
   config: string,
   quickStart: string,
-  console: string,
   configPage: string,
+  storagePage: string,
+  localPage: string,
   labels: string[],
 ) => ({
   ...sharedTheme,
@@ -60,10 +58,11 @@ const createTheme = (
   sidebar: createSidebar(
     prefix,
     guide,
-    console,
     config,
     quickStart,
     configPage,
+    storagePage,
+    localPage,
     labels,
   ),
 });
@@ -81,8 +80,9 @@ export default defineConfig({
         '指南',
         '配置',
         '快速开始',
-        '管理控制台',
         'Docker 与存储',
+        '存储选择',
+        '本地运行（开发）',
         ['仪表盘', '用量', '凭据', '账号状态', 'API 测试', '调试', '设置'],
       ),
     },
@@ -95,8 +95,9 @@ export default defineConfig({
         'Guide',
         'Configuration',
         'Quick Start',
-        'Admin Console',
         'Docker and Storage',
+        'Storage Choices',
+        'Local Development',
         [
           'Dashboard',
           'Usage',
@@ -117,8 +118,9 @@ export default defineConfig({
         'ガイド',
         '設定',
         'クイックスタート',
-        '管理コンソール',
         'Docker とストレージ',
+        'ストレージの選択',
+        'ローカル開発',
         [
           'ダッシュボード',
           '利用量',
