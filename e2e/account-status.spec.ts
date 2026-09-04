@@ -73,6 +73,18 @@ test.describe('Account Status tab', () => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
       origin: 'http://127.0.0.1:8001',
     });
+    await page.addInitScript(() => {
+      let clipboardText = '';
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          readText: async () => clipboardText,
+          writeText: async (value: string) => {
+            clipboardText = value;
+          },
+        },
+      });
+    });
     const filename = `account-status-copy-${process.pid}.json`;
     const createResponse = await page.request.post('/admin-api/credentials', {
       data: {
