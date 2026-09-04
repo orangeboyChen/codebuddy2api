@@ -1,19 +1,19 @@
 # Credentials
 
-Credentials are the CodeBuddy accounts used by the proxy.
+Credentials manages CodeBuddy accounts and the API keys used by clients.
 
 ## Add an account
 
 1. Open **Credentials**.
-2. Start the CodeBuddy OAuth flow or add a credential through the available login action.
+2. Click **Start authentication**, or choose **Add credential manually**.
 3. Complete authorization in the browser.
 4. Return to the console and refresh the list.
 
 ## Create an API access key
 
-1. Open the access-key section on the Credentials page.
+1. In the **API key** section, click **Create API key**.
 2. Give the key a recognizable name.
-3. Copy the secret immediately; it is only shown when created or explicitly revealed.
+3. Copy the secret immediately. Use **Reveal key** later only when necessary.
 4. Send it as `Authorization: Bearer <access-key>` or `x-api-key: <access-key>`.
 
-Never put a credential file or access key in the documentation site, source repository, or client-side demo code.
+The saved-credentials list shows active state, expiry, domain, and upstream protocol. Use **Edit** to change an entry and **Delete** to remove it. Never commit credential JSON files or API keys.

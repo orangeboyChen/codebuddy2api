@@ -6,7 +6,7 @@ hero:
   text: CodeBuddy management and API service
   tagline: Self-host CodeBuddy and manage credentials, keys, and usage.
   image:
-    src: /codebuddy2api/codebuddy-dashboard.png
+    src: /codebuddy-dashboard.png
     alt: CodeBuddy admin console
   actions:
     - theme: brand

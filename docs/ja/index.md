@@ -6,7 +6,7 @@ hero:
   text: CodeBuddy 管理・API サービス
   tagline: CodeBuddy をセルフホストし、認証情報・キー・利用量を管理します。
   image:
-    src: /codebuddy2api/codebuddy-dashboard.png
+    src: /codebuddy-dashboard.png
     alt: CodeBuddy 管理コンソール
   actions:
     - theme: brand

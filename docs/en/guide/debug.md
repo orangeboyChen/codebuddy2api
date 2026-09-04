@@ -4,9 +4,11 @@ Debug records sanitized proxy activity for troubleshooting.
 
 ## Capture a problem
 
-1. Enable debug logging and choose a retention limit.
-2. Reproduce the failing request once.
-3. Return to **Debug** and open the newest entry.
-4. Compare the request method, model, status, duration, and error summary.
+1. Choose an **Auto-refresh interval**, or leave it **Off** for manual refresh.
+2. Enable **Enable debug capture**.
+3. Set **Max retained records** and click **Save**.
+4. Reproduce the failing request once.
+5. Use the interface type, model, credential, and API key filters.
+6. Expand the newest record to inspect route, statuses, token counts, TPS, duration, and payload details.
 
-Tokens, cookies, API keys, authorization headers, and user identifiers are redacted. Debug logs are diagnostic data, not a replacement for application metrics.
+**Clear** permanently removes retained records. Tokens, cookies, API keys, authorization headers, and user identifiers are redacted.

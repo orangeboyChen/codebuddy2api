@@ -13,6 +13,18 @@ docker run -d --name codebuddy2api --restart unless-stopped -p 8001:8001 \
 
 `http://127.0.0.1:8001/dashboard` を開きます。単一インスタンスには SQLite、複数インスタンスには PostgreSQL を推奨します。
 
+## CodeBuddy2API のローカル起動
+
+ローカル開発では `bun install`、`.codebuddy_data` と `.codebuddy_creds` の作成、`bun run dev` の順に実行し、`http://127.0.0.1:3000/dashboard` を開きます。
+
 ## ドキュメントのローカル起動
 
-リポジトリのルートで `bun install`、`bun install --cwd docs`、`bun run docs:dev` を実行します。
+リポジトリのルートで `bun install --cwd docs`、`bun run docs:dev` を実行します。ドキュメントは通常 `http://127.0.0.1:5173/codebuddy2api/` で表示されます。
+
+## 初回利用の手順
+
+1. 「認証情報」で CodeBuddy アカウントを認証します。
+2. 「アカウント状態」でクォータとモデルを確認します。
+3. 「認証情報」で API key を作成します。
+4. 「API テスト」でテストメッセージを送信します。
+5. `/v1` endpoint と API key をクライアントに設定します。

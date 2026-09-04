@@ -1,12 +1,10 @@
 # Account Status
 
-Account Status is the health check for each CodeBuddy account.
+Account Status shows quota, check-in, and model information for each account.
 
-For every account, review the email or user ID, expiration state, and available models.
+1. Click **Refresh all** to update every account, or the account-level **Refresh** button for one account.
+2. Review the account ID, plan, used / total quota, remaining percentage, and **Reset time**.
+3. Check whether the account is checked in today; click **Check in** when enabled.
+4. Review **Available models** before selecting a model in API Test or a client.
 
-When a request fails:
-
-1. Check whether the account is expired.
-2. Re-authorize it from **Credentials** if necessary.
-3. Confirm that the requested model is listed for the account.
-4. Open **Debug** for the upstream error details.
+If the quota is unknown or a request fails, verify the credential in **Credentials** and inspect **Debug**.

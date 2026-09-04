@@ -6,7 +6,7 @@ hero:
   text: CodeBuddy 管理与 API 服务
   tagline: 自托管 CodeBuddy，统一管理凭据、密钥和用量。
   image:
-    src: /codebuddy2api/codebuddy-dashboard.png
+    src: /codebuddy-dashboard.png
     alt: CodeBuddy 管理界面
   actions:
     - theme: brand
