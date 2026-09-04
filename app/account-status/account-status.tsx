@@ -178,13 +178,25 @@ const AccountStatusCard = ({
       padding={20}
       variant="outlined"
     >
-      <Flexbox align="flex-start" distribution="space-between" horizontal>
-        <Flexbox direction="vertical" gap={4}>
+      <Flexbox
+        align="flex-start"
+        className="account-status-card-header"
+        distribution="space-between"
+        horizontal
+        width="100%"
+      >
+        <Flexbox
+          className="account-status-card-identity"
+          direction="vertical"
+          gap={4}
+        >
           <Tooltip title={credential.email || credential.user_id}>
-            <Text strong>{credential.email || credential.user_id}</Text>
+            <Text className="account-status-card-name" strong>
+              {credential.email || credential.user_id}
+            </Text>
           </Tooltip>
           <Tooltip title={credential.filename}>
-            <Text ellipsis type="secondary">
+            <Text className="account-status-card-filename" type="secondary">
               {credential.filename}
             </Text>
           </Tooltip>
@@ -213,8 +225,14 @@ const AccountStatusCard = ({
           {text('accountStatus.resetAt')}: {snapshot.credits.resetAt ?? '—'}
         </Text>
       </Flexbox>
-      <Flexbox align="center" distribution="space-between" horizontal>
-        <Text type="secondary">
+      <Flexbox
+        align="center"
+        className="account-status-card-checkin"
+        distribution="space-between"
+        horizontal
+        width="100%"
+      >
+        <Text className="account-status-card-checkin-label" type="secondary">
           {text('accountStatus.checkin')}:{' '}
           {snapshot.checkin.claimed === true
             ? text('accountStatus.checkedIn')

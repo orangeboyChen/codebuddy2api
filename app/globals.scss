@@ -166,8 +166,11 @@ textarea {
 }
 
 .console-header {
-  position: sticky !important;
+  left: 0;
+  position: fixed !important;
+  right: 0;
   top: 0;
+  width: 100%;
   z-index: 30;
 }
 
@@ -273,7 +276,7 @@ textarea {
 .console-main {
   width: min(1440px, 100%);
   margin: 0 auto;
-  padding: 24px 32px 48px;
+  padding: 80px 32px 48px;
 }
 
 .account-status-progress {
@@ -361,8 +364,26 @@ textarea {
     gap: 8px;
   }
 
-  .account-status-card button {
-    flex: 1 1 0;
+  .account-status-card-header,
+  .account-status-card-checkin {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+  }
+
+  .account-status-card-identity,
+  .account-status-card-name,
+  .account-status-card-filename,
+  .account-status-card-checkin-label {
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .account-status-card-header > button,
+  .account-status-card-checkin > button {
+    flex: 0 0 auto;
   }
 }
 
@@ -853,7 +874,7 @@ textarea {
 
 @media (max-width: 640px) {
   .console-main {
-    padding: 20px 0 32px;
+    padding: 76px 0 32px;
   }
 
   .console-main > * {
@@ -1059,6 +1080,19 @@ textarea {
     min-width: 0;
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+
+  #debug .debug-credential {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  #debug .debug-credential * {
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
   }
 
   #debug .debug-entry-tags > span {
