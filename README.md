@@ -31,31 +31,7 @@ application instances.
 
 ## Documentation
 
-- [中文文档](https://orangeboychen.github.io/codebuddy2api/)
-- [English documentation](https://orangeboychen.github.io/codebuddy2api/en/)
-- [日本語ドキュメント](https://orangeboychen.github.io/codebuddy2api/ja/)
-
-Run the documentation site locally from the repository root:
-
-```bash
-bun install
-bun install --cwd docs
-bun run docs:dev
-```
-
-Use `bun run docs:build` to build the static site and `bun run docs:preview` to
-preview it.
-
-## Development
-
-```bash
-bun install
-bun run lint
-bun run format:check
-bun run typecheck
-bun run test:coverage
-bunx next build --webpack
-```
+- [Documentation](https://orangeboychen.github.io/codebuddy2api/)
 
 ## License
 
