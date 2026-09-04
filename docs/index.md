@@ -23,9 +23,3 @@ features:
   - title: 灵活存储
     details: 默认零配置文件存储，也支持 SQLite 和 PostgreSQL。
 ---
-
-## CodeBuddy API 代理服务
-
-自托管 CodeBuddy，统一管理凭据、密钥和用量。
-
-[开始使用](/guide/quick-start)

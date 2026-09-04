@@ -23,9 +23,3 @@ features:
   - title: Flexible storage
     details: Zero-config file storage, SQLite for single instances, and PostgreSQL for multiple instances.
 ---
-
-## CodeBuddy API proxy service
-
-Self-host CodeBuddy and manage credentials, keys, and usage.
-
-[Get started](/en/guide/quick-start)

@@ -23,9 +23,3 @@ features:
   - title: 柔軟なストレージ
     details: ゼロ設定のファイル、単一インスタンス向け SQLite、複数インスタンス向け PostgreSQL。
 ---
-
-## CodeBuddy API プロキシサービス
-
-CodeBuddy をセルフホストし、認証情報・キー・利用量を管理します。
-
-[はじめる](/ja/guide/quick-start)
