@@ -1,19 +1,24 @@
 # 设置
 
-设置页用于修改运行时配置和控制台安全选项。
+设置页用于修改服务运行参数、凭证模型和控制台安全策略。
 
-## 服务设置
+## 服务配置
 
-- **CodeBuddy API endpoint**：上游地址，默认 `https://copilot.tencent.com`。
-- **Admin passkey RP ID / domain**：WebAuthn 使用的域名，只填写 hostname。
-- **Authentication mode**：选择 `auto` 或 `token`。
-- **Network environment**：选择 `internal`、`ioa` 或 `public`。
-- **Log level**：选择日志级别，默认 `INFO`。
+填写或选择以下项目后点击“保存”：
 
-修改后点击对应的“保存”。
+| 页面字段                        | 说明                                         |
+| ------------------------------- | -------------------------------------------- |
+| CodeBuddy 官方 API 端点         | 上游地址，默认 `https://copilot.tencent.com` |
+| 管理员 Passkey RP ID / 域名     | WebAuthn 使用的 hostname，不要填写协议或端口 |
+| 认证模式（auto/token）          | 上游认证方式                                 |
+| 网络环境（internal/ioa/public） | 上游网络环境                                 |
+| 日志级别                        | 选择 `DEBUG`、`INFO`、`WARNING` 或 `ERROR`   |
 
-## 其他设置
+## 凭证模型和用量
 
-- **Credential models**：查看每个凭据支持的模型并单独刷新。
-- **Usage event cache**：点击“清除用量事件缓存”删除用量数据，不能恢复。
-- **Console security**：设置管理员用户名、密码和确认密码。启用后未登录用户会被重定向到登录页。
+- “凭证模型”列出每个凭证支持的模型；可以编辑模型列表，或点击“刷新”重新获取。
+- “用量统计缓存”中的“清空用量统计缓存”会删除全部用量记录，且无法撤销。
+
+## 控制台安全
+
+在“控制台安全”中设置管理员用户名、密码和确认密码，点击“保存”启用管理员鉴权。关闭鉴权后，控制台可直接访问。
