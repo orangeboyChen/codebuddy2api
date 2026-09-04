@@ -1702,8 +1702,8 @@ const mapResponsesStreamToChat = (
                 );
                 pendingStopText = '';
               }
+              emitCustomToolCallClosures(controller);
               if (!emittedFinish) {
-                emitCustomToolCallClosures(controller);
                 controller.enqueue(
                   encodeChunk({
                     delta: {},

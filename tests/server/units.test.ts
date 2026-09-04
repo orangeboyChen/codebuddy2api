@@ -1605,10 +1605,12 @@ describe('server units', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(
         [
+          'data: {"type":"response.output_item.added","item":{"type":"message"}}',
           'data: {"type":"response.output_item.added","item":{"type":"mcp_call","id":"fc_mcp","call_id":"call_mcp","name":"search_docs","arguments":"{}"}}',
           'data: {"type":"response.mcp_call_arguments.delta","item_id":"fc_mcp","delta":"{\\"query\\":\\"docs\\"}"}',
-          'data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"fc_custom","call_id":"call_custom","name":"shell","input":"ls"}}',
+          'data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"fc_custom","call_id":"call_custom","name":"shell","arguments":"ls"}}',
           'data: {"type":"response.custom_tool_call_input.delta","item_id":"fc_custom","delta":" -la"}',
+          'data: {"type":"response.completed"}',
           'data: {"type":"response.completed"}',
         ].join('\n\n') + '\n\n',
         { headers: { 'Content-Type': 'text/event-stream' } },
@@ -1632,6 +1634,41 @@ describe('server units', () => {
     expect(text).toContain('\\"input\\":\\"ls');
     expect(text).toContain(' -la');
     expect(text).toContain('"finish_reason":"tool_calls"');
+  });
+
+  it('handles empty and partial streamed custom tool inputs at EOF', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-stream-custom-eof-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-stream-custom-eof@example.com',
+      },
+      filePath: '/tmp/responses-stream-custom-eof.json',
+      filename: 'responses-stream-custom-eof.json',
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"fc_empty","call_id":"call_empty","name":"shell"}}\n\n' +
+          'data: {"type":"response.custom_tool_call_input.delta","item_id":"fc_empty"}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'run tool' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+    const text = await response.text();
+    expect(text).toContain('"id":"call_empty"');
+    expect(text).toContain('\\"input\\":\\"');
+    expect(text).toContain('\\"}');
   });
 
   it('covers Responses upstream compatibility input variants', async () => {

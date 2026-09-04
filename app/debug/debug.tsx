@@ -279,7 +279,14 @@ const getToolCallText = (value: unknown): string | null => {
       : `Tool call: ${label} ${String(argumentsValue)}`;
   }
 
-  for (const key of ['tool_calls', 'output', 'message']) {
+  for (const key of [
+    'tool_calls',
+    'output',
+    'message',
+    'item',
+    'response',
+    'delta',
+  ]) {
     const text = getToolCallText(value[key]);
     if (text) return text;
   }
