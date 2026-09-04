@@ -1,20 +1,17 @@
 # Usage
 
-Usage reports request volume and token consumption.
+Usage shows request volume, token consumption, and model distribution.
 
-## Filter the report
+## Filter and refresh
 
-1. Choose a **Time range**, such as `24 hours`, `7 days`, or **Today**.
-2. Optionally filter by credential or access key.
-3. Click **Refresh**, or choose an **Auto-refresh** interval.
-4. Read the summary cards for calls, tokens, and cache-hit tokens.
+1. Choose **Time range**: `1 hour`, `3 hours`, `6 hours`, `12 hours`, `24 hours`, `3 days`, `7 days`, `Today`, or `Yesterday`.
+2. Select credentials and API keys, or choose **All credentials** and **All API keys**.
+3. Click **Refresh**, or choose **Off**, `5 sec`, `15 sec`, `30 sec`, `60 sec`, or `300 sec` under **Auto-refresh**.
 
-## Investigate a spike
+## Read the results
 
-1. Start with the **Call trend** and **Token trend** charts.
-2. Select the model or credential with the largest change in the table.
-3. Compare the result with **Debug** logs to connect usage to individual requests.
+- Summary cards show **Calls**, **Total tokens**, and **Cache-hit tokens**.
+- **Call trend** and **Token trend** show changes over time and by model.
+- **Credential usage** and **Model summary** provide table breakdowns.
 
-**Clear history** permanently removes stored usage events.
-
-Usage data is stored by the configured storage backend and is retained according to the server settings.
+**Clear history** permanently deletes saved usage events.

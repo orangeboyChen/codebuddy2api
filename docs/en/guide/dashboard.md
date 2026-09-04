@@ -1,18 +1,16 @@
 # Dashboard
 
-Dashboard is the first page to check after deployment.
+Open Dashboard after signing in to confirm that the proxy and credential pool are ready.
 
-## What it shows
+## What you see
 
-- **Credential totals**: total and currently valid CodeBuddy accounts.
-- **API endpoint**: the `/v1` base URL used by clients.
-- **Calls today**: request count, total tokens, and cache-hit tokens.
+- **Total credentials** and the number marked **active**.
+- **Calls today**, **Tokens today**, and **Cache-hit tokens today**.
+- **API endpoint**, the `/v1` base URL for clients.
 
-## Typical workflow
+## First use
 
-1. Open `/dashboard` and confirm the service is reachable.
-2. If the active credential count is zero, open **Credentials** and authorize an account.
-3. Copy the API endpoint and create an API key under **Credentials**.
-4. Configure your client with the endpoint and API key.
-
-Dashboard is a read-only overview; use the other console tabs to make changes.
+1. If no credentials are active, open **Credentials** and complete authentication.
+2. Copy the **API endpoint**, then create an API key in **Credentials**.
+3. Configure your client with the endpoint and key.
+4. Use **API Test** to send a first request.

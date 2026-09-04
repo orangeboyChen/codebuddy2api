@@ -1,13 +1,24 @@
 # Settings
 
-Settings controls runtime behavior and console security without rebuilding the container.
+Settings controls service parameters, credential models, usage data, and console security.
 
 ## Service settings
 
-- **CodeBuddy API endpoint**: upstream URL; defaults to `https://copilot.tencent.com`.
-- **Authentication mode**: automatic or token-based upstream authentication.
-- **Network environment**: internal, IOA, or public routing.
-- **Log level**: server logging verbosity.
-- **Admin passkey RP ID**: hostname used by WebAuthn passkeys.
+| Field                                     | Purpose                                               |
+| ----------------------------------------- | ----------------------------------------------------- |
+| CodeBuddy API endpoint                    | Upstream URL; default `https://copilot.tencent.com`   |
+| Admin passkey RP ID / domain              | WebAuthn hostname only; do not include scheme or port |
+| Authentication mode (auto/token)          | Upstream authentication method                        |
+| Network environment (internal/ioa/public) | Upstream network environment                          |
+| Log level                                 | Choose `DEBUG`, `INFO`, `WARNING`, or `ERROR`         |
 
-Click **Save** after changing service settings. **Credential models** lists discovered models and refreshes them per credential. **Usage event cache** permanently clears usage data. **Console security** sets the administrator username and password; once enabled, unauthenticated users are sent to Login. The passkey RP ID must be a hostname only and must match the browser-visible origin.
+Click **Save** after changing a field.
+
+## Models and usage
+
+- **Credential models** lists models for each credential; edit the list or click **Refresh**.
+- **Usage event cache** can be permanently cleared with **Clear usage event cache**.
+
+## Console security
+
+Set the administrator username, password, and confirmation password under **Console security**, then click **Save**. Disabling authentication makes the console directly accessible.

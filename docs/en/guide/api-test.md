@@ -1,11 +1,11 @@
 # API Test
 
-API Test sends a chat completion directly from the admin console.
+API Test verifies the proxy path without configuring an external client.
 
-1. Select a non-expired credential.
-2. Select one of its discovered models.
-3. Enter a message.
+1. Select an active credential.
+2. Select one of its available models.
+3. Enter a **Test message**.
 4. Turn **Stream response** on or off.
-5. Click **Send test** and read the **Response** panel.
+5. Click **Send test** and read **Response result**.
 
-The page also includes curl and Python examples. External clients call `/v1/chat/completions`, `/v1/responses`, or `/v1/messages` with a managed API key.
+The **API usage examples** section includes curl and Python. Use the Dashboard API endpoint as the client base URL and send the created API key as a bearer token.

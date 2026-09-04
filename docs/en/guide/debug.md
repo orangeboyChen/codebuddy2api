@@ -1,14 +1,11 @@
 # Debug
 
-Debug records sanitized proxy activity for troubleshooting.
+Debug helps diagnose failed requests, model errors, and upstream responses. Records are sanitized.
 
-## Capture a problem
-
-1. Choose an **Auto-refresh interval**, or leave it **Off** for manual refresh.
-2. Enable **Enable debug capture**.
+1. Enable **Enable Debug capture**.
+2. Choose an **Auto-refresh interval**, or choose **Off** and click **Refresh** manually.
 3. Set **Max retained records** and click **Save**.
-4. Reproduce the failing request once.
-5. Use the interface type, model, credential, and API key filters.
-6. Expand the newest record to inspect route, statuses, token counts, TPS, duration, and payload details.
+4. Reproduce the problem from a client or **API Test**.
+5. Filter by interface type, model, credential, or API key. Expand a record to inspect requests, responses, status, token counts, TPS, and duration.
 
-**Clear** permanently removes retained records. Tokens, cookies, API keys, authorization headers, and user identifiers are redacted.
+**Clear** removes retained Debug records.
