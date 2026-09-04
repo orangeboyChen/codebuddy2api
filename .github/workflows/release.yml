@@ -2,6 +2,16 @@ name: Build and Release
 
 on:
   workflow_dispatch:
+    inputs:
+      version_bump:
+        description: Version increment
+        required: true
+        default: patch
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
   push:
     branches: [main]
 
@@ -35,7 +45,21 @@ jobs:
           set -euo pipefail
           current_version="$(node -p "require('./package.json').version")"
           IFS='.' read -r major minor patch <<< "$current_version"
-          version="${major}.${minor}.$((patch + 1))"
+          case "${{ inputs.version_bump }}" in
+            major)
+              version="$((major + 1)).0.0"
+              ;;
+            minor)
+              version="${major}.$((minor + 1)).0"
+              ;;
+            patch)
+              version="${major}.${minor}.$((patch + 1))"
+              ;;
+            *)
+              echo 'Unsupported version increment.' >&2
+              exit 1
+              ;;
+          esac
           branch="release/v${version}"
           node -e "const fs=require('fs'); const p='package.json'; const x=JSON.parse(fs.readFileSync(p,'utf8')); x.version=process.argv[1]; fs.writeFileSync(p,JSON.stringify(x,null,2)+'\\n')" "$version"
           git switch -c "$branch"
@@ -108,8 +132,6 @@ jobs:
       - run: bun run format:check
       - run: bun run typecheck
       - run: bun run test:coverage
-      - run: bun run build
-
   publish-image:
     needs: [detect-release, verify]
     if: ${{ needs.detect-release.outputs.should_release == 'true' }}
@@ -173,4 +195,23 @@ jobs:
           TAG: ${{ needs.detect-release.outputs.release_tag }}
           IMAGE: ${{ needs.detect-release.outputs.image }}:${{ needs.detect-release.outputs.version }}
         run: |
-          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --latest --notes "Docker image: \`$IMAGE\`"
+          set -euo pipefail
+          previous_tag="$(git tag --sort=-v:refname | grep '^v' | head -n 1 || true)"
+          if [[ -n "$previous_tag" ]]; then
+            commits="$(git log --pretty=format:'- %h %s' "${previous_tag}..${GITHUB_SHA}")"
+          else
+            commits="$(git log --pretty=format:'- %h %s' "${GITHUB_SHA}")"
+          fi
+          notes_file="$(mktemp)"
+          {
+            echo "Docker image: \`$IMAGE\`"
+            echo
+            echo '## Commits'
+            echo
+            if [[ -n "$commits" ]]; then
+              printf '%s\n' "$commits"
+            else
+              echo '- No commits found.'
+            fi
+          } > "$notes_file"
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --latest --notes-file "$notes_file"
