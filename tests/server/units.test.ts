@@ -1506,6 +1506,171 @@ describe('server units', () => {
     });
   });
 
+  it('maps Responses mcp and custom tool calls to Chat tool calls', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-tool-types-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-tool-types@example.com',
+      },
+      filePath: '/tmp/responses-tool-types.json',
+      filename: 'responses-tool-types.json',
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          id: 'resp_mcp',
+          output: [
+            {
+              type: 'mcp_call',
+              call_id: 'call_mcp',
+              name: 'search_docs',
+              arguments: '{"query":"docs"}',
+            },
+          ],
+          status: 'completed',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          id: 'resp_custom',
+          output: [
+            {
+              type: 'custom_tool_call',
+              call_id: 'call_custom',
+              name: 'shell',
+              input: 'ls -la',
+            },
+          ],
+          status: 'completed',
+        }),
+      );
+
+    const makeRequest = async (): Promise<Record<string, unknown>> => {
+      const response = await proxyChatCompletions(
+        makeNextRequest('http://localhost/v1/chat/completions', {
+          method: 'POST',
+        }),
+        { messages: [{ role: 'user', content: 'run tool' }], model: 'hy3' },
+        context,
+      );
+      return (await response.json()) as Record<string, unknown>;
+    };
+
+    const mcpPayload = await makeRequest();
+    const customPayload = await makeRequest();
+    expect(mcpPayload.choices).toMatchObject([
+      {
+        finish_reason: 'tool_calls',
+        message: {
+          tool_calls: [
+            {
+              id: 'call_mcp',
+              function: {
+                arguments: '{"query":"docs"}',
+                name: 'search_docs',
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(customPayload.choices).toMatchObject([
+      {
+        finish_reason: 'tool_calls',
+        message: {
+          tool_calls: [
+            {
+              id: 'call_custom',
+              function: { arguments: '{"input":"ls -la"}', name: 'shell' },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('maps streamed Responses mcp and custom tool calls to Chat tool calls', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-stream-tool-types-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-stream-tool-types@example.com',
+      },
+      filePath: '/tmp/responses-stream-tool-types.json',
+      filename: 'responses-stream-tool-types.json',
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        [
+          'data: {"type":"response.output_item.added","item":{"type":"message"}}',
+          'data: {"type":"response.output_item.added","item":{"type":"mcp_call","id":"fc_mcp","call_id":"call_mcp","name":"search_docs","arguments":"{}"}}',
+          'data: {"type":"response.mcp_call_arguments.delta","item_id":"fc_mcp","delta":"{\\"query\\":\\"docs\\"}"}',
+          'data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"fc_custom","call_id":"call_custom","name":"shell","arguments":"ls"}}',
+          'data: {"type":"response.custom_tool_call_input.delta","item_id":"fc_custom","delta":" -la"}',
+          'data: {"type":"response.completed"}',
+          'data: {"type":"response.completed"}',
+        ].join('\n\n') + '\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'run tools' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+    const text = await response.text();
+    expect(text).toContain('"id":"call_mcp"');
+    expect(text).toContain('"id":"call_custom"');
+    expect(text).toContain('\\"input\\":\\"ls');
+    expect(text).toContain(' -la');
+    expect(text).toContain('"finish_reason":"tool_calls"');
+  });
+
+  it('handles empty and partial streamed custom tool inputs at EOF', async () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'responses-stream-custom-eof-token',
+        upstream_protocol: 'responses',
+        user_id: 'responses-stream-custom-eof@example.com',
+      },
+      filePath: '/tmp/responses-stream-custom-eof.json',
+      filename: 'responses-stream-custom-eof.json',
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"fc_empty","call_id":"call_empty","name":"shell"}}\n\n' +
+          'data: {"type":"response.custom_tool_call_input.delta","item_id":"fc_empty"}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'run tool' }],
+        model: 'hy3',
+        stream: true,
+      },
+      context,
+    );
+    const text = await response.text();
+    expect(text).toContain('"id":"call_empty"');
+    expect(text).toContain('\\"input\\":\\"');
+    expect(text).toContain('\\"}');
+  });
+
   it('covers Responses upstream compatibility input variants', async () => {
     const context = createProxyContextFromCredential({
       data: {

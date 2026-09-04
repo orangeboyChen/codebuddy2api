@@ -355,4 +355,79 @@ describe('debug view', () => {
       expect(document.body).toHaveTextContent('Hello world');
     });
   }, 60_000);
+
+  it('shows tool calls when a response has no text content', async () => {
+    renderWithMessages(
+      <DebugProvider
+        value={{
+          autoRefreshOptions: [],
+          debug: {
+            autoRefreshSeconds: 0,
+            detailLoadedIds: { tool: true },
+            detailLoadingIds: {},
+            enabled: true,
+            items: [
+              {
+                credentialFilename: null,
+                createdAt: '2026-07-18T00:00:00.000Z',
+                elapsedMs: null,
+                error: null,
+                id: 'tool',
+                requestBody: {},
+                requestKey: null,
+                route: '/v1/chat/completions',
+                transformedResponse: null,
+                upstreamRequest: null,
+                upstreamResponse: {
+                  body: JSON.stringify({
+                    choices: [
+                      {
+                        message: {
+                          tool_calls: [
+                            {
+                              function: {
+                                arguments: '{"query":"docs"}',
+                                name: 'search_docs',
+                              },
+                              id: 'call_docs',
+                              type: 'function',
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  }),
+                  status: 200,
+                },
+              },
+            ],
+            loading: false,
+            maxEntries: 100,
+            saving: false,
+          },
+          onAutoRefreshSecondsChange: vi.fn(),
+          onClear: vi.fn(),
+          onCopy: vi.fn(),
+          onEnabledChange: vi.fn(),
+          onMaxEntriesChange: vi.fn(),
+          onRefresh: vi.fn(),
+          onSave: vi.fn(),
+        }}
+      >
+        <Debug />
+      </DebugProvider>,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /\/v1\/chat\/completions/ }),
+    );
+
+    await waitFor(() => {
+      expect(document.body).toHaveTextContent('Tool call: search_docs');
+      expect(document.body).toHaveTextContent('{"query":"docs"}');
+    });
+    expect(screen.getAllByText('No aggregate response content')).toHaveLength(
+      1,
+    );
+  }, 60_000);
 });

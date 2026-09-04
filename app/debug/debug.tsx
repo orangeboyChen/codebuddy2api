@@ -250,6 +250,50 @@ const getStreamingEventText = (event: unknown): string | null => {
     : null;
 };
 
+const getToolCallText = (value: unknown): string | null => {
+  if (Array.isArray(value)) {
+    const calls = value
+      .map(getToolCallText)
+      .filter((item): item is string => Boolean(item));
+    return calls.length ? calls.join('\n') : null;
+  }
+
+  if (!isRecord(value)) return null;
+
+  const type = typeof value.type === 'string' ? value.type : '';
+  const name = isRecord(value.function) ? value.function.name : value.name;
+  const argumentsValue = isRecord(value.function)
+    ? value.function.arguments
+    : (value.arguments ?? value.input);
+
+  if (
+    (type === 'function' ||
+      type === 'function_call' ||
+      type === 'mcp_call' ||
+      type === 'custom_tool_call') &&
+    (typeof name === 'string' || argumentsValue !== undefined)
+  ) {
+    const label = typeof name === 'string' ? name : 'Unnamed tool';
+    return argumentsValue === undefined
+      ? `Tool call: ${label}`
+      : `Tool call: ${label} ${String(argumentsValue)}`;
+  }
+
+  for (const key of [
+    'tool_calls',
+    'output',
+    'message',
+    'item',
+    'response',
+    'delta',
+  ]) {
+    const text = getToolCallText(value[key]);
+    if (text) return text;
+  }
+
+  return null;
+};
+
 const getToolName = (tool: JsonRecord): string => {
   const functionValue = isRecord(tool.function) ? tool.function : tool;
   return String(functionValue.name ?? tool.name ?? 'Unnamed tool');
@@ -708,7 +752,10 @@ const StructuredResponse = ({
       .filter((item): item is string => Boolean(item))
       .join('') ||
     getText(responseRecord?.choices) ||
-    getText(responseRecord?.content);
+    getText(responseRecord?.content) ||
+    getToolCallText(eventPayloads) ||
+    getToolCallText(responseRecord?.choices) ||
+    getToolCallText(responseRecord?.output);
   const usage = isRecord(responseRecord?.usage) ? responseRecord.usage : null;
   const visibleContent =
     content && !showFullContent
