@@ -1,4 +1,4 @@
-# Credentials
+# 認証情報
 
 Credentials はプロキシが使用する CodeBuddy アカウントを管理します。
 

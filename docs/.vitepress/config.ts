@@ -16,6 +16,7 @@ export default defineConfig({
     },
     nav: [
       { text: '指南', link: '/guide/quick-start' },
+      { text: '配置', link: '/config/docker' },
       {
         text: 'GitHub',
         link: 'https://github.com/orangeboyChen/codebuddy2api',
@@ -28,18 +29,22 @@ export default defineConfig({
           {
             collapsed: false,
             items: [
-              { text: 'Dashboard', link: '/guide/dashboard' },
-              { text: 'Usage', link: '/guide/usage' },
-              { text: 'Credentials', link: '/guide/credentials' },
-              { text: 'Account Status', link: '/guide/account-status' },
-              { text: 'API Test', link: '/guide/api-test' },
-              { text: 'Debug', link: '/guide/debug' },
-              { text: 'Settings', link: '/guide/settings' },
+              { text: '仪表盘', link: '/guide/dashboard' },
+              { text: '用量', link: '/guide/usage' },
+              { text: '凭据', link: '/guide/credentials' },
+              { text: '账号状态', link: '/guide/account-status' },
+              { text: 'API 测试', link: '/guide/api-test' },
+              { text: '调试', link: '/guide/debug' },
+              { text: '设置', link: '/guide/settings' },
             ],
             text: '管理控制台',
           },
         ],
         text: '指南',
+      },
+      {
+        items: [{ text: 'Docker 与存储', link: '/config/docker' }],
+        text: '配置',
       },
     ],
     socialLinks: [
@@ -52,6 +57,7 @@ export default defineConfig({
       en: {
         nav: [
           { text: 'Guide', link: '/en/guide/quick-start' },
+          { text: 'Configuration', link: '/en/config/docker' },
           {
             text: 'GitHub',
             link: 'https://github.com/orangeboyChen/codebuddy2api',
@@ -77,11 +83,16 @@ export default defineConfig({
             ],
             text: 'Guide',
           },
+          {
+            items: [{ text: 'Docker and Storage', link: '/en/config/docker' }],
+            text: 'Configuration',
+          },
         ],
       },
       ja: {
         nav: [
           { text: 'ガイド', link: '/ja/guide/quick-start' },
+          { text: '設定', link: '/ja/config/docker' },
           {
             text: 'GitHub',
             link: 'https://github.com/orangeboyChen/codebuddy2api',
@@ -94,18 +105,22 @@ export default defineConfig({
               {
                 collapsed: false,
                 items: [
-                  { text: 'Dashboard', link: '/ja/guide/dashboard' },
-                  { text: 'Usage', link: '/ja/guide/usage' },
-                  { text: 'Credentials', link: '/ja/guide/credentials' },
-                  { text: 'Account Status', link: '/ja/guide/account-status' },
-                  { text: 'API Test', link: '/ja/guide/api-test' },
-                  { text: 'Debug', link: '/ja/guide/debug' },
-                  { text: 'Settings', link: '/ja/guide/settings' },
+                  { text: 'ダッシュボード', link: '/ja/guide/dashboard' },
+                  { text: '利用量', link: '/ja/guide/usage' },
+                  { text: '認証情報', link: '/ja/guide/credentials' },
+                  { text: 'アカウント状態', link: '/ja/guide/account-status' },
+                  { text: 'API テスト', link: '/ja/guide/api-test' },
+                  { text: 'デバッグ', link: '/ja/guide/debug' },
+                  { text: '設定', link: '/ja/guide/settings' },
                 ],
                 text: '管理コンソール',
               },
             ],
             text: 'ガイド',
+          },
+          {
+            items: [{ text: 'Docker とストレージ', link: '/ja/config/docker' }],
+            text: '設定',
           },
         ],
       },

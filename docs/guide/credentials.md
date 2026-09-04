@@ -1,6 +1,6 @@
-# Credentials
+# 凭据
 
-Credentials 用于管理 CodeBuddy 账号。
+凭据页用于管理 CodeBuddy 账号。
 
 1. 点击添加或登录，按页面提示完成 OAuth 流程。
 2. 刷新模型列表，确认账号支持的模型。

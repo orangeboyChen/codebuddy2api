@@ -6,8 +6,8 @@
 docker run -d --name codebuddy2api --restart unless-stopped -p 8001:8001 \
   -e CODEBUDDY_STORAGE_BACKEND=sqlite \
   -e CODEBUDDY_STORAGE_ENCRYPTION_KEY='replace-with-a-long-random-secret' \
+  -e CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES=false \
   -v "$(pwd)/.codebuddy_data:/app/.codebuddy_data" \
-  -v "$(pwd)/.codebuddy_creds:/app/.codebuddy_creds" \
   ghcr.io/orangeboychen/codebuddy2api:latest
 ```
 

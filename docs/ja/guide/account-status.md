@@ -1,4 +1,4 @@
-# Account Status
+# アカウント状態
 
 Account Status は CodeBuddy アカウントごとの状態確認ページです。
 
