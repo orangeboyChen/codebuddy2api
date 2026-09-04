@@ -11,7 +11,6 @@ const consolePaths = [
   'settings',
 ];
 const sharedTheme = {
-  footer: { message: 'Released under the MIT License.' },
   socialLinks: [{ icon: 'github', link: githubLink }],
 };
 
@@ -52,8 +51,14 @@ const createTheme = (
   storagePage: string,
   localPage: string,
   labels: string[],
+  ui: { footer: string; menu: string; top: string; prev: string; next: string },
 ) => ({
   ...sharedTheme,
+  docFooter: { prev: ui.prev, next: ui.next },
+  footer: { message: ui.footer },
+  outline: { label: ui.menu },
+  returnToTopLabel: ui.top,
+  sidebarMenuLabel: ui.menu,
   nav: [{ text: guide, link: `${prefix}/guide/dashboard` }],
   sidebar: createSidebar(
     prefix,
@@ -84,6 +89,14 @@ export default defineConfig({
         '存储选择',
         '本地运行（开发）',
         ['仪表盘', '用量', '凭据', '账号状态', 'API 测试', '调试', '设置'],
+        {
+          footer:
+            'Released under the <a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE">MIT License</a>.',
+          menu: '目录',
+          top: '返回顶部',
+          prev: '上一页',
+          next: '下一页',
+        },
       ),
     },
     en: {
@@ -107,6 +120,14 @@ export default defineConfig({
           'Debug',
           'Settings',
         ],
+        {
+          footer:
+            'Released under the <a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE">MIT License</a>.',
+          menu: 'On this page',
+          top: 'Return to top',
+          prev: 'Previous page',
+          next: 'Next page',
+        },
       ),
     },
     ja: {
@@ -130,6 +151,14 @@ export default defineConfig({
           'デバッグ',
           '設定',
         ],
+        {
+          footer:
+            'MIT License（<a href="https://github.com/orangeboyChen/codebuddy2api/blob/main/LICENSE">ライセンス全文</a>）',
+          menu: 'このページの内容',
+          top: 'トップへ戻る',
+          prev: '前のページ',
+          next: '次のページ',
+        },
       ),
     },
   },

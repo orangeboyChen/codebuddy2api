@@ -3,7 +3,7 @@ layout: home
 
 hero:
   name: CodeBuddy2API
-  text: CodeBuddy 管理・API サービス
+  text: CodeBuddy API プロキシサービス
   tagline: CodeBuddy をセルフホストし、認証情報・キー・利用量を管理します。
   image:
     src: /codebuddy-dashboard.png
@@ -24,5 +24,3 @@ features:
   - title: 柔軟なストレージ
     details: ゼロ設定のファイル、単一インスタンス向け SQLite、複数インスタンス向け PostgreSQL。
 ---
-
-CodeBuddy2API は CodeBuddy 向けのセルフホスト型ゲートウェイと管理コンソールです。ローカル、Docker、Kubernetes で実行できます。

@@ -3,7 +3,7 @@ layout: home
 
 hero:
   name: CodeBuddy2API
-  text: CodeBuddy management and API service
+  text: CodeBuddy API proxy service
   tagline: Self-host CodeBuddy and manage credentials, keys, and usage.
   image:
     src: /codebuddy-dashboard.png
@@ -24,6 +24,3 @@ features:
   - title: Flexible storage
     details: Zero-config file storage, SQLite for single instances, and PostgreSQL for multiple instances.
 ---
-
-CodeBuddy2API provides a self-hosted gateway and admin console for CodeBuddy.
-Run it locally, with Docker, or on Kubernetes.
