@@ -24,19 +24,38 @@ docker run -d \
   ghcr.io/orangeboychen/codebuddy2api:latest
 ```
 
-Open `http://127.0.0.1:8001/` after startup.
+Open `http://127.0.0.1:8001/dashboard` after startup.
+
+The Docker image contains only the Next.js API service and admin console. A
+future static product demo can live independently under `docs/` and be
+published to GitHub Pages; it is not part of the Docker runtime or image.
 
 ## Storage Backends
 
 Persistence is now routed through a storage abstraction layer. Business modules do not read or write files directly.
 
-- Default backend: `file`
+- Default backend: `file` (zero-configuration, backwards-compatible mode)
 - Optional database backends: `pg`, `sqlite`
 - Backend selection:
   - explicit `CODEBUDDY_STORAGE_BACKEND=file|pg|sqlite`
   - explicit `CODEBUDDY_STORAGE_PERSISTENCE=file|pg|sqlite`
   - otherwise auto-switch to `pg` when `CODEBUDDY_STORAGE_PG_URL` or `DATABASE_URL` is set
   - otherwise fall back to `file`
+
+SQLite is the recommended persistent backend for a single application
+instance. It keeps runtime data in one local database file and avoids the
+multiple-JSON-file consistency limitations of the file backend. The current
+default remains `file` so existing deployments continue to start without an
+encryption key or migration step. To opt into SQLite:
+
+```bash
+CODEBUDDY_STORAGE_BACKEND=sqlite
+CODEBUDDY_STORAGE_SQLITE_PATH=.codebuddy_data/storage.sqlite
+CODEBUDDY_STORAGE_ENCRYPTION_KEY='replace-with-a-long-random-secret'
+```
+
+SQLite is local and single-instance. Use PostgreSQL when multiple application
+instances need to share persistence.
 
 ### File Backend
 
@@ -65,7 +84,7 @@ Optional overrides:
 When `pg` or `sqlite` storage is active, runtime persistence is stored in a database instead of local files.
 
 - PostgreSQL uses `DATABASE_URL` or `CODEBUDDY_STORAGE_PG_URL` and the `codebuddy2api` schema
-- SQLite uses `CODEBUDDY_STORAGE_SQLITE_PATH`; the default is `.codebuddy_data/storage.sqlite`
+- SQLite uses `CODEBUDDY_STORAGE_SQLITE_PATH`; the default path is `.codebuddy_data/storage.sqlite`
 - `CODEBUDDY_STORAGE_ENCRYPTION_KEY` is required for either database backend and encrypts sensitive stored documents
 
 In database mode, local files are not used for normal runtime persistence. Runtime
@@ -99,7 +118,7 @@ mkdir -p .codebuddy_data .codebuddy_creds
 bun run dev
 ```
 
-Then open `http://127.0.0.1:3000/`.
+Then open `http://127.0.0.1:3000/dashboard`.
 
 Use the admin console to complete the CodeBuddy OAuth flow or add credentials manually. Local settings and console data are stored under `.codebuddy_data/`; credentials are stored under `.codebuddy_creds/`.
 
@@ -227,6 +246,31 @@ bun run test -- tests/server/units.test.ts
 ```
 
 ## Deployment Notes
+
+### GitHub Pages Demo
+
+The documentation site is intentionally separate from the server application.
+Its VitePress source and build configuration live under `docs/`, and
+`.github/workflows/docs-pages.yml` publishes only the generated static assets
+to GitHub Pages. Changes to `app/`, server code, or the Dockerfile do not
+rebuild or replace the published site unless the documentation or its workflow
+changes.
+
+The published site is documentation only. Any interactive API example should
+use mock responses by default; a live API mode must require a user-provided API
+key and a CORS-enabled API endpoint. Server credentials must never be bundled
+into static assets.
+
+Run the documentation site locally from the repository root:
+
+```bash
+bun install
+bun install --cwd docs
+bun run docs:dev
+```
+
+Build or preview the static site with `bun run docs:build` or
+`bun run docs:preview`.
 
 ### Docker Compose
 

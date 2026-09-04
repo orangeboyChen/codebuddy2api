@@ -28,6 +28,8 @@ const vitestConfig = defineConfig({
     exclude: [
       '.next/**',
       'coverage/**',
+      'docs/.vitepress/**',
+      '**/node_modules/**',
       'dist/**',
       'e2e/**',
       'node_modules/**',

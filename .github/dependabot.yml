@@ -99,3 +99,14 @@ updates:
           - github/*
           - docker/*
           - oven-sh/*
+
+  - package-ecosystem: bun
+    directory: /docs
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)

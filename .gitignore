@@ -3,6 +3,9 @@ node_modules/
 
 # Next.js / TypeScript build outputs
 .next/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/node_modules/
 out/
 dist/
 build/
