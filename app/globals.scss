@@ -354,6 +354,26 @@ textarea {
   opacity: 0.72;
 }
 
+.account-status-card-header,
+.account-status-card-checkin {
+  min-width: 0;
+}
+
+.account-status-card-identity {
+  flex: 1 1 auto;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.account-status-card-name,
+.account-status-card-filename,
+.account-status-card-checkin-label {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 @media (max-width: 767px) {
   .console-main {
     padding-inline: 16px;
@@ -369,16 +389,6 @@ textarea {
     align-items: flex-start !important;
     flex-direction: column !important;
     gap: 8px !important;
-  }
-
-  .account-status-card-identity,
-  .account-status-card-name,
-  .account-status-card-filename,
-  .account-status-card-checkin-label {
-    max-width: 100%;
-    min-width: 0;
-    overflow-wrap: anywhere;
-    word-break: break-word;
   }
 
   .account-status-card-header > button,
