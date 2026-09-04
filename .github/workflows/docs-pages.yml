@@ -14,7 +14,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
 
       - name: Install documentation dependencies
         working-directory: docs
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build documentation
         working-directory: docs
@@ -47,6 +47,7 @@ jobs:
 
   deploy:
     needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
