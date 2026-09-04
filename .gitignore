@@ -3,6 +3,9 @@ node_modules/
 
 # Next.js / TypeScript build outputs
 .next/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/node_modules/
 out/
 dist/
 build/
@@ -32,6 +35,8 @@ config/usage/
 .tmp-test-debug-usage-root/
 .tmp-test-runtime-root/
 .tmp-e2e/
+playwright-report/
+test-results/
 
 # Credentials
 .codebuddy_creds/

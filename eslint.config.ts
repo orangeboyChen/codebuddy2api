@@ -11,6 +11,8 @@ const eslintConfig = [
   globalIgnores([
     '.next/**',
     'coverage/**',
+    'docs/.vitepress/**',
+    '**/node_modules/**',
     'node_modules/**',
     'next-env.d.ts',
     'tsconfig.tsbuildinfo',
