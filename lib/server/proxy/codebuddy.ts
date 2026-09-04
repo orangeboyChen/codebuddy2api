@@ -1339,6 +1339,7 @@ const mapResponsesStreamToChat = (
   const toolIndexes = new Map<string, number>();
   const toolCallIds = new Map<string, string>();
   const customToolCallIds = new Set<string>();
+  const closedCustomToolCallIds = new Set<string>();
   let nextToolIndex = 0;
   let stoppedLocally = false;
 
@@ -1417,6 +1418,25 @@ const mapResponsesStreamToChat = (
     }
   };
 
+  const emitCustomToolCallClosures = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+  ): void => {
+    customToolCallIds.forEach((itemId) => {
+      if (closedCustomToolCallIds.has(itemId)) return;
+      const index = getToolIndex(itemId);
+      const callId = toolCallIds.get(itemId) ?? `call_${index + 1}`;
+      controller.enqueue(
+        encodeChunk({
+          delta: {
+            tool_calls: [{ function: { arguments: '"}' }, id: callId, index }],
+          },
+          index: 0,
+        }),
+      );
+      closedCustomToolCallIds.add(itemId);
+    });
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       if (!reader) {
@@ -1446,6 +1466,7 @@ const mapResponsesStreamToChat = (
             );
             pendingStopText = '';
           }
+          emitCustomToolCallClosures(controller);
           if (!emittedFinish) {
             controller.enqueue(
               encodeChunk({
@@ -1604,11 +1625,11 @@ const mapResponsesStreamToChat = (
                 continue;
               }
               const isCustomToolCall = item.type === 'custom_tool_call';
-              const initialArguments = String(
-                isCustomToolCall
-                  ? `{"input":${JSON.stringify(String(item.input ?? item.arguments ?? ''))}`
-                  : (item.arguments ?? ''),
-              );
+              const initialArguments = isCustomToolCall
+                ? `{"input":"${JSON.stringify(
+                    String(item.input ?? item.arguments ?? ''),
+                  ).slice(1, -1)}`
+                : String(item.arguments ?? '');
               const itemId = String(item.id ?? item.call_id ?? nextToolIndex);
               const index = getToolIndex(itemId);
               const callId = String(item.call_id ?? item.id ?? itemId);
@@ -1682,20 +1703,7 @@ const mapResponsesStreamToChat = (
                 pendingStopText = '';
               }
               if (!emittedFinish) {
-                customToolCallIds.forEach((itemId) => {
-                  const index = getToolIndex(itemId);
-                  const callId = toolCallIds.get(itemId) ?? `call_${index + 1}`;
-                  controller.enqueue(
-                    encodeChunk({
-                      delta: {
-                        tool_calls: [
-                          { function: { arguments: '"}' }, id: callId, index },
-                        ],
-                      },
-                      index: 0,
-                    }),
-                  );
-                });
+                emitCustomToolCallClosures(controller);
                 controller.enqueue(
                   encodeChunk({
                     delta: {},
@@ -1726,6 +1734,7 @@ const mapResponsesStreamToChat = (
                 );
                 pendingStopText = '';
               }
+              emitCustomToolCallClosures(controller);
               const incompleteReason =
                 event.response && typeof event.response === 'object'
                   ? (
