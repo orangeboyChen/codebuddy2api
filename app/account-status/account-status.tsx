@@ -124,10 +124,33 @@ const CopyableModel = ({ model }: { model: string }) => {
   const [copied, setCopied] = useState(false);
   const text = useTranslations('Admin');
   const copy = async () => {
-    if (!navigator.clipboard) return;
-    await navigator.clipboard.writeText(model);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
+    try {
+      let copiedWithModernApi = false;
+      if (navigator.clipboard) {
+        try {
+          await navigator.clipboard.writeText(model);
+          copiedWithModernApi = true;
+        } catch {
+          copiedWithModernApi = false;
+        }
+      }
+      if (!copiedWithModernApi) {
+        const fallback = document.createElement('textarea');
+        fallback.value = model;
+        fallback.setAttribute('readonly', '');
+        fallback.style.position = 'fixed';
+        fallback.style.opacity = '0';
+        document.body.append(fallback);
+        fallback.select();
+        const copiedWithFallback = document.execCommand('copy');
+        fallback.remove();
+        if (!copiedWithFallback) return;
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      return;
+    }
   };
   return (
     <Tooltip title={copied ? text('common.copy') : text('common.copy')}>
