@@ -4,7 +4,7 @@ Usage reports request volume and token consumption.
 
 ## Filter the report
 
-1. Choose a **Time range**, such as `24 hours` or `7 days`.
+1. Choose a **Time range**, such as `24 hours`, `7 days`, or **Today**.
 2. Optionally filter by credential or access key.
 3. Click **Refresh**, or choose an **Auto-refresh** interval.
 4. Read the summary cards for calls, tokens, and cache-hit tokens.
