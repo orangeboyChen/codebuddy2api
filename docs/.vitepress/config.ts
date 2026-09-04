@@ -18,16 +18,22 @@ const sharedTheme = {
 const createSidebar = (
   prefix: string,
   guide: string,
-  quickStart: string,
   console: string,
   config: string,
+  quickStart: string,
   configPage: string,
   labels: string[],
 ) => [
   {
-    text: guide,
+    text: config,
     items: [
       { text: quickStart, link: `${prefix}/guide/quick-start` },
+      { text: configPage, link: `${prefix}/config/docker` },
+    ],
+  },
+  {
+    text: guide,
+    items: [
       {
         text: console,
         collapsed: false,
@@ -37,10 +43,6 @@ const createSidebar = (
         })),
       },
     ],
-  },
-  {
-    text: config,
-    items: [{ text: configPage, link: `${prefix}/config/docker` }],
   },
 ];
 
@@ -54,17 +56,13 @@ const createTheme = (
   labels: string[],
 ) => ({
   ...sharedTheme,
-  nav: [
-    { text: guide, link: `${prefix}/guide/quick-start` },
-    { text: config, link: `${prefix}/config/docker` },
-    { text: 'GitHub', link: githubLink },
-  ],
+  nav: [{ text: guide, link: `${prefix}/guide/dashboard` }],
   sidebar: createSidebar(
     prefix,
     guide,
-    quickStart,
     console,
     config,
+    quickStart,
     configPage,
     labels,
   ),
