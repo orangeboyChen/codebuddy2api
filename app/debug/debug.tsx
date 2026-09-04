@@ -245,9 +245,14 @@ const getStreamingEventText = (event: unknown): string | null => {
   const choiceText = getText(event.choices);
   if (choiceText) return choiceText;
 
-  return event.type === 'response.output_text.delta'
-    ? getText(event.delta)
-    : null;
+  if (
+    event.type === 'response.output_text.delta' ||
+    event.type === 'content_block_delta'
+  ) {
+    return getText(event.delta);
+  }
+
+  return null;
 };
 
 const getToolName = (tool: JsonRecord): string => {
@@ -293,9 +298,16 @@ const formatToolName = (value: string): string => {
     .join(' ');
 };
 
-const getResponseFormat = (route: string): string => {
+const getDownstreamFormat = (route: string): string => {
   if (route === '/v1/responses') return 'OpenAI Responses';
   if (route === '/v1/messages') return 'Anthropic Messages';
+  return 'OpenAI Chat';
+};
+
+const getUpstreamFormat = (
+  upstreamRequest: DebugLogEntry['upstreamRequest'],
+): string => {
+  if (upstreamRequest?.url.endsWith('/responses')) return 'OpenAI Responses';
   return 'OpenAI Chat';
 };
 
@@ -883,7 +895,7 @@ const Debug = () => {
   const formatOptions = useMemo(
     () =>
       [
-        ...new Set(debug.items.map((item) => getResponseFormat(item.route))),
+        ...new Set(debug.items.map((item) => getDownstreamFormat(item.route))),
       ].map((format) => ({ label: format, value: format })),
     [debug.items],
   );
@@ -932,7 +944,7 @@ const Debug = () => {
   const filteredItems = useMemo(
     () =>
       debug.items.filter((item) => {
-        const format = getResponseFormat(item.route);
+        const format = getDownstreamFormat(item.route);
         const credential = item.credentialFilename ?? EMPTY_FILTER_VALUE;
         const model = item.model ?? EMPTY_FILTER_VALUE;
         const requestKey = item.requestKey ?? EMPTY_FILTER_VALUE;
@@ -1152,25 +1164,25 @@ const Debug = () => {
                         ) : (
                           <>
                             <RawDebugSection
-                              format={getResponseFormat(item.route)}
+                              format={getDownstreamFormat(item.route)}
                               step={1}
                               title={debugText('request')}
                               value={item.requestBody}
                             />
                             <StructuredUpstreamRequest
-                              format={getResponseFormat(item.route)}
+                              format={getUpstreamFormat(item.upstreamRequest)}
                               step={2}
                               title={debugText('upstreamRequest')}
                               value={item.upstreamRequest?.body}
                             />
                             <StructuredResponse
-                              format={getResponseFormat(item.route)}
+                              format={getUpstreamFormat(item.upstreamRequest)}
                               step={3}
                               title={debugText('upstreamResponse')}
                               value={item.upstreamResponse?.body}
                             />
                             <StructuredResponse
-                              format={getResponseFormat(item.route)}
+                              format={getDownstreamFormat(item.route)}
                               step={4}
                               title={debugText('response')}
                               value={item.transformedResponse?.body}
