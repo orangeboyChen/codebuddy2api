@@ -3,18 +3,10 @@ layout: home
 
 hero:
   name: CodeBuddy2API
-  text: CodeBuddy API 代理服务
   tagline: 自托管 CodeBuddy，统一管理凭据、密钥和用量。
   image:
     src: /codebuddy-dashboard.png
     alt: CodeBuddy 管理界面
-  actions:
-    - theme: brand
-      text: 开始使用
-      link: /guide/quick-start
-    - theme: alt
-      text: 查看 GitHub
-      link: https://github.com/orangeboyChen/codebuddy2api
 
 features:
   - title: 多协议兼容
@@ -24,3 +16,9 @@ features:
   - title: 灵活存储
     details: 默认零配置文件存储，也支持 SQLite 和 PostgreSQL。
 ---
+
+## CodeBuddy API 代理服务
+
+自托管 CodeBuddy，统一管理凭据、密钥和用量。
+
+[开始使用](/guide/quick-start)

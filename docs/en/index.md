@@ -3,18 +3,10 @@ layout: home
 
 hero:
   name: CodeBuddy2API
-  text: CodeBuddy API proxy service
   tagline: Self-host CodeBuddy and manage credentials, keys, and usage.
   image:
     src: /codebuddy-dashboard.png
     alt: CodeBuddy admin console
-  actions:
-    - theme: brand
-      text: Get started
-      link: /en/guide/quick-start
-    - theme: alt
-      text: View on GitHub
-      link: https://github.com/orangeboyChen/codebuddy2api
 
 features:
   - title: Compatible APIs
@@ -24,3 +16,9 @@ features:
   - title: Flexible storage
     details: Zero-config file storage, SQLite for single instances, and PostgreSQL for multiple instances.
 ---
+
+## CodeBuddy API proxy service
+
+Self-host CodeBuddy and manage credentials, keys, and usage.
+
+[Get started](/en/guide/quick-start)
