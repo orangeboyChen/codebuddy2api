@@ -1085,11 +1085,6 @@ const mapChatUsageToResponses = (usage: unknown): Record<string, unknown> => {
     };
     total_tokens?: unknown;
   };
-  // Chat usage is the single source of truth for both shapes. Keep the
-  // Responses counters faithful to it so clients never see zeroed metrics.
-  const inputTokens = toResponsesUsageNumber(
-    value.prompt_tokens ?? value.prompt_cache_miss_tokens,
-  );
   const outputTokens = toResponsesUsageNumber(value.completion_tokens);
   const cachedTokens = toResponsesUsageNumber(
     value.prompt_tokens_details?.cached_tokens ??
@@ -1106,6 +1101,17 @@ const mapChatUsageToResponses = (usage: unknown): Record<string, unknown> => {
     value.completion_tokens_details?.reasoning_tokens ??
       value.completion_thinking_tokens,
   );
+  // Chat usage is the single source of truth for both shapes. Keep the
+  // Responses counters faithful to it so clients never see zeroed metrics.
+  // prompt_tokens already covers its cached and created subsets, so the
+  // split counters are only summed when prompt_tokens is missing. Otherwise
+  // cached tokens would exceed the reported input total.
+  const inputTokens = toResponsesUsageNumber(
+    value.prompt_tokens ??
+      toResponsesUsageNumber(value.prompt_cache_miss_tokens) +
+        cachedTokens +
+        cacheCreationTokens,
+  );
 
   return {
     input_tokens: inputTokens,
@@ -1113,8 +1119,7 @@ const mapChatUsageToResponses = (usage: unknown): Record<string, unknown> => {
     output_tokens: outputTokens,
     output_tokens_details: { reasoning_tokens: reasoningTokens },
     total_tokens:
-      toResponsesUsageNumber(value.total_tokens) ||
-      inputTokens + outputTokens + cacheCreationTokens,
+      toResponsesUsageNumber(value.total_tokens) || inputTokens + outputTokens,
   };
 };
 

@@ -417,6 +417,70 @@ describe('Responses memory bounds', () => {
     });
   });
 
+  it('does not double-count cache creation in the fallback total', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'derived totals' } }],
+          usage: {
+            completion_tokens: 3,
+            prompt_tokens: 10,
+            prompt_tokens_details: { cache_creation_tokens: 2 },
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'derive totals',
+      model: 'gpt-5.5',
+    });
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    // prompt_tokens already includes cache creation, so it must not be
+    // added again when computing the fallback total.
+    expect(payload.usage).toEqual({
+      input_tokens: 10,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 3,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 13,
+    });
+  });
+
+  it('sums split cache counters when upstream omits prompt_tokens', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'split counters' } }],
+          usage: {
+            completion_tokens: 506,
+            prompt_cache_hit_tokens: 281408,
+            prompt_cache_miss_tokens: 326,
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'split counters',
+      model: 'gpt-5.5',
+    });
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    // Without prompt_tokens, the split counters must be summed so cached
+    // tokens never exceed the reported input total.
+    expect(payload.usage).toEqual({
+      input_tokens: 281734,
+      input_tokens_details: { cached_tokens: 281408 },
+      output_tokens: 506,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 282240,
+    });
+  });
+
   it('bounds incomplete SSE frames in every proxy stream', async () => {
     const oversizedFrame = 'x'.repeat(1_000_001);
     const fetchMock = vi
