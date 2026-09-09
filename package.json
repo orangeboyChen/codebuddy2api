@@ -46,7 +46,7 @@
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.2",
     "@commitlint/types": "^21.2.0",
-    "@eslint/compat": "^2.1.0",
+    "@eslint/compat": "^2.1.1",
     "@next/eslint-plugin-next": "^16.3.3",
     "@playwright/test": "^1.55.0",
     "@tailwindcss/postcss": "^4.3.3",
