@@ -1046,6 +1046,83 @@ const normalizeTranscriptMessageToolNames = (
   });
 };
 
+const toResponsesUsageNumber = (value: unknown): number => {
+  const numeric =
+    typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
+
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return 0;
+  }
+
+  return numeric;
+};
+
+const mapChatUsageToResponses = (usage: unknown): Record<string, unknown> => {
+  if (!usage || typeof usage !== 'object') {
+    return {
+      input_tokens: 0,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 0,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 0,
+    };
+  }
+
+  const value = usage as {
+    cache_creation_input_tokens?: unknown;
+    cache_read_input_tokens?: unknown;
+    completion_tokens?: unknown;
+    completion_tokens_details?: { reasoning_tokens?: unknown };
+    completion_thinking_tokens?: unknown;
+    input_tokens_details?: { cached_tokens?: unknown };
+    prompt_cache_hit_tokens?: unknown;
+    prompt_cache_miss_tokens?: unknown;
+    prompt_cache_write_tokens?: unknown;
+    prompt_tokens?: unknown;
+    prompt_tokens_details?: {
+      cache_creation_tokens?: unknown;
+      cached_tokens?: unknown;
+    };
+    total_tokens?: unknown;
+  };
+  const outputTokens = toResponsesUsageNumber(value.completion_tokens);
+  const cachedTokens = toResponsesUsageNumber(
+    value.prompt_tokens_details?.cached_tokens ??
+      value.input_tokens_details?.cached_tokens ??
+      value.cache_read_input_tokens ??
+      value.prompt_cache_hit_tokens,
+  );
+  const cacheCreationTokens = toResponsesUsageNumber(
+    value.prompt_tokens_details?.cache_creation_tokens ??
+      value.cache_creation_input_tokens ??
+      value.prompt_cache_write_tokens,
+  );
+  const reasoningTokens = toResponsesUsageNumber(
+    value.completion_tokens_details?.reasoning_tokens ??
+      value.completion_thinking_tokens,
+  );
+  // Chat usage is the single source of truth for both shapes. Keep the
+  // Responses counters faithful to it so clients never see zeroed metrics.
+  // prompt_tokens already covers its cached and created subsets, so the
+  // split counters are only summed when prompt_tokens is missing. Otherwise
+  // cached tokens would exceed the reported input total.
+  const inputTokens = toResponsesUsageNumber(
+    value.prompt_tokens ??
+      toResponsesUsageNumber(value.prompt_cache_miss_tokens) +
+        cachedTokens +
+        cacheCreationTokens,
+  );
+
+  return {
+    input_tokens: inputTokens,
+    input_tokens_details: { cached_tokens: cachedTokens },
+    output_tokens: outputTokens,
+    output_tokens_details: { reasoning_tokens: reasoningTokens },
+    total_tokens:
+      toResponsesUsageNumber(value.total_tokens) || inputTokens + outputTokens,
+  };
+};
+
 const mapChatResponseToResponsesPayload = async (
   accessKeyId: string | null,
   credentialFilename: string | null,
@@ -1127,7 +1204,7 @@ const mapChatResponseToResponsesPayload = async (
     model,
     output,
     output_text: outputText,
-    usage: upstreamPayload.usage ?? null,
+    usage: mapChatUsageToResponses(upstreamPayload.usage),
     metadata: defaults.metadata ?? {},
     previous_response_id: previousResponseId,
   };
@@ -1180,6 +1257,7 @@ const createResponsesEventStream = async (
   const toolCallStates = new Map<string, StreamingToolCallState>();
   const toolCallStateKeys = new Map<string, string>();
   let nextToolCallOutputIndex = 1;
+  let latestUsage: unknown = null;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
   const releaseReader = (): void => {
@@ -1405,6 +1483,7 @@ const createResponsesEventStream = async (
                 status: 'completed',
                 output_text: outputText,
                 previous_response_id: previousResponseId,
+                usage: mapChatUsageToResponses(latestUsage),
                 output: [
                   ...(outputText
                     ? [buildStreamingMessageItem('completed')]
@@ -1464,7 +1543,13 @@ const createResponsesEventStream = async (
                     tool_calls?: ChatResponseToolCall[];
                   };
                 }>;
+                usage?: unknown;
               };
+              // The final upstream chunk carries the aggregated usage, so
+              // remember it for the downstream response.completed event.
+              if (payload.usage !== undefined) {
+                latestUsage = payload.usage;
+              }
               const delta = payload.choices?.[0]?.delta;
 
               if (delta?.content) {

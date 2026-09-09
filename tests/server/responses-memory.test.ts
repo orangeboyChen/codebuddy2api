@@ -339,6 +339,148 @@ describe('Responses memory bounds', () => {
     expect(writePgSession).not.toHaveBeenCalled();
   });
 
+  it('maps Chat usage onto Responses usage for non-streamed requests', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'usage answer' } }],
+          usage: {
+            completion_tokens: 506,
+            completion_tokens_details: { reasoning_tokens: 12 },
+            prompt_tokens: 281734,
+            prompt_tokens_details: { cached_tokens: 281408 },
+            total_tokens: 282240,
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'usage please',
+      model: 'gpt-5.5',
+    });
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.usage).toEqual({
+      input_tokens: 281734,
+      input_tokens_details: { cached_tokens: 281408 },
+      output_tokens: 506,
+      output_tokens_details: { reasoning_tokens: 12 },
+      total_tokens: 282240,
+    });
+  });
+
+  it('emits mapped usage in streamed response.completed events', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        'data: {"choices":[{"delta":{"content":"usage "}}]}\n\n' +
+          'data: {"choices":[{"delta":{"content":"stream"}}]}\n\n' +
+          'data: {"choices":[],"usage":{"prompt_tokens":281734,"completion_tokens":506,"total_tokens":282240,"prompt_tokens_details":{"cached_tokens":281408},"prompt_cache_hit_tokens":281408,"prompt_cache_miss_tokens":326,"completion_tokens_details":{"reasoning_tokens":12}}}\n\n' +
+          'data: [DONE]\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'stream usage please',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+    const body = await response.text();
+
+    expect(body).toContain('"output_text":"usage stream"');
+    expect(body).toContain('"input_tokens":281734');
+    expect(body).toContain('"cached_tokens":281408');
+    expect(body).toContain('"output_tokens":506');
+    expect(body).toContain('"reasoning_tokens":12');
+    expect(body).toContain('"total_tokens":282240');
+  });
+
+  it('reports zeroed Responses usage when upstream omits usage', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeChatResponse('no usage here'),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'missing usage',
+      model: 'gpt-5.5',
+    });
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.usage).toEqual({
+      input_tokens: 0,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 0,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 0,
+    });
+  });
+
+  it('does not double-count cache creation in the fallback total', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'derived totals' } }],
+          usage: {
+            completion_tokens: 3,
+            prompt_tokens: 10,
+            prompt_tokens_details: { cache_creation_tokens: 2 },
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'derive totals',
+      model: 'gpt-5.5',
+    });
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    // prompt_tokens already includes cache creation, so it must not be
+    // added again when computing the fallback total.
+    expect(payload.usage).toEqual({
+      input_tokens: 10,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 3,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 13,
+    });
+  });
+
+  it('sums split cache counters when upstream omits prompt_tokens', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'split counters' } }],
+          usage: {
+            completion_tokens: 506,
+            prompt_cache_hit_tokens: 281408,
+            prompt_cache_miss_tokens: 326,
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'split counters',
+      model: 'gpt-5.5',
+    });
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    // Without prompt_tokens, the split counters must be summed so cached
+    // tokens never exceed the reported input total.
+    expect(payload.usage).toEqual({
+      input_tokens: 281734,
+      input_tokens_details: { cached_tokens: 281408 },
+      output_tokens: 506,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 282240,
+    });
+  });
+
   it('bounds incomplete SSE frames in every proxy stream', async () => {
     const oversizedFrame = 'x'.repeat(1_000_001);
     const fetchMock = vi
