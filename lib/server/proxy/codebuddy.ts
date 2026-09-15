@@ -2580,6 +2580,12 @@ const fetchChatCompletion = async ({
   debugTrace?: DebugTrace;
   request: NextRequest;
   resolvedContext: ProxyContext;
+  /**
+   * Whether the caller wants an SSE stream back. Upstream is always asked to
+   * stream regardless — it rejects `stream: false` with code 11101 — so this
+   * only chooses between passing the stream through and buffering it into a
+   * single JSON payload.
+   */
   stream: boolean;
   upstreamBody?: ChatRequestBody;
   usageRoute: string;
@@ -2642,6 +2648,8 @@ const fetchChatCompletion = async ({
     });
   }
 
+  // Upstream only accepts `stream: true`, so a non-streaming caller is served
+  // by buffering the SSE response and folding it into a single JSON payload.
   const contentType = upstreamResponse.headers.get('content-type') ?? '';
 
   if (contentType.toLowerCase().includes('application/json')) {
@@ -2707,19 +2715,21 @@ export const proxyChatCompletions = async (
     // the whole conversation through a different protocol for each iteration.
     if (resolvedContext.preferences.upstreamProtocol === 'chat') {
       const webSearch = await executeWebSearchLoop({
-        body: { ...upstreamBody, stream: false },
+        body: upstreamBody,
         callUpstream: (loopBody) =>
           fetchChatCompletion({
             body: loopBody,
             debugTrace,
             request,
             resolvedContext,
-            // Buffered: the loop needs complete tool calls before it can act.
+            // Upstream rejects `stream: false` outright (code 11101), so the
+            // request always streams and the SSE response is buffered into a
+            // single payload the loop can inspect for tool calls.
             stream: false,
             // Already normalized, so pass it straight through; re-running
             // buildUpstreamBody each iteration would re-apply prompt cache
             // markers to the appended tool results.
-            upstreamBody: loopBody,
+            upstreamBody: { ...loopBody, stream: true },
             usageRoute,
           }),
       });
