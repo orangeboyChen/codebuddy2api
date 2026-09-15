@@ -4,6 +4,11 @@ import { getDefaultModel } from '../domain/config';
 import type { DebugTrace } from '../domain/debug';
 
 import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
+import {
+  anthropicStreamErrorChunks,
+  createStreamCloser,
+  toUpstreamTimeoutMessage,
+} from '../shared/upstream-timeout';
 
 const MAX_STREAM_FRAME_LENGTH = 1_000_000;
 
@@ -831,6 +836,7 @@ const mapOpenAIStreamToAnthropicSSE = (
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
   let streamRejected = false;
+  const closer = createStreamCloser();
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
@@ -848,7 +854,13 @@ const mapOpenAIStreamToAnthropicSSE = (
         enqueueEvent({
           type: 'error',
           error: {
-            type: 'invalid_request_error',
+            // An oversized frame is a malformed stream, but an upstream
+            // deadline is the server failing — and `api_error` is the type
+            // clients treat as retryable. Reporting a timeout as
+            // invalid_request_error would tell them never to retry.
+            type: message.includes('did not produce output')
+              ? 'api_error'
+              : 'invalid_request_error',
             message,
           },
         });
@@ -928,10 +940,27 @@ const mapOpenAIStreamToAnthropicSSE = (
         }
       };
 
-      void pump();
+      void pump().catch((error) => {
+        if (cancelled) return;
+        const timeoutMessage = toUpstreamTimeoutMessage(error);
+
+        if (timeoutMessage === null) {
+          closer.mark();
+          controller.error(error);
+          return;
+        }
+
+        void reader?.cancel().then(
+          () => undefined,
+          () => undefined,
+        );
+        releaseReader();
+        closer.fail(controller, anthropicStreamErrorChunks(timeoutMessage));
+      });
     },
     async cancel(reason): Promise<void> {
       cancelled = true;
+      closer.mark();
       try {
         await reader?.cancel(reason);
       } finally {

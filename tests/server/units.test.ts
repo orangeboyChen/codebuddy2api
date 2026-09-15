@@ -57,9 +57,12 @@ import {
   resetResponseSessions,
   translateResponsesToolsToChat,
 } from '@/lib/server/proxy/responses';
+import { handleMessagesRequest } from '@/lib/server/proxy/anthropic';
 import {
   getActiveConfig,
+  getApiFirstDeltaTimeoutMs,
   getDefaultModel,
+  getSettingLabels,
   updateSettings,
 } from '@/lib/server/domain/config';
 import { getRequestHeaderMap } from '@/lib/server/shared/http';
@@ -5558,6 +5561,518 @@ describe('server units', () => {
     await expect(getActiveConfig()).resolves.toMatchObject({
       CODEBUDDY_ADMIN_PASSKEY_RP_ID: 'admin.example.com',
       CODEBUDDY_AUTH_MODE: 'token',
+    });
+  });
+
+  it('defaults the API timeout to five minutes', async () => {
+    await updateSettings({});
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_API_TIMEOUT_MINUTES: 5,
+    });
+  });
+
+  it('converts the API timeout from minutes to milliseconds', async () => {
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 2 });
+
+    await expect(getApiFirstDeltaTimeoutMs()).resolves.toBe(120_000);
+  });
+
+  it('parses a numeric API timeout supplied as a string', async () => {
+    // The console submits every field as text, so a number that arrives as a
+    // string still has to become a number rather than being stringified.
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: '1.5' });
+
+    const config = await getActiveConfig();
+
+    expect(config.CODEBUDDY_API_TIMEOUT_MINUTES).toBe(1.5);
+  });
+
+  it('clamps an out-of-range API timeout instead of storing it', async () => {
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 10_000 });
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_API_TIMEOUT_MINUTES: 1440,
+    });
+
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0 });
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_API_TIMEOUT_MINUTES: 0.1,
+    });
+  });
+
+  it('falls back to the default for a non-numeric API timeout', async () => {
+    // A NaN timeout would silently disable the deadline, so it has to fall back.
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 'soon' });
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_API_TIMEOUT_MINUTES: 5,
+    });
+  });
+
+  it('reads the API timeout from the environment', async () => {
+    // beforeEach wipes the persisted config, so the env value is the only
+    // thing that can be in play here.
+    process.env.CODEBUDDY_API_TIMEOUT_MINUTES = '3';
+
+    try {
+      await expect(getActiveConfig()).resolves.toMatchObject({
+        CODEBUDDY_API_TIMEOUT_MINUTES: 3,
+      });
+    } finally {
+      delete process.env.CODEBUDDY_API_TIMEOUT_MINUTES;
+    }
+  });
+
+  it('keeps coercing non-numeric settings to strings', async () => {
+    await updateSettings({ CODEBUDDY_LOG_LEVEL: true });
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_LOG_LEVEL: 'true',
+    });
+  });
+
+  it('labels the API timeout in every supported locale', () => {
+    expect(
+      getSettingLabels('en-US').CODEBUDDY_API_TIMEOUT_MINUTES,
+    ).toBeTruthy();
+    expect(
+      getSettingLabels('ja-JP').CODEBUDDY_API_TIMEOUT_MINUTES,
+    ).toBeTruthy();
+    expect(
+      getSettingLabels('zh-CN').CODEBUDDY_API_TIMEOUT_MINUTES,
+    ).toBeTruthy();
+  });
+
+  describe('API timeout enforcement', () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'timeout-token',
+        user_id: 'timeout@example.com',
+      },
+      filePath: '/tmp/timeout.json',
+      filename: 'timeout.json',
+    });
+
+    const chatRequest = () =>
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      });
+
+    /** An upstream that never settles, so the deadline is what ends the wait. */
+    const hangUntilAborted = () =>
+      vi.spyOn(globalThis, 'fetch').mockImplementation(
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(init.signal?.reason);
+            });
+          }),
+      );
+
+    it('aborts a chat request that produces no response in time', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      hangUntilAborted();
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Take forever', role: 'user' }],
+          model: 'glm-5.1',
+        },
+        context,
+      );
+
+      expect(response.status).toBe(504);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: 'Upstream CodeBuddy request timed out' },
+      });
+    });
+
+    it('fails a stalled stream with an OpenAI error chunk', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      // Headers arrive immediately, but the body only sends keepalives, so the
+      // first delta never comes and the streaming deadline has to fire.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Stall', role: 'user' }],
+          model: 'glm-5.1',
+          stream: true,
+        },
+        context,
+      );
+
+      const text = await response.text();
+
+      expect(text).toContain('"error"');
+      expect(text).toContain('did not produce output');
+      expect(text).toContain('data: [DONE]');
+    });
+
+    it('surfaces the timeout as an Anthropic error event', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      // Headers arrive, then nothing: the Messages route must report the
+      // timeout through its own protocol rather than a bare transport error.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+        {
+          max_tokens: 16,
+          messages: [{ content: 'Stall', role: 'user' }],
+          model: 'glm-5.1',
+          stream: true,
+        },
+      );
+
+      const text = await response.text();
+
+      expect(text).toContain('event: error');
+      expect(text).toContain('"type":"api_error"');
+    });
+
+    it('surfaces the timeout as a Responses error event', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await handleResponsesRequest(
+        makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+        {
+          input: 'Stall',
+          model: 'glm-5.1',
+          stream: true,
+        },
+      );
+
+      const text = await response.text();
+
+      expect(text).toContain('event: response.error');
+      expect(text).toContain('did not produce output');
+    });
+
+    it('stays silent when the client cancels during a stalled stream', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      let upstreamCancelled = false;
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+            cancel() {
+              upstreamCancelled = true;
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Stall', role: 'user' }],
+          model: 'glm-5.1',
+          stream: true,
+        },
+        context,
+      );
+
+      // Cancelling first means the pump must not report a timeout at all.
+      await response.body?.cancel('client disconnected');
+
+      expect(upstreamCancelled).toBe(true);
+    });
+
+    it('propagates a non-timeout stream failure through the Anthropic route', async () => {
+      // A reader that rejects with something other than a timeout must fall
+      // through to the generic error path rather than being reshaped.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+            pull() {
+              throw new Error('socket exploded');
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+        {
+          max_tokens: 16,
+          messages: [{ content: 'Break', role: 'user' }],
+          model: 'glm-5.1',
+          stream: true,
+        },
+      );
+
+      // A non-timeout failure stays a transport error instead of being
+      // reshaped into the protocol's timeout event.
+      await expect(response.text()).rejects.toThrow('socket exploded');
+    });
+
+    it('propagates a non-timeout stream failure through the Responses route', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+            pull() {
+              throw new Error('socket exploded');
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await handleResponsesRequest(
+        makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+        { input: 'Break', model: 'glm-5.1', stream: true },
+      );
+
+      await expect(response.text()).rejects.toThrow('socket exploded');
+    });
+
+    it('stays silent when a native Responses stream is cancelled while stalled', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      // A native Responses upstream (not the chat pipeline) exercises the
+      // pass-through stream, which has its own cancellation path.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await proxyResponsesUpstream(
+        chatRequest(),
+        { input: 'Stall', model: 'glm-5.1', stream: true },
+        context,
+      );
+
+      const reader = response.body?.getReader();
+      // Read once so the pump is mid-flight, then cancel: the pending read
+      // rejects and the pump's catch sees `cancelled` already set.
+      await reader?.read();
+      await reader?.cancel('client disconnected');
+
+      expect(response.status).toBe(200);
+    });
+
+    it('stays silent when an Anthropic stream is cancelled while stalled', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      // The upstream stalls after the first keepalive, so the pump is blocked
+      // on a read when the client goes away.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+        {
+          max_tokens: 16,
+          messages: [{ content: 'Stall', role: 'user' }],
+          model: 'glm-5.1',
+          stream: true,
+        },
+      );
+
+      const anReader = response.body?.getReader();
+      await anReader?.read();
+      // The deadline is still pending, so cancelling now makes the pump's
+      // catch observe `cancelled` before it can reshape anything.
+      await anReader?.cancel('client disconnected');
+
+      expect(response.status).toBe(200);
+    });
+
+    it('stays silent when a Responses stream is cancelled while stalled', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await handleResponsesRequest(
+        makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+        { input: 'Stall', model: 'glm-5.1', stream: true },
+      );
+
+      // Cancelling first means no timeout should be reported downstream.
+      await response.body?.cancel('client disconnected');
+
+      expect(response.status).toBe(200);
+    });
+
+    it('returns a 504 when the Responses upstream never answers', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      hangUntilAborted();
+
+      const response = await proxyResponsesUpstream(
+        chatRequest(),
+        { input: 'Take forever', model: 'glm-5.1' },
+        context,
+      );
+
+      expect(response.status).toBe(504);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: 'Upstream CodeBuddy request timed out' },
+      });
+    });
+
+    it('returns a 504 for the Responses upstream behind the chat route', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      hangUntilAborted();
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Take forever', role: 'user' }],
+          model: 'glm-5.1',
+        },
+        createProxyContextFromCredential({
+          data: {
+            bearer_token: 'responses-token',
+            upstream_protocol: 'responses',
+            user_id: 'responses@example.com',
+          },
+          filePath: '/tmp/responses.json',
+          filename: 'responses.json',
+        }),
+      );
+
+      expect(response.status).toBe(504);
+    });
+
+    it('reports a non-Error upstream failure through the Responses route', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('boom');
+
+      const response = await proxyResponsesUpstream(
+        chatRequest(),
+        { model: 'glm-5.1' },
+        context,
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: 'Unexpected upstream error' },
+      });
+    });
+
+    it('falls back to a generic message when an upstream failure is not an Error', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('boom');
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Explode', role: 'user' }],
+          model: 'glm-5.1',
+        },
+        context,
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: 'Unexpected upstream error' },
+      });
+    });
+
+    it('lets a stream that produced a first delta continue past the deadline', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      // A delta arrives up front, so the long tail that follows must not be cut
+      // off even though it takes far longer than the configured window.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            async start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+                ),
+              );
+              await new Promise((resolve) => setTimeout(resolve, 400));
+              controller.enqueue(
+                new TextEncoder().encode(
+                  'data: {"choices":[{"delta":{"content":" there"}}]}\n\n',
+                ),
+              );
+              controller.close();
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Stream then lag', role: 'user' }],
+          model: 'glm-5.1',
+          stream: true,
+        },
+        context,
+      );
+
+      const text = await response.text();
+
+      // The deadline is 6s of wall time scaled to 0.1 minutes = 6s, but the
+      // point is that the second chunk lands despite the delay.
+      expect(text).toContain('"hi"');
+      expect(text).toContain('" there"');
+      expect(text).not.toContain('timed out');
     });
   });
 });

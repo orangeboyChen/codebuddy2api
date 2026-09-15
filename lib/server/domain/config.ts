@@ -17,7 +17,18 @@ export interface RuntimeConfig {
   CODEBUDDY_AUTH_MODE: 'auto' | 'token';
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa' | 'internal' | 'public';
   CODEBUDDY_LOG_LEVEL: string;
+  CODEBUDDY_API_TIMEOUT_MINUTES: number;
 }
+
+/**
+ * Budget for a proxied request to produce its first delta, in minutes. It is
+ * deliberately generous: a slow model that is thinking still has to clear it,
+ * while a hung upstream is cut loose instead of holding a connection forever.
+ */
+export const DEFAULT_API_TIMEOUT_MINUTES = 5;
+export const MIN_API_TIMEOUT_MINUTES = 0.1;
+export const MAX_API_TIMEOUT_MINUTES = 1440;
+const MINUTE_MS = 60_000;
 
 export type ConfigLabelLocale = 'zh-CN' | 'en-US' | 'ja-JP';
 
@@ -29,6 +40,7 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_AUTH_MODE: 'auto',
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa',
   CODEBUDDY_LOG_LEVEL: 'INFO',
+  CODEBUDDY_API_TIMEOUT_MINUTES: DEFAULT_API_TIMEOUT_MINUTES,
 };
 let configMutationQueue: Promise<void> = Promise.resolve();
 
@@ -42,6 +54,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_AUTH_MODE: 'Authentication mode (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: 'Network environment (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'Log level',
+    CODEBUDDY_API_TIMEOUT_MINUTES: 'API timeout, first token (minutes)',
   },
   'ja-JP': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy API エンドポイント',
@@ -49,6 +62,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_AUTH_MODE: '認証モード (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: 'ネットワーク環境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'ログレベル',
+    CODEBUDDY_API_TIMEOUT_MINUTES: 'API タイムアウト・最初のトークン (分)',
   },
   'zh-CN': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方 API 端点',
@@ -56,6 +70,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_AUTH_MODE: '认证模式 (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: '网络环境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: '日志级别',
+    CODEBUDDY_API_TIMEOUT_MINUTES: 'API 超时时间,首个 token(分钟)',
   },
 };
 
@@ -85,6 +100,26 @@ const enqueueConfigMutation = async <T>(
   return operation;
 };
 
+/**
+ * Numeric settings arrive as strings from the console and as strings from
+ * `process.env`, so they are coerced and clamped rather than rejected: a
+ * mistyped value should fall back to a sane bound instead of failing the save
+ * or, worse, disabling the timeout by parsing to NaN.
+ */
+const normalizeNumericValue = (value: unknown, fallback: number): number => {
+  const parsed =
+    typeof value === 'number' ? value : Number(String(value).trim());
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(
+    Math.max(parsed, MIN_API_TIMEOUT_MINUTES),
+    MAX_API_TIMEOUT_MINUTES,
+  );
+};
+
 const normalizeValue = <K extends keyof RuntimeConfig>(
   key: K,
   value: unknown,
@@ -93,6 +128,10 @@ const normalizeValue = <K extends keyof RuntimeConfig>(
 
   if (value === undefined || value === null || value === '') {
     return fallback;
+  }
+
+  if (typeof fallback === 'number') {
+    return normalizeNumericValue(value, fallback) as RuntimeConfig[K];
   }
 
   if (typeof fallback === 'string') {
@@ -128,6 +167,11 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
       'CODEBUDDY_LOG_LEVEL',
       persisted.CODEBUDDY_LOG_LEVEL ?? process.env.CODEBUDDY_LOG_LEVEL,
     ),
+    CODEBUDDY_API_TIMEOUT_MINUTES: normalizeValue(
+      'CODEBUDDY_API_TIMEOUT_MINUTES',
+      persisted.CODEBUDDY_API_TIMEOUT_MINUTES ??
+        process.env.CODEBUDDY_API_TIMEOUT_MINUTES,
+    ),
   };
 };
 
@@ -157,6 +201,17 @@ export const updateSettings = async (
 
     return merged;
   });
+};
+
+/**
+ * Milliseconds a proxied request may spend before its first delta arrives.
+ * Resolved per request so a change in the console takes effect immediately
+ * instead of requiring a restart.
+ */
+export const getApiFirstDeltaTimeoutMs = async (): Promise<number> => {
+  const config = await getActiveConfig();
+
+  return config.CODEBUDDY_API_TIMEOUT_MINUTES * MINUTE_MS;
 };
 
 export const getCodeBuddyApiEndpoint = async (): Promise<string> => {
