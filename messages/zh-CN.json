@@ -433,6 +433,7 @@
       "loginDescription": "使用内置管理员登录建立 session cookie，然后在控制台里管理凭证、Access Key 与 passkey。"
     },
     "settingsPanel": {
+      "apiTimeoutHint": "从发起请求开始计时,直到上游返回第一个 delta。一旦开始输出,即使回答较长也会允许其完成。支持小数分钟,取值范围 0.1~1440。",
       "clearUsageEvents": "清空用量统计缓存",
       "confirmClearUsageEvents": "确认清空所有已保存的用量统计记录吗？",
       "helper": "Passkey RP ID 通常应与最终访问域名一致。HTTPS 站点可直接使用；localhost 在现代浏览器中通常可用于本地调试，其它非 HTTPS 域名通常无法使用 passkey。",

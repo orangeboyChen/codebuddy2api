@@ -19,6 +19,12 @@ import {
 import { resolveRequestAccessKey } from './auth';
 import { createErrorResponse } from '../shared/http';
 import {
+  createStreamCloser,
+  readTimeoutFrame,
+  responsesStreamErrorChunks,
+  toUpstreamTimeoutMessage,
+} from '../shared/upstream-timeout';
+import {
   deleteStorageJson,
   getStorageBackendMeta,
   listStorageJson,
@@ -1297,6 +1303,7 @@ const createResponsesEventStream = async (
   let latestUsage: unknown = null;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
+  const closer = createStreamCloser();
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
@@ -1571,6 +1578,20 @@ const createResponsesEventStream = async (
               continue;
             }
 
+            // The upstream here is the chat pipeline, which reports a deadline
+            // as a terminal error chunk and closes cleanly. Surfacing it keeps
+            // the client from seeing an empty successful response.
+            const upstreamError = readTimeoutFrame(frame);
+
+            if (upstreamError !== null) {
+              streamRejected = true;
+              enqueueEvent({
+                type: 'response.error',
+                error: { message: upstreamError },
+              });
+              break;
+            }
+
             try {
               const payload = JSON.parse(raw) as {
                 choices?: Array<{
@@ -1734,10 +1755,28 @@ const createResponsesEventStream = async (
         }
       };
 
-      void pump();
+      void pump().catch((error) => {
+        if (cancelled) return;
+        const timeoutMessage = toUpstreamTimeoutMessage(error);
+
+        if (timeoutMessage === null) {
+          closer.mark();
+          controller.error(error);
+          return;
+        }
+
+        streamRejected = true;
+        void reader?.cancel().then(
+          () => undefined,
+          () => undefined,
+        );
+        releaseReader();
+        closer.fail(controller, responsesStreamErrorChunks(timeoutMessage));
+      });
     },
     async cancel(reason): Promise<void> {
       cancelled = true;
+      closer.mark();
       try {
         await reader?.cancel(reason);
       } finally {

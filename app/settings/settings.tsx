@@ -88,6 +88,10 @@ const settingsSelectOptions: Record<
   ],
 };
 
+const settingsPlaceholders: Record<string, string> = {
+  CODEBUDDY_API_TIMEOUT_MINUTES: '5',
+};
+
 /**
  * Settings rendered as a switch instead of a text input. `CODEBUDDY_WEB_SEARCH_ENABLED`
  * is the only boolean in the config today; the server hides its label when no
@@ -100,14 +104,14 @@ const isTruthySetting = (value: SettingsValue): boolean => {
 };
 
 const SettingField = ({
-  description,
+  hint,
   label,
   onChange,
   placeholder,
   settingKey,
   value,
 }: {
-  description?: string;
+  hint?: string;
   label: string;
   onChange: (value: string) => void;
   placeholder?: string;
@@ -126,9 +130,7 @@ const SettingField = ({
           >
             {label}
           </label>
-          {description ? (
-            <div className="text-sm text-secondary">{description}</div>
-          ) : null}
+          {hint ? <div className="text-sm text-secondary">{hint}</div> : null}
         </div>
         <Switch
           checked={isTruthySetting(value)}
@@ -164,6 +166,7 @@ const SettingField = ({
           value={String(value ?? '')}
         />
       )}
+      {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
     </div>
   );
 };
@@ -423,10 +426,12 @@ const Settings = () => {
           ) : (
             Object.entries(settings.labels).map(([settingKey, label]) => (
               <SettingField
-                description={
-                  settingKey === 'CODEBUDDY_WEB_SEARCH_ENABLED'
-                    ? translations('settingsPanel.webSearchDescription')
-                    : undefined
+                hint={
+                  settingKey === 'CODEBUDDY_API_TIMEOUT_MINUTES'
+                    ? translations('settingsPanel.apiTimeoutHint')
+                    : settingKey === 'CODEBUDDY_WEB_SEARCH_ENABLED'
+                      ? translations('settingsPanel.webSearchDescription')
+                      : undefined
                 }
                 key={settingKey}
                 label={label}
@@ -434,7 +439,7 @@ const Settings = () => {
                 placeholder={
                   settingKey === 'CODEBUDDY_ADMIN_PASSKEY_RP_ID'
                     ? translations('settingsPanel.passkeyRpIdPlaceholder')
-                    : undefined
+                    : settingsPlaceholders[settingKey]
                 }
                 settingKey={settingKey}
                 value={settings.values[settingKey] ?? ''}
