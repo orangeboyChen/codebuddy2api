@@ -20,7 +20,10 @@ import {
   createSearxngProviderFromEnv,
 } from '@/lib/server/search/providers/searxng';
 import { buildWebSearchToolDefinition } from '@/lib/server/search/tool';
-import { proxyChatCompletions } from '@/lib/server/proxy/codebuddy';
+import {
+  createProxyContextFromCredential,
+  proxyChatCompletions,
+} from '@/lib/server/proxy/codebuddy';
 import {
   addCredential,
   resetCredentialRuntimeState,
@@ -1767,6 +1770,108 @@ describe('server local web search', () => {
 
       expect(first.model).toBe('fallback-model');
       expect(String(first.id)).toMatch(/^chatcmpl_/);
+    });
+  });
+
+  describe('upstream streaming contract', () => {
+    it('always asks upstream to stream and buffers the response', async () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+
+      const upstreamBodies: Array<Record<string, unknown>> = [];
+      let call = 0;
+
+      const fetchMock = vi.fn(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+
+          if (url.includes('searx.test')) {
+            return makeJsonResponse({
+              results: [{ content: 'snip', title: 'T', url: 'https://t.test' }],
+            });
+          }
+
+          call += 1;
+          upstreamBodies.push(JSON.parse(String(init?.body ?? '{}')));
+
+          // Upstream only ever speaks SSE.
+          const chunk =
+            call === 1
+              ? {
+                  choices: [
+                    {
+                      delta: {
+                        tool_calls: [
+                          {
+                            id: 'call_1',
+                            index: 0,
+                            type: 'function',
+                            function: {
+                              arguments: '{"query":"q1"}',
+                              name: 'web_search',
+                            },
+                          },
+                        ],
+                      },
+                      finish_reason: 'tool_calls',
+                    },
+                  ],
+                }
+              : {
+                  choices: [
+                    { delta: { content: 'Done.' }, finish_reason: 'stop' },
+                  ],
+                };
+
+          return new Response(
+            `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`,
+            {
+              status: 200,
+              headers: {
+                'Content-Type': 'text/event-stream; charset=utf-8',
+              },
+            },
+          );
+        },
+      );
+
+      vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          stream: false,
+          tools: [{ type: 'web_search_preview' }],
+        },
+        callUpstream: (loopBody) =>
+          proxyChatCompletions(
+            new NextRequest('http://localhost/v1/chat/completions', {
+              method: 'POST',
+            }),
+            loopBody,
+            createProxyContextFromCredential({
+              data: {
+                bearer_token: 'stream-token',
+                user_id: 'stream@example.com',
+              },
+              filePath: '/tmp/stream.json',
+              filename: 'stream.json',
+            }),
+          ),
+      });
+
+      // Upstream must never receive stream:false — it answers 11101.
+      expect(upstreamBodies.length).toBeGreaterThan(0);
+      for (const body of upstreamBodies) {
+        expect(body.stream).toBe(true);
+      }
+
+      // The buffered result is still a normal JSON completion for the loop.
+      const payload = (await result!.response.json()) as {
+        choices: Array<{ message: { content: string } }>;
+      };
+      expect(payload.choices[0]?.message.content).toBe('Done.');
     });
   });
 
