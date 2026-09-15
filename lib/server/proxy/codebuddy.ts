@@ -20,6 +20,11 @@ import {
   type DebugTrace,
 } from '../domain/debug';
 import { createErrorResponse, getRequestHeaderMap } from '../shared/http';
+import {
+  type ChatCompletionPayload,
+  executeWebSearchLoop,
+  synthesizeChatCompletionStream,
+} from './web-search-loop';
 import { recordUsageEvent, type UsageSnapshot } from '../domain/usage';
 
 interface OpenAIMessage {
@@ -2496,6 +2501,128 @@ export const getModelsResponse = async (
   });
 };
 
+/**
+ * One round trip to `/v2/chat/completions`. Split out from
+ * `proxyChatCompletions` so the local web search loop can re-issue the request
+ * with tool results appended without re-deriving auth, headers, or usage
+ * recording on each iteration.
+ *
+ * Upstream is always asked to stream; `stream` only controls the shape handed
+ * back to the caller, so it must echo what the client asked for rather than
+ * being read off `upstreamBody`.
+ */
+const fetchChatCompletion = async ({
+  body,
+  debugTrace,
+  request,
+  resolvedContext,
+  stream,
+  upstreamBody: providedUpstreamBody,
+  usageRoute,
+}: {
+  body: ChatRequestBody;
+  debugTrace?: DebugTrace;
+  request: NextRequest;
+  resolvedContext: ProxyContext;
+  stream: boolean;
+  upstreamBody?: ChatRequestBody;
+  usageRoute: string;
+}): Promise<Response> => {
+  const apiEndpoint = await getCodeBuddyApiEndpoint();
+  const upstreamUrl = `${apiEndpoint}/v2/chat/completions`;
+  const upstreamHeaders = await buildUpstreamHeaders(
+    request,
+    resolvedContext.auth,
+  );
+  const upstreamBody =
+    providedUpstreamBody ?? (await buildUpstreamBody(body, resolvedContext));
+
+  setDebugUpstreamRequest(debugTrace, {
+    body: upstreamBody,
+    headers: headersToRecord(upstreamHeaders),
+    method: 'POST',
+    url: upstreamUrl,
+  });
+
+  let upstreamResponse = await fetch(upstreamUrl, {
+    method: 'POST',
+    headers: upstreamHeaders,
+    body: JSON.stringify(upstreamBody),
+    cache: 'no-store',
+  });
+
+  upstreamResponse = enqueueUpstreamResponseSnapshot(
+    debugTrace,
+    upstreamResponse,
+  );
+
+  if (!upstreamResponse.ok) {
+    const detail = await upstreamResponse.text();
+    logUpstreamFailure({
+      detail,
+      route: '/v1/chat/completions',
+      status: upstreamResponse.status,
+      url: upstreamUrl,
+    });
+    setDebugTraceError(debugTrace, detail);
+    return createErrorResponse(
+      upstreamResponse.status,
+      'Upstream CodeBuddy request failed',
+      detail,
+    );
+  }
+
+  if (stream) {
+    return normalizeStreamingResponse({
+      model: String(upstreamBody.model ?? 'unknown'),
+      proxyContext: resolvedContext,
+      route: usageRoute,
+      upstreamResponse,
+    });
+  }
+
+  const contentType = upstreamResponse.headers.get('content-type') ?? '';
+
+  if (contentType.toLowerCase().includes('application/json')) {
+    const payloadText = await upstreamResponse.text();
+    let usage: unknown = null;
+
+    try {
+      usage = (JSON.parse(payloadText) as { usage?: unknown }).usage ?? null;
+    } catch {
+      usage = null;
+    }
+
+    await recordProxyUsage({
+      model: String(upstreamBody.model ?? 'unknown'),
+      proxyContext: resolvedContext,
+      route: usageRoute,
+      usage,
+    });
+
+    return new Response(payloadText, {
+      status: upstreamResponse.status,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+    });
+  }
+
+  const aggregated = await aggregateUpstreamStream(
+    upstreamResponse,
+    String(upstreamBody.model ?? 'unknown'),
+  );
+
+  await recordProxyUsage({
+    model: aggregated.model,
+    proxyContext: resolvedContext,
+    route: usageRoute,
+    usage: aggregated.usage,
+  });
+
+  return aggregated.response;
+};
+
 export const proxyChatCompletions = async (
   request: NextRequest,
   body: ChatRequestBody,
@@ -2512,6 +2639,45 @@ export const proxyChatCompletions = async (
       context ?? (await resolveProxyContext(request, body.model));
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
     const upstreamBody = await buildUpstreamBody(body, resolvedContext);
+
+    // Server-side web search runs on the chat path only. The Responses
+    // passthrough path forwards to CodeBuddy's own /responses endpoint, where
+    // re-issuing a request with a synthesized tool result would mean replaying
+    // the whole conversation through a different protocol for each iteration.
+    if (resolvedContext.preferences.upstreamProtocol === 'chat') {
+      const webSearch = await executeWebSearchLoop({
+        body: { ...upstreamBody, stream: false },
+        callUpstream: (loopBody) =>
+          fetchChatCompletion({
+            body: loopBody,
+            debugTrace,
+            request,
+            resolvedContext,
+            // Buffered: the loop needs complete tool calls before it can act.
+            stream: false,
+            // Already normalized, so pass it straight through; re-running
+            // buildUpstreamBody each iteration would re-apply prompt cache
+            // markers to the appended tool results.
+            upstreamBody: loopBody,
+            usageRoute,
+          }),
+      });
+
+      if (webSearch) {
+        if (!webSearch.response.ok) {
+          return webSearch.response;
+        }
+
+        if (body.stream) {
+          return synthesizeChatCompletionStream(
+            (await webSearch.response.json()) as ChatCompletionPayload,
+            String(upstreamBody.model ?? 'unknown'),
+          );
+        }
+
+        return webSearch.response;
+      }
+    }
 
     if (resolvedContext.preferences.upstreamProtocol === 'responses') {
       const unsupportedOptions = getUnsupportedResponsesChatOptions(body);
@@ -2609,97 +2775,15 @@ export const proxyChatCompletions = async (
       );
     }
 
-    const apiEndpoint = await getCodeBuddyApiEndpoint();
-    const upstreamUrl = `${apiEndpoint}/v2/chat/completions`;
-    const upstreamHeaders = await buildUpstreamHeaders(
-      request,
-      resolvedContext.auth,
-    );
-
-    setDebugUpstreamRequest(debugTrace, {
-      body: upstreamBody,
-      headers: headersToRecord(upstreamHeaders),
-      method: 'POST',
-      url: upstreamUrl,
-    });
-
-    let upstreamResponse = await fetch(upstreamUrl, {
-      method: 'POST',
-      headers: upstreamHeaders,
-      body: JSON.stringify(upstreamBody),
-      cache: 'no-store',
-    });
-
-    upstreamResponse = enqueueUpstreamResponseSnapshot(
+    return fetchChatCompletion({
+      body,
       debugTrace,
-      upstreamResponse,
-    );
-
-    if (!upstreamResponse.ok) {
-      const detail = await upstreamResponse.text();
-      logUpstreamFailure({
-        detail,
-        route: '/v1/chat/completions',
-        status: upstreamResponse.status,
-        url: upstreamUrl,
-      });
-      setDebugTraceError(debugTrace, detail);
-      return createErrorResponse(
-        upstreamResponse.status,
-        'Upstream CodeBuddy request failed',
-        detail,
-      );
-    }
-
-    if (body.stream) {
-      return normalizeStreamingResponse({
-        model: String(upstreamBody.model ?? 'unknown'),
-        proxyContext: resolvedContext,
-        route: usageRoute,
-        upstreamResponse,
-      });
-    }
-
-    const contentType = upstreamResponse.headers.get('content-type') ?? '';
-
-    if (contentType.toLowerCase().includes('application/json')) {
-      const payloadText = await upstreamResponse.text();
-      let usage: unknown = null;
-
-      try {
-        usage = (JSON.parse(payloadText) as { usage?: unknown }).usage ?? null;
-      } catch {
-        usage = null;
-      }
-
-      await recordProxyUsage({
-        model: String(upstreamBody.model ?? 'unknown'),
-        proxyContext: resolvedContext,
-        route: usageRoute,
-        usage,
-      });
-
-      return new Response(payloadText, {
-        status: upstreamResponse.status,
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-        },
-      });
-    }
-
-    const aggregated = await aggregateUpstreamStream(
-      upstreamResponse,
-      String(upstreamBody.model ?? 'unknown'),
-    );
-
-    await recordProxyUsage({
-      model: aggregated.model,
-      proxyContext: resolvedContext,
-      route: usageRoute,
-      usage: aggregated.usage,
+      request,
+      resolvedContext,
+      stream: Boolean(body.stream),
+      upstreamBody,
+      usageRoute,
     });
-
-    return aggregated.response;
   } catch (error) {
     setDebugTraceError(debugTrace, error);
     logUpstreamFailure({
@@ -2779,6 +2863,7 @@ export const proxyResponsesUpstream = async (
 
     const model = String(upstreamBody.model ?? 'unknown');
     const fallbackUsage = parseUsageHeader(upstreamResponse);
+
     const contentType = upstreamResponse.headers.get('content-type') ?? '';
 
     if (contentType.toLowerCase().includes('application/json')) {

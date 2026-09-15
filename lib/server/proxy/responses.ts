@@ -3,6 +3,12 @@ import type { NextRequest } from 'next/server';
 import { getDefaultModel } from '../domain/config';
 import { getCredentialSupportedModels } from '../domain/credentials';
 import type { DebugTrace } from '../domain/debug';
+import { isLocalWebSearchConfigured } from '../search';
+import {
+  buildWebSearchToolDefinition,
+  WEB_SEARCH_TOOL_NAME,
+  WEB_SEARCH_TOOL_TYPE_PREFIX,
+} from '../search/tool';
 import {
   proxyChatCompletions,
   proxyResponsesUpstream,
@@ -436,6 +442,28 @@ const toSupportedChatTool = (
   namespace?: string,
 ): SupportedChatTool[] => {
   const toolType = typeof tool.type === 'string' ? tool.type : 'function';
+
+  // Server-side search has no function schema, so the generic branch below
+  // drops it. Emit it as a function when a local backend is configured: the
+  // proxy loop then executes it locally and folds the findings back in, which
+  // is the only way a Responses client gets search results. Gated on the
+  // backend rather than the enable toggle because that check is synchronous;
+  // the proxy strips the tool again when the toggle is off.
+  if (
+    toolType.startsWith(WEB_SEARCH_TOOL_TYPE_PREFIX) &&
+    isLocalWebSearchConfigured()
+  ) {
+    const definition = buildWebSearchToolDefinition();
+
+    return [
+      {
+        chatName: WEB_SEARCH_TOOL_NAME,
+        kind: 'function',
+        originalName: WEB_SEARCH_TOOL_NAME,
+        tool: definition,
+      },
+    ];
+  }
 
   if (toolType === 'namespace') {
     const namespaceName = typeof tool.name === 'string' ? tool.name.trim() : '';
