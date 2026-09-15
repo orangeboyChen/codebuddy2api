@@ -5957,6 +5957,46 @@ describe('server units', () => {
       expect(response.status).toBe(200);
     });
 
+    it('returns a 504 when the Responses upstream never answers', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      hangUntilAborted();
+
+      const response = await proxyResponsesUpstream(
+        chatRequest(),
+        { input: 'Take forever', model: 'glm-5.1' },
+        context,
+      );
+
+      expect(response.status).toBe(504);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: 'Upstream CodeBuddy request timed out' },
+      });
+    });
+
+    it('returns a 504 for the Responses upstream behind the chat route', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      hangUntilAborted();
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Take forever', role: 'user' }],
+          model: 'glm-5.1',
+        },
+        createProxyContextFromCredential({
+          data: {
+            bearer_token: 'responses-token',
+            upstream_protocol: 'responses',
+            user_id: 'responses@example.com',
+          },
+          filePath: '/tmp/responses.json',
+          filename: 'responses.json',
+        }),
+      );
+
+      expect(response.status).toBe(504);
+    });
+
     it('reports a non-Error upstream failure through the Responses route', async () => {
       vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('boom');
 
