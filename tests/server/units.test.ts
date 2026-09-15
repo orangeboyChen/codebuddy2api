@@ -4304,6 +4304,46 @@ describe('server units', () => {
     expect(responseState.__codebuddy2apiResponseSessionTotalBytes__).toBe(0);
   });
 
+  it('breaks out of pruning when the byte total drifts ahead of an empty store', async () => {
+    const responseState = globalThis as typeof globalThis & {
+      __codebuddy2apiResponseSessionBytes__?: Map<string, number>;
+      __codebuddy2apiResponseSessionTotalBytes__?: number;
+      __codebuddy2apiResponseSessions__?: Map<string, { createdAt: number }>;
+    };
+    resetResponseSessions();
+
+    // Simulate a total that has drifted out of step with the map: the loop
+    // would otherwise find no oldest id to remove and spin forever, blocking
+    // the event loop.
+    // Far larger than any single session, so a leftover is unmistakable.
+    const driftedBytes = 100 * 1024 * 1024;
+    responseState.__codebuddy2apiResponseSessionTotalBytes__ = driftedBytes;
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        choices: [{ message: { content: 'after drifted total' } }],
+        model: 'gpt-5.5',
+      }),
+    );
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'drifted total', model: 'gpt-5.5' },
+    );
+
+    // Getting a response at all proves the loop broke out instead of spinning
+    // forever on an empty store with a positive total.
+    expect(response.status).toBe(200);
+    expect((await response.json()).output_text).toBe('after drifted total');
+
+    // The drifted total was cleared; only this request's session remains.
+    expect(
+      responseState.__codebuddy2apiResponseSessionTotalBytes__,
+    ).toBeLessThan(driftedBytes);
+
+    resetResponseSessions();
+  });
+
   it('updates saved credentials by index and normalizes string boolean flags', async () => {
     const createdCredential = await addCredential({
       bearer_token: 'token-original',

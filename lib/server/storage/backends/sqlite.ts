@@ -5,6 +5,13 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import path from 'node:path';
 
 import { debugLogs, documents, usageEvents } from './sqlite-schema';
+
+/**
+ * Ceiling on rows scanned per trim pass. Rows are deleted oldest-first and
+ * pruning runs on every flush, so any backlog is cleared over successive
+ * passes without ever loading the whole table into memory.
+ */
+const MAX_DEBUG_LOG_TRIM_SCAN = 10_000;
 import type {
   DatabaseDocumentRecord,
   DatabaseStorageAdapter,
@@ -159,11 +166,18 @@ export class DrizzleSqliteDatabaseStorageAdapter implements DatabaseStorageAdapt
   }
 
   public async trimDebugLogs(maxEntries: number): Promise<void> {
-    const rows = await this.db
+    // Push the retention window into the database. Selecting every row and
+    // slicing in JS materializes the whole table in the heap on every flush;
+    // the Postgres backend already relies on offset, so this keeps the two
+    // backends equivalent.
+    // SQLite requires LIMIT before OFFSET, so bound the scan with an explicit
+    // (generous) limit rather than relying on OFFSET alone.
+    const staleRows = await this.db
       .select({ eventId: debugLogs.eventId })
       .from(debugLogs)
-      .orderBy(desc(debugLogs.createdAt), desc(debugLogs.eventId));
-    const staleRows = rows.slice(maxEntries);
+      .orderBy(desc(debugLogs.createdAt), desc(debugLogs.eventId))
+      .limit(MAX_DEBUG_LOG_TRIM_SCAN)
+      .offset(maxEntries);
 
     if (!staleRows.length) return;
 

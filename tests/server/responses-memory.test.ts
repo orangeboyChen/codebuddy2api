@@ -694,4 +694,57 @@ describe('Responses memory bounds', () => {
       'response.function_call_arguments.delta',
     );
   });
+
+  it('keeps output_text delta events proportional to the delta, not the output', async () => {
+    // Each delta event used to embed the whole accumulated text, so the total
+    // bytes enqueued grew quadratically with the response size. Emitting the
+    // item reference keeps the stream linear.
+    const chunkCount = 40;
+    const chunk = 'y'.repeat(500);
+    const body = Array.from(
+      { length: chunkCount },
+      () =>
+        `data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`,
+    ).join('');
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(body, { headers: { 'Content-Type': 'text/event-stream' } }),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'stream many deltas',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+
+    const text = await response.text();
+    const deltaEvents = text
+      .split('\n\n')
+      .filter((frame) => frame.includes('response.output_text.delta'))
+      .map((frame) => {
+        const dataLine = frame
+          .split('\n')
+          .find((line) => line.startsWith('data: '));
+
+        return JSON.parse(String(dataLine).slice(6)) as Record<string, unknown>;
+      });
+
+    expect(deltaEvents).toHaveLength(chunkCount);
+
+    // Ordering and ids stay intact...
+    const itemIds = new Set(deltaEvents.map((event) => event.item_id));
+    expect(itemIds.size).toBe(1);
+    expect(deltaEvents[0]).toMatchObject({ delta: chunk });
+
+    // ...but no delta carries the accumulated text. The last one would be
+    // ~chunkCount * chunk bytes long if it did.
+    for (const event of deltaEvents) {
+      expect(event.item).toBeUndefined();
+      expect(JSON.stringify(event).length).toBeLessThan(chunk.length * 3);
+    }
+
+    // The complete text still reaches the client once the output finishes.
+    expect(text).toContain('response.output_text.done');
+    expect(text).toContain(`"text":"${'y'.repeat(chunk.length * chunkCount)}"`);
+  });
 });
