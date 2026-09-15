@@ -20,7 +20,32 @@ export interface RuntimeConfig {
   CODEBUDDY_LOG_LEVEL: string;
   CODEBUDDY_API_TIMEOUT_MINUTES: number;
   CODEBUDDY_WEB_SEARCH_ENABLED: boolean;
+  CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: boolean;
 }
+
+/**
+ * Hy-series models take their thinking depth as `reasoning_effort` with the
+ * values `no_think` / `low` / `high` — a vocabulary no downstream client
+ * speaks. Claude Code sends Anthropic `thinking`, Codex sends Responses
+ * `reasoning.effort`. When this is on, those are translated onto the Hy
+ * vocabulary; when off, requests are forwarded exactly as they arrive.
+ */
+
+/**
+ * Every model id starting with `hy` is a Hy-series model and takes the
+ * `reasoning_effort` vocabulary, so matching is a single case-insensitive
+ * prefix test rather than an enumeration of known ids: the upstream decides
+ * which models exist, and new `hy*` releases should be covered without a code
+ * change. `hunyuan-*` is a different prefix and a separate product line, so it
+ * is not affected.
+ */
+export const HY_MODEL_PREFIX = 'hy';
+
+export const isHyModel = (model: string | undefined | null): boolean => {
+  if (typeof model !== 'string') return false;
+
+  return model.trim().toLowerCase().startsWith(HY_MODEL_PREFIX);
+};
 
 /**
  * Budget for a proxied request to produce its first delta, in minutes. It is
@@ -44,6 +69,7 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_LOG_LEVEL: 'INFO',
   CODEBUDDY_API_TIMEOUT_MINUTES: DEFAULT_API_TIMEOUT_MINUTES,
   CODEBUDDY_WEB_SEARCH_ENABLED: false,
+  CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: false,
 };
 let configMutationQueue: Promise<void> = Promise.resolve();
 
@@ -59,6 +85,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_LOG_LEVEL: 'Log level',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API timeout, first token (minutes)',
     CODEBUDDY_WEB_SEARCH_ENABLED: 'Enable local web search',
+    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'Translate thought depth for Hy models',
   },
   'ja-JP': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy API エンドポイント',
@@ -68,6 +95,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_LOG_LEVEL: 'ログレベル',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API タイムアウト・最初のトークン (分)',
     CODEBUDDY_WEB_SEARCH_ENABLED: 'ローカル Web 検索を有効化',
+    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'Hy モデルの思考深度を変換する',
   },
   'zh-CN': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方 API 端点',
@@ -77,6 +105,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_LOG_LEVEL: '日志级别',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API 超时时间,首个 token(分钟)',
     CODEBUDDY_WEB_SEARCH_ENABLED: '启用本地 WebSearch',
+    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: '为 Hy 系列模型转换思想深度',
   },
 };
 
@@ -217,6 +246,11 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
         persisted.CODEBUDDY_WEB_SEARCH_ENABLED ??
           process.env.CODEBUDDY_WEB_SEARCH_ENABLED,
       ),
+    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: normalizeValue(
+      'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED',
+      persisted.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED ??
+        process.env.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED,
+    ),
   };
 };
 
@@ -267,6 +301,17 @@ export const getApiFirstDeltaTimeoutMs = async (): Promise<number> => {
   const config = await getActiveConfig();
 
   return config.CODEBUDDY_API_TIMEOUT_MINUTES * MINUTE_MS;
+};
+
+/**
+ * Whether downstream thinking parameters should be translated onto the Hy
+ * vocabulary. Resolved per request so toggling the setting in the console takes
+ * effect immediately.
+ */
+export const getHyThoughtDepthEnabled = async (): Promise<boolean> => {
+  const config = await getActiveConfig();
+
+  return config.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED;
 };
 
 export const getCodeBuddyApiEndpoint = async (): Promise<string> => {

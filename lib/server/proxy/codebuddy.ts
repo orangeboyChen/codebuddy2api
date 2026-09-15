@@ -25,6 +25,10 @@ import {
 } from '../domain/debug';
 import { createErrorResponse, getRequestHeaderMap } from '../shared/http';
 import {
+  resolveHyChatThinking,
+  resolveHyResponsesReasoning,
+} from '../shared/hy-thought-depth';
+import {
   type ChatCompletionPayload,
   executeWebSearchLoop,
   synthesizeChatCompletionStream,
@@ -850,6 +854,8 @@ const buildUpstreamBody = async (
       ? body.model
       : (credentialModels[0] ?? (await getDefaultModel()));
 
+  const hyThinking = await resolveHyChatThinking(model, body);
+
   return {
     model,
     messages: normalizedMessages,
@@ -866,8 +872,8 @@ const buildUpstreamBody = async (
     tools: body.tools,
     tool_choice: body.tool_choice,
     parallel_tool_calls: body.parallel_tool_calls,
-    thinking: body.thinking,
-    reasoning_effort: body.reasoning_effort,
+    thinking: hyThinking.thinking,
+    reasoning_effort: hyThinking.reasoningEffort,
   };
 };
 
@@ -1051,13 +1057,29 @@ const getPendingStopPrefixLength = (
   return 0;
 };
 
-const normalizeResponsesUpstreamBody = (
+/**
+ * Codex sends `reasoning.effort` in the OpenAI vocabulary, which Hy models do
+ * not accept, so the effort is rewritten onto the Hy vocabulary before the body
+ * is forwarded.
+ */
+const resolveHyResponsesBody = async (
   body: Record<string, unknown>,
-): Record<string, unknown> => {
+): Promise<Record<string, unknown>> => {
+  const reasoning = await resolveHyResponsesReasoning(
+    typeof body.model === 'string' ? body.model : undefined,
+    body.reasoning as Record<string, unknown> | undefined,
+  );
+
+  return { ...body, reasoning };
+};
+
+const normalizeResponsesUpstreamBody = async (
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> => {
   const { messages, ...rest } = body;
 
   if (rest.input !== undefined || !Array.isArray(messages)) {
-    return rest;
+    return resolveHyResponsesBody(rest);
   }
 
   const systemInstructions = messages
@@ -1095,12 +1117,16 @@ const normalizeResponsesUpstreamBody = (
     .filter(Boolean)
     .join('\n\n');
 
-  return { ...rest, ...(instructions ? { instructions } : {}), input };
+  return resolveHyResponsesBody({
+    ...rest,
+    ...(instructions ? { instructions } : {}),
+    input,
+  });
 };
 
-const buildResponsesBodyFromChat = (
+const buildResponsesBodyFromChat = async (
   body: ChatRequestBody,
-): Record<string, unknown> => {
+): Promise<Record<string, unknown>> => {
   const instructions = body.messages
     ?.filter(
       (message) => message.role === 'system' || message.role === 'developer',
@@ -1183,9 +1209,9 @@ const buildResponsesBodyFromChat = (
     ];
   });
   const text = translateChatResponseFormatToResponses(body.response_format);
-  const reasoning = translateChatThinkingToResponses(
-    body.thinking,
-    body.reasoning_effort,
+  const reasoning = await resolveHyResponsesReasoning(
+    body.model,
+    translateChatThinkingToResponses(body.thinking, body.reasoning_effort),
   );
 
   return {
@@ -2764,7 +2790,7 @@ export const proxyChatCompletions = async (
         await buildUpstreamHeaders(request, resolvedContext.auth),
       );
       const responsesBody = {
-        ...buildResponsesBodyFromChat(upstreamBody),
+        ...(await buildResponsesBodyFromChat(upstreamBody)),
         stream: Boolean(body.stream),
       };
 
@@ -2978,7 +3004,7 @@ export const proxyResponsesUpstream = async (
       ));
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
     const upstreamBody = {
-      ...normalizeResponsesUpstreamBody(body),
+      ...(await normalizeResponsesUpstreamBody(body)),
       model:
         typeof body.model === 'string' && body.model.trim()
           ? body.model

@@ -62,7 +62,9 @@ import {
   getActiveConfig,
   getApiFirstDeltaTimeoutMs,
   getDefaultModel,
+  getHyThoughtDepthEnabled,
   getSettingLabels,
+  isHyModel,
   updateSettings,
 } from '@/lib/server/domain/config';
 import { getRequestHeaderMap } from '@/lib/server/shared/http';
@@ -112,6 +114,25 @@ const makeJsonResponse = (
       'Content-Type': 'application/json',
     },
   });
+};
+
+/** A minimal non-streaming Chat Completions response, for the /v1/messages path. */
+const chatCompletionPayload = (model: string): Record<string, unknown> => {
+  return {
+    choices: [{ message: { content: 'ok', role: 'assistant' } }],
+    model,
+    usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
+  };
+};
+
+/** A minimal non-streaming Responses payload, for the /v1/responses path. */
+const responsesPayload = (model: string): Record<string, unknown> => {
+  return {
+    model,
+    output: [
+      { content: [{ text: 'ok', type: 'output_text' }], type: 'message' },
+    ],
+  };
 };
 
 const waitForAsync = async (
@@ -1860,6 +1881,153 @@ describe('server units', () => {
       text: { format: { type: 'json_object' } },
       tool_choice: 'auto',
     });
+  });
+
+  it('converts Claude Code thinking onto the Hy reasoning_effort', async () => {
+    await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: true });
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(makeJsonResponse(chatCompletionPayload('hy3')));
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 16_000,
+        messages: [{ content: 'think hard', role: 'user' }],
+        model: 'hy3',
+        thinking: { budget_tokens: 16_000, type: 'enabled' },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as Record<string, unknown>;
+
+    // Claude Code speaks Anthropic budget_tokens; upstream wants a named level.
+    expect(body.reasoning_effort).toBe('high');
+  });
+
+  it('drops the Anthropic thinking block once it has been translated', async () => {
+    // Leaving the original block alongside the converted effort would still be
+    // rejected by the upstream this translation exists to satisfy.
+    await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: true });
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(makeJsonResponse(chatCompletionPayload('hy3')));
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 16_000,
+        messages: [{ content: 'think hard', role: 'user' }],
+        model: 'hy3',
+        thinking: { budget_tokens: 16_000, type: 'enabled' },
+      },
+    );
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as Record<string, unknown>;
+
+    expect(body.reasoning_effort).toBe('high');
+    expect(body).not.toHaveProperty('thinking');
+  });
+
+  it('converts Codex reasoning.effort onto the Hy vocabulary', async () => {
+    await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: true });
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(makeJsonResponse(responsesPayload('hy3')));
+
+    await proxyResponsesUpstream(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'reason about this',
+        model: 'hy3',
+        reasoning: { effort: 'medium', summary: 'auto' },
+      },
+    );
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as Record<string, unknown>;
+
+    // `medium` is not a Hy level, so it collapses onto the nearest one.
+    expect(body.reasoning).toEqual({ effort: 'low', summary: 'auto' });
+  });
+
+  it('forwards Codex reasoning untouched when Hy conversion is off', async () => {
+    await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: false });
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(makeJsonResponse(chatCompletionPayload('hy3')));
+
+    await proxyResponsesUpstream(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      { input: 'keep as is', model: 'hy3', reasoning: { effort: 'medium' } },
+    );
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as Record<string, unknown>;
+
+    expect(body.reasoning).toEqual({ effort: 'medium' });
+  });
+
+  it('keeps the Anthropic thinking block when conversion is off', async () => {
+    await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: false });
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(makeJsonResponse(chatCompletionPayload('hy3')));
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 16_000,
+        messages: [{ content: 'think hard', role: 'user' }],
+        model: 'hy3',
+        thinking: { budget_tokens: 16_000, type: 'enabled' },
+      },
+    );
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as Record<string, unknown>;
+
+    expect(body.thinking).toEqual({
+      budget_tokens: 16_000,
+      type: 'enabled',
+    });
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('leaves non-Hy models untouched when conversion is on', async () => {
+    await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: true });
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(makeJsonResponse(responsesPayload('hy3')));
+
+    await proxyResponsesUpstream(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'no conversion',
+        model: 'glm-5.1',
+        reasoning: { effort: 'medium' },
+      },
+    );
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as Record<string, unknown>;
+
+    expect(body.reasoning).toEqual({ effort: 'medium' });
   });
 
   it('covers Responses payload fallback and stop variants', async () => {
@@ -5562,6 +5730,80 @@ describe('server units', () => {
       CODEBUDDY_ADMIN_PASSKEY_RP_ID: 'admin.example.com',
       CODEBUDDY_AUTH_MODE: 'token',
     });
+  });
+
+  it('defaults Hy thought depth conversion to off', async () => {
+    await updateSettings({});
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: false,
+    });
+    await expect(getHyThoughtDepthEnabled()).resolves.toBe(false);
+  });
+
+  it('turns Hy thought depth conversion on from the console', async () => {
+    await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: true });
+
+    await expect(getHyThoughtDepthEnabled()).resolves.toBe(true);
+  });
+
+  it('accepts the truthy spellings a boolean setting arrives in', async () => {
+    // The console switch sends a real boolean, but the value can also arrive as
+    // "1"/"true" from the environment, so both have to enable it.
+    for (const value of [true, 'true', '1', 'TRUE']) {
+      await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: value });
+
+      await expect(getHyThoughtDepthEnabled()).resolves.toBe(true);
+    }
+  });
+
+  it('treats an unrecognized Hy thought depth as off', async () => {
+    // A garbage value must not silently rewrite thinking depth for every Hy
+    // request, so the conservative reading wins.
+    for (const value of ['yes', 'maybe', '2', '']) {
+      await updateSettings({ CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: value });
+
+      await expect(getHyThoughtDepthEnabled()).resolves.toBe(false);
+    }
+  });
+
+  it('reads Hy thought depth from the environment', async () => {
+    // beforeEach wipes the persisted config, so the env value is the only
+    // thing that can be in play here.
+    process.env.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED = '1';
+
+    try {
+      await expect(getHyThoughtDepthEnabled()).resolves.toBe(true);
+    } finally {
+      delete process.env.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED;
+    }
+  });
+
+  it('recognizes Hy models case-insensitively', () => {
+    expect(isHyModel('hy3')).toBe(true);
+    expect(isHyModel('hy3-ioa')).toBe(true);
+    expect(isHyModel('HY3-IOA')).toBe(true);
+    expect(isHyModel('hy2')).toBe(true);
+  });
+
+  it('does not treat other model families as Hy models', () => {
+    // hunyuan-* uses a different thinking parameter, so it must not be matched.
+    expect(isHyModel('hunyuan-2.0-thinking')).toBe(false);
+    expect(isHyModel('glm-5.1')).toBe(false);
+    expect(isHyModel(undefined)).toBe(false);
+    expect(isHyModel('')).toBe(false);
+  });
+
+  it('labels Hy thought depth in every supported locale', () => {
+    expect(
+      getSettingLabels('en-US').CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED,
+    ).toBeTruthy();
+    expect(
+      getSettingLabels('ja-JP').CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED,
+    ).toBeTruthy();
+    expect(
+      getSettingLabels('zh-CN').CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED,
+    ).toBeTruthy();
   });
 
   it('defaults the API timeout to five minutes', async () => {

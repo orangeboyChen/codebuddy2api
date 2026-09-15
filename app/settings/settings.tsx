@@ -93,11 +93,14 @@ const settingsPlaceholders: Record<string, string> = {
 };
 
 /**
- * Settings rendered as a switch instead of a text input. `CODEBUDDY_WEB_SEARCH_ENABLED`
- * is the only boolean in the config today; the server hides its label when no
- * search backend is configured, so the UI only ever sees it when it is usable.
+ * Settings rendered as a switch instead of a text input. These are the boolean
+ * entries in the config; the server hides the web search label when no search
+ * backend is configured, so the UI only ever sees it when it is usable.
  */
-const BOOLEAN_SETTING_KEYS = new Set(['CODEBUDDY_WEB_SEARCH_ENABLED']);
+const BOOLEAN_SETTING_KEYS = new Set([
+  'CODEBUDDY_WEB_SEARCH_ENABLED',
+  'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED',
+]);
 
 const isTruthySetting = (value: SettingsValue): boolean => {
   return value === true || value === 'true' || value === '1';
@@ -431,7 +434,9 @@ const Settings = () => {
                     ? translations('settingsPanel.apiTimeoutHint')
                     : settingKey === 'CODEBUDDY_WEB_SEARCH_ENABLED'
                       ? translations('settingsPanel.webSearchDescription')
-                      : undefined
+                      : settingKey === 'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED'
+                        ? translations('settingsPanel.hyThoughtDepthHint')
+                        : undefined
                 }
                 key={settingKey}
                 label={label}
