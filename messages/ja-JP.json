@@ -437,6 +437,7 @@
       "loginDescription": "組み込みの管理者ログインで session cookie を作成し、その後コンソールから認証情報、Access Key、passkey を管理します。"
     },
     "settingsPanel": {
+      "apiTimeoutHint": "リクエスト送信からアップストリームが最初の delta を返すまでの時間です。出力が始まった後は、長い応答でも完了まで許可されます。0.1〜1440 の範囲で小数分を指定できます。",
       "clearUsageEvents": "使用量イベントキャッシュを削除",
       "confirmClearUsageEvents": "保存済みの使用量イベントをすべて削除しますか？",
       "helper": "Passkey の RP ID は通常、最終的にアクセスするドメインと一致させます。HTTPS ではそのまま利用でき、localhost はローカル開発で使えることが多い一方、それ以外の非 HTTPS ドメインでは通常 passkey を利用できません。",

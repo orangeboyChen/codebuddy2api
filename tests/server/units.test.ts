@@ -59,7 +59,9 @@ import {
 } from '@/lib/server/proxy/responses';
 import {
   getActiveConfig,
+  getApiFirstDeltaTimeoutMs,
   getDefaultModel,
+  getSettingLabels,
   updateSettings,
 } from '@/lib/server/domain/config';
 import { getRequestHeaderMap } from '@/lib/server/shared/http';
@@ -5558,6 +5560,202 @@ describe('server units', () => {
     await expect(getActiveConfig()).resolves.toMatchObject({
       CODEBUDDY_ADMIN_PASSKEY_RP_ID: 'admin.example.com',
       CODEBUDDY_AUTH_MODE: 'token',
+    });
+  });
+
+  it('defaults the API timeout to five minutes', async () => {
+    await updateSettings({});
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_API_TIMEOUT_MINUTES: 5,
+    });
+  });
+
+  it('converts the API timeout from minutes to milliseconds', async () => {
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 2 });
+
+    await expect(getApiFirstDeltaTimeoutMs()).resolves.toBe(120_000);
+  });
+
+  it('parses a numeric API timeout supplied as a string', async () => {
+    // The console submits every field as text, so a number that arrives as a
+    // string still has to become a number rather than being stringified.
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: '1.5' });
+
+    const config = await getActiveConfig();
+
+    expect(config.CODEBUDDY_API_TIMEOUT_MINUTES).toBe(1.5);
+  });
+
+  it('clamps an out-of-range API timeout instead of storing it', async () => {
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 10_000 });
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_API_TIMEOUT_MINUTES: 1440,
+    });
+
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0 });
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_API_TIMEOUT_MINUTES: 0.1,
+    });
+  });
+
+  it('falls back to the default for a non-numeric API timeout', async () => {
+    // A NaN timeout would silently disable the deadline, so it has to fall back.
+    await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 'soon' });
+
+    await expect(getActiveConfig()).resolves.toMatchObject({
+      CODEBUDDY_API_TIMEOUT_MINUTES: 5,
+    });
+  });
+
+  it('reads the API timeout from the environment', async () => {
+    // beforeEach wipes the persisted config, so the env value is the only
+    // thing that can be in play here.
+    process.env.CODEBUDDY_API_TIMEOUT_MINUTES = '3';
+
+    try {
+      await expect(getActiveConfig()).resolves.toMatchObject({
+        CODEBUDDY_API_TIMEOUT_MINUTES: 3,
+      });
+    } finally {
+      delete process.env.CODEBUDDY_API_TIMEOUT_MINUTES;
+    }
+  });
+
+  it('labels the API timeout in every supported locale', () => {
+    expect(
+      getSettingLabels('en-US').CODEBUDDY_API_TIMEOUT_MINUTES,
+    ).toBeTruthy();
+    expect(
+      getSettingLabels('ja-JP').CODEBUDDY_API_TIMEOUT_MINUTES,
+    ).toBeTruthy();
+    expect(
+      getSettingLabels('zh-CN').CODEBUDDY_API_TIMEOUT_MINUTES,
+    ).toBeTruthy();
+  });
+
+  describe('API timeout enforcement', () => {
+    const context = createProxyContextFromCredential({
+      data: {
+        bearer_token: 'timeout-token',
+        user_id: 'timeout@example.com',
+      },
+      filePath: '/tmp/timeout.json',
+      filename: 'timeout.json',
+    });
+
+    const chatRequest = () =>
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      });
+
+    /** An upstream that never settles, so the deadline is what ends the wait. */
+    const hangUntilAborted = () =>
+      vi.spyOn(globalThis, 'fetch').mockImplementation(
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(init.signal?.reason);
+            });
+          }),
+      );
+
+    it('aborts a chat request that produces no response in time', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      hangUntilAborted();
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Take forever', role: 'user' }],
+          model: 'glm-5.1',
+        },
+        context,
+      );
+
+      expect(response.status).toBe(504);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: 'Upstream CodeBuddy request timed out' },
+      });
+    });
+
+    it('fails a stalled stream with an OpenAI error chunk', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      // Headers arrive immediately, but the body only sends keepalives, so the
+      // first delta never comes and the streaming deadline has to fire.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(': ping\n\n'));
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Stall', role: 'user' }],
+          model: 'glm-5.1',
+          stream: true,
+        },
+        context,
+      );
+
+      const text = await response.text();
+
+      expect(text).toContain('"error"');
+      expect(text).toContain('first delta');
+      expect(text).toContain('data: [DONE]');
+    });
+
+    it('lets a stream that produced a first delta continue past the deadline', async () => {
+      await updateSettings({ CODEBUDDY_API_TIMEOUT_MINUTES: 0.1 });
+      // A delta arrives up front, so the long tail that follows must not be cut
+      // off even though it takes far longer than the configured window.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            async start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+                ),
+              );
+              await new Promise((resolve) => setTimeout(resolve, 400));
+              controller.enqueue(
+                new TextEncoder().encode(
+                  'data: {"choices":[{"delta":{"content":" there"}}]}\n\n',
+                ),
+              );
+              controller.close();
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+
+      const response = await proxyChatCompletions(
+        chatRequest(),
+        {
+          messages: [{ content: 'Stream then lag', role: 'user' }],
+          model: 'glm-5.1',
+          stream: true,
+        },
+        context,
+      );
+
+      const text = await response.text();
+
+      // The deadline is 6s of wall time scaled to 0.1 minutes = 6s, but the
+      // point is that the second chunk lands despite the delay.
+      expect(text).toContain('"hi"');
+      expect(text).toContain('" there"');
+      expect(text).not.toContain('timed out');
     });
   });
 });

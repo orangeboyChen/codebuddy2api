@@ -88,13 +88,19 @@ const settingsSelectOptions: Record<
   ],
 };
 
+const settingsPlaceholders: Record<string, string> = {
+  CODEBUDDY_API_TIMEOUT_MINUTES: '5',
+};
+
 const SettingField = ({
+  hint,
   label,
   onChange,
   placeholder,
   settingKey,
   value,
 }: {
+  hint?: string;
   label: string;
   onChange: (value: string) => void;
   placeholder?: string;
@@ -128,6 +134,7 @@ const SettingField = ({
           value={value}
         />
       )}
+      {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
     </div>
   );
 };
@@ -387,13 +394,18 @@ const Settings = () => {
           ) : (
             Object.entries(settings.labels).map(([settingKey, label]) => (
               <SettingField
+                hint={
+                  settingKey === 'CODEBUDDY_API_TIMEOUT_MINUTES'
+                    ? translations('settingsPanel.apiTimeoutHint')
+                    : undefined
+                }
                 key={settingKey}
                 label={label}
                 onChange={(value) => onChange(settingKey, value)}
                 placeholder={
                   settingKey === 'CODEBUDDY_ADMIN_PASSKEY_RP_ID'
                     ? translations('settingsPanel.passkeyRpIdPlaceholder')
-                    : undefined
+                    : settingsPlaceholders[settingKey]
                 }
                 settingKey={settingKey}
                 value={String(settings.values[settingKey] ?? '')}
