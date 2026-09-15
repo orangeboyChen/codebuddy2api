@@ -54,6 +54,37 @@ const readEnv = (name: string): string => {
   return typeof value === 'string' ? value.trim() : '';
 };
 
+/**
+ * Appends engine selection to the query using SearXNG's bang syntax.
+ *
+ * `/search` has no `engines` parameter — `webapp.py` only reads `q`, `format`,
+ * and `timeout_limit` from the request. Engines are selected inside the query
+ * itself: each `!name` token is parsed by the bang parser and resolved against
+ * engine names, engine shortcuts, or category names. Multiple space-separated
+ * bangs accumulate, so `google` + `bing` becomes `!google !bing <query>`.
+ *
+ * Values are sanitised to a single token because the parser matches the whole
+ * bang token against the engine table — a stray space or comma would make it
+ * part of the search text instead.
+ */
+const buildSearxngQuery = (query: string, engines?: string): string => {
+  if (!engines) {
+    return query;
+  }
+
+  const bangs = engines
+    .split(/[\s,]+/)
+    .map((engine) => engine.trim().replace(/^!+/, ''))
+    .filter((engine) => /^[A-Za-z0-9_-]+$/.test(engine))
+    .map((engine) => `!${engine}`);
+
+  if (!bangs.length) {
+    return query;
+  }
+
+  return `${bangs.join(' ')} ${query}`;
+};
+
 const collapse = (value: string, maxLength: number): string => {
   const collapsed = value.replace(/\s+/g, ' ').trim();
 
@@ -139,13 +170,9 @@ export const createSearxngProvider = (
 
     const params = new URLSearchParams({
       format: 'json',
-      q: trimmedQuery,
+      q: buildSearxngQuery(trimmedQuery, options.engines),
       safesearch: '0',
     });
-
-    if (options.engines) {
-      params.set('engines', options.engines);
-    }
 
     if (options.language) {
       params.set('language', options.language);
@@ -172,6 +199,16 @@ export const createSearxngProvider = (
           signal: controller.signal,
         },
       );
+
+      if (response.status === 403) {
+        // `format=json` is opt-in: it must be listed under `search.formats` in
+        // the instance's settings.yml, and many instances leave it off (public
+        // ones especially). Without this hint the failure looks like an opaque
+        // auth error rather than a deployment setting.
+        throw new Error(
+          `SearXNG responded with HTTP 403 — the instance has not enabled the JSON output format. Add "json" to the "search.formats" list in the instance's settings.yml (or use an instance that supports it).`,
+        );
+      }
 
       if (!response.ok) {
         throw new Error(`SearXNG responded with HTTP ${response.status}`);

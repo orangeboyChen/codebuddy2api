@@ -220,7 +220,7 @@ describe('server local web search', () => {
       expect(new Headers(init.headers).get('X-API-Key')).toBe('secret-key');
     });
 
-    it('applies the configured engine and language', async () => {
+    it('selects engines with bang syntax inside the query', async () => {
       const fetchMock = vi.fn(
         async () => makeJsonResponse({ results: [] }) as unknown as Response,
       );
@@ -230,11 +230,48 @@ describe('server local web search', () => {
         engines: 'google,bing',
         language: 'zh',
         url: 'https://searx.test',
+      }).search('latest news');
+
+      const [url] = fetchMock.mock.calls[0] as unknown as [string];
+      // No `engines` parameter exists; selection rides in `q` as bang tokens.
+      expect(url).not.toContain('engines=');
+      expect(url).toContain('language=zh');
+      const query = new URL(url).searchParams.get('q');
+      expect(query).toBe('!google !bing latest news');
+    });
+
+    it('applies the language on its own when no engines are set', async () => {
+      const fetchMock = vi.fn(
+        async () => makeJsonResponse({ results: [] }) as unknown as Response,
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      await createSearxngProvider({
+        language: 'zh',
+        url: 'https://searx.test',
+      }).search('latest news');
+
+      const [url] = fetchMock.mock.calls[0] as unknown as [string];
+      expect(url).toContain('language=zh');
+      expect(new URL(url).searchParams.get('q')).toBe('latest news');
+    });
+
+    it('strips redundant bang prefixes and rejects unsafe engine names', async () => {
+      const fetchMock = vi.fn(
+        async () => makeJsonResponse({ results: [] }) as unknown as Response,
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      await createSearxngProvider({
+        engines: '!!google  bang "bad name"  ok-engine ',
+        url: 'https://searx.test',
       }).search('q');
 
       const [url] = fetchMock.mock.calls[0] as unknown as [string];
-      expect(url).toContain('engines=google%2Cbing');
-      expect(url).toContain('language=zh');
+      // Only whole-token names survive; anything else is dropped.
+      expect(new URL(url).searchParams.get('q')).toBe(
+        '!google !bang !ok-engine q',
+      );
     });
 
     it('limits results to the configured maximum', async () => {
@@ -284,6 +321,29 @@ describe('server local web search', () => {
       const provider = createSearxngProvider({ url: 'https://searx.test' });
 
       await expect(provider.search('q')).rejects.toThrow('HTTP 503');
+    });
+
+    it('explains that JSON output is disabled on a 403', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response('forbidden', { status: 403 }) as unknown as Response,
+        ),
+      );
+
+      const provider = createSearxngProvider({ url: 'https://searx.test' });
+
+      // The JSON format is opt-in on the instance, so the error has to point
+      // at settings.yml rather than reading like an auth failure.
+      await expect(provider.search('q')).rejects.toThrow(/search\.formats/);
+
+      // The message reaches the model as text, not a thrown error.
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await expect(runWebSearch({ query: 'q' })).resolves.toContain(
+        'search.formats',
+      );
     });
 
     it('returns null from the env factory when the URL is missing', () => {
@@ -370,7 +430,7 @@ describe('server local web search', () => {
         RequestInit,
       ];
       expect(url).toContain('https://searx.example.com/search?');
-      expect(url).toContain('engines=brave');
+      expect(new URL(url).searchParams.get('q')).toBe('!brave hallo');
       expect(url).toContain('language=de');
       expect(new Headers(init.headers).get('X-API-Key')).toBe('env-key');
     });
