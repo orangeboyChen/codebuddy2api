@@ -1,7 +1,7 @@
 'use client';
 
 import { Block, Flexbox, Input, TextArea } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import { Table } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { atom } from 'jotai';
@@ -18,7 +18,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
 import Security from './security';
 
-export type SettingsValue = string | number | null;
+export type SettingsValue = string | number | boolean | null;
 
 export interface SettingsState {
   labels: Record<string, string>;
@@ -92,6 +92,17 @@ const settingsPlaceholders: Record<string, string> = {
   CODEBUDDY_API_TIMEOUT_MINUTES: '5',
 };
 
+/**
+ * Settings rendered as a switch instead of a text input. `CODEBUDDY_WEB_SEARCH_ENABLED`
+ * is the only boolean in the config today; the server hides its label when no
+ * search backend is configured, so the UI only ever sees it when it is usable.
+ */
+const BOOLEAN_SETTING_KEYS = new Set(['CODEBUDDY_WEB_SEARCH_ENABLED']);
+
+const isTruthySetting = (value: SettingsValue): boolean => {
+  return value === true || value === 'true' || value === '1';
+};
+
 const SettingField = ({
   hint,
   label,
@@ -105,9 +116,30 @@ const SettingField = ({
   onChange: (value: string) => void;
   placeholder?: string;
   settingKey: string;
-  value: string;
+  value: SettingsValue;
 }) => {
   const selectOptions = settingsSelectOptions[settingKey];
+
+  if (BOOLEAN_SETTING_KEYS.has(settingKey)) {
+    return (
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <label
+            className="block whitespace-normal break-words font-medium text-text-light dark:text-text-dark"
+            htmlFor={settingKey}
+          >
+            {label}
+          </label>
+          {hint ? <div className="text-sm text-secondary">{hint}</div> : null}
+        </div>
+        <Switch
+          checked={isTruthySetting(value)}
+          id={settingKey}
+          onChange={(checked) => onChange(checked ? 'true' : 'false')}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="mb-4">
@@ -131,7 +163,7 @@ const SettingField = ({
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           type="text"
-          value={value}
+          value={String(value ?? '')}
         />
       )}
       {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
@@ -397,7 +429,9 @@ const Settings = () => {
                 hint={
                   settingKey === 'CODEBUDDY_API_TIMEOUT_MINUTES'
                     ? translations('settingsPanel.apiTimeoutHint')
-                    : undefined
+                    : settingKey === 'CODEBUDDY_WEB_SEARCH_ENABLED'
+                      ? translations('settingsPanel.webSearchDescription')
+                      : undefined
                 }
                 key={settingKey}
                 label={label}
@@ -408,7 +442,7 @@ const Settings = () => {
                     : settingsPlaceholders[settingKey]
                 }
                 settingKey={settingKey}
-                value={String(settings.values[settingKey] ?? '')}
+                value={settings.values[settingKey] ?? ''}
               />
             ))
           )}

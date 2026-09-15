@@ -441,6 +441,7 @@
       "passkeyRpIdPlaceholder": "留空则跟随当前访问域名",
       "saveSuccess": "设置已保存。",
       "title": "服务配置",
+      "webSearchDescription": "启用后，在 Codebuddy2API 本地完成 WebSearch 操作。",
       "usageCacheDescription": "删除所有已保存的用量统计记录。此操作无法撤销。",
       "usageCacheTitle": "用量统计缓存"
     },

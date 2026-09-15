@@ -18,7 +18,7 @@ export type TabKey =
 
 export interface AdminSettingsSnapshot {
   labels: Record<string, string>;
-  values: Record<string, string | number | null>;
+  values: Record<string, string | number | boolean | null>;
 }
 
 export interface DashboardInitialData {

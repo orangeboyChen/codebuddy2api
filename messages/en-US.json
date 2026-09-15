@@ -445,6 +445,7 @@
       "passkeyRpIdPlaceholder": "Leave empty to follow the current host",
       "saveSuccess": "Settings saved.",
       "title": "Service settings",
+      "webSearchDescription": "When enabled, web search is performed locally by Codebuddy2API.",
       "usageCacheDescription": "Remove all stored usage events. This cannot be undone.",
       "usageCacheTitle": "Usage event cache"
     },

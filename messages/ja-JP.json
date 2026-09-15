@@ -445,6 +445,7 @@
       "passkeyRpIdPlaceholder": "空欄なら現在のホストに追従",
       "saveSuccess": "設定を保存しました。",
       "title": "サービス設定",
+      "webSearchDescription": "有効にすると、WebSearch は Codebuddy2API 側でローカルに実行されます。",
       "usageCacheDescription": "保存済みの使用量イベントをすべて削除します。この操作は元に戻せません。",
       "usageCacheTitle": "使用量イベントキャッシュ"
     },

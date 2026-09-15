@@ -6,6 +6,7 @@ import {
   readStorageJson,
   writeStorageJson,
 } from '../storage';
+import { isLocalWebSearchConfigured } from '../search';
 import {
   getCredentialSupportedModels,
   listEligibleCredentialRecords,
@@ -18,6 +19,7 @@ export interface RuntimeConfig {
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa' | 'internal' | 'public';
   CODEBUDDY_LOG_LEVEL: string;
   CODEBUDDY_API_TIMEOUT_MINUTES: number;
+  CODEBUDDY_WEB_SEARCH_ENABLED: boolean;
 }
 
 /**
@@ -41,6 +43,7 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa',
   CODEBUDDY_LOG_LEVEL: 'INFO',
   CODEBUDDY_API_TIMEOUT_MINUTES: DEFAULT_API_TIMEOUT_MINUTES,
+  CODEBUDDY_WEB_SEARCH_ENABLED: false,
 };
 let configMutationQueue: Promise<void> = Promise.resolve();
 
@@ -55,6 +58,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_INTERNET_ENVIRONMENT: 'Network environment (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'Log level',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API timeout, first token (minutes)',
+    CODEBUDDY_WEB_SEARCH_ENABLED: 'Enable local web search',
   },
   'ja-JP': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy API エンドポイント',
@@ -63,6 +67,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_INTERNET_ENVIRONMENT: 'ネットワーク環境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'ログレベル',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API タイムアウト・最初のトークン (分)',
+    CODEBUDDY_WEB_SEARCH_ENABLED: 'ローカル Web 検索を有効化',
   },
   'zh-CN': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方 API 端点',
@@ -71,13 +76,29 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_INTERNET_ENVIRONMENT: '网络环境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: '日志级别',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API 超时时间,首个 token(分钟)',
+    CODEBUDDY_WEB_SEARCH_ENABLED: '启用本地 WebSearch',
   },
 };
 
+/**
+ * The web search toggle is only meaningful when a SearXNG instance is
+ * configured, and that configuration lives in the environment rather than the
+ * console. Hiding the label here keeps the setting out of both the rendered
+ * form and the save payload, so an unconfigured deployment cannot enable a
+ * feature with nothing behind it.
+ */
 export const getSettingLabels = (
   locale: ConfigLabelLocale = 'zh-CN',
-): Record<keyof RuntimeConfig, string> => {
-  return SETTING_LABELS_BY_LOCALE[locale];
+): Partial<Record<keyof RuntimeConfig, string>> => {
+  const labels = SETTING_LABELS_BY_LOCALE[locale];
+
+  if (isLocalWebSearchConfigured()) {
+    return labels;
+  }
+
+  const { CODEBUDDY_WEB_SEARCH_ENABLED: _hidden, ...visible } = labels;
+
+  return visible;
 };
 
 export const SETTING_LABELS = getSettingLabels();
@@ -138,6 +159,20 @@ const normalizeValue = <K extends keyof RuntimeConfig>(
     return String(value) as RuntimeConfig[K];
   }
 
+  if (typeof fallback === 'boolean') {
+    if (typeof value === 'boolean') {
+      return value as RuntimeConfig[K];
+    }
+
+    if (typeof value === 'number') {
+      return (value !== 0) as RuntimeConfig[K];
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+
+    return (normalized === 'true' || normalized === '1') as RuntimeConfig[K];
+  }
+
   return value as RuntimeConfig[K];
 };
 
@@ -172,7 +207,27 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
       persisted.CODEBUDDY_API_TIMEOUT_MINUTES ??
         process.env.CODEBUDDY_API_TIMEOUT_MINUTES,
     ),
+    CODEBUDDY_WEB_SEARCH_ENABLED:
+      // The toggle is hidden while no SearXNG instance is configured, but a
+      // deployment that later drops SEARXNG_URL must not keep advertising a
+      // tool it can no longer execute, so the value is re-checked per request.
+      isLocalWebSearchConfigured() &&
+      normalizeValue(
+        'CODEBUDDY_WEB_SEARCH_ENABLED',
+        persisted.CODEBUDDY_WEB_SEARCH_ENABLED ??
+          process.env.CODEBUDDY_WEB_SEARCH_ENABLED,
+      ),
   };
+};
+
+/**
+ * Whether a web search tool call should be executed locally. Resolved per
+ * request so toggling the setting in the console takes effect immediately.
+ */
+export const isWebSearchEnabled = async (): Promise<boolean> => {
+  const config = await getActiveConfig();
+
+  return config.CODEBUDDY_WEB_SEARCH_ENABLED;
 };
 
 export const updateSettings = async (
