@@ -84,6 +84,11 @@ const MAX_SNAPSHOT_TEXT_LENGTH = 200_000;
 const FLUSH_INTERVAL_MS = 1000;
 const DEBUG_SETTINGS_CACHE_TTL_MS = 1000;
 const MAX_PENDING_LOGS = 100;
+// Bounds the fan-out of sanitizeValue: without them a request body made of
+// many large items (or deeply nested objects) is deep-copied into the debug
+// log in full, and pathological nesting overflows the stack.
+const MAX_SANITIZE_ITEMS = 500;
+const MAX_SANITIZE_DEPTH = 12;
 const REDACTED_VALUE = '[redacted]';
 let debugWriteQueue: Promise<void> = Promise.resolve();
 let pendingDebugLogs: DebugLogEntry[] = [];
@@ -177,7 +182,7 @@ const isSensitiveFieldName = (name: string): boolean => {
   return SENSITIVE_FIELD_NAMES.has(name.trim().toLowerCase());
 };
 
-const sanitizeValue = (value: unknown, key?: string): unknown => {
+const sanitizeValue = (value: unknown, key?: string, depth = 0): unknown => {
   if (typeof key === 'string' && isSensitiveFieldName(key)) {
     if (value === null || value === undefined || value === '') {
       return value;
@@ -192,18 +197,46 @@ const sanitizeValue = (value: unknown, key?: string): unknown => {
     return truncateString(value);
   }
 
+  // Deep or self-referential structures would otherwise recurse without bound.
+  if (depth >= MAX_SANITIZE_DEPTH) {
+    return '[truncated: nesting too deep]';
+  }
+
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeValue(item));
+    // Individual strings are already capped, but the array itself is not:
+    // without these bounds a body of many large items is copied into the
+    // debug log in full, and pathological nesting costs unbounded stack.
+    if (value.length > MAX_SANITIZE_ITEMS) {
+      return [
+        ...value
+          .slice(0, MAX_SANITIZE_ITEMS)
+          .map((item) => sanitizeValue(item, undefined, depth + 1)),
+        `...[truncated ${value.length - MAX_SANITIZE_ITEMS} items]`,
+      ];
+    }
+
+    return value.map((item) => sanitizeValue(item, undefined, depth + 1));
   }
 
   if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+
+    if (entries.length > MAX_SANITIZE_ITEMS) {
+      return Object.fromEntries(
+        entries
+          .slice(0, MAX_SANITIZE_ITEMS)
+          .map(([entryKey, entryValue]) => [
+            entryKey,
+            sanitizeValue(entryValue, entryKey, depth + 1),
+          ]),
+      );
+    }
+
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(
-        ([entryKey, entryValue]) => [
-          entryKey,
-          sanitizeValue(entryValue, entryKey),
-        ],
-      ),
+      entries.map(([entryKey, entryValue]) => [
+        entryKey,
+        sanitizeValue(entryValue, entryKey, depth + 1),
+      ]),
     );
   }
 
@@ -646,9 +679,31 @@ const readSnapshotText = async (response: Response): Promise<string> => {
   return truncated ? `${text}\n...[truncated]` : text;
 };
 
+const isStreamingResponse = (response: Response): boolean => {
+  const contentType = response.headers.get('content-type') ?? '';
+
+  return (
+    contentType.includes('text/event-stream') ||
+    contentType.includes('application/x-ndjson')
+  );
+};
+
 const captureIndependentResponseSnapshot = async (
   response: Response,
 ): Promise<DebugHttpSnapshot> => {
+  // Cloning a streamed (SSE) response tees it, and the teed branch is only
+  // drained as fast as the original consumer reads. For a long-lived event
+  // stream that pins the buffered text — up to MAX_SNAPSHOT_TEXT_LENGTH — for
+  // the whole life of the request, per in-flight request. Record only what is
+  // cheap and already known instead of draining the body.
+  if (isStreamingResponse(response)) {
+    return {
+      body: '[streaming response body omitted]',
+      headers: toHeadersRecord(response.headers),
+      status: response.status,
+    };
+  }
+
   const clone = response.clone();
 
   return {

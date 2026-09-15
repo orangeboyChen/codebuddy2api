@@ -196,7 +196,16 @@ const pruneResponseSessions = (): void => {
     getSessionTotalBytes() > MAX_RESPONSE_SESSION_TOTAL_BYTES
   ) {
     const oldestId = store.keys().next().value;
-    removeLocalResponseSession(oldestId!);
+
+    // Guard against a byte total that has drifted out of step with the map.
+    // Without this, an empty map with a positive total makes the removal a
+    // no-op and spins here forever, blocking the event loop.
+    if (oldestId === undefined) {
+      setSessionTotalBytes(0);
+      break;
+    }
+
+    removeLocalResponseSession(oldestId);
   }
 };
 
@@ -1561,7 +1570,12 @@ const createResponsesEventStream = async (
                 enqueueEvent({
                   type: 'response.output_text.delta',
                   delta: delta.content,
-                  item: buildStreamingMessageItem('in_progress'),
+                  // Send only the item reference: embedding the accumulated
+                  // text re-serializes it on every delta, which makes the
+                  // enqueued volume quadratic in the output size. The full
+                  // text still arrives intact in response.output_text.done
+                  // and response.completed.
+                  item_id: messageState.outputItemId,
                   output_index: messageState.outputIndex,
                   response_id: responseId,
                 });

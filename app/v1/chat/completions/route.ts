@@ -7,7 +7,7 @@ import {
   isDebugEnabled,
 } from '@/lib/server/domain/debug';
 import { proxyChatCompletions } from '@/lib/server/proxy/codebuddy';
-import { getJsonBody } from '@/lib/server/shared/http';
+import { readJsonBodyOrErrorResponse } from '@/lib/server/shared/http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,7 +19,14 @@ export const POST = async (request: NextRequest): Promise<Response> => {
     return authError;
   }
 
-  const body = await getJsonBody<Record<string, unknown>>(request);
+  const parsed =
+    await readJsonBodyOrErrorResponse<Record<string, unknown>>(request);
+
+  if ('response' in parsed) {
+    return parsed.response;
+  }
+
+  const body = parsed.body;
   const debugTrace = (await isDebugEnabled())
     ? createDebugTrace({
         requestBody: body,
