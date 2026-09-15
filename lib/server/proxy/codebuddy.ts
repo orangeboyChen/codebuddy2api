@@ -25,8 +25,11 @@ import {
 } from '../domain/debug';
 import { createErrorResponse, getRequestHeaderMap } from '../shared/http';
 import {
-  createUpstreamDeadline,
-  isUpstreamTimeoutError,
+  chatStreamErrorChunks,
+  createStreamCloser,
+  fetchWithDeadline,
+  responsesStreamErrorChunks,
+  readTimeoutFrame,
   toUpstreamTimeoutMessage,
 } from '../shared/upstream-timeout';
 import { recordUsageEvent, type UsageSnapshot } from '../domain/usage';
@@ -302,40 +305,13 @@ const trackResponsesUsageStream = async ({
   const encoder = new TextEncoder();
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
-  /**
-   * Whether the downstream stream has already reached a terminal state. Once a
-   * deadline has errored it, writing again throws `TypeError: Controller is
-   * already closed` — and that throw happens inside a `.catch` handler, where
-   * nothing can observe it except the process-level unhandled-rejection hook.
-   */
-  let closed = false;
+  const closer = createStreamCloser();
   let latestUsage = fallbackUsage;
   let responseBinding: Promise<void> | null = null;
   let usageRecorded = false;
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
-  };
-  /** Enqueues only while the stream is still writable, then closes it once. */
-  const emitStreamError = (
-    controller: ReadableStreamDefaultController<Uint8Array>,
-    chunks: Uint8Array[],
-  ): void => {
-    if (closed) return;
-
-    try {
-      chunks.forEach((chunk) => controller.enqueue(chunk));
-    } catch {
-      return;
-    }
-
-    closed = true;
-
-    try {
-      controller.close();
-    } catch {
-      // The consumer errored or cancelled the stream first.
-    }
   };
   const recordStreamUsage = async (): Promise<void> => {
     if (usageRecorded) return;
@@ -408,16 +384,14 @@ const trackResponsesUsageStream = async ({
           if (done) {
             if (buffer) {
               await inspectFrame(buffer);
-              if (closed) return;
+              if (closer.closed) return;
               controller.enqueue(encoder.encode(buffer));
             }
 
             await recordStreamUsage();
             await responseBinding;
             releaseReader();
-
-            if (closed) return;
-            closed = true;
+            closer.mark();
             controller.close();
             return;
           }
@@ -450,17 +424,12 @@ const trackResponsesUsageStream = async ({
         await responseBinding;
         await recordStreamUsage();
         releaseReader();
-        // Frames here are passed through verbatim to a native Responses
-        // client, so a timeout has to be reshaped into that protocol's error
-        // event rather than failing the stream as a transport error.
         const timeoutMessage = toUpstreamTimeoutMessage(error);
 
         if (timeoutMessage !== null) {
-          emitStreamError(controller, [
-            encoder.encode(
-              `event: response.error\ndata: ${JSON.stringify({ error: { message: timeoutMessage }, type: 'response.error' })}\n\n`,
-            ),
-          ]);
+          // Frames here are forwarded verbatim, so the error has to arrive as
+          // the Responses protocol's own event.
+          closer.fail(controller, responsesStreamErrorChunks(timeoutMessage));
           return;
         }
 
@@ -469,7 +438,7 @@ const trackResponsesUsageStream = async ({
     },
     async cancel(reason): Promise<void> {
       cancelled = true;
-      closed = true;
+      closer.mark();
       try {
         await reader?.cancel(reason);
       } finally {
@@ -1378,6 +1347,7 @@ const mapResponsesStreamToChat = (
   stop: string | string[] | undefined,
   includeUsage: boolean,
 ): Response => {
+  const closer = createStreamCloser();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const responseId = `chatcmpl-${crypto.randomUUID()}`;
@@ -1508,25 +1478,10 @@ const mapResponsesStreamToChat = (
           await recordStreamUsage();
           reader.releaseLock();
           reader = null;
-          // A deadline firing mid-stream reaches the client as a raw transport
-          // error unless it is reshaped; this path feeds chat clients, so use
-          // the OpenAI error chunk followed by [DONE].
           const timeoutMessage = toUpstreamTimeoutMessage(error);
 
           if (timeoutMessage !== null) {
-            try {
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({ error: { message: timeoutMessage } })}\n\n`,
-                ),
-              );
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            } catch {
-              // The downstream stream may already have been cancelled.
-              return;
-            }
-
-            controller.close();
+            closer.fail(controller, chatStreamErrorChunks(timeoutMessage));
             return;
           }
 
@@ -1595,6 +1550,17 @@ const mapResponsesStreamToChat = (
             .split(/\r?\n/)
             .find((line) => line.startsWith('data: '));
           if (!dataLine || dataLine === 'data: [DONE]') continue;
+          // The upstream here is the chat pipeline, which reports a deadline as
+          // a terminal error chunk and closes cleanly. Without this the failure
+          // would be reported to the client as an empty successful response.
+          const upstreamError = readTimeoutFrame(frame);
+
+          if (upstreamError !== null) {
+            closer.fail(controller, chatStreamErrorChunks(upstreamError));
+            await cancelAndReleaseReader();
+            await recordStreamUsage();
+            return;
+          }
           try {
             const event = JSON.parse(dataLine.slice(6)) as {
               delta?: unknown;
@@ -2098,37 +2064,10 @@ const normalizeStreamingResponse = ({
   };
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
-  /**
-   * Whether the downstream stream has already reached a terminal state. Once a
-   * deadline has errored it, writing again throws `TypeError: Controller is
-   * already closed` — and that throw happens inside a `.catch` handler, where
-   * nothing can observe it except the process-level unhandled-rejection hook.
-   */
-  let closed = false;
+  const closer = createStreamCloser();
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
-  };
-  /** Enqueues only while the stream is still writable, then closes it once. */
-  const emitStreamError = (
-    controller: ReadableStreamDefaultController<Uint8Array>,
-    chunks: Uint8Array[],
-  ): void => {
-    if (closed) return;
-
-    try {
-      chunks.forEach((chunk) => controller.enqueue(chunk));
-    } catch {
-      return;
-    }
-
-    closed = true;
-
-    try {
-      controller.close();
-    } catch {
-      // The consumer errored or cancelled the stream first.
-    }
   };
 
   const stream = new ReadableStream<Uint8Array>({
@@ -2231,18 +2170,10 @@ const normalizeStreamingResponse = ({
 
       void pump().catch((error) => {
         if (cancelled) return;
-        // A deadline that fires mid-stream surfaces here as a rejected read.
-        // Report it in the OpenAI error-chunk shape the client already handles
-        // rather than letting the stream fail with a bare transport error.
         const timeoutMessage = toUpstreamTimeoutMessage(error);
 
         if (timeoutMessage !== null) {
-          emitStreamError(controller, [
-            encoder.encode(
-              `data: ${JSON.stringify({ error: { message: timeoutMessage } })}\n\n`,
-            ),
-            encoder.encode('data: [DONE]\n\n'),
-          ]);
+          closer.fail(controller, chatStreamErrorChunks(timeoutMessage));
           return;
         }
 
@@ -2251,7 +2182,7 @@ const normalizeStreamingResponse = ({
     },
     async cancel(reason): Promise<void> {
       cancelled = true;
-      closed = true;
+      closer.mark();
       try {
         await reader?.cancel(reason);
       } finally {
@@ -2663,32 +2594,21 @@ export const proxyChatCompletions = async (
         url: upstreamUrl,
       });
 
-      const deadline = createUpstreamDeadline(
-        await getApiFirstDeltaTimeoutMs(),
-      );
-      let upstreamResponse: Response;
+      const upstream = await fetchWithDeadline({
+        body: JSON.stringify(responsesBody),
+        headers: upstreamHeaders,
+        onTimeout: (error) => setDebugTraceError(debugTrace, error),
+        timeoutMs: await getApiFirstDeltaTimeoutMs(),
+        url: upstreamUrl,
+      });
 
-      try {
-        upstreamResponse = await fetch(upstreamUrl, {
-          method: 'POST',
-          headers: upstreamHeaders,
-          body: JSON.stringify(responsesBody),
-          cache: 'no-store',
-          signal: deadline.signal,
-        });
-      } catch (error) {
-        if (!isUpstreamTimeoutError(error)) throw error;
-        setDebugTraceError(debugTrace, error);
-        return createErrorResponse(
-          504,
-          'Upstream CodeBuddy request timed out',
-          error.message,
-        );
+      if (!upstream.ok) {
+        return upstream.response;
       }
 
-      upstreamResponse = enqueueUpstreamResponseSnapshot(
+      const upstreamResponse = enqueueUpstreamResponseSnapshot(
         debugTrace,
-        deadline.trackFirstDelta(upstreamResponse),
+        upstream.response,
       );
 
       if (!upstreamResponse.ok) {
@@ -2765,30 +2685,21 @@ export const proxyChatCompletions = async (
       url: upstreamUrl,
     });
 
-    const deadline = createUpstreamDeadline(await getApiFirstDeltaTimeoutMs());
-    let upstreamResponse: Response;
+    const upstream = await fetchWithDeadline({
+      body: JSON.stringify(upstreamBody),
+      headers: upstreamHeaders,
+      onTimeout: (error) => setDebugTraceError(debugTrace, error),
+      timeoutMs: await getApiFirstDeltaTimeoutMs(),
+      url: upstreamUrl,
+    });
 
-    try {
-      upstreamResponse = await fetch(upstreamUrl, {
-        method: 'POST',
-        headers: upstreamHeaders,
-        body: JSON.stringify(upstreamBody),
-        cache: 'no-store',
-        signal: deadline.signal,
-      });
-    } catch (error) {
-      if (!isUpstreamTimeoutError(error)) throw error;
-      setDebugTraceError(debugTrace, error);
-      return createErrorResponse(
-        504,
-        'Upstream CodeBuddy request timed out',
-        error.message,
-      );
+    if (!upstream.ok) {
+      return upstream.response;
     }
 
-    upstreamResponse = enqueueUpstreamResponseSnapshot(
+    const upstreamResponse = enqueueUpstreamResponseSnapshot(
       debugTrace,
-      deadline.trackFirstDelta(upstreamResponse),
+      upstream.response,
     );
 
     if (!upstreamResponse.ok) {
@@ -2905,35 +2816,28 @@ export const proxyResponsesUpstream = async (
       url: upstreamUrl,
     });
 
-    const deadline = createUpstreamDeadline(await getApiFirstDeltaTimeoutMs());
-    let upstreamResponse: Response;
+    const upstream = await fetchWithDeadline({
+      body: JSON.stringify(upstreamBody),
+      headers: upstreamHeaders,
+      onTimeout: (error) => {
+        setDebugTraceError(debugTrace, error);
+        logUpstreamFailure({
+          error,
+          route: '/v1/responses',
+          url: upstreamUrl,
+        });
+      },
+      timeoutMs: await getApiFirstDeltaTimeoutMs(),
+      url: upstreamUrl,
+    });
 
-    try {
-      upstreamResponse = await fetch(upstreamUrl, {
-        method: 'POST',
-        headers: upstreamHeaders,
-        body: JSON.stringify(upstreamBody),
-        cache: 'no-store',
-        signal: deadline.signal,
-      });
-    } catch (error) {
-      if (!isUpstreamTimeoutError(error)) throw error;
-      setDebugTraceError(debugTrace, error);
-      logUpstreamFailure({
-        error,
-        route: '/v1/responses',
-        url: upstreamUrl,
-      });
-      return createErrorResponse(
-        504,
-        'Upstream CodeBuddy request timed out',
-        error.message,
-      );
+    if (!upstream.ok) {
+      return upstream.response;
     }
 
-    upstreamResponse = enqueueUpstreamResponseSnapshot(
+    const upstreamResponse = enqueueUpstreamResponseSnapshot(
       debugTrace,
-      deadline.trackFirstDelta(upstreamResponse),
+      upstream.response,
     );
 
     if (!upstreamResponse.ok) {

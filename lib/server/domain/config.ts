@@ -30,15 +30,6 @@ export const MIN_API_TIMEOUT_MINUTES = 0.1;
 export const MAX_API_TIMEOUT_MINUTES = 1440;
 const MINUTE_MS = 60_000;
 
-const NUMBER_SETTING_BOUNDS: Partial<
-  Record<keyof RuntimeConfig, { max: number; min: number }>
-> = {
-  CODEBUDDY_API_TIMEOUT_MINUTES: {
-    max: MAX_API_TIMEOUT_MINUTES,
-    min: MIN_API_TIMEOUT_MINUTES,
-  },
-};
-
 export type ConfigLabelLocale = 'zh-CN' | 'en-US' | 'ja-JP';
 
 type PersistedConfigFile = Partial<RuntimeConfig>;
@@ -115,8 +106,7 @@ const enqueueConfigMutation = async <T>(
  * mistyped value should fall back to a sane bound instead of failing the save
  * or, worse, disabling the timeout by parsing to NaN.
  */
-const normalizeNumericValue = (key: keyof RuntimeConfig, value: unknown) => {
-  const fallback = DEFAULT_CONFIG[key];
+const normalizeNumericValue = (value: unknown, fallback: number): number => {
   const parsed =
     typeof value === 'number' ? value : Number(String(value).trim());
 
@@ -124,13 +114,10 @@ const normalizeNumericValue = (key: keyof RuntimeConfig, value: unknown) => {
     return fallback;
   }
 
-  const bounds = NUMBER_SETTING_BOUNDS[key];
-
-  if (!bounds) {
-    return parsed;
-  }
-
-  return Math.min(Math.max(parsed, bounds.min), bounds.max);
+  return Math.min(
+    Math.max(parsed, MIN_API_TIMEOUT_MINUTES),
+    MAX_API_TIMEOUT_MINUTES,
+  );
 };
 
 const normalizeValue = <K extends keyof RuntimeConfig>(
@@ -144,7 +131,7 @@ const normalizeValue = <K extends keyof RuntimeConfig>(
   }
 
   if (typeof fallback === 'number') {
-    return normalizeNumericValue(key, value) as RuntimeConfig[K];
+    return normalizeNumericValue(value, fallback) as RuntimeConfig[K];
   }
 
   if (typeof fallback === 'string') {

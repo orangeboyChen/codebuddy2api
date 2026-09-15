@@ -12,7 +12,12 @@ import {
 } from './codebuddy';
 import { resolveRequestAccessKey } from './auth';
 import { createErrorResponse } from '../shared/http';
-import { toUpstreamTimeoutMessage } from '../shared/upstream-timeout';
+import {
+  createStreamCloser,
+  readTimeoutFrame,
+  responsesStreamErrorChunks,
+  toUpstreamTimeoutMessage,
+} from '../shared/upstream-timeout';
 import {
   deleteStorageJson,
   getStorageBackendMeta,
@@ -1270,13 +1275,7 @@ const createResponsesEventStream = async (
   let latestUsage: unknown = null;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
-  /**
-   * Whether the downstream stream has already reached a terminal state. A
-   * deadline errors the upstream stream before this pump observes the failure,
-   * so by the time the catch runs the controller may already be closed and any
-   * write to it would throw inside a handler nothing can observe.
-   */
-  let closed = false;
+  const closer = createStreamCloser();
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
@@ -1551,6 +1550,20 @@ const createResponsesEventStream = async (
               continue;
             }
 
+            // The upstream here is the chat pipeline, which reports a deadline
+            // as a terminal error chunk and closes cleanly. Surfacing it keeps
+            // the client from seeing an empty successful response.
+            const upstreamError = readTimeoutFrame(frame);
+
+            if (upstreamError !== null) {
+              streamRejected = true;
+              enqueueEvent({
+                type: 'response.error',
+                error: { message: upstreamError },
+              });
+              break;
+            }
+
             try {
               const payload = JSON.parse(raw) as {
                 choices?: Array<{
@@ -1715,14 +1728,11 @@ const createResponsesEventStream = async (
       };
 
       void pump().catch((error) => {
-        if (cancelled || closed) return;
-        // A deadline fires mid-stream as a rejected read. Emit the same
-        // `response.error` event the other rejection paths use so the client
-        // sees a timeout instead of a truncated stream.
+        if (cancelled) return;
         const timeoutMessage = toUpstreamTimeoutMessage(error);
 
         if (timeoutMessage === null) {
-          closed = true;
+          closer.mark();
           controller.error(error);
           return;
         }
@@ -1733,30 +1743,12 @@ const createResponsesEventStream = async (
           () => undefined,
         );
         releaseReader();
-
-        try {
-          if (controller.desiredSize !== null) {
-            enqueueEvent({
-              type: 'response.error',
-              error: { message: timeoutMessage },
-            });
-          }
-        } catch {
-          // The downstream stream may already have been cancelled.
-        }
-
-        closed = true;
-
-        try {
-          controller.close();
-        } catch {
-          // The consumer cancelled first; nothing left to close.
-        }
+        closer.fail(controller, responsesStreamErrorChunks(timeoutMessage));
       });
     },
     async cancel(reason): Promise<void> {
       cancelled = true;
-      closed = true;
+      closer.mark();
       try {
         await reader?.cancel(reason);
       } finally {

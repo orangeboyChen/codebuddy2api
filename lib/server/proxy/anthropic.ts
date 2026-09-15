@@ -4,7 +4,11 @@ import { getDefaultModel } from '../domain/config';
 import type { DebugTrace } from '../domain/debug';
 
 import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
-import { toUpstreamTimeoutMessage } from '../shared/upstream-timeout';
+import {
+  anthropicStreamErrorChunks,
+  createStreamCloser,
+  toUpstreamTimeoutMessage,
+} from '../shared/upstream-timeout';
 
 const MAX_STREAM_FRAME_LENGTH = 1_000_000;
 
@@ -832,13 +836,7 @@ const mapOpenAIStreamToAnthropicSSE = (
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
   let streamRejected = false;
-  /**
-   * Whether the downstream stream has already reached a terminal state. A
-   * deadline errors the upstream stream before this pump observes the failure,
-   * so by the time the catch runs the controller may already be closed and any
-   * write to it would throw inside a handler nothing can observe.
-   */
-  let closed = false;
+  const closer = createStreamCloser();
   const releaseReader = (): void => {
     reader?.releaseLock();
     reader = null;
@@ -856,7 +854,13 @@ const mapOpenAIStreamToAnthropicSSE = (
         enqueueEvent({
           type: 'error',
           error: {
-            type: 'invalid_request_error',
+            // An oversized frame is a malformed stream, but an upstream
+            // deadline is the server failing — and `api_error` is the type
+            // clients treat as retryable. Reporting a timeout as
+            // invalid_request_error would tell them never to retry.
+            type: message.includes('did not produce output')
+              ? 'api_error'
+              : 'invalid_request_error',
             message,
           },
         });
@@ -937,14 +941,11 @@ const mapOpenAIStreamToAnthropicSSE = (
       };
 
       void pump().catch((error) => {
-        if (cancelled || closed) return;
-        // A deadline firing mid-stream arrives here as a rejected read. It is
-        // reported through rejectStream so the client gets the Anthropic
-        // `error` event shape instead of a bare transport failure.
+        if (cancelled) return;
         const timeoutMessage = toUpstreamTimeoutMessage(error);
 
         if (timeoutMessage === null) {
-          closed = true;
+          closer.mark();
           controller.error(error);
           return;
         }
@@ -954,27 +955,12 @@ const mapOpenAIStreamToAnthropicSSE = (
           () => undefined,
         );
         releaseReader();
-
-        try {
-          if (controller.desiredSize !== null) {
-            rejectStream(timeoutMessage);
-          }
-        } catch {
-          // The downstream stream may already have been cancelled.
-        }
-
-        closed = true;
-
-        try {
-          controller.close();
-        } catch {
-          // The consumer cancelled first; nothing left to close.
-        }
+        closer.fail(controller, anthropicStreamErrorChunks(timeoutMessage));
       });
     },
     async cancel(reason): Promise<void> {
       cancelled = true;
-      closed = true;
+      closer.mark();
       try {
         await reader?.cancel(reason);
       } finally {
