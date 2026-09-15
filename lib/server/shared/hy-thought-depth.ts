@@ -46,7 +46,13 @@ const OPENAI_EFFORT_TO_HY: Record<string, string> = {
 /**
  * Anthropic `budget_tokens` is a raw token budget, not a level, so it is bucketed
  * against the output sizes the Hy levels correspond to: `no_think` caps out at
- * 8K, `low` is recommended around 16K and `high` reaches 64K.
+ * 8K, `low` is recommended around 16K and `high` reaches 64K. The upstream fixes
+ * the sizes but not the reverse mapping, so the cut points are ours: at or below
+ * 8K the request still fits `low`'s recommended envelope, above it only `high`
+ * can produce the output that was asked for.
+ *
+ * Below the Anthropic minimum for enabling thinking at all there is effectively
+ * no thinking to pay for, so it resolves to `no_think`.
  */
 const anthropicBudgetToHyEffort = (budgetTokens: number): string => {
   if (

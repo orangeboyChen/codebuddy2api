@@ -37,6 +37,7 @@ vocabulary: Claude Code sends Anthropic `thinking`, while Codex sends Responses
 Any model id starting with `hy` counts as a Hy model, case-insensitively, so
 `hy3` and `hy3-ioa` match today and a future `hy4` is covered without a code
 change. `hunyuan-*` is a different prefix and a separate product line, so it
+<<<<<<< HEAD
 does not match.
 
 Once translated, the original `thinking` block is dropped: leaving it alongside
@@ -44,6 +45,11 @@ the converted effort would ask for the same thing twice in two vocabularies, and
 would still be rejected by the upstream this conversion exists to satisfy. The
 setting defaults to off, which forwards requests unchanged. Seed it before the
 console is opened with `CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED` (`true` / `false`).
+=======
+does not match. The default is `off`, which forwards requests unchanged. Seed it
+before the console is opened with `CODEBUDDY_HY_THOUGHT_DEPTH` (`on` / `off`,
+also `1` / `0`, `true` / `false`).
+>>>>>>> a3c3abf (fix(settings): match every hy-prefixed model as a Hy model)
 
 ## Models and usage
 

@@ -5779,16 +5779,26 @@ describe('server units', () => {
     }
   });
 
-  it('recognizes Hy models case-insensitively', () => {
+  it('treats any hy-prefixed model as a Hy model', () => {
+    // The upstream decides which ids exist, so matching is a prefix test rather
+    // than a list of known ids: a new hy release is covered without a code change.
     expect(isHyModel('hy3')).toBe(true);
     expect(isHyModel('hy3-ioa')).toBe(true);
-    expect(isHyModel('HY3-IOA')).toBe(true);
+    expect(isHyModel('hy3-preview-agent-ioa')).toBe(true);
     expect(isHyModel('hy2')).toBe(true);
+    expect(isHyModel('hy')).toBe(true);
+    expect(isHyModel('  hy4-future  ')).toBe(true);
+  });
+
+  it('recognizes Hy models case-insensitively', () => {
+    expect(isHyModel('HY3-IOA')).toBe(true);
+    expect(isHyModel('Hy3')).toBe(true);
   });
 
   it('does not treat other model families as Hy models', () => {
-    // hunyuan-* uses a different thinking parameter, so it must not be matched.
+    // hunyuan-* is a different prefix, so it must not be matched.
     expect(isHyModel('hunyuan-2.0-thinking')).toBe(false);
+    expect(isHyModel('hunyuan-chat')).toBe(false);
     expect(isHyModel('glm-5.1')).toBe(false);
     expect(isHyModel(undefined)).toBe(false);
     expect(isHyModel('')).toBe(false);

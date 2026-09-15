@@ -3,10 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/server/domain/config', () => ({
   getHyThoughtDepthEnabled: vi.fn(),
   isHyModel: (model: string | undefined | null) =>
-    typeof model === 'string' &&
-    ['hy3', 'hy2', 'hy-'].some((prefix) =>
-      model.trim().toLowerCase().startsWith(prefix),
-    ),
+    typeof model === 'string' && model.trim().toLowerCase().startsWith('hy'),
 }));
 
 const { getHyThoughtDepthEnabled } = await import('@/lib/server/domain/config');
