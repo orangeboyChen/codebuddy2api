@@ -30,49 +30,117 @@ const getDeclaredBodyBytes = (request: Request): number | null => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 };
 
+/**
+ * Reads the body while enforcing `MAX_REQUEST_BODY_BYTES`. A chunked request
+ * declares no Content-Length, so the limit has to be applied as the bytes
+ * arrive; buffering the whole body first would let an arbitrarily large
+ * payload exhaust the heap before it could ever be rejected. The stream is
+ * cancelled as soon as the cap is passed so the connection stops being fed.
+ */
+const readCappedText = async (request: Request): Promise<string> => {
+  const body = request.body;
+
+  if (!body) {
+    return request.text();
+  }
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      totalBytes += value.byteLength;
+
+      if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+        throw new RequestBodyTooLargeError(MAX_REQUEST_BODY_BYTES);
+      }
+
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+
+    chunks.push(decoder.decode());
+  } finally {
+    // Cancel rather than just releasing, so a rejected body stops the client
+    // from pushing the remainder through a connection nobody will read.
+    try {
+      await reader.cancel();
+    } catch {
+      // The stream may already be closed or errored.
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  return chunks.join('');
+};
+
 export const getJsonBody = async <T>(request: Request): Promise<T> => {
   const declaredBytes = getDeclaredBodyBytes(request);
 
-  // Reject a large body from Content-Length when the header is present: that
-  // avoids buffering it at all. Chunked requests fall through to the
-  // post-read check below, since they declare no length.
+  // Cheap fast path: reject a body that declares itself oversized without
+  // reading any of it.
   if (declaredBytes !== null && declaredBytes > MAX_REQUEST_BODY_BYTES) {
     throw new RequestBodyTooLargeError(MAX_REQUEST_BODY_BYTES);
   }
 
-  const text = await request.text();
-  const actualBytes = Buffer.byteLength(text, 'utf8');
-
-  if (actualBytes > MAX_REQUEST_BODY_BYTES) {
-    throw new RequestBodyTooLargeError(MAX_REQUEST_BODY_BYTES);
-  }
+  const text = await readCappedText(request);
 
   return JSON.parse(text) as T;
 };
 
 /**
- * Same as `getJsonBody`, but converts a malformed or oversized body into a
- * proper 400/413 response instead of letting it escape as an unhandled
- * rejection.
+ * Reads and parses the body, reporting a malformed or oversized body as a
+ * `(status, message)` pair instead of throwing. Callers turn that into
+ * whichever error shape their API contract uses, so the Anthropic route can
+ * stay on `type: "error"` while the OpenAI-compatible routes keep
+ * `{ error: { message } }`.
  */
-export const readJsonBodyOrErrorResponse = async <T>(
+export const readJsonBodyOrFailure = async <T>(
   request: Request,
-): Promise<{ body: T } | { response: Response }> => {
+): Promise<{ body: T } | { failure: { message: string; status: number } }> => {
   try {
     return { body: await getJsonBody<T>(request) };
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
-      return {
-        response: createErrorResponse(413, error.message, {
-          limit_bytes: error.limitBytes,
-        }),
-      };
+      return { failure: { message: error.message, status: 413 } };
     }
 
     return {
-      response: createErrorResponse(400, 'Request body must be valid JSON'),
+      failure: { message: 'Request body must be valid JSON', status: 400 },
     };
   }
+};
+
+/**
+ * OpenAI-compatible variant of `readJsonBodyOrFailure`.
+ */
+export const readJsonBodyOrErrorResponse = async <T>(
+  request: Request,
+): Promise<{ body: T } | { response: Response }> => {
+  const result = await readJsonBodyOrFailure<T>(request);
+
+  if ('failure' in result) {
+    const { message, status } = result.failure;
+
+    return {
+      response:
+        status === 413
+          ? createErrorResponse(413, message, {
+              limit_bytes: MAX_REQUEST_BODY_BYTES,
+            })
+          : createErrorResponse(400, message),
+    };
+  }
+
+  return result;
 };
 
 export const getRequestHeaderMap = (

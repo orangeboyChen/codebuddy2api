@@ -1029,7 +1029,10 @@ export const handleMessagesRequest = async (
   }
 };
 
-const createAnthropicError = (status: number, message: string): Response => {
+export const createAnthropicError = (
+  status: number,
+  message: string,
+): Response => {
   const type =
     status === 401
       ? 'authentication_error'

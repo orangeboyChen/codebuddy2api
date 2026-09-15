@@ -6,8 +6,11 @@ import {
   finalizeDebugTrace,
   isDebugEnabled,
 } from '@/lib/server/domain/debug';
-import { handleMessagesRequest } from '@/lib/server/proxy/anthropic';
-import { readJsonBodyOrErrorResponse } from '@/lib/server/shared/http';
+import {
+  createAnthropicError,
+  handleMessagesRequest,
+} from '@/lib/server/proxy/anthropic';
+import { readJsonBodyOrFailure } from '@/lib/server/shared/http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,11 +22,14 @@ export const POST = async (request: NextRequest): Promise<Response> => {
     return authError;
   }
 
-  const parsed =
-    await readJsonBodyOrErrorResponse<Record<string, unknown>>(request);
+  // Body errors go through createAnthropicError so this route keeps returning
+  // `type: "error"` with an Anthropic error type, matching every other failure
+  // on the route. A 413 maps to request_too_large and a 400 to
+  // invalid_request_error.
+  const parsed = await readJsonBodyOrFailure<Record<string, unknown>>(request);
 
-  if ('response' in parsed) {
-    return parsed.response;
+  if ('failure' in parsed) {
+    return createAnthropicError(parsed.failure.status, parsed.failure.message);
   }
 
   const body = parsed.body;
