@@ -434,6 +434,7 @@
     },
     "settingsPanel": {
       "apiTimeoutHint": "从发起请求开始计时,直到上游返回第一个 delta。一旦开始输出,即使回答较长也会允许其完成。支持小数分钟,取值范围 0.1~1440。",
+      "hyThoughtDepthHint": "为 Hy 系列模型把下游的思考参数转换为上游的 reasoning_effort。Claude Code 的 thinking 与 Codex 的 reasoning.effort 都会映射到 no_think / low / high;默认 off,即原样转发。",
       "clearUsageEvents": "清空用量统计缓存",
       "confirmClearUsageEvents": "确认清空所有已保存的用量统计记录吗？",
       "helper": "Passkey RP ID 通常应与最终访问域名一致。HTTPS 站点可直接使用；localhost 在现代浏览器中通常可用于本地调试，其它非 HTTPS 域名通常无法使用 passkey。",

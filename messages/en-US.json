@@ -438,6 +438,7 @@
     },
     "settingsPanel": {
       "apiTimeoutHint": "Measured from when a request is sent until the upstream produces its first delta. Once output has started, a long answer is allowed to finish. Accepts fractional minutes, from 0.1 to 1440.",
+      "hyThoughtDepthHint": "Converts downstream thinking parameters into the upstream reasoning_effort for Hy models. Claude Code's thinking and Codex's reasoning.effort both map onto no_think / low / high. Defaults to off, which forwards requests unchanged.",
       "clearUsageEvents": "Clear usage event cache",
       "confirmClearUsageEvents": "Clear all stored usage events?",
       "helper": "The passkey RP ID should usually match the final site domain. HTTPS works directly; localhost is commonly allowed for local development, while other non-HTTPS domains usually cannot use passkeys.",
