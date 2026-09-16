@@ -12,6 +12,10 @@ Settings controls service parameters, credential models, usage data, and console
 | Network environment (internal/ioa/public) | Upstream network environment                                                               |
 | Log level                                 | Choose `DEBUG`, `INFO`, `WARNING`, or `ERROR`                                              |
 | API timeout, first token (minutes)        | Abort a request that produces no first delta in time; default `5`                          |
+| Enable local web search                   | Run `web_search` locally instead of forwarding it; default `off`                           |
+| Web search backend                        | Where `web_search` runs: `codebuddy`, `searxng`, or `none`                                 |
+| Enable local web fetch                    | Run `web_fetch` locally instead of forwarding it; default `off`                            |
+| Web fetch backend                         | Where `web_fetch` runs: `codebuddy`, `local`, or `none`                                    |
 | Translate thought depth for Hy models     | Convert downstream thinking parameters into the upstream `reasoning_effort`; default `off` |
 
 Click **Save** after changing a field.
@@ -44,6 +48,41 @@ the converted effort would ask for the same thing twice in two vocabularies, and
 would still be rejected by the upstream this conversion exists to satisfy. The
 setting defaults to off, which forwards requests unchanged. Seed it before the
 console is opened with `CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED` (`true` / `false`).
+
+## Server tools
+
+Anthropic clients declare search and fetch as server-side tools
+(`web_search_20260209`, `web_fetch_20250910`) and Codex declares
+`web_search_preview`. CodeBuddy has no equivalent, so when a client declares one
+the proxy swaps it for a plain function tool, runs it itself, and appends the
+result as a tool message. The model answers normally and the client never learns
+the work happened locally.
+
+Each tool has its own backend, chosen independently:
+
+| Tool         | Backend     | What it does                                                            |
+| ------------ | ----------- | ----------------------------------------------------------------------- |
+| `web_search` | `codebuddy` | Calls CodeBuddy's own `/agenttool/v1/search` with a saved credential.   |
+| `web_search` | `searxng`   | Queries a SearXNG instance. Default. Requires `SEARXNG_URL`.            |
+| `web_fetch`  | `codebuddy` | Calls CodeBuddy's own `/agenttool/v1/webfetch`. Returns extracted text. |
+| `web_fetch`  | `local`     | This server fetches the page directly and converts HTML to text.        |
+| either       | `none`      | Never run the tool; drop it from the request.                           |
+
+`codebuddy` is the reason to reach for this setting: it is the same endpoint the
+CodeBuddy CLI calls, so it needs no extra deployment and authenticates with the
+credential already saved in the gateway. `searxng` stays the default so existing
+deployments are unaffected, and the console hides the search setting entirely
+when `SEARXNG_URL` is unset — a deployment cannot advertise a tool it cannot
+execute.
+
+The `local` fetch backend treats the URL as untrusted input, since it comes from
+the model: private and loopback addresses are refused before connecting, and
+redirects are re-checked at every hop so a public URL cannot redirect onto the
+deployment's own network.
+
+Both tools default to off. Seed them before opening the console with
+`CODEBUDDY_WEB_SEARCH_BACKEND`, `CODEBUDDY_WEB_FETCH_BACKEND`,
+`CODEBUDDY_WEB_SEARCH_ENABLED`, and `CODEBUDDY_WEB_FETCH_ENABLED`.
 
 ## Models and usage
 

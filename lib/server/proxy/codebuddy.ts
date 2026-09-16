@@ -28,6 +28,7 @@ import {
   resolveHyChatThinking,
   resolveHyResponsesReasoning,
 } from '../shared/hy-thought-depth';
+import { withCodeBuddyToken } from '../search/token';
 import {
   type ChatCompletionPayload,
   executeWebSearchLoop,
@@ -2735,30 +2736,37 @@ export const proxyChatCompletions = async (
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
     const upstreamBody = await buildUpstreamBody(body, resolvedContext);
 
-    // Server-side web search runs on the chat path only. The Responses
+    // Server-side web tools run on the chat path only. The Responses
     // passthrough path forwards to CodeBuddy's own /responses endpoint, where
     // re-issuing a request with a synthesized tool result would mean replaying
     // the whole conversation through a different protocol for each iteration.
     if (resolvedContext.preferences.upstreamProtocol === 'chat') {
-      const webSearch = await executeWebSearchLoop({
-        body: upstreamBody,
-        callUpstream: (loopBody) =>
-          fetchChatCompletion({
-            body: loopBody,
-            debugTrace,
-            request,
-            resolvedContext,
-            // Upstream rejects `stream: false` outright (code 11101), so the
-            // request always streams and the SSE response is buffered into a
-            // single payload the loop can inspect for tool calls.
-            stream: false,
-            // Already normalized, so pass it straight through; re-running
-            // buildUpstreamBody each iteration would re-apply prompt cache
-            // markers to the appended tool results.
-            upstreamBody: { ...loopBody, stream: true },
-            usageRoute,
+      const webSearch = await withCodeBuddyToken(
+        // The CodeBuddy backends call the agent-tool endpoints with the same
+        // credential as this request, so the loop is scoped to it. Resolved
+        // lazily: a token is only needed when a CodeBuddy backend actually runs.
+        () => Promise.resolve(resolvedContext.auth.bearerToken),
+        () =>
+          executeWebSearchLoop({
+            body: upstreamBody,
+            callUpstream: (loopBody) =>
+              fetchChatCompletion({
+                body: loopBody,
+                debugTrace,
+                request,
+                resolvedContext,
+                // Upstream rejects `stream: false` outright (code 11101), so
+                // the request always streams and the SSE response is buffered
+                // into a single payload the loop can inspect for tool calls.
+                stream: false,
+                // Already normalized, so pass it straight through; re-running
+                // buildUpstreamBody each iteration would re-apply prompt cache
+                // markers to the appended tool results.
+                upstreamBody: { ...loopBody, stream: true },
+                usageRoute,
+              }),
           }),
-      });
+      );
 
       if (webSearch) {
         if (!webSearch.response.ok) {

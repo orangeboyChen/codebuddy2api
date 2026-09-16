@@ -1,12 +1,30 @@
-import { isWebSearchEnabled } from '../domain/config';
-import { runWebSearch } from '../search';
+import {
+  getActiveConfig,
+  getCodeBuddyApiEndpoint,
+  isWebFetchEnabled,
+  isWebSearchEnabled,
+} from '../domain/config';
+import {
+  resolveFetchProvider,
+  resolveSearchProvider,
+  runWebFetch,
+  runWebSearch,
+} from '../search';
 
 import type { ChatRequestBody } from './codebuddy';
 import {
+  buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
+  WEB_FETCH_TOOL_NAME,
+  WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
   WEB_SEARCH_TOOL_TYPE_PREFIX,
 } from '../search/tool';
+import type {
+  WebFetchProvider,
+  WebFetchQuery,
+  WebSearchProvider,
+} from '../search/types';
 
 /**
  * Server-side web search for upstreams that do not implement it.
@@ -67,63 +85,159 @@ const asRecord = (value: unknown): JsonRecord | null => {
 };
 
 /**
- * Anthropic sends server-tool types (`web_search_20260209`) and Responses
- * sends `web_search_preview`; both must be recognised, along with a plain
- * function tool a client may name `web_search` for its own purposes.
+ * Recognises one server-tool declaration.
+ *
+ * Anthropic sends dated server-tool *types* (`web_search_20260209`,
+ * `web_fetch_20250910`), Responses sends `web_search_preview`, and a client may
+ * also declare a plain function tool with the bare name for its own purposes.
+ * All three shapes have to match, because the tool has to be swapped for a
+ * function upstream can actually call regardless of how it arrived.
+ *
+ * Returns two independent answers. `matches` says the declaration is one this
+ * proxy can serve; `serverDeclared` says it arrived as a provider-executed
+ * server tool rather than as the client's own function. The difference decides
+ * what happens when the tool cannot be executed: a server-tool declaration is
+ * dropped, because upstream has no idea what to do with it, whereas the
+ * client's own function is left exactly as sent — the client is the one that
+ * resolves it, and deleting it would silently remove a capability the client
+ * asked for.
  */
-const isWebSearchTool = (tool: unknown): boolean => {
+const classifyServerTool = (
+  tool: unknown,
+  name: string,
+  prefix: string,
+): { matches: boolean; serverDeclared: boolean } => {
   const record = asRecord(tool);
 
   if (!record) {
-    return false;
+    return { matches: false, serverDeclared: false };
   }
 
   const type = typeof record.type === 'string' ? record.type : '';
-  if (type.startsWith(WEB_SEARCH_TOOL_TYPE_PREFIX)) {
-    return true;
+
+  // A dedicated server-tool type (`web_search_20260209`, `web_fetch_20250910`,
+  // `web_search_preview`) is unambiguous: only a provider-executed tool is
+  // declared that way.
+  if (type.startsWith(prefix)) {
+    return { matches: true, serverDeclared: true };
   }
 
   const fn = asRecord(record.function);
-  const name = typeof fn?.name === 'string' ? fn.name : '';
+  const isBareName =
+    (typeof fn?.name === 'string' && fn.name === name) ||
+    (typeof record.name === 'string' && record.name.startsWith(prefix));
 
-  return (
-    name === WEB_SEARCH_TOOL_NAME ||
-    (typeof record.name === 'string' &&
-      record.name.startsWith(WEB_SEARCH_TOOL_TYPE_PREFIX))
-  );
+  return { matches: isBareName, serverDeclared: false };
 };
+
+const isWebSearchTool = (tool: unknown): boolean =>
+  classifyServerTool(tool, WEB_SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_TYPE_PREFIX)
+    .matches;
+
+const isWebFetchTool = (tool: unknown): boolean =>
+  classifyServerTool(tool, WEB_FETCH_TOOL_NAME, WEB_FETCH_TOOL_TYPE_PREFIX)
+    .matches;
+
+/**
+ * Whether `tool` is a provider-executed server-tool declaration.
+ *
+ * Used to strip declarations upstream would not understand. A plain function
+ * tool the client named `web_search` or `web_fetch` is excluded: the client
+ * resolves it itself, so removing it would take away a working capability.
+ */
+const isServerDeclaredTool = (tool: unknown): boolean =>
+  classifyServerTool(tool, WEB_SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_TYPE_PREFIX)
+    .serverDeclared ||
+  classifyServerTool(tool, WEB_FETCH_TOOL_NAME, WEB_FETCH_TOOL_TYPE_PREFIX)
+    .serverDeclared;
 
 const isWebSearchToolCall = (toolCall: ChatCompletionToolCall): boolean => {
   return toolCall.function?.name === WEB_SEARCH_TOOL_NAME;
 };
 
+const isWebFetchToolCall = (toolCall: ChatCompletionToolCall): boolean => {
+  return toolCall.function?.name === WEB_FETCH_TOOL_NAME;
+};
+
 /**
- * Swaps every web search declaration for the one function tool upstream can
- * actually call. Returns `null` when the request declares no search tool, so
- * callers can skip the loop entirely and keep the fast pass-through path.
+ * Swaps every supported server-tool declaration for the function tool upstream
+ * can actually call, dropping any that cannot be executed.
+ *
+ * Returns `null` when nothing was swapped, so callers can skip the loop
+ * entirely and keep the fast pass-through path.
+ *
+ * A server-tool declaration that cannot be executed is dropped rather than
+ * passed through: advertising a tool that would be refused is worse than not
+ * advertising it, since the model calls it and the turn is wasted. A plain
+ * function tool of the same name is left alone — see `classifyServerTool`.
  */
-const replaceWebSearchTools = (tools: unknown): unknown[] | null => {
+const replaceServerTools = ({
+  fetchEnabled,
+  fetchProvider,
+  searchEnabled,
+  searchProvider,
+  tools,
+}: {
+  fetchEnabled: boolean;
+  fetchProvider: WebFetchProvider | null;
+  searchEnabled: boolean;
+  searchProvider: WebSearchProvider | null;
+  tools: unknown;
+}): unknown[] | null => {
   if (!Array.isArray(tools) || !tools.length) {
     return null;
   }
 
-  if (!tools.some(isWebSearchTool)) {
-    return null;
-  }
+  let changed = false;
 
-  const definition = buildWebSearchToolDefinition();
+  const rewritten = tools.flatMap((tool): unknown[] => {
+    if (isWebSearchTool(tool)) {
+      if (searchEnabled && searchProvider) {
+        changed = true;
 
-  return tools.map((tool) =>
-    isWebSearchTool(tool) ? { type: 'function', function: definition } : tool,
-  );
+        return [{ type: 'function', function: buildWebSearchToolDefinition() }];
+      }
+
+      // Cannot execute it: drop the declaration if upstream would not
+      // recognise it, otherwise leave the client's own tool untouched.
+      return isServerDeclaredTool(tool) ? ((changed = true), []) : [tool];
+    }
+
+    if (isWebFetchTool(tool)) {
+      if (fetchEnabled && fetchProvider) {
+        changed = true;
+
+        return [{ type: 'function', function: buildWebFetchToolDefinition() }];
+      }
+
+      return isServerDeclaredTool(tool) ? ((changed = true), []) : [tool];
+    }
+
+    return [tool];
+  });
+
+  // Tracking `changed` explicitly rather than comparing lengths: swapping one
+  // declaration for one definition leaves the count identical, so a length
+  // check would silently skip the loop for the common single-tool request.
+  return changed ? rewritten : null;
 };
 
 /**
- * SearXNG expects one query string. Clients send `{query}`, but models also
- * emit `q`, `search_query`, or an Anthropic-style `{query: {q: ...}}` object,
- * so any string-ish value is accepted rather than failing the call.
+ * Reads one string field out of a tool-call argument object.
+ *
+ * Backends expect a single string, but models emit `query`, `q`,
+ * `search_query`, or an Anthropic-style `{query: {q: ...}}` nested object, so
+ * any string-ish value is accepted rather than failing the call.
  */
-const extractSearchQuery = (rawArguments: string | undefined): string => {
+const extractStringArgument = ({
+  keys,
+  rawArguments,
+  required,
+}: {
+  keys: string[];
+  rawArguments: string | undefined;
+  required: boolean;
+}): string => {
   if (!rawArguments) {
     return '';
   }
@@ -142,33 +256,74 @@ const extractSearchQuery = (rawArguments: string | undefined): string => {
       return '';
     }
 
-    for (const key of ['query', 'q', 'search_query', 'text']) {
+    for (const key of keys) {
       const value = record[key];
 
       if (typeof value === 'string' && value.trim()) {
         return value.trim();
       }
 
-      // Anthropic-style arguments nest the query one level deeper.
+      // Anthropic-style arguments nest the value one level deeper.
       const nested = asRecord(value);
 
-      if (nested && typeof nested.q === 'string' && nested.q.trim()) {
-        return nested.q.trim();
+      if (nested) {
+        for (const nestedKey of keys) {
+          const nestedValue = nested[nestedKey];
+
+          if (typeof nestedValue === 'string' && nestedValue.trim()) {
+            return nestedValue.trim();
+          }
+        }
       }
     }
 
-    // Fall back to whichever field holds the first non-empty string, so an
-    // unexpected argument shape still yields a usable query.
-    const firstString = Object.values(record).find(
-      (value): value is string =>
-        typeof value === 'string' && value.trim().length > 0,
-    );
+    if (required) {
+      // Fall back to whichever field holds the first non-empty string, so an
+      // unexpected argument shape still yields a usable value. Only safe when
+      // every field means the same thing, which is true for a single-string
+      // search query but not for a fetch's url plus prompt.
+      const firstString = Object.values(record).find(
+        (value): value is string =>
+          typeof value === 'string' && value.trim().length > 0,
+      );
 
-    return firstString?.trim() ?? '';
+      return firstString?.trim() ?? '';
+    }
+
+    return '';
   } catch {
-    // Malformed JSON: treat the raw text as the query so the search still runs.
+    // Malformed JSON: treat the raw text as the value so the call still runs.
     return rawArguments.trim();
   }
+};
+
+const extractSearchQuery = (rawArguments: string | undefined): string =>
+  extractStringArgument({
+    keys: ['query', 'q', 'search_query', 'text'],
+    rawArguments,
+    required: true,
+  });
+
+/**
+ * Builds the `web_fetch` arguments.
+ *
+ * A missing URL is reported to the model rather than thrown: the model sent the
+ * call, so telling it the argument was missing lets it retry correctly, whereas
+ * an exception would surface as an opaque tool failure.
+ */
+const extractFetchQuery = (rawArguments: string | undefined): WebFetchQuery => {
+  const url = extractStringArgument({
+    keys: ['url', 'uri', 'link'],
+    rawArguments,
+    required: false,
+  });
+  const prompt = extractStringArgument({
+    keys: ['prompt', 'question', 'goal'],
+    rawArguments,
+    required: false,
+  });
+
+  return { ...(prompt ? { prompt } : {}), url };
 };
 
 const sumUsage = (accumulated: unknown, incoming: unknown): unknown => {
@@ -251,9 +406,36 @@ export const executeWebSearchLoop = async ({
   body: ChatRequestBody;
   callUpstream: (body: ChatRequestBody) => Promise<Response>;
 }): Promise<{ body: ChatRequestBody; response: Response } | null> => {
-  const tools = replaceWebSearchTools(body.tools);
+  const [searchEnabled, fetchEnabled, config] = await Promise.all([
+    isWebSearchEnabled(),
+    isWebFetchEnabled(),
+    getActiveConfig(),
+  ]);
 
-  if (!tools || !(await isWebSearchEnabled())) {
+  if (!searchEnabled && !fetchEnabled) {
+    return null;
+  }
+
+  const resolveEndpoint = getCodeBuddyApiEndpoint;
+  const searchProvider = searchEnabled
+    ? resolveSearchProvider(
+        config.CODEBUDDY_WEB_SEARCH_BACKEND,
+        resolveEndpoint,
+      )
+    : null;
+  const fetchProvider = fetchEnabled
+    ? resolveFetchProvider(config.CODEBUDDY_WEB_FETCH_BACKEND, resolveEndpoint)
+    : null;
+
+  const tools = replaceServerTools({
+    fetchEnabled,
+    fetchProvider,
+    searchEnabled,
+    searchProvider,
+    tools: body.tools,
+  });
+
+  if (!tools) {
     return null;
   }
 
@@ -275,30 +457,42 @@ export const executeWebSearchLoop = async ({
 
     const message = payload.choices?.[0]?.message;
     const toolCalls = message?.tool_calls ?? [];
-    const searchCalls = toolCalls.filter(isWebSearchToolCall);
+    const localCalls = toolCalls.filter(
+      (toolCall) =>
+        isWebSearchToolCall(toolCall) || isWebFetchToolCall(toolCall),
+    );
     const remainingCalls = toolCalls.filter(
-      (toolCall) => !isWebSearchToolCall(toolCall),
+      (toolCall) =>
+        !isWebSearchToolCall(toolCall) && !isWebFetchToolCall(toolCall),
     );
 
-    if (!searchCalls.length) {
+    if (!localCalls.length) {
       break;
     }
 
     const results = await Promise.all(
-      searchCalls.map(async (toolCall) => ({
-        content: await runWebSearch({
-          query: extractSearchQuery(toolCall.function?.arguments),
-        }),
+      localCalls.map(async (toolCall) => ({
+        content: isWebFetchToolCall(toolCall)
+          ? await runWebFetch({
+              // Already resolved above; re-resolving would rebuild the provider
+              // for every call in the turn.
+              provider: fetchProvider,
+              query: extractFetchQuery(toolCall.function?.arguments),
+            })
+          : await runWebSearch({
+              provider: searchProvider,
+              query: extractSearchQuery(toolCall.function?.arguments),
+            }),
         tool_call_id: toolCall.id ?? '',
       })),
     );
 
-    // A turn mixing search with client-side calls cannot be continued locally:
-    // the client owns those calls, and re-issuing the transcript with only
-    // search results would leave them unanswered, which upstream rejects as an
-    // invalid tool-call transcript. Run the searches, fold the findings into the
-    // message text, and hand the outstanding calls back so the client resolves
-    // them on its next turn.
+    // A turn mixing server tools with client-side calls cannot be continued
+    // locally: the client owns those calls, and re-issuing the transcript with
+    // only server-tool results would leave them unanswered, which upstream
+    // rejects as an invalid tool-call transcript. Run the server tools, fold the
+    // findings into the message text, and hand the outstanding calls back so the
+    // client resolves them on its next turn.
     if (remainingCalls.length) {
       return {
         body: loopBody,
@@ -324,8 +518,8 @@ export const executeWebSearchLoop = async ({
       })),
     );
 
-    // A forced tool_choice would make the model call search forever; once the
-    // loop is running, let it decide when it has enough.
+    // A forced tool_choice would make the model call a server tool forever;
+    // once the loop is running, let it decide when it has enough.
     loopBody = {
       ...loopBody,
       messages,
@@ -334,14 +528,16 @@ export const executeWebSearchLoop = async ({
     payload = null;
   }
 
-  // The budget ran out with the model still asking to search. Drop the search
-  // tool and ask once more so it answers with what it has: looping forever
-  // would hang the request, and returning `null` would hand the unfinished
-  // tool call back to the client, which has no way to resolve it.
+  // The budget ran out with the model still asking to search or fetch. Drop
+  // every server tool and ask once more so it answers with what it has: looping
+  // forever would hang the request, and returning `null` would hand the
+  // unfinished tool call back to the client, which has no way to resolve it.
   if (!payload) {
     const finalResponse = await callUpstream({
       ...loopBody,
-      tools: (loopBody.tools ?? []).filter((tool) => !isWebSearchTool(tool)),
+      tools: (loopBody.tools ?? []).filter(
+        (tool) => !isWebSearchTool(tool) && !isWebFetchTool(tool),
+      ),
     });
     payload = (await finalResponse.json()) as ChatCompletionPayload;
     usage = sumUsage(usage, payload.usage);

@@ -443,6 +443,9 @@
       "saveSuccess": "设置已保存。",
       "title": "服务配置",
       "webSearchDescription": "启用后，在 Codebuddy2API 本地完成 WebSearch 操作。",
+      "webFetchDescription": "启用后，在 Codebuddy2API 本地完成 WebFetch 操作。",
+      "webSearchBackendHint": "WebSearch 的执行位置。codebuddy 使用已保存的凭证调用 CodeBuddy 自带的 agent-tool 接口；searxng 查询 SearXNG 实例（需配置 SEARXNG_URL）；none 关闭该工具。",
+      "webFetchBackendHint": "WebFetch 的执行位置。codebuddy 使用已保存的凭证调用 CodeBuddy 自带的 agent-tool 接口；local 由本服务直接抓取页面；none 关闭该工具。",
       "usageCacheDescription": "删除所有已保存的用量统计记录。此操作无法撤销。",
       "usageCacheTitle": "用量统计缓存"
     },
