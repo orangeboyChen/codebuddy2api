@@ -40,7 +40,9 @@ import { resetUsageStats } from '@/lib/server/domain/stats';
 import type { ChatRequestBody } from '@/lib/server/proxy/codebuddy';
 import {
   buildWebFetchToolDefinition,
+  buildWebSearchToolDefinition,
   isMarkedServerTool,
+  normalizeToolName,
   stripServerToolMarker,
 } from '@/lib/server/search/tool';
 import { executeWebSearchLoop } from '@/lib/server/proxy/web-search-loop';
@@ -1275,6 +1277,38 @@ describe('server tool backends', () => {
     });
   });
 
+  describe('tool name normalization', () => {
+    it('collapses the spellings upstream uses for the same tool', () => {
+      // The wire format is snake_case, but the model echoes the call back in
+      // whatever casing it prefers, so every spelling has to compare equal.
+      const spellings = [
+        'web_fetch',
+        'WebFetch',
+        'webFetch',
+        'Web Fetch',
+        'web-fetch',
+        '  WEB_FETCH  ',
+      ];
+
+      for (const spelling of spellings) {
+        expect(normalizeToolName(spelling)).toBe('webfetch');
+      }
+
+      expect(normalizeToolName('web_fetch_20250910')).toBe(
+        normalizeToolName('WebFetch_20250910'),
+      );
+    });
+
+    it('keeps distinct tools distinct', () => {
+      expect(normalizeToolName('web_fetch')).not.toBe(
+        normalizeToolName('web_search'),
+      );
+      expect(normalizeToolName('WebFetch')).not.toBe(
+        normalizeToolName('WebSearch'),
+      );
+    });
+  });
+
   describe('server tool marker', () => {
     it('ignores non-object values', () => {
       expect(isMarkedServerTool(null)).toBe(false);
@@ -1673,6 +1707,146 @@ describe('server tool backends', () => {
       };
       expect(payload.choices[0]?.message.content).toBe('Fetched.');
       expect(call).toBe(2);
+    });
+
+    it('executes a fetch the model echoes back as WebFetch', async () => {
+      // Regression guard: upstream returns the call as `WebFetch`, not
+      // `web_fetch`. An exact name match missed it, so the call was neither
+      // executed nor taken over — it was handed straight back to the client
+      // unresolved, and the fetch silently never happened.
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
+      });
+
+      let call = 0;
+      const response = await runOnce({
+        fetchImpl: async (...args: unknown[]) => {
+          const url = String(args[0]);
+
+          if (url.includes('/v2/chat/completions')) {
+            call += 1;
+
+            return call === 1
+              ? makeJsonResponse({
+                  choices: [
+                    {
+                      finish_reason: 'tool_calls',
+                      message: {
+                        tool_calls: [
+                          {
+                            id: 'c1',
+                            function: {
+                              arguments: '{"url":"https://a.test/page"}',
+                              name: 'WebFetch',
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                })
+              : makeJsonResponse({
+                  choices: [
+                    { finish_reason: 'stop', message: { content: 'Fetched.' } },
+                  ],
+                });
+          }
+
+          return new Response('<html><body><p>Page body</p></body></html>', {
+            headers: { 'Content-Type': 'text/html' },
+            status: 200,
+          });
+        },
+        tools: [{ type: 'function', function: buildWebFetchToolDefinition() }],
+      });
+
+      const payload = (await response.json()) as {
+        choices: Array<{ message: { content: string } }>;
+      };
+
+      // A second upstream call means the tool ran and its result was folded
+      // back in. Before the fix the loop broke on the first response and
+      // returned the unresolved call, so this was 1.
+      expect(payload.choices[0]?.message.content).toBe('Fetched.');
+      expect(call).toBe(2);
+    });
+
+    it('executes a search the model echoes back as WebSearch', async () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      let call = 0;
+      let searched = 0;
+      const response = await runOnce({
+        fetchImpl: async (...args: unknown[]) => {
+          const url = String(args[0]);
+
+          if (url.includes('searx.test')) {
+            searched += 1;
+
+            return makeJsonResponse({
+              results: [
+                {
+                  content: 'A snippet',
+                  title: 'Docs',
+                  url: 'https://docs.test',
+                },
+              ],
+            });
+          }
+
+          if (url.includes('/v2/chat/completions')) {
+            call += 1;
+
+            return call === 1
+              ? makeJsonResponse({
+                  choices: [
+                    {
+                      finish_reason: 'tool_calls',
+                      message: {
+                        tool_calls: [
+                          {
+                            id: 'c1',
+                            function: {
+                              arguments: '{"query":"latest news"}',
+                              name: 'WebSearch',
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                })
+              : makeJsonResponse({
+                  choices: [
+                    {
+                      finish_reason: 'stop',
+                      message: { content: 'Searched.' },
+                    },
+                  ],
+                });
+          }
+
+          return makeJsonResponse({});
+        },
+        tools: [{ type: 'function', function: buildWebSearchToolDefinition() }],
+      });
+
+      const payload = (await response.json()) as {
+        choices: Array<{ message: { content: string } }>;
+      };
+
+      expect(payload.choices[0]?.message.content).toBe('Searched.');
+      expect(searched).toBe(1);
+      expect(call).toBe(2);
+
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
     });
 
     it('drops a fetch server-tool declaration it cannot execute', async () => {
