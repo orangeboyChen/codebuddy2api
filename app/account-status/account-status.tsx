@@ -13,8 +13,8 @@ import {
   Text,
   Tooltip,
 } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
-import { Check, Copy, RefreshCw } from 'lucide-react';
+import { Button, Select, Switch } from '@lobehub/ui/base-ui';
+import { CalendarClock, Check, Copy, RefreshCw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState } from 'react';
 
@@ -39,6 +39,26 @@ export interface AccountStatusSnapshot {
   models: string[];
   queriedAt: string;
 }
+
+/**
+ * Fallback when a credential has no stored time. Mirrors
+ * `DEFAULT_AUTO_CHECKIN_TIME` on the server; the client must not import from
+ * `lib/server`, so the value is restated here.
+ */
+const DEFAULT_AUTO_CHECKIN_TIME = '09:00';
+
+/**
+ * Times offered for automatic check-in.
+ *
+ * The server accepts any `HH:MM`; these are simply the slots worth offering, so
+ * a schedule is a choice rather than a typing exercise.
+ */
+const AUTO_CHECKIN_TIMES = Array.from({ length: 48 }, (_, index) => {
+  const hours = String(Math.floor(index / 2)).padStart(2, '0');
+  const minutes = index % 2 === 0 ? '00' : '30';
+
+  return { label: `${hours}:${minutes}`, value: `${hours}:${minutes}` };
+});
 
 const initialSnapshot = (filename: string): AccountStatusSnapshot => ({
   checkin: { claimed: null, message: null },
@@ -174,18 +194,70 @@ const AccountStatusSkeleton = () => (
   </Block>
 );
 
+const AutoCheckinRow = ({
+  enabled,
+  saving,
+  time,
+  onToggle,
+  onTimeChange,
+}: {
+  enabled: boolean;
+  saving: boolean;
+  time: string;
+  onToggle: (checked: boolean) => void;
+  onTimeChange: (time: string) => void;
+}) => {
+  const text = useTranslations('Admin');
+  return (
+    <Flexbox
+      align="center"
+      className="account-status-card-auto-checkin"
+      distribution="space-between"
+      gap={12}
+      horizontal
+      wrap="wrap"
+      width="100%"
+    >
+      <Flexbox align="center" gap={8} horizontal>
+        <CalendarClock size={16} />
+        <Flexbox direction="vertical" gap={2}>
+          <Text strong>{text('accountStatus.autoCheckin')}</Text>
+          <Text className="text-sm" type="secondary">
+            {text('accountStatus.autoCheckinDescription')}
+          </Text>
+        </Flexbox>
+      </Flexbox>
+      <Flexbox align="center" gap={12} horizontal>
+        <Text type="secondary">{text('accountStatus.autoCheckinTime')}</Text>
+        <Select
+          className="account-status-card-auto-checkin-time"
+          disabled={!enabled || saving}
+          onChange={onTimeChange}
+          options={AUTO_CHECKIN_TIMES}
+          value={time}
+        />
+        <Switch checked={enabled} disabled={saving} onChange={onToggle} />
+      </Flexbox>
+    </Flexbox>
+  );
+};
+
 const AccountStatusCard = ({
   credential,
   snapshot,
   busy,
   onRefresh,
   onCheckin,
+  autoCheckin,
+  onAutoCheckinChange,
 }: {
   credential: CredentialSummary;
   snapshot: AccountStatusSnapshot;
   busy: string | null;
   onRefresh: () => void;
   onCheckin: () => void;
+  autoCheckin: { enabled: boolean; time: string };
+  onAutoCheckinChange: (next: { enabled?: boolean; time?: string }) => void;
 }) => {
   const text = useTranslations('Admin');
   const quotaUnknown = text('accountStatus.quotaUnknown');
@@ -271,6 +343,13 @@ const AccountStatusCard = ({
           {text('accountStatus.checkinAction')}
         </Button>
       </Flexbox>
+      <AutoCheckinRow
+        enabled={autoCheckin.enabled}
+        saving={busy === 'auto-checkin'}
+        time={autoCheckin.time}
+        onToggle={(checked) => onAutoCheckinChange({ enabled: checked })}
+        onTimeChange={(next) => onAutoCheckinChange({ time: next })}
+      />
       <Flexbox direction="vertical" gap={8}>
         <Text strong>{text('accountStatus.models')}</Text>
         {snapshot.models.length ? (
@@ -302,6 +381,19 @@ const AccountStatus = ({
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [page, setPage] = useState(1);
   const [batchBusy, setBatchBusy] = useState<string | null>(null);
+  const [autoCheckin, setAutoCheckin] = useState<
+    Record<string, { enabled: boolean; time: string }>
+  >(() =>
+    Object.fromEntries(
+      credentials.map((credential) => [
+        credential.filename,
+        {
+          enabled: credential.auto_checkin_enabled === true,
+          time: credential.auto_checkin_time || DEFAULT_AUTO_CHECKIN_TIME,
+        },
+      ]),
+    ),
+  );
   const loadOne = useCallback(
     async (filename: string, action: 'refresh' | 'checkin' = 'refresh') => {
       setBusy((current) => ({ ...current, [filename]: action }));
@@ -361,6 +453,71 @@ const AccountStatus = ({
     },
     [credentials, loadOne, snapshots],
   );
+  const saveAutoCheckin = useCallback(
+    async (filename: string, next: { enabled?: boolean; time?: string }) => {
+      const previous = autoCheckin[filename] ?? {
+        enabled: false,
+        time: DEFAULT_AUTO_CHECKIN_TIME,
+      };
+      const merged = {
+        enabled: next.enabled ?? previous.enabled,
+        time: next.time ?? previous.time,
+      };
+
+      // Optimistic: the switch should move immediately, and a failure is
+      // reverted with an error on the card rather than leaving the control
+      // stuck in the old state.
+      setAutoCheckin((current) => ({ ...current, [filename]: merged }));
+      setBusy((current) => ({ ...current, [filename]: 'auto-checkin' }));
+
+      try {
+        const response = await fetch('/admin-api/account-status', {
+          body: JSON.stringify({ action: 'auto-checkin', filename, ...next }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+        });
+
+        if (!response.ok) {
+          throw new Error(`Auto check-in request failed (${response.status})`);
+        }
+
+        const payload = (await response.json()) as {
+          autoCheckin?: { enabled: boolean; time: string };
+          error?: string;
+        };
+
+        if (payload.error) throw new Error(payload.error);
+        if (payload.autoCheckin)
+          setAutoCheckin((current) => ({
+            ...current,
+            [filename]: payload.autoCheckin as {
+              enabled: boolean;
+              time: string;
+            },
+          }));
+      } catch (error) {
+        setAutoCheckin((current) => ({ ...current, [filename]: previous }));
+        setSnapshots((current) => ({
+          ...current,
+          [filename]: {
+            ...(current[filename] ?? failedSnapshot(filename, error)),
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Auto check-in update failed',
+          },
+        }));
+      } finally {
+        setBusy((current) => {
+          const pending = { ...current };
+          delete pending[filename];
+          return pending;
+        });
+      }
+    },
+    [autoCheckin],
+  );
+
   const pageCredentials = useMemo(
     () =>
       credentials.length > 50
@@ -409,6 +566,15 @@ const AccountStatus = ({
               busy={busy[credential.filename] ?? null}
               onCheckin={() => void loadOne(credential.filename, 'checkin')}
               onRefresh={() => void loadOne(credential.filename)}
+              autoCheckin={
+                autoCheckin[credential.filename] ?? {
+                  enabled: false,
+                  time: DEFAULT_AUTO_CHECKIN_TIME,
+                }
+              }
+              onAutoCheckinChange={(next) =>
+                void saveAutoCheckin(credential.filename, next)
+              }
             />
           );
         })

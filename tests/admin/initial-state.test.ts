@@ -47,6 +47,8 @@ describe('admin initial state', () => {
     };
     initialData.credentials = [
       {
+        auto_checkin_enabled: false,
+        auto_checkin_time: '09:00',
         created_at: null,
         domain: '',
         email: '',
@@ -70,6 +72,8 @@ describe('admin initial state', () => {
         user_id: '',
       },
       {
+        auto_checkin_enabled: false,
+        auto_checkin_time: '09:00',
         created_at: null,
         domain: '',
         email: '',

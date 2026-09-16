@@ -52,7 +52,12 @@
       "checkinAll": "すべてチェックイン",
       "empty": "認証情報がありません",
       "quotaUnknown": "使用量不明",
-      "quotaUsed": "残り容量 {percent}%"
+      "quotaUsed": "残り容量 {percent}%",
+      "autoCheckin": "自動チェックイン",
+      "autoCheckinDescription": "ゲートウェイの稼働中に、指定した時刻へ 1 日 1 回このアカウントをチェックインします。",
+      "autoCheckinTime": "時刻",
+      "autoCheckinSaved": "自動チェックインを保存しました",
+      "autoCheckinFailed": "自動チェックインを保存できませんでした"
     },
     "dashboard": {
       "welcomeTitle": "トークンをぶん回す準備はできた？",

@@ -5,6 +5,7 @@ import {
   hasAccessKeys,
   removeCredentialReferencesFromAccessKeys,
 } from './access-keys';
+import { getAutoCheckinTime } from './auto-checkin-settings';
 import {
   deleteStorageJson,
   getCredsDir,
@@ -34,6 +35,16 @@ export type CredentialData = Record<string, unknown> & {
   first_message_role_to_system?: boolean;
   first_system_message_role_to_user?: boolean;
   supported_models?: string;
+  /** Whether the built-in scheduler checks this account in automatically. */
+  auto_checkin_enabled?: boolean;
+  /**
+   * Local wall-clock time to check in, as `HH:MM` in 24-hour form. Stored as a
+   * string rather than an offset so it stays correct across DST changes and
+   * matches what the operator picked in the console.
+   */
+  auto_checkin_time?: string;
+  /** Local date (`YYYY-MM-DD`) the scheduler last ran a check-in for this account. */
+  auto_checkin_last_date?: string;
 };
 
 export interface CredentialRecord {
@@ -485,6 +496,10 @@ export const listCredentials = async (): Promise<{
         ),
         user_id:
           record.data.user_id ?? record.data.user_info?.email ?? 'unknown',
+        auto_checkin_enabled: getBooleanSetting(
+          record.data.auto_checkin_enabled,
+        ),
+        auto_checkin_time: getAutoCheckinTime(record.data),
       };
     }),
   };
