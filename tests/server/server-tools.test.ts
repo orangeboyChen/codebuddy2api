@@ -37,10 +37,12 @@ import type { ChatRequestBody } from '@/lib/server/proxy/codebuddy';
 import {
   buildWebFetchToolDefinition,
   isMarkedServerTool,
+  stripServerToolMarker,
 } from '@/lib/server/search/tool';
 import { executeWebSearchLoop } from '@/lib/server/proxy/web-search-loop';
 import { translateResponsesToolsToChat } from '@/lib/server/proxy/responses';
 import {
+  pickCredentialToken,
   resolveCodeBuddyToken,
   withCodeBuddyToken,
 } from '@/lib/server/search/token';
@@ -89,6 +91,23 @@ const withCredential = async (): Promise<void> => {
     supported_models: 'glm-5.1',
     user_id: 'tester',
   });
+};
+
+/**
+ * Reads the loop's buffered payload, asserting the loop produced a response.
+ *
+ * `executeWebSearchLoop` legitimately returns a null response when no backend
+ * can run the declared tools, so assertions on the payload have to rule that
+ * out rather than reading through a nullable.
+ */
+const readPayload = async (
+  result: { response: Response | null } | null,
+): Promise<Record<string, unknown>> => {
+  if (!result?.response) {
+    throw new Error('Expected the server-tool loop to produce a response');
+  }
+
+  return (await result.response.json()) as Record<string, unknown>;
 };
 
 describe('server tool backends', () => {
@@ -319,6 +338,141 @@ describe('server tool backends', () => {
     });
   });
 
+  describe('provider resolution', () => {
+    it('resolves the codebuddy search backend', () => {
+      expect(
+        resolveSearchProvider('codebuddy', async () => 'https://cb.test')?.id,
+      ).toBe('codebuddy');
+    });
+
+    it('resolves the local fetch backend', () => {
+      expect(
+        resolveFetchProvider('local', async () => 'https://cb.test')?.id,
+      ).toBe('local');
+    });
+
+    it('resolves the codebuddy fetch backend', () => {
+      expect(
+        resolveFetchProvider('codebuddy', async () => 'https://cb.test')?.id,
+      ).toBe('codebuddy');
+    });
+  });
+
+  describe('token resolution', () => {
+    it('prefers bearer_token', () => {
+      expect(
+        pickCredentialToken({ access_token: 'a', bearer_token: 'b' }),
+      ).toBe('b');
+    });
+
+    it('falls back to access_token when bearer_token is empty', () => {
+      // Empty must fall through, not just null: `??` would stop at the blank
+      // and report "no token" for a credential that has one.
+      expect(
+        pickCredentialToken({ access_token: 'fallback', bearer_token: '' }),
+      ).toBe('fallback');
+    });
+
+    it('falls back to access_token when bearer_token is missing', () => {
+      expect(pickCredentialToken({ access_token: 'fallback' })).toBe(
+        'fallback',
+      );
+    });
+
+    it('treats a whitespace-only token as absent', () => {
+      expect(
+        pickCredentialToken({ access_token: '  ', bearer_token: ' ' }),
+      ).toBeNull();
+    });
+
+    it('reports no token for an empty credential', () => {
+      expect(pickCredentialToken({})).toBeNull();
+    });
+  });
+
+  describe('declaration stripping', () => {
+    it('drops a server-declared search tool when search is disabled', async () => {
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_ENABLED: 'false',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
+        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'No tools.' } },
+            ],
+          }),
+      });
+
+      expect(result?.response).toBeNull();
+      expect(result?.body.tools).toEqual([]);
+    });
+
+    it('reads a query from the first non-empty string field', async () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({
+        CODEBUDDY_WEB_SEARCH_ENABLED: 'true',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      let searched = '';
+      stubFetch(async (...args: unknown[]) => {
+        const url = String(args[0]);
+
+        if (url.includes('searx.test')) {
+          searched = new URL(url).searchParams.get('q') ?? '';
+
+          return makeJsonResponse({ results: [] });
+        }
+
+        return makeJsonResponse({
+          choices: [{ finish_reason: 'stop', message: { content: 'done' } }],
+        });
+      });
+
+      await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [{ type: 'web_search_preview' }],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  tool_calls: [
+                    {
+                      id: 'call_alias',
+                      function: {
+                        // No known key: the fallback takes the first string.
+                        arguments: '{"whatever":"unexpected shape"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+      });
+
+      expect(searched).toBe('unexpected shape');
+
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
+    });
+  });
+
   describe('codebuddy fetch provider', () => {
     it('posts the url and prompt to the webfetch path', async () => {
       const mock = stubFetch(async () =>
@@ -426,6 +580,59 @@ describe('server tool backends', () => {
 
       expect(result.url).toBe('https://a.test/page');
       expect(result.content).toContain('Body');
+    });
+
+    it('reports an HTTP error carrying no message', async () => {
+      stubFetch(async () => makeJsonResponse({ code: 1 }, 500));
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test' },
+        }),
+      ).resolves.toContain('failed with HTTP 500');
+    });
+
+    it('falls back to Unknown error when the code carries no message', async () => {
+      stubFetch(async () => makeJsonResponse({ code: 42 }));
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test' },
+        }),
+      ).resolves.toContain('Unknown error');
+    });
+
+    it('treats a non-string content field as empty', async () => {
+      stubFetch(async () => makeJsonResponse({ content: { nope: true } }));
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test' },
+        }),
+      ).resolves.toContain('no readable content');
+    });
+
+    it('omits the prompt from the result when none was given', async () => {
+      stubFetch(async () => makeJsonResponse({ content: 'Body text' }));
+
+      const result = await createCodeBuddyFetchProvider({
+        resolveEndpoint: async () => 'https://cb.test',
+        resolveToken: async () => 'token',
+      }).fetch({ url: 'https://a.test/page' });
+
+      expect(result.content).not.toContain('Requested focus');
     });
 
     it('reports a missing URL without calling the endpoint', async () => {
@@ -605,6 +812,34 @@ describe('server tool backends', () => {
       );
     });
 
+    it('reports a blank URL without connecting', async () => {
+      await expect(fetchWith('   ')).resolves.toContain('without a URL');
+    });
+
+    it('follows a redirect whose location header is an array', async () => {
+      let call = 0;
+      handler = (_req, res) => {
+        call += 1;
+
+        if (call === 1) {
+          // Node exposes repeated headers as an array, and only the first is
+          // used. `setHeader` accepts that array shape, but it has to run
+          // before `writeHead` commits the headers.
+          res.setHeader('location', [`${baseUrl}/final`, '/ignored']);
+          res.writeHead(302);
+          res.end();
+          return;
+        }
+
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('final body');
+      };
+
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'final body',
+      );
+    });
+
     it('refuses localhost and other reserved hosts', async () => {
       const mock = stubFetch(async () => makeJsonResponse({ content: 'x' }));
 
@@ -722,6 +957,28 @@ describe('server tool backends', () => {
       ).resolves.toContain('could not resolve host');
     });
 
+    it('sends no default port and reports an https failure', async () => {
+      // Exercises the https branch: it needs a `servername` for SNI and must not
+      // append a port. There is no TLS server here, so the request fails — the
+      // point is that the transport is configured, not that it connects.
+      await expect(
+        fetchWith('https://unreachable.invalid.test/page', {
+          resolveHost: async () => ['192.0.2.1'],
+        }),
+      ).resolves.toContain('Web fetch failed');
+    });
+
+    it('treats a missing content type as text', async () => {
+      handler = (_req, res) => {
+        res.writeHead(200);
+        res.end('plain body');
+      };
+
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'plain body',
+      );
+    });
+
     it('stops reading once the body cap is reached', async () => {
       const chunk = 'y'.repeat(1000);
       handler = (_req, res) => {
@@ -758,6 +1015,14 @@ describe('server tool backends', () => {
         required: ['url'],
         type: 'object',
       });
+    });
+  });
+
+  describe('server tool marker', () => {
+    it('ignores non-object values', () => {
+      expect(isMarkedServerTool(null)).toBe(false);
+      expect(isMarkedServerTool('nope')).toBe(false);
+      expect(stripServerToolMarker('plain')).toBe('plain');
     });
   });
 
@@ -1146,6 +1411,100 @@ describe('server tool backends', () => {
       expect(result?.body.tools).toEqual([
         { type: 'function', function: { name: 'keep_me' } },
       ]);
+    });
+
+    it('drops a client-declared function it would otherwise keep once disabled', async () => {
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_ENABLED: 'false',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
+        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [{ type: 'function', function: { name: 'keep_me' } }],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'No tools.' } },
+            ],
+          }),
+      });
+
+      // No server tool was declared, so nothing is rewritten.
+      expect(result).toBeNull();
+    });
+
+    it('withdraws server tools when the model keeps calling them', async () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({
+        CODEBUDDY_WEB_SEARCH_ENABLED: 'true',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+      stubFetch(async (...args: unknown[]) => {
+        const url = String(args[0]);
+
+        if (url.includes('searx.test')) {
+          return makeJsonResponse({ results: [] });
+        }
+
+        return makeJsonResponse({
+          choices: [
+            {
+              finish_reason: 'tool_calls',
+              message: {
+                tool_calls: [
+                  {
+                    id: `call_${url.length}`,
+                    function: {
+                      arguments: '{"query":"again"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      });
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [{ type: 'web_search_preview' }],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  tool_calls: [
+                    {
+                      id: 'call_loop',
+                      function: {
+                        arguments: '{"query":"again"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+      });
+
+      // The budget ran out, so the final call goes out with the server tool
+      // withdrawn — otherwise the model would search forever.
+      const payload = await readPayload(result);
+      expect(payload.choices).toBeDefined();
+
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
     });
 
     it('leaves a client-declared web_fetch function alone when disabled', async () => {

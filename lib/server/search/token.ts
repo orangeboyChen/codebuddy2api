@@ -40,6 +40,28 @@ const tokenStorage = new AsyncLocalStorage<TokenResolver>();
  * there would make the backend unusable for no security benefit — the token is
  * only ever sent to the configured CodeBuddy endpoint.
  */
+/**
+ * Picks the first usable token from a credential.
+ *
+ * Empty strings fall through rather than only `null`/`undefined`. A credential
+ * saved with a blank `bearer_token` and a populated `access_token` is common,
+ * and `??` would stop at the blank and report "no token" for a credential that
+ * has one. The proxy's own upstream path already reads these fields this way, so
+ * the agent-tool backends agree with it.
+ *
+ * Exported because the fall-through rules are easy to get wrong and worth
+ * testing directly, without going through credential storage.
+ */
+export const pickCredentialToken = (
+  data: Record<string, unknown>,
+): string | null => {
+  const token = [data.bearer_token, data.access_token]
+    .map((value) => String(value ?? '').trim())
+    .find((value) => value.length > 0);
+
+  return token ? token : null;
+};
+
 export const resolveCodeBuddyToken: TokenResolver = async () => {
   const ambient = tokenStorage.getStore();
 
@@ -53,11 +75,7 @@ export const resolveCodeBuddyToken: TokenResolver = async () => {
     return null;
   }
 
-  const token = String(
-    credential.data.bearer_token ?? credential.data.access_token ?? '',
-  ).trim();
-
-  return token || null;
+  return pickCredentialToken(credential.data);
 };
 
 /**
