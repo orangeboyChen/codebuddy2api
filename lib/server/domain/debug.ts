@@ -924,6 +924,95 @@ const scheduleDebugFlush = (): void => {
   debugFlushTimer.unref?.();
 };
 
+const observeResponseCompletion = (
+  response: Response,
+  onComplete: () => void,
+): Response => {
+  if (!response.body) {
+    onComplete();
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  let completed = false;
+  const complete = (): void => {
+    if (completed) return;
+    completed = true;
+    onComplete();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async cancel(reason): Promise<void> {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        complete();
+        reader.releaseLock();
+      }
+    },
+    async pull(controller): Promise<void> {
+      try {
+        const chunk = await reader.read();
+
+        if (chunk.done) {
+          complete();
+          controller.close();
+          reader.releaseLock();
+          return;
+        }
+
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        complete();
+        controller.error(error);
+        reader.releaseLock();
+      }
+    },
+  });
+
+  return new Response(body, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+};
+
+const appendCompletedDebugTrace = async (
+  trace: DebugTrace,
+  lifecycle: Promise<void>,
+): Promise<void> => {
+  try {
+    let processed = 0;
+
+    while (processed < trace.pending.length) {
+      const pending = trace.pending
+        .slice(processed)
+        .filter((promise) => promise !== lifecycle);
+      processed = trace.pending.length;
+      await Promise.all(pending);
+      await Promise.resolve();
+    }
+  } catch (error) {
+    setDebugTraceError(trace, error);
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - trace.startedAtMs);
+  await appendDebugLog({
+    credentialFilename: trace.credentialFilename,
+    createdAt: trace.createdAt,
+    elapsedMs,
+    error: trace.error,
+    id: trace.id,
+    model: getTraceModel(trace),
+    requestBody: trace.requestBody,
+    requestKey: trace.requestKey,
+    route: trace.route,
+    transformedResponse: trace.transformedResponse,
+    upstreamRequest: trace.upstreamRequest,
+    upstreamResponse: trace.upstreamResponse,
+    usage: getTraceUsage(trace),
+  });
+};
+
 export const finalizeDebugTrace = (
   trace: DebugTrace | undefined,
   response: Response,
@@ -933,6 +1022,29 @@ export const finalizeDebugTrace = (
   }
 
   pendingDebugTraces += 1;
+  let finalizeStarted = false;
+  let resolveLifecycle!: () => void;
+  const lifecycle = new Promise<void>((resolve) => {
+    resolveLifecycle = resolve;
+  });
+  const complete = (): void => {
+    if (finalizeStarted) return;
+    finalizeStarted = true;
+    void appendCompletedDebugTrace(trace, lifecycle).finally(() => {
+      pendingDebugTraces -= 1;
+      resolveLifecycle();
+    });
+  };
+  trace.pending.push(lifecycle);
+
+  if (isStreamingResponse(response)) {
+    trace.transformedResponse = {
+      body: '[streaming response body omitted]',
+      headers: toHeadersRecord(response.headers),
+      status: response.status,
+    };
+    return observeResponseCompletion(response, complete);
+  }
 
   trace.pending.push(
     captureIndependentResponseSnapshot(response)
@@ -943,29 +1055,6 @@ export const finalizeDebugTrace = (
         setDebugTraceError(trace, error);
       }),
   );
-
-  void Promise.all(trace.pending)
-    .catch((error) => {
-      setDebugTraceError(trace, error);
-    })
-    .finally(() => {
-      const elapsedMs = Math.max(0, Date.now() - trace.startedAtMs);
-      void appendDebugLog({
-        credentialFilename: trace.credentialFilename,
-        createdAt: trace.createdAt,
-        elapsedMs,
-        error: trace.error,
-        id: trace.id,
-        model: getTraceModel(trace),
-        requestBody: trace.requestBody,
-        requestKey: trace.requestKey,
-        route: trace.route,
-        transformedResponse: trace.transformedResponse,
-        upstreamRequest: trace.upstreamRequest,
-        upstreamResponse: trace.upstreamResponse,
-        usage: getTraceUsage(trace),
-      });
-      pendingDebugTraces -= 1;
-    });
+  complete();
   return response;
 };

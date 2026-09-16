@@ -3020,13 +3020,15 @@ export const proxyChatCompletions = async (
                     ? [normalizeToolName(WEB_SEARCH_TOOL_NAME)]
                     : [normalizeToolName(WEB_FETCH_TOOL_NAME)];
 
-              return mode !== 'buffer'
-                ? detectServerToolStream(
-                    upstreamResponse,
-                    String(loopBody.model ?? 'unknown'),
-                    detectedNames,
-                  )
-                : upstreamResponse;
+              if (mode === 'stream' || mode === 'buffer') {
+                return upstreamResponse;
+              }
+
+              return detectServerToolStream(
+                upstreamResponse,
+                String(loopBody.model ?? 'unknown'),
+                detectedNames,
+              );
             },
             detectInitialStream: Boolean(body.stream),
           }),

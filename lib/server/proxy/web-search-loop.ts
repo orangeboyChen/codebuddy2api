@@ -54,6 +54,7 @@ type JsonRecord = Record<string, unknown>;
 
 interface ChatCompletionToolCall {
   id?: string;
+  index?: number;
   type?: string;
   function?: {
     arguments?: string;
@@ -474,9 +475,39 @@ export type ServerToolExecution =
     });
 
 export interface ServerToolCallbacks {
+  emitStreamEvents?: boolean;
   onCall?: (invocation: ServerToolInvocation) => void;
   onResult?: (execution: ServerToolExecution) => void;
 }
+
+const SERVER_TOOL_STREAM_EVENT_KEY = 'x-codebuddy2api-server-tool';
+
+export type ServerToolStreamEvent =
+  | { invocation: ServerToolInvocation; phase: 'call' }
+  | { execution: ServerToolExecution; phase: 'result' };
+
+export const getServerToolStreamEvent = (
+  value: unknown,
+): ServerToolStreamEvent | null => {
+  const record = asRecord(value);
+  const event = asRecord(record?.[SERVER_TOOL_STREAM_EVENT_KEY]);
+
+  if (event?.phase === 'call' && event.invocation) {
+    return {
+      invocation: event.invocation as ServerToolInvocation,
+      phase: 'call',
+    };
+  }
+
+  if (event?.phase === 'result' && event.execution) {
+    return {
+      execution: event.execution as ServerToolExecution,
+      phase: 'result',
+    };
+  }
+
+  return null;
+};
 
 const serverToolExecutions = new WeakMap<Response, ServerToolExecution[]>();
 
@@ -496,7 +527,517 @@ export const getServerToolExecutions = (
 ): ServerToolExecution[] => serverToolExecutions.get(response) ?? [];
 
 export type ServerToolUpstreamMode =
-  'buffer' | 'detect-both' | 'detect-fetch' | 'detect-search';
+  'buffer' | 'detect-both' | 'detect-fetch' | 'detect-search' | 'stream';
+
+const mergeStreamingToolName = (previous: string, incoming: string): string => {
+  if (!previous || incoming.startsWith(previous)) return incoming;
+  if (!incoming || previous.endsWith(incoming)) return previous;
+  return previous + incoming;
+};
+
+const aggregateStreamingToolCalls = (
+  deltas: ChatCompletionToolCall[],
+): ChatCompletionToolCall[] => {
+  const calls = new Map<
+    string,
+    ChatCompletionToolCall & {
+      function: { arguments: string; name: string };
+    }
+  >();
+  const latestKeyByIndex = new Map<number, string>();
+
+  deltas.forEach((delta, position) => {
+    const key =
+      (delta.id ? `id:${delta.id}` : undefined) ??
+      (typeof delta.index === 'number'
+        ? (latestKeyByIndex.get(delta.index) ?? `index:${delta.index}`)
+        : `position:${position}`);
+    const current = calls.get(key) ?? {
+      function: { arguments: '', name: '' },
+      index: delta.index,
+    };
+
+    current.id = delta.id ?? current.id;
+    current.index = delta.index ?? current.index;
+    current.type = delta.type ?? current.type;
+    current.function.arguments += delta.function?.arguments ?? '';
+    current.function.name = mergeStreamingToolName(
+      current.function.name,
+      delta.function?.name ?? '',
+    );
+    calls.set(key, current);
+
+    if (typeof delta.index === 'number') {
+      latestKeyByIndex.set(delta.index, key);
+    }
+  });
+
+  return [...calls.values()];
+};
+
+const buildServerToolInvocation = (
+  toolCall: ChatCompletionToolCall,
+  iteration: number,
+  index: number,
+): ServerToolInvocation =>
+  isWebFetchToolCall(toolCall)
+    ? {
+        id: toolCall.id ?? `server_tool_${iteration}_${index}`,
+        input: extractFetchQuery(toolCall.function?.arguments),
+        type: 'web_fetch',
+      }
+    : {
+        id: toolCall.id ?? `server_tool_${iteration}_${index}`,
+        input: { query: extractSearchQuery(toolCall.function?.arguments) },
+        type: 'web_search',
+      };
+
+const executeServerToolInvocations = async ({
+  callbacks,
+  fetchProvider,
+  invocations,
+  searchProvider,
+}: {
+  callbacks?: ServerToolCallbacks;
+  fetchProvider: WebFetchProvider | null;
+  invocations: ServerToolInvocation[];
+  searchProvider: WebSearchProvider | null;
+}): Promise<
+  Array<{
+    content: string;
+    execution: ServerToolExecution;
+    tool_call_id: string;
+  }>
+> => {
+  invocations.forEach((invocation) => callbacks?.onCall?.(invocation));
+
+  return await Promise.all(
+    invocations.map(async (invocation) => {
+      if (invocation.type === 'web_fetch') {
+        const result = await runWebFetchResult({
+          provider: fetchProvider,
+          query: invocation.input,
+        });
+        const execution: ServerToolExecution = { ...invocation, result };
+        callbacks?.onResult?.(execution);
+
+        return {
+          content: result.content,
+          execution,
+          tool_call_id: invocation.id,
+        };
+      }
+
+      const result = await runWebSearchResult({
+        provider: searchProvider,
+        query: invocation.input.query,
+      });
+      const execution: ServerToolExecution = { ...invocation, result };
+      callbacks?.onResult?.(execution);
+
+      return {
+        content: result.content,
+        execution,
+        tool_call_id: invocation.id,
+      };
+    }),
+  );
+};
+
+const createInlineServerToolStream = async ({
+  body,
+  callbacks,
+  callUpstream,
+  fetchProvider,
+  searchProvider,
+}: {
+  body: ChatRequestBody;
+  callbacks: ServerToolCallbacks;
+  callUpstream: (
+    body: ChatRequestBody,
+    mode: ServerToolUpstreamMode,
+  ) => Promise<Response>;
+  fetchProvider: WebFetchProvider | null;
+  searchProvider: WebSearchProvider | null;
+}): Promise<ServerToolLoopResult> => {
+  const firstResponse = await callUpstream(body, 'stream');
+  const contentType = firstResponse.headers.get('content-type') ?? '';
+
+  if (!contentType.toLowerCase().includes('text/event-stream')) {
+    return { body, executions: [], response: firstResponse };
+  }
+
+  const executions: ServerToolExecution[] = [];
+  const encoder = new TextEncoder();
+  let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let cancelled = false;
+  const emitJson = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    payload: Record<string, unknown>,
+  ): void => {
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+  };
+  const emitServerToolEvent = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    event: ServerToolStreamEvent,
+  ): void => {
+    emitJson(controller, { [SERVER_TOOL_STREAM_EVENT_KEY]: event });
+  };
+  const pipeResponse = async (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    response: Response,
+  ): Promise<void> => {
+    if (!response.body) return;
+    const reader = response.body.getReader();
+    activeReader = reader;
+
+    while (true) {
+      const chunk = await reader.read();
+      if (cancelled || chunk.done) break;
+      controller.enqueue(chunk.value);
+    }
+
+    reader.releaseLock();
+    activeReader = null;
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    start: (controller) => {
+      const run = async (): Promise<void> => {
+        const reader = firstResponse.body!.getReader();
+        activeReader = reader;
+        const decoder = new TextDecoder();
+        const heldToolFrames: string[] = [];
+        const toolCallDeltas: ChatCompletionToolCall[] = [];
+        let buffer = '';
+        let responseId = '';
+        let responseModel = String(body.model ?? 'unknown');
+        let responseObject = 'chat.completion';
+        let responseCreated = Math.floor(Date.now() / 1000);
+        let role = 'assistant';
+        let content = '';
+        let reasoning = '';
+        let usage: unknown = null;
+
+        const inspectFrame = (frame: string): void => {
+          const line = frame
+            .split(/\r?\n/)
+            .find((segment) => segment.startsWith('data:'));
+
+          if (!line) {
+            controller.enqueue(encoder.encode(`${frame}\n\n`));
+            return;
+          }
+
+          const raw = line.slice(5).trim();
+          if (!raw) return;
+          if (raw === '[DONE]') {
+            heldToolFrames.push(frame);
+            return;
+          }
+
+          try {
+            const chunk = JSON.parse(raw) as {
+              choices?: Array<{
+                delta?: ChatCompletionMessage & {
+                  tool_calls?: ChatCompletionToolCall[];
+                };
+                finish_reason?: string | null;
+              }>;
+              created?: number;
+              id?: string;
+              model?: string;
+              object?: string;
+              usage?: unknown;
+            };
+            responseId = chunk.id ?? responseId;
+            responseModel = chunk.model ?? responseModel;
+            responseObject =
+              chunk.object?.replace(/\.chunk$/, '') ?? responseObject;
+            responseCreated = chunk.created ?? responseCreated;
+            usage = chunk.usage ?? usage;
+            const choice = chunk.choices?.[0];
+            const delta = choice?.delta;
+            role = delta?.role ?? role;
+            content += delta?.content ?? '';
+            reasoning += delta?.reasoning_content ?? delta?.reasoning ?? '';
+
+            if (delta?.tool_calls?.length) {
+              toolCallDeltas.push(...delta.tool_calls);
+              heldToolFrames.push(frame);
+
+              const visibleDelta = { ...delta };
+              delete visibleDelta.tool_calls;
+
+              if (Object.keys(visibleDelta).length) {
+                emitJson(controller, {
+                  ...chunk,
+                  choices: [
+                    { ...choice, delta: visibleDelta, finish_reason: null },
+                  ],
+                });
+              }
+              return;
+            }
+
+            if (choice?.finish_reason === 'tool_calls') {
+              heldToolFrames.push(frame);
+              return;
+            }
+          } catch {
+            controller.enqueue(encoder.encode(`${frame}\n\n`));
+            return;
+          }
+
+          controller.enqueue(encoder.encode(`${frame}\n\n`));
+        };
+
+        while (true) {
+          const chunk = await reader.read();
+          if (cancelled) return;
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          const frames = buffer.split(/\r?\n\r?\n/);
+          buffer = frames.pop() ?? '';
+          frames.forEach(inspectFrame);
+        }
+
+        if (buffer.trim()) inspectFrame(buffer);
+        reader.releaseLock();
+        activeReader = null;
+
+        const toolCalls = aggregateStreamingToolCalls(toolCallDeltas);
+        const localCalls = toolCalls.filter(
+          (toolCall) =>
+            (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
+            (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
+        );
+
+        if (!localCalls.length) {
+          heldToolFrames.forEach((frame) =>
+            controller.enqueue(encoder.encode(`${frame}\n\n`)),
+          );
+          controller.close();
+          return;
+        }
+
+        const remainingCalls = toolCalls.filter(
+          (toolCall) =>
+            (!searchProvider || !isWebSearchToolCall(toolCall)) &&
+            (!fetchProvider || !isWebFetchToolCall(toolCall)),
+        );
+        const invocations = localCalls.map((toolCall, index) =>
+          buildServerToolInvocation(toolCall, 0, index),
+        );
+
+        invocations.forEach((invocation) => {
+          callbacks.onCall?.(invocation);
+          emitServerToolEvent(controller, { invocation, phase: 'call' });
+        });
+        const results = await executeServerToolInvocations({
+          callbacks: {
+            onResult: (execution) => {
+              callbacks.onResult?.(execution);
+              emitServerToolEvent(controller, { execution, phase: 'result' });
+            },
+          },
+          fetchProvider,
+          invocations,
+          searchProvider,
+        });
+        if (cancelled) return;
+        executions.push(...results.map((result) => result.execution));
+
+        if (remainingCalls.length) {
+          const findings = results.map((result) => result.content).join('\n\n');
+          if (findings) {
+            emitJson(controller, {
+              choices: [{ delta: { content: findings }, index: 0 }],
+              created: responseCreated,
+              id: responseId,
+              model: responseModel,
+              object: `${responseObject}.chunk`,
+            });
+          }
+          emitJson(controller, {
+            choices: [
+              {
+                delta: { tool_calls: remainingCalls },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+            created: responseCreated,
+            id: responseId,
+            model: responseModel,
+            object: `${responseObject}.chunk`,
+            usage,
+          });
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          return;
+        }
+
+        const messages = body.messages as JsonRecord[];
+        const assistantMessage: JsonRecord = {
+          role,
+          content: content || null,
+          tool_calls: toolCalls,
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
+        };
+        messages.push(assistantMessage);
+        messages.push(
+          ...results.map((result) => ({
+            role: 'tool',
+            tool_call_id: result.tool_call_id,
+            content: result.content,
+          })),
+        );
+
+        let loopBody: ChatRequestBody = {
+          ...body,
+          messages,
+          tool_choice: body.tool_choice ? 'auto' : body.tool_choice,
+        };
+        let finalPayload: ChatCompletionPayload | null = null;
+
+        for (
+          let iteration = 1;
+          iteration < MAX_SEARCH_ITERATIONS;
+          iteration++
+        ) {
+          const response = await callUpstream(loopBody, 'buffer');
+          const payload = (await response.json()) as ChatCompletionPayload;
+
+          if (!response.ok || payload.error) {
+            emitJson(controller, payload as JsonRecord);
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+            return;
+          }
+
+          usage = sumUsage(usage, payload.usage);
+          const message = payload.choices?.[0]?.message;
+          const calls = message?.tool_calls ?? [];
+          const nextLocalCalls = calls.filter(
+            (toolCall) =>
+              (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
+              (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
+          );
+          const nextRemainingCalls = calls.filter(
+            (toolCall) =>
+              (!searchProvider || !isWebSearchToolCall(toolCall)) &&
+              (!fetchProvider || !isWebFetchToolCall(toolCall)),
+          );
+
+          if (!nextLocalCalls.length) {
+            finalPayload = { ...payload, ...(usage ? { usage } : {}) };
+            break;
+          }
+
+          const nextInvocations = nextLocalCalls.map((toolCall, index) =>
+            buildServerToolInvocation(toolCall, iteration, index),
+          );
+          nextInvocations.forEach((invocation) => {
+            callbacks.onCall?.(invocation);
+            emitServerToolEvent(controller, { invocation, phase: 'call' });
+          });
+          const nextResults = await executeServerToolInvocations({
+            callbacks: {
+              onResult: (execution) => {
+                callbacks.onResult?.(execution);
+                emitServerToolEvent(controller, {
+                  execution,
+                  phase: 'result',
+                });
+              },
+            },
+            fetchProvider,
+            invocations: nextInvocations,
+            searchProvider,
+          });
+          if (cancelled) return;
+          executions.push(...nextResults.map((result) => result.execution));
+
+          if (nextRemainingCalls.length) {
+            finalPayload = buildMixedTurnPayload({
+              message,
+              payload,
+              remainingCalls: nextRemainingCalls,
+              searchResults: nextResults.map((result) => result.content),
+              usage,
+            });
+            break;
+          }
+
+          messages.push(message as JsonRecord);
+          messages.push(
+            ...nextResults.map((result) => ({
+              role: 'tool',
+              tool_call_id: result.tool_call_id,
+              content: result.content,
+            })),
+          );
+          loopBody = {
+            ...loopBody,
+            messages,
+            tool_choice: loopBody.tool_choice ? 'auto' : loopBody.tool_choice,
+          };
+        }
+
+        if (!finalPayload) {
+          const response = await callUpstream(
+            {
+              ...loopBody,
+              tools: loopBody.tools?.filter(
+                (tool) => !isWebSearchTool(tool) && !isWebFetchTool(tool),
+              ),
+            },
+            'buffer',
+          );
+          finalPayload = (await response.json()) as ChatCompletionPayload;
+          usage = sumUsage(usage, finalPayload.usage);
+          finalPayload = {
+            ...finalPayload,
+            ...(usage ? { usage } : {}),
+          };
+        }
+
+        await pipeResponse(
+          controller,
+          synthesizeChatCompletionStream(
+            finalPayload,
+            String(loopBody.model ?? 'unknown'),
+          ),
+        );
+        controller.close();
+      };
+
+      void run().catch((error) => {
+        if (!cancelled) controller.error(error);
+      });
+    },
+    async cancel(reason): Promise<void> {
+      cancelled = true;
+      try {
+        await activeReader?.cancel(reason);
+      } finally {
+        activeReader?.releaseLock();
+        activeReader = null;
+      }
+    },
+  });
+
+  return {
+    body,
+    executions,
+    response: new Response(stream, {
+      headers: firstResponse.headers,
+      status: firstResponse.status,
+      statusText: firstResponse.statusText,
+    }),
+  };
+};
 
 export const executeWebSearchLoop = async ({
   body,
@@ -563,6 +1104,16 @@ export const executeWebSearchLoop = async ({
       : searchProvider
         ? 'detect-search'
         : 'detect-fetch';
+
+  if (detectInitialStream && callbacks?.emitStreamEvents) {
+    return await createInlineServerToolStream({
+      body: loopBody,
+      callbacks,
+      callUpstream,
+      fetchProvider,
+      searchProvider,
+    });
+  }
 
   for (let iteration = 0; iteration < MAX_SEARCH_ITERATIONS; iteration++) {
     response = await callUpstream(
