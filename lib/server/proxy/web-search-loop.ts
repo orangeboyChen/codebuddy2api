@@ -16,6 +16,7 @@ import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
   isMarkedServerTool,
+  normalizeSearchBackend,
   normalizeToolName,
   stripServerToolMarker,
   WEB_FETCH_TOOL_NAME,
@@ -83,6 +84,33 @@ export interface ChatCompletionPayload {
   object?: string;
   usage?: unknown;
 }
+
+const readBufferedChatCompletionPayload = async (
+  response: Response,
+): Promise<ChatCompletionPayload> => {
+  let payload: ChatCompletionPayload;
+
+  try {
+    payload = (await response.json()) as ChatCompletionPayload;
+  } catch (error) {
+    if (response.ok) {
+      throw error;
+    }
+
+    payload = {};
+  }
+
+  if (!response.ok && !payload.error) {
+    return {
+      ...payload,
+      error: {
+        message: `Upstream request failed with status ${response.status}`,
+      },
+    };
+  }
+
+  return payload;
+};
 
 const asRecord = (value: unknown): JsonRecord | null => {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -162,13 +190,6 @@ const isServerDeclaredFetchTool = (tool: unknown): boolean =>
   classifyServerTool(tool, WEB_FETCH_TOOL_NAME, WEB_FETCH_TOOL_TYPE_PREFIX)
     .serverDeclared;
 
-/**
- * Whether `tool` is a provider-executed server-tool declaration.
- *
- * Used to strip declarations upstream would not understand. A plain function
- * tool the client named `web_search` or `web_fetch` is excluded: the client
- * resolves it itself, so removing it would take away a working capability.
- */
 /**
  * Whether `toolCall` is a call the proxy is meant to execute.
  *
@@ -912,7 +933,7 @@ const createInlineServerToolStream = async ({
           iteration++
         ) {
           const response = await callUpstream(loopBody, 'buffer');
-          const payload = (await response.json()) as ChatCompletionPayload;
+          const payload = await readBufferedChatCompletionPayload(response);
 
           if (!response.ok || payload.error) {
             emitJson(controller, payload as JsonRecord);
@@ -1000,7 +1021,7 @@ const createInlineServerToolStream = async ({
             },
             'buffer',
           );
-          finalPayload = (await response.json()) as ChatCompletionPayload;
+          finalPayload = await readBufferedChatCompletionPayload(response);
 
           if (!response.ok || finalPayload.error) {
             emitJson(controller, finalPayload as JsonRecord);
@@ -1087,7 +1108,9 @@ export const executeWebSearchLoop = async ({
     fetchEnabled,
     fetchProvider,
     searchEnabled,
-    searchPassthrough: config.CODEBUDDY_WEB_SEARCH_BACKEND === 'passthrough',
+    searchPassthrough:
+      normalizeSearchBackend(config.CODEBUDDY_WEB_SEARCH_BACKEND) ===
+      'passthrough',
     searchProvider,
     tools: body.tools,
   });
