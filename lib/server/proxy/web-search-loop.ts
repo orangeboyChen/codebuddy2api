@@ -15,6 +15,8 @@ import type { ChatRequestBody } from './codebuddy';
 import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
+  isMarkedServerTool,
+  stripServerToolMarker,
   WEB_FETCH_TOOL_NAME,
   WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
@@ -127,7 +129,13 @@ const classifyServerTool = (
     (typeof fn?.name === 'string' && fn.name === name) ||
     (typeof record.name === 'string' && record.name.startsWith(prefix));
 
-  return { matches: isBareName, serverDeclared: false };
+  // A Responses translation has already flattened the declaration into a plain
+  // function, so the type is gone by now; its marker is the only surviving
+  // evidence that the client asked for a provider-executed tool.
+  return {
+    matches: isBareName,
+    serverDeclared: isBareName && isMarkedServerTool(tool),
+  };
 };
 
 const isWebSearchTool = (tool: unknown): boolean =>
@@ -213,7 +221,8 @@ const replaceServerTools = ({
       return isServerDeclaredTool(tool) ? ((changed = true), []) : [tool];
     }
 
-    return [tool];
+    // The marker is internal to this proxy, so it never reaches upstream.
+    return [stripServerToolMarker(tool)];
   });
 
   // Tracking `changed` explicitly rather than comparing lengths: swapping one
@@ -399,22 +408,30 @@ const buildMixedTurnPayload = ({
   };
 };
 
+/**
+ * Result of one server-tool pass.
+ *
+ * `response` is null when no tool could be executed: the request still has to
+ * be sent, but with the server-tool declarations already stripped, so the
+ * caller falls through to its ordinary upstream path.
+ */
+export interface ServerToolLoopResult {
+  body: ChatRequestBody;
+  response: Response | null;
+}
+
 export const executeWebSearchLoop = async ({
   body,
   callUpstream,
 }: {
   body: ChatRequestBody;
   callUpstream: (body: ChatRequestBody) => Promise<Response>;
-}): Promise<{ body: ChatRequestBody; response: Response } | null> => {
+}): Promise<ServerToolLoopResult | null> => {
   const [searchEnabled, fetchEnabled, config] = await Promise.all([
     isWebSearchEnabled(),
     isWebFetchEnabled(),
     getActiveConfig(),
   ]);
-
-  if (!searchEnabled && !fetchEnabled) {
-    return null;
-  }
 
   const resolveEndpoint = getCodeBuddyApiEndpoint;
   const searchProvider = searchEnabled
@@ -427,6 +444,11 @@ export const executeWebSearchLoop = async ({
     ? resolveFetchProvider(config.CODEBUDDY_WEB_FETCH_BACKEND, resolveEndpoint)
     : null;
 
+  // Runs even when both tools are switched off. Typed server-tool declarations
+  // (`web_search_preview`, `web_fetch_20250910`) are meaningless to upstream, so
+  // they have to be stripped on the way out regardless of whether the proxy
+  // intends to execute them — otherwise the default configuration forwards a
+  // declaration upstream rejects, or hands back a tool nobody implements.
   const tools = replaceServerTools({
     fetchEnabled,
     fetchProvider,
@@ -437,6 +459,13 @@ export const executeWebSearchLoop = async ({
 
   if (!tools) {
     return null;
+  }
+
+  // Nothing can be executed, so there is nothing to loop for. The rewritten
+  // `tools` still have to reach the caller: it forwards them upstream, and the
+  // stripped declarations have to stay stripped on that path too.
+  if (!searchProvider && !fetchProvider) {
+    return { body: { ...body, tools }, response: null };
   }
 
   const messages: JsonRecord[] = body.messages as JsonRecord[];

@@ -7,6 +7,7 @@ import { isLocalWebSearchConfigured } from '../search';
 import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
+  markServerTool,
   WEB_FETCH_TOOL_NAME,
   WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
@@ -52,6 +53,16 @@ interface SupportedChatTool {
   kind: 'custom' | 'function' | 'mcp' | 'tool_search';
   namespace?: string;
   originalName: string;
+  /**
+   * True when the client declared this as a provider-executed server tool
+   * (`web_search_20260209`, `web_fetch_20250910`, `web_search_preview`) rather
+   * than as its own function.
+   *
+   * Translation turns both into ordinary functions for upstream, so without this
+   * the proxy cannot tell them apart later — and the difference decides whether a
+   * tool that cannot be executed is dropped or forwarded.
+   */
+  serverDeclared?: boolean;
   serverLabel?: string;
   tool: Record<string, unknown>;
 }
@@ -469,6 +480,7 @@ const toSupportedChatTool = (
         chatName: WEB_SEARCH_TOOL_NAME,
         kind: 'function',
         originalName: WEB_SEARCH_TOOL_NAME,
+        serverDeclared: true,
         tool: definition,
       },
     ];
@@ -485,6 +497,7 @@ const toSupportedChatTool = (
         chatName: WEB_FETCH_TOOL_NAME,
         kind: 'function',
         originalName: WEB_FETCH_TOOL_NAME,
+        serverDeclared: true,
         tool: definition,
       },
     ];
@@ -820,6 +833,7 @@ export const translateResponsesToolsToChat = (
     return {
       type: 'function',
       function: tool.tool,
+      ...(tool.serverDeclared ? markServerTool({}) : {}),
     };
   });
 };

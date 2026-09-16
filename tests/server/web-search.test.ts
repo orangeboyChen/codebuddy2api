@@ -64,6 +64,23 @@ const makeJsonResponse = (
 
 type LoopCall = (body: ChatRequestBody) => Promise<Response>;
 
+/**
+ * Reads the loop's buffered payload, asserting the loop ran.
+ *
+ * `executeWebSearchLoop` legitimately returns a null response when no backend
+ * can execute the declared tools, so every assertion on the payload has to rule
+ * that out first rather than silently reading through a nullable.
+ */
+const readPayload = async (
+  result: { response: Response | null } | null,
+): Promise<Record<string, unknown>> => {
+  if (!result?.response) {
+    throw new Error('Expected the server-tool loop to produce a response');
+  }
+
+  return (await result.response.json()) as Record<string, unknown>;
+};
+
 const readSseEvents = async (response: Response): Promise<string[]> => {
   const text = await response.text();
 
@@ -563,22 +580,27 @@ describe('server local web search', () => {
       expect(callUpstream).not.toHaveBeenCalled();
     });
 
-    it('skips the loop when the setting is disabled', async () => {
+    it('does not run the loop when the setting is disabled', async () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
       await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'false' });
       const callUpstream = vi.fn<LoopCall>(async () => makeJsonResponse({}));
 
-      await expect(
-        executeWebSearchLoop({
-          body: {
-            messages: [{ content: 'hi', role: 'user' }],
-            tools: [{ type: 'web_search_20260209', name: 'web_search' }],
-          },
-          callUpstream,
-        }),
-      ).resolves.toBeNull();
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+        },
+        callUpstream,
+      });
+
+      // No upstream call: nothing can execute, so there is nothing to loop for.
       expect(callUpstream).not.toHaveBeenCalled();
+      // The typed declaration is still stripped. Forwarding it upstream would
+      // send a tool type the upstream does not implement, and handing it back
+      // would give the client a tool nobody runs.
+      expect(result?.response).toBeNull();
+      expect(result?.body.tools).toEqual([]);
     });
 
     it.each([
@@ -667,7 +689,7 @@ describe('server local web search', () => {
       });
 
       expect(callUpstream).toHaveBeenCalledTimes(2);
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{ message: { content: string } }>;
       };
       expect(payload.choices[0]?.message.content).toBe('It is sunny.');
@@ -779,11 +801,11 @@ describe('server local web search', () => {
       const finalBody = callUpstream.mock.calls[5]?.[0] as ChatRequestBody;
       expect(finalBody.tools).toEqual([]);
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{ message: { content?: string } }>;
       };
       expect(payload.choices[0]?.message.content).toBe('Enough.');
-      expect(result?.response.ok).toBe(true);
+      expect(result?.response?.ok).toBe(true);
     });
 
     it('preserves unrelated tools and passes through non-search tool calls', async () => {
@@ -821,7 +843,7 @@ describe('server local web search', () => {
 
       expect(fetchMock).not.toHaveBeenCalled();
       expect(callUpstream).toHaveBeenCalledTimes(1);
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{ message: { tool_calls?: unknown[] } }>;
       };
       expect(payload.choices[0]?.message.tool_calls).toHaveLength(1);
@@ -885,7 +907,7 @@ describe('server local web search', () => {
       // transcript that has no result for read_file.
       expect(callUpstream).toHaveBeenCalledTimes(1);
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{
           finish_reason: string | null;
           message: {
@@ -948,7 +970,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{ message: { tool_calls?: unknown[] } }>;
         usage?: { total_tokens?: number };
       };
@@ -999,7 +1021,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{ message: { content: string | null } }>;
         usage?: unknown;
       };
@@ -1051,7 +1073,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{
           finish_reason: string | null;
           message: { content: string | null; tool_calls?: unknown[] };
@@ -1111,7 +1133,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{ message: { content: string | null } }>;
       };
       const content = payload.choices[0]?.message.content ?? '';
@@ -1167,7 +1189,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{ message: { content: string | null } }>;
       };
 
@@ -1188,8 +1210,8 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      expect(result?.response.ok).toBe(false);
-      expect(result?.response.status).toBe(502);
+      expect(result?.response?.ok).toBe(false);
+      expect(result?.response?.status).toBe(502);
     });
 
     it('relaxes a forced tool_choice so the loop can terminate', async () => {
@@ -1346,7 +1368,7 @@ describe('server local web search', () => {
         .filter((message) => message.role === 'tool')
         .at(-1) as { content?: unknown };
       expect(String(toolMessage.content)).toContain('without a query');
-      expect(result?.response.ok).toBe(true);
+      expect(result?.response?.ok).toBe(true);
     });
 
     it('falls back to raw argument text when JSON is malformed', async () => {
@@ -1435,7 +1457,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         usage: { prompt_tokens?: number };
       };
       expect(payload.usage.prompt_tokens).toBe(4);
@@ -1486,7 +1508,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         usage: { prompt_tokens?: number };
       };
       expect(payload.usage.prompt_tokens).toBe(3);
@@ -1538,7 +1560,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         usage: { prompt_tokens?: number; total_tokens?: number };
       };
       expect(payload.usage.prompt_tokens).toBe(15);
@@ -1590,7 +1612,7 @@ describe('server local web search', () => {
         callUpstream,
       });
 
-      expect(result?.response.status).toBe(500);
+      expect(result?.response?.status).toBe(500);
     });
   });
 
@@ -1868,7 +1890,7 @@ describe('server local web search', () => {
       }
 
       // The buffered result is still a normal JSON completion for the loop.
-      const payload = (await result!.response.json()) as {
+      const payload = (await readPayload(result)) as {
         choices: Array<{ message: { content: string } }>;
       };
       expect(payload.choices[0]?.message.content).toBe('Done.');

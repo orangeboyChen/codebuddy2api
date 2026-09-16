@@ -2734,7 +2734,7 @@ export const proxyChatCompletions = async (
     const resolvedContext =
       context ?? (await resolveProxyContext(request, body.model));
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
-    const upstreamBody = await buildUpstreamBody(body, resolvedContext);
+    let upstreamBody = await buildUpstreamBody(body, resolvedContext);
 
     // Server-side web tools run on the chat path only. The Responses
     // passthrough path forwards to CodeBuddy's own /responses endpoint, where
@@ -2768,7 +2768,15 @@ export const proxyChatCompletions = async (
           }),
       );
 
-      if (webSearch) {
+      // No tool could be executed, so the loop declined to run. Its rewritten
+      // `tools` still matter: unsupported server-tool declarations have been
+      // stripped, and continuing with them keeps the request valid upstream
+      // instead of forwarding a declaration it would reject.
+      if (webSearch && !webSearch.response) {
+        upstreamBody = webSearch.body;
+      }
+
+      if (webSearch?.response) {
         if (!webSearch.response.ok) {
           return webSearch.response;
         }

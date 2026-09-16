@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 
 import { NextRequest } from 'next/server';
@@ -10,7 +11,10 @@ import {
 } from '@/lib/server/domain/config';
 import { createCodeBuddyFetchProvider } from '@/lib/server/search/providers/codebuddy-fetch';
 import { createCodeBuddySearchProvider } from '@/lib/server/search/providers/codebuddy-search';
-import { createLocalFetchProvider } from '@/lib/server/search/providers/local-fetch';
+import {
+  createLocalFetchProvider,
+  type HostResolver,
+} from '@/lib/server/search/providers/local-fetch';
 import {
   normalizeFetchBackend,
   normalizeSearchBackend,
@@ -30,7 +34,10 @@ import {
 } from '@/lib/server/domain/credentials';
 import { resetUsageStats } from '@/lib/server/domain/stats';
 import type { ChatRequestBody } from '@/lib/server/proxy/codebuddy';
-import { buildWebFetchToolDefinition } from '@/lib/server/search/tool';
+import {
+  buildWebFetchToolDefinition,
+  isMarkedServerTool,
+} from '@/lib/server/search/tool';
 import { executeWebSearchLoop } from '@/lib/server/proxy/web-search-loop';
 import { translateResponsesToolsToChat } from '@/lib/server/proxy/responses';
 import {
@@ -438,18 +445,87 @@ describe('server tool backends', () => {
   });
 
   describe('local fetch provider', () => {
-    it('converts html to text', async () => {
-      stubFetch(
-        async () =>
-          new Response(
-            '<html><head><title>T</title></head><body><script>bad()</script><h1>Hello</h1><p>World &amp; friends</p></body></html>',
-            { headers: { 'Content-Type': 'text/html' }, status: 200 },
-          ),
-      );
+    /**
+     * A real server, because the backend no longer goes through `globalThis.fetch`:
+     * it resolves the host itself and pins the socket to the validated address,
+     * so a stubbed `fetch` cannot exercise the SSRF path at all.
+     */
+    let server: http.Server;
+    let baseUrl: string;
+    let handler: (req: http.IncomingMessage, res: http.ServerResponse) => void;
 
-      const result = await createLocalFetchProvider().fetch({
-        url: 'https://a.test/page',
+    beforeEach(async () => {
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('ok');
+      };
+      server = http.createServer((req, res) => handler(req, res));
+      await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', resolve);
       });
+      const address = server.address();
+
+      if (!address || typeof address === 'string') {
+        throw new Error('failed to start test server');
+      }
+
+      // Reachable as a public-looking name: `127.0.0.1` would be refused by the
+      // private-address check before it ever proved anything.
+      baseUrl = `http://localtest.me:${address.port}`;
+    });
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    });
+
+    /**
+     * Resolves the test hostname to the loopback address the server is bound to.
+     *
+     * The address itself is refused by the private-range check, so this override
+     * is what lets a test reach a local server while still exercising the real
+     * resolve → validate → pin path. Pinning then connects to 127.0.0.1 while the
+     * request still names the public hostname.
+     */
+    const resolveToLocalServer: HostResolver = Object.assign(
+      async () => ['127.0.0.1'],
+      { trusted: true },
+    );
+
+    /**
+     * A resolver whose answers are validated.
+     *
+     * The provider only applies the private-address check to answers coming from
+     * its DNS resolver — an injected resolver is an explicit operator pin, and
+     * pinning a name to a private address is legitimate. These wrappers produce
+     * values that look like DNS answers so the validation path is exercised.
+     */
+    const dnsReturning = (addresses: string[]): HostResolver =>
+      Object.assign(async () => addresses, { trusted: false });
+
+    const fetchWith = (
+      url: string,
+      options: { resolveHost?: HostResolver } = {},
+    ) =>
+      runWebFetch({
+        provider: createLocalFetchProvider({
+          resolveHost: options.resolveHost ?? resolveToLocalServer,
+        }),
+        query: { url },
+      });
+
+    it('converts html to text', async () => {
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(
+          '<html><head><title>T</title></head><body><script>bad()</script><h1>Hello</h1><p>World &amp; friends</p></body></html>',
+        );
+      };
+
+      const result = await createLocalFetchProvider({
+        resolveHost: resolveToLocalServer,
+      }).fetch({ url: `${baseUrl}/page` });
 
       expect(result.content).toContain('Hello');
       expect(result.content).toContain('World & friends');
@@ -457,74 +533,76 @@ describe('server tool backends', () => {
       expect(result.content).not.toContain('<h1>');
     });
 
+    it('preserves the host header while pinning the address', async () => {
+      let seenHost: string | undefined;
+      handler = (req, res) => {
+        seenHost = req.headers.host;
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('ok');
+      };
+
+      await fetchWith(`${baseUrl}/page`);
+
+      // The connection is pinned to the validated IP, but the request still has
+      // to name the original host so virtual-host routing and TLS SNI work.
+      expect(seenHost).toBe(`localtest.me:${new URL(baseUrl).port}`);
+    });
+
     it('refuses a private address before connecting', async () => {
       const mock = stubFetch(async () => makeJsonResponse({ content: 'x' }));
 
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'http://127.0.0.1/admin' },
-        }),
-      ).resolves.toContain('private or loopback');
+      await expect(fetchWith('http://127.0.0.1/admin')).resolves.toContain(
+        'private or loopback',
+      );
       expect(mock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a hostname that resolves to a private address', async () => {
+      // A public-looking name whose resolution is a private address must still be
+      // refused: validating only the hostname string would let it through, and
+      // pinning means the connection would then go to the loopback address.
+      await expect(
+        fetchWith('http://private.test/page', {
+          resolveHost: dnsReturning(['127.0.0.1']),
+        }),
+      ).resolves.toContain('resolves to the private address');
     });
 
     it('refuses a non-http scheme', async () => {
       const mock = stubFetch(async () => makeJsonResponse({ content: 'x' }));
 
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'file:///etc/passwd' },
-        }),
-      ).resolves.toContain('Unsupported URL protocol');
+      await expect(fetchWith('file:///etc/passwd')).resolves.toContain(
+        'Unsupported URL protocol',
+      );
       expect(mock).not.toHaveBeenCalled();
     });
 
     it('refuses a redirect onto a private address', async () => {
-      stubFetch(
-        async () =>
-          new Response(null, {
-            headers: { location: 'http://169.254.169.254/latest/meta-data' },
-            status: 302,
-          }),
-      );
+      handler = (_req, res) => {
+        res.writeHead(302, { location: 'http://169.254.169.254/latest' });
+        res.end();
+      };
 
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'https://a.test/page' },
-        }),
-      ).resolves.toContain('private or loopback');
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'private or loopback',
+      );
     });
 
     it('rejects an unsupported content type', async () => {
-      stubFetch(
-        async () =>
-          new Response('binary', {
-            headers: { 'Content-Type': 'application/pdf' },
-            status: 200,
-          }),
-      );
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/pdf' });
+        res.end('binary');
+      };
 
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'https://a.test/f.pdf' },
-        }),
-      ).resolves.toContain('unsupported content type');
+      await expect(fetchWith(`${baseUrl}/f.pdf`)).resolves.toContain(
+        'unsupported content type',
+      );
     });
 
     it('reports an invalid URL without connecting', async () => {
-      const mock = stubFetch(async () => makeJsonResponse({ content: 'x' }));
-
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'not-a-url' },
-        }),
-      ).resolves.toContain('not a valid absolute URL');
-      expect(mock).not.toHaveBeenCalled();
+      await expect(fetchWith('not-a-url')).resolves.toContain(
+        'not a valid absolute URL',
+      );
     });
 
     it('refuses localhost and other reserved hosts', async () => {
@@ -540,145 +618,130 @@ describe('server tool backends', () => {
         'http://10.1.2.3/admin',
         'http://192.168.1.1/admin',
       ]) {
-        await expect(
-          runWebFetch({ provider: createLocalFetchProvider(), query: { url } }),
-        ).resolves.toContain('private or loopback');
+        await expect(fetchWith(url)).resolves.toContain('private or loopback');
       }
 
       expect(mock).not.toHaveBeenCalled();
     });
 
-    it('allows a public host', async () => {
-      stubFetch(
-        async () =>
-          new Response('plain text body', {
-            headers: { 'Content-Type': 'text/plain' },
-            status: 200,
-          }),
-      );
-
-      const result = await runWebFetch({
-        provider: createLocalFetchProvider(),
-        query: { url: 'https://93.184.216.34/page' },
-      });
-
-      expect(result).toContain('plain text body');
-    });
-
     it('reports a redirect with no target', async () => {
-      stubFetch(async () => new Response(null, { status: 302 }));
+      handler = (_req, res) => {
+        res.writeHead(302);
+        res.end();
+      };
 
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'https://a.test/page' },
-        }),
-      ).resolves.toContain('redirect with no target');
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'redirect with no target',
+      );
     });
 
     it('reports too many redirects', async () => {
-      stubFetch(
-        async () =>
-          new Response(null, {
-            headers: { location: 'https://a.test/next' },
-            status: 302,
-          }),
-      );
+      handler = (_req, res) => {
+        res.writeHead(302, { location: `${baseUrl}/next` });
+        res.end();
+      };
 
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'https://a.test/page' },
-        }),
-      ).resolves.toContain('more than 5 redirects');
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'more than 5 redirects',
+      );
     });
 
     it('reports an HTTP error status', async () => {
-      stubFetch(async () => new Response('gone', { status: 404 }));
+      handler = (_req, res) => {
+        res.writeHead(404, { 'content-type': 'text/plain' });
+        res.end('gone');
+      };
 
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'https://a.test/page' },
-        }),
-      ).resolves.toContain('Web fetch failed with HTTP 404');
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'Web fetch failed with HTTP 404',
+      );
     });
 
     it('reports a page with no readable text', async () => {
-      stubFetch(
-        async () =>
-          new Response('   ', {
-            headers: { 'Content-Type': 'text/html' },
-            status: 200,
-          }),
-      );
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('   ');
+      };
 
-      await expect(
-        runWebFetch({
-          provider: createLocalFetchProvider(),
-          query: { url: 'https://a.test/page' },
-        }),
-      ).resolves.toContain('no readable content');
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'no readable content',
+      );
     });
 
     it('follows a redirect to another public host', async () => {
       let call = 0;
-      stubFetch(async () => {
+      handler = (_req, res) => {
         call += 1;
 
-        return call === 1
-          ? new Response(null, {
-              headers: { location: 'https://b.test/final' },
-              status: 301,
-            })
-          : new Response('<p>Final page</p>', {
-              headers: { 'Content-Type': 'text/html' },
-              status: 200,
-            });
-      });
+        if (call === 1) {
+          res.writeHead(301, { location: `${baseUrl}/final` });
+          res.end();
+          return;
+        }
 
-      const result = await runWebFetch({
-        provider: createLocalFetchProvider(),
-        query: { url: 'https://a.test/page' },
-      });
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<p>Final page</p>');
+      };
 
-      expect(result).toContain('Final page');
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'Final page',
+      );
     });
 
     it('decodes entities when converting html', async () => {
-      stubFetch(
-        async () =>
-          new Response('<p>a &amp; b &lt;c&gt; &#65;</p>', {
-            headers: { 'Content-Type': 'text/html' },
-            status: 200,
-          }),
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<p>a &amp; b &lt;c&gt; &#65;</p>');
+      };
+
+      await expect(fetchWith(`${baseUrl}/page`)).resolves.toContain(
+        'a & b <c> A',
       );
-
-      const result = await runWebFetch({
-        provider: createLocalFetchProvider(),
-        query: { url: 'https://a.test/page' },
-      });
-
-      expect(result).toContain('a & b <c> A');
     });
 
     it('passes plain text through unchanged', async () => {
-      stubFetch(
-        async () =>
-          new Response('a &amp; b', {
-            headers: { 'Content-Type': 'text/plain' },
-            status: 200,
-          }),
-      );
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('a &amp; b');
+      };
 
-      // Entities are only decoded on the HTML path: a text/plain body is
-      // literal text, and decoding it would corrupt the content.
+      // Entities are only decoded on the HTML path: a text/plain body is literal
+      // text, and decoding it would corrupt the content.
+      await expect(fetchWith(`${baseUrl}/t.txt`)).resolves.toContain(
+        'a &amp; b',
+      );
+    });
+
+    it('reports a hostname whose DNS lookup fails', async () => {
+      await expect(
+        fetchWith('http://nx.test/page', {
+          resolveHost: async () => {
+            throw new Error('dns boom');
+          },
+        }),
+      ).resolves.toContain('could not resolve host');
+    });
+
+    it('stops reading once the body cap is reached', async () => {
+      const chunk = 'y'.repeat(1000);
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.write(chunk);
+        // Never ends: the reader must cancel rather than wait for the body.
+      };
+
       const result = await runWebFetch({
-        provider: createLocalFetchProvider(),
-        query: { url: 'https://a.test/t.txt' },
+        provider: createLocalFetchProvider({
+          maxContentLength: 2000,
+          resolveHost: resolveToLocalServer,
+          // Comfortably under the 15s test budget: the server hangs on purpose.
+          timeoutMs: 2000,
+        }),
+        query: { url: `${baseUrl}/huge` },
       });
 
-      expect(result).toContain('a &amp; b');
+      // The cap stopped the read instead of waiting for a body that never ends.
+      expect(result.length).toBeLessThan(5000);
     });
   });
 
@@ -695,6 +758,128 @@ describe('server tool backends', () => {
         required: ['url'],
         type: 'object',
       });
+    });
+  });
+
+  describe('responses provenance', () => {
+    it('marks a translated server tool so it can be stripped later', () => {
+      const translated = translateResponsesToolsToChat([
+        { type: 'web_fetch_20250910', name: 'web_fetch' },
+      ]) as Array<Record<string, unknown>>;
+
+      // The declaration becomes a plain function for upstream, so the marker is
+      // the only surviving evidence that the client asked for a server tool.
+      expect(translated[0]?.function).toMatchObject({ name: 'web_fetch' });
+      expect(isMarkedServerTool(translated[0])).toBe(true);
+    });
+
+    it('does not mark a client-declared function of the same name', () => {
+      const translated = translateResponsesToolsToChat([
+        { type: 'function', name: 'web_fetch', parameters: { type: 'object' } },
+      ]) as Array<Record<string, unknown>>;
+
+      expect(isMarkedServerTool(translated[0])).toBe(false);
+    });
+
+    it('strips a translated server tool when fetch cannot run', async () => {
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_ENABLED: 'true',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'none',
+        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      const translated = translateResponsesToolsToChat([
+        { type: 'web_fetch_20250910', name: 'web_fetch' },
+      ]);
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: translated as unknown[],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'No tools.' } },
+            ],
+          }),
+      });
+
+      // Would be forwarded before: the marker lets the loop know the client
+      // declared a server tool rather than implementing `web_fetch` itself.
+      expect(result?.body.tools).toEqual([]);
+    });
+
+    it('keeps a client function of the same name when fetch cannot run', async () => {
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_ENABLED: 'true',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'none',
+        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'web_fetch',
+                parameters: { type: 'object' },
+              },
+            },
+          ],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'No tools.' } },
+            ],
+          }),
+      });
+
+      // Nothing matched a server-tool declaration, so the loop declines to
+      // touch the request at all — the client's own function is left exactly as
+      // sent rather than being rewritten or dropped.
+      expect(result).toBeNull();
+    });
+
+    it('never forwards the marker upstream', async () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({
+        CODEBUDDY_WEB_SEARCH_ENABLED: 'true',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      const translated = translateResponsesToolsToChat([
+        { type: 'web_search_preview' },
+        { type: 'keep', name: 'keep' },
+      ]);
+
+      let forwarded: unknown[] | undefined;
+      await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: translated as unknown[],
+        } as ChatRequestBody,
+        callUpstream: async (loopBody) => {
+          forwarded = loopBody.tools;
+
+          return makeJsonResponse({
+            choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+          });
+        },
+      });
+
+      expect((forwarded ?? []).some((tool) => isMarkedServerTool(tool))).toBe(
+        false,
+      );
+
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
     });
   });
 
@@ -933,8 +1118,15 @@ describe('server tool backends', () => {
         CODEBUDDY_WEB_SEARCH_BACKEND: 'none',
       });
 
-      let upstreamTools: unknown[] | undefined;
-      await executeWebSearchLoop({
+      const callUpstream = vi.fn(async (_loopBody: ChatRequestBody) =>
+        makeJsonResponse({
+          choices: [
+            { finish_reason: 'stop', message: { content: 'No tools.' } },
+          ],
+        }),
+      );
+
+      const result = await executeWebSearchLoop({
         body: {
           messages: [{ content: 'hi', role: 'user' }],
           tools: [
@@ -942,20 +1134,16 @@ describe('server tool backends', () => {
             { type: 'function', function: { name: 'keep_me' } },
           ],
         } as ChatRequestBody,
-        callUpstream: async (loopBody) => {
-          upstreamTools = loopBody.tools;
-
-          return makeJsonResponse({
-            choices: [
-              { finish_reason: 'stop', message: { content: 'No tools.' } },
-            ],
-          });
-        },
+        callUpstream: callUpstream as never,
       });
 
+      // Nothing can serve either tool, so no upstream call is made — but the
+      // declaration is still rewritten before the request goes out.
+      expect(callUpstream).not.toHaveBeenCalled();
+      expect(result?.response).toBeNull();
       // The server-tool declaration upstream would not understand is dropped,
       // while the client's own function is untouched.
-      expect(upstreamTools).toEqual([
+      expect(result?.body.tools).toEqual([
         { type: 'function', function: { name: 'keep_me' } },
       ]);
     });

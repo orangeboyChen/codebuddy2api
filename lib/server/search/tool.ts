@@ -86,3 +86,49 @@ export const buildWebFetchToolDefinition = (): {
     },
   };
 };
+
+/**
+ * Marks a translated tool as having been declared by the client as a
+ * provider-executed server tool.
+ *
+ * The Responses path necessarily flattens `web_fetch_20250910` into a plain
+ * function for upstream, which loses the information that the client asked for a
+ * server tool rather than declaring its own. The proxy loop later needs that
+ * distinction: an unexecutable server-tool declaration is dropped, while a
+ * client-owned function is forwarded untouched.
+ *
+ * This is a private, non-standard field that travels only between the Responses
+ * translator and the proxy loop; the loop strips it before anything is sent
+ * upstream.
+ */
+const SERVER_TOOL_MARKER = 'x-codebuddy2api-server-tool';
+
+export const markServerTool = <T>(tool: T): T & Record<string, unknown> => {
+  if (!tool || typeof tool !== 'object') {
+    return tool as T & Record<string, unknown>;
+  }
+
+  return { ...tool, [SERVER_TOOL_MARKER]: true };
+};
+
+export const isMarkedServerTool = (tool: unknown): boolean => {
+  if (!tool || typeof tool !== 'object') {
+    return false;
+  }
+
+  return (tool as Record<string, unknown>)[SERVER_TOOL_MARKER] === true;
+};
+
+/** Removes the private marker so nothing non-standard reaches upstream. */
+export const stripServerToolMarker = <T>(tool: T): T => {
+  if (!tool || typeof tool !== 'object') {
+    return tool;
+  }
+
+  const { [SERVER_TOOL_MARKER]: _marker, ...rest } = tool as Record<
+    string,
+    unknown
+  >;
+
+  return rest as T;
+};
