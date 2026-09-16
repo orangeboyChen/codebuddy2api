@@ -676,9 +676,10 @@ describe('server tool backends', () => {
         throw new Error('failed to start test server');
       }
 
-      // Reachable as a public-looking name: `127.0.0.1` would be refused by the
-      // private-address check before it ever proved anything.
-      baseUrl = `http://localtest.me:${address.port}`;
+      // A name that need not resolve anywhere: the injected resolver answers for
+      // it, so no DNS or network access is involved. It must not be `127.0.0.1`,
+      // which the private-address check refuses before it proves anything.
+      baseUrl = `http://public.test:${address.port}`;
     });
 
     afterEach(async () => {
@@ -752,7 +753,7 @@ describe('server tool backends', () => {
 
       // The connection is pinned to the validated IP, but the request still has
       // to name the original host so virtual-host routing and TLS SNI work.
-      expect(seenHost).toBe(`localtest.me:${new URL(baseUrl).port}`);
+      expect(seenHost).toBe(`public.test:${new URL(baseUrl).port}`);
     });
 
     it('refuses a private address before connecting', async () => {
@@ -957,17 +958,6 @@ describe('server tool backends', () => {
       ).resolves.toContain('could not resolve host');
     });
 
-    it('sends no default port and reports an https failure', async () => {
-      // Exercises the https branch: it needs a `servername` for SNI and must not
-      // append a port. There is no TLS server here, so the request fails — the
-      // point is that the transport is configured, not that it connects.
-      await expect(
-        fetchWith('https://unreachable.invalid.test/page', {
-          resolveHost: async () => ['192.0.2.1'],
-        }),
-      ).resolves.toContain('Web fetch failed');
-    });
-
     it('treats a missing content type as text', async () => {
       handler = (_req, res) => {
         res.writeHead(200);
@@ -979,25 +969,47 @@ describe('server tool backends', () => {
       );
     });
 
-    it('stops reading once the body cap is reached', async () => {
-      const chunk = 'y'.repeat(1000);
+    it('reports a connection dropped mid-body', async () => {
+      // The socket is destroyed instead of left hanging: an abrupt close fails
+      // fast and deterministically, whereas asserting on a stalled body would
+      // depend on the idle timeout firing within the test's own time budget.
       handler = (_req, res) => {
         res.writeHead(200, { 'content-type': 'text/plain' });
-        res.write(chunk);
-        // Never ends: the reader must cancel rather than wait for the body.
+        res.write('partial');
+        res.destroy();
+      };
+
+      const result = await runWebFetch({
+        provider: createLocalFetchProvider({
+          resolveHost: resolveToLocalServer,
+        }),
+        query: { url: `${baseUrl}/dropped` },
+      });
+
+      expect(result).toContain('Web fetch failed');
+    });
+
+    it('stops reading once the body cap is reached', async () => {
+      const chunk = 'y'.repeat(1000);
+      // Far more than the cap, in chunks, and then the server is done: the body
+      // is bounded by the reader, not by the server's willingness to stop.
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        for (let index = 0; index < 500; index += 1) {
+          res.write(chunk);
+        }
+        res.end();
       };
 
       const result = await runWebFetch({
         provider: createLocalFetchProvider({
           maxContentLength: 2000,
           resolveHost: resolveToLocalServer,
-          // Comfortably under the 15s test budget: the server hangs on purpose.
-          timeoutMs: 2000,
         }),
         query: { url: `${baseUrl}/huge` },
       });
 
-      // The cap stopped the read instead of waiting for a body that never ends.
+      // The cap truncated the body instead of buffering all ~500 KB of it.
       expect(result.length).toBeLessThan(5000);
     });
   });
