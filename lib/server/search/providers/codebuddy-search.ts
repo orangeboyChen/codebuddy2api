@@ -12,7 +12,6 @@
  */
 
 import {
-  clampInteger,
   collapse,
   formatSearchResults,
   MAX_SNIPPET_LENGTH,
@@ -37,11 +36,6 @@ const MAX_QUERY_LENGTH = 500;
  * Mirrors the CLI's own timeout. The endpoint is on the critical path of a
  * model turn, so waiting longer than the CLI would only stalls the request.
  */
-
-export interface CodeBuddySearchOptions {
-  maxResults?: number;
-  timeoutMs?: number;
-}
 
 /**
  * Bearer token for the agent-tool endpoints.
@@ -183,32 +177,3 @@ export const createCodeBuddySearchProvider = ({
 
   return { id: 'codebuddy', search };
 };
-
-/**
- * Builds the provider from `CODEBUDDY_SEARCH_*` overrides. The endpoint
- * authenticates every call, so availability depends on a token being
- * resolvable rather than on any single environment variable.
- */
-export const createCodeBuddySearchProviderFromEnv = ({
-  resolveEndpoint,
-  resolveToken,
-}: {
-  resolveEndpoint: EndpointResolver;
-  resolveToken: TokenResolver;
-}): WebSearchProvider =>
-  createCodeBuddySearchProvider({
-    resolveEndpoint,
-    maxResults: clampInteger(
-      process.env.CODEBUDDY_SEARCH_MAX_RESULTS,
-      DEFAULT_MAX_RESULTS,
-      1,
-      MAX_MAX_RESULTS,
-    ),
-    resolveToken,
-    timeoutMs: clampInteger(
-      process.env.CODEBUDDY_SEARCH_TIMEOUT_MS,
-      DEFAULT_TIMEOUT_MS,
-      MIN_TIMEOUT_MS,
-      MAX_TIMEOUT_MS,
-    ),
-  });

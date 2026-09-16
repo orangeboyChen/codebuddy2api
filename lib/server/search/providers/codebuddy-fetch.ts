@@ -11,7 +11,7 @@
  * token, so the backend surfaces that instead of issuing a doomed request.
  */
 
-import { clampInteger, formatFetchResult } from '../shared';
+import { formatFetchResult } from '../shared';
 import type { EndpointResolver, TokenResolver } from '../token';
 import type {
   WebFetchProvider,
@@ -26,11 +26,6 @@ const MAX_TIMEOUT_MS = 60_000;
 const MAX_CONTENT_LENGTH = 100_000;
 const MAX_PROMPT_LENGTH = 500;
 const MAX_URL_LENGTH = 2_048;
-
-export interface CodeBuddyFetchOptions {
-  maxContentLength?: number;
-  timeoutMs?: number;
-}
 
 const readErrorBody = async (response: Response): Promise<string> => {
   const text = await response.text().catch(() => '');
@@ -162,25 +157,3 @@ export const createCodeBuddyFetchProvider = ({
 
   return { fetch: fetchPage, id: 'codebuddy' };
 };
-
-/**
- * Builds the provider from `CODEBUDDY_FETCH_*` overrides. Availability depends
- * on a token being resolvable rather than on any single environment variable.
- */
-export const createCodeBuddyFetchProviderFromEnv = ({
-  resolveEndpoint,
-  resolveToken,
-}: {
-  resolveEndpoint: EndpointResolver;
-  resolveToken: TokenResolver;
-}): WebFetchProvider =>
-  createCodeBuddyFetchProvider({
-    resolveEndpoint,
-    resolveToken,
-    timeoutMs: clampInteger(
-      process.env.CODEBUDDY_FETCH_TIMEOUT_MS,
-      DEFAULT_TIMEOUT_MS,
-      MIN_TIMEOUT_MS,
-      MAX_TIMEOUT_MS,
-    ),
-  });
