@@ -9,6 +9,7 @@ import type { DebugTrace } from '../domain/debug';
 
 import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
 import {
+  getServerToolStreamEvent,
   getServerToolExecutions,
   type ServerToolExecution,
 } from './web-search-loop';
@@ -695,6 +696,7 @@ const mapOpenAIStreamToAnthropicSSE = (
   const messageId = options?.messageId ?? createAnthropicId('msg');
   const serverToolExecutions =
     options?.serverToolExecutions ?? getServerToolExecutions(upstreamResponse);
+  const serverToolUseIds = new Map<string, string>();
   const toolUseStates = new Map<string, StreamingToolUseState>();
   let nextToolIndex = 0;
   let started = options?.emitMessageStart === false;
@@ -1002,6 +1004,58 @@ const mapOpenAIStreamToAnthropicSSE = (
 
           try {
             const chunk = JSON.parse(raw) as OpenAIStreamChunk;
+            const serverToolEvent = getServerToolStreamEvent(chunk);
+
+            if (serverToolEvent?.phase === 'call') {
+              closeOpenTextBlocks();
+              const index = contentBlockCount++;
+              const toolUseId = createAnthropicId('srvtoolu');
+              serverToolUseIds.set(serverToolEvent.invocation.id, toolUseId);
+              enqueueEvent({
+                type: 'content_block_start',
+                index,
+                content_block: {
+                  type: 'server_tool_use',
+                  id: toolUseId,
+                  name: serverToolEvent.invocation.type,
+                  input: {},
+                },
+              });
+              enqueueEvent({
+                type: 'content_block_delta',
+                index,
+                delta: {
+                  type: 'input_json_delta',
+                  partial_json: JSON.stringify(
+                    serverToolEvent.invocation.input,
+                  ),
+                },
+              });
+              enqueueEvent({ type: 'content_block_stop', index });
+              continue;
+            }
+
+            if (serverToolEvent?.phase === 'result') {
+              closeOpenTextBlocks();
+              serverToolExecutions.push(serverToolEvent.execution);
+              const index = contentBlockCount++;
+              const resultBlock = buildAnthropicServerToolBlocks([
+                serverToolEvent.execution,
+              ])[1];
+              enqueueEvent({
+                type: 'content_block_start',
+                index,
+                content_block: {
+                  ...resultBlock,
+                  tool_use_id: serverToolUseIds.get(
+                    serverToolEvent.execution.id,
+                  ),
+                },
+              });
+              enqueueEvent({ type: 'content_block_stop', index });
+              continue;
+            }
+
             const upstreamError = chunk as OpenAIStreamError;
             if (upstreamError.error?.message) {
               rejectStream(upstreamError.error.message);
@@ -1101,9 +1155,6 @@ const createAnthropicServerToolEventStream = (
 ): Response => {
   const encoder = new TextEncoder();
   const messageId = createAnthropicId('msg');
-  const executions: ServerToolExecution[] = [];
-  const toolUseIds = new Map<string, string>();
-  let contentBlockCount = 0;
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
 
@@ -1144,48 +1195,7 @@ const createAnthropicServerToolEventStream = (
           undefined,
           debugTrace,
           '/v1/messages',
-          {
-            onCall: (invocation) => {
-              const index = contentBlockCount++;
-              const toolUseId = createAnthropicId('srvtoolu');
-              toolUseIds.set(invocation.id, toolUseId);
-              enqueueEvent({
-                type: 'content_block_start',
-                index,
-                content_block: {
-                  type: 'server_tool_use',
-                  id: toolUseId,
-                  name: invocation.type,
-                  input: {},
-                },
-              });
-              enqueueEvent({
-                type: 'content_block_delta',
-                index,
-                delta: {
-                  type: 'input_json_delta',
-                  partial_json: JSON.stringify(invocation.input),
-                },
-              });
-              enqueueEvent({ type: 'content_block_stop', index });
-            },
-            onResult: (execution) => {
-              executions.push(execution);
-              const index = contentBlockCount++;
-              const resultBlock = buildAnthropicServerToolBlocks([
-                execution,
-              ])[1];
-              enqueueEvent({
-                type: 'content_block_start',
-                index,
-                content_block: {
-                  ...resultBlock,
-                  tool_use_id: toolUseIds.get(execution.id)!,
-                },
-              });
-              enqueueEvent({ type: 'content_block_stop', index });
-            },
-          },
+          { emitStreamEvents: true },
         );
 
         if (cancelled) {
@@ -1207,9 +1217,9 @@ const createAnthropicServerToolEventStream = (
           model,
           {
             emitMessageStart: false,
-            initialContentBlockCount: contentBlockCount,
+            initialContentBlockCount: 0,
             messageId,
-            serverToolExecutions: executions,
+            serverToolExecutions: [],
           },
         );
         const reader = mappedResponse.body!.getReader();

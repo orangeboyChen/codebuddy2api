@@ -12,6 +12,7 @@ import {
   hasPendingDebugLogWrites,
   isDebugEnabled,
   listDebugLogs,
+  setDebugTraceCredential,
   setDebugTraceError,
   setDebugUpstreamRequest,
   updateDebugSettings,
@@ -929,6 +930,82 @@ describe('debug and usage persistence', () => {
       body: '[streaming response body omitted]',
       status: 200,
     });
+  });
+
+  it('waits for a stream to finish before persisting late proxy metadata', async () => {
+    const trace = createDebugTrace({
+      requestBody: { input: 'stream me' },
+      requestKey: null,
+      route: '/v1/messages',
+    });
+    const encoder = new TextEncoder();
+    let closeStream: (() => void) | undefined;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: first\n\n'));
+          closeStream = () => controller.close();
+        },
+      }),
+      { headers: { 'Content-Type': 'text/event-stream' } },
+    );
+    const returned = finalizeDebugTrace(trace, response);
+    const reader = returned.body!.getReader();
+
+    await reader.read();
+    setDebugTraceCredential(trace, 'credential.json');
+    setDebugUpstreamRequest(trace, {
+      body: { model: 'hy4-dev' },
+      headers: { Authorization: 'Bearer secret-token' },
+      method: 'POST',
+      url: 'https://upstream.test/v2/chat/completions',
+    });
+    await enqueueUpstreamResponseSnapshot(
+      trace,
+      Response.json({ usage: { total_tokens: 12 } }),
+    ).text();
+
+    expect(await listDebugLogs()).toEqual([]);
+    closeStream!();
+    await reader.read();
+    await Promise.all(trace.pending);
+    await flushDebugLogs();
+
+    const [entry] = await listDebugLogs();
+    expect(entry).toMatchObject({
+      credentialFilename: 'credential.json',
+      upstreamRequest: {
+        body: { model: 'hy4-dev' },
+        headers: { Authorization: 'secr********' },
+      },
+      upstreamResponse: {
+        body: { usage: { total_tokens: 12 } },
+        status: 200,
+      },
+    });
+  });
+
+  it('persists an empty streaming response without waiting for a body', async () => {
+    const trace = createDebugTrace({
+      requestBody: { input: 'empty stream' },
+      requestKey: null,
+      route: '/v1/messages',
+    });
+    const response = new Response(null, {
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+
+    expect(finalizeDebugTrace(trace, response)).toBe(response);
+    await Promise.all(trace.pending);
+    await flushDebugLogs();
+
+    expect(await listDebugLogs()).toEqual([
+      expect.objectContaining({
+        transformedResponse: expect.objectContaining({
+          body: '[streaming response body omitted]',
+        }),
+      }),
+    ]);
   });
 
   it('still captures the body of non-streaming responses', async () => {

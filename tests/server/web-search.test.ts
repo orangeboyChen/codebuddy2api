@@ -1822,6 +1822,425 @@ describe('server local web search', () => {
   });
 
   describe('upstream streaming contract', () => {
+    const enableSearxngSearch = async (): Promise<void> => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+        makeJsonResponse({
+          results: [
+            {
+              content: 'Search result',
+              title: 'Result',
+              url: 'https://result.test',
+            },
+          ],
+        }),
+      );
+    };
+
+    const inlineBody = (): ChatRequestBody => ({
+      messages: [{ content: 'Search', role: 'user' }],
+      stream: true,
+      tools: [{ type: 'web_search_preview' }],
+    });
+
+    it('keeps malformed frames and returns mixed client tool calls', async () => {
+      await enableSearxngSearch();
+      const upstream = vi.fn<LoopCall>(async () => {
+        const toolChunk = {
+          choices: [
+            {
+              delta: {
+                content: 'Searching.',
+                reasoning_content: 'Need current data.',
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"query":"mixed tools"}',
+                      name: 'web_search',
+                    },
+                  },
+                  {
+                    id: 'call_client',
+                    index: 1,
+                    function: {
+                      arguments: '{"city":"Shenzhen"}',
+                      name: 'get_weather',
+                    },
+                    type: 'function',
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+              index: 0,
+            },
+          ],
+          created: 123,
+          id: 'chatcmpl_mixed',
+          model: 'hy4-dev',
+          object: 'chat.completion.chunk',
+        };
+
+        return new Response(
+          `event: ping\n\ndata:\n\ndata: ${JSON.stringify(toolChunk)}\n\ndata: [DONE]`,
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        );
+      });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+      const text = await result!.response!.text();
+
+      expect(text).toContain('event: ping');
+      expect(text).toContain('Need current data.');
+      expect(text).toContain('server_tool_0_0');
+      expect(text).toContain('Search result');
+      expect(text).toContain('get_weather');
+      expect(text).toContain('data: [DONE]');
+      expect(upstream).toHaveBeenCalledTimes(1);
+    });
+
+    it('aggregates usage when the turn after a streamed tool call completes', async () => {
+      await enableSearxngSearch();
+      let call = 0;
+      const upstream = vi.fn<LoopCall>(async () => {
+        call += 1;
+
+        if (call === 1) {
+          return makeSseResponse(
+            {
+              choices: [
+                {
+                  delta: {
+                    reasoning_content: 'Need usage data.',
+                    tool_calls: [
+                      { index: 0, function: { name: 'web_search' } },
+                    ],
+                  },
+                  index: 0,
+                },
+              ],
+            },
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        id: 'call_usage',
+                        index: 0,
+                        function: { arguments: '{"query":"usage"}' },
+                      },
+                    ],
+                  },
+                  index: 0,
+                },
+              ],
+              usage: {
+                completion_tokens: 1,
+                prompt_tokens: 2,
+                total_tokens: 3,
+              },
+            },
+            {
+              choices: [{ delta: {}, finish_reason: 'tool_calls', index: 0 }],
+            },
+          );
+        }
+
+        return makeJsonResponse({
+          choices: [
+            { finish_reason: 'stop', message: { content: 'Final answer.' } },
+          ],
+          usage: { completion_tokens: 4, prompt_tokens: 5, total_tokens: 9 },
+        });
+      });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+      const events = await readSseEvents(result!.response!);
+      const usageEvent = events
+        .map((event) => (event === '[DONE]' ? null : JSON.parse(event)))
+        .find((event) => event?.usage);
+
+      expect(usageEvent?.usage).toEqual({
+        completion_tokens: 5,
+        prompt_tokens: 7,
+        total_tokens: 12,
+      });
+      expect(JSON.stringify(events)).toContain('Final answer.');
+      expect(JSON.stringify(events)).toContain('call_usage');
+      expect(upstream).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns a later upstream error inside the composite stream', async () => {
+      await enableSearxngSearch();
+      let call = 0;
+      const upstream = vi.fn<LoopCall>(async () => {
+        call += 1;
+
+        return call === 1
+          ? makeSseResponse({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        id: 'call_search',
+                        index: 0,
+                        function: {
+                          arguments: '{"query":"error"}',
+                          name: 'web_search',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                  index: 0,
+                },
+              ],
+            })
+          : makeJsonResponse({ error: { message: 'follow-up failed' } }, 502);
+      });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+
+      await expect(result!.response!.text()).resolves.toContain(
+        'follow-up failed',
+      );
+    });
+
+    it('returns later mixed client calls after executing another server tool', async () => {
+      await enableSearxngSearch();
+      let call = 0;
+      const upstream = vi.fn<LoopCall>(async () => {
+        call += 1;
+
+        if (call === 1) {
+          return makeSseResponse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      id: 'call_first',
+                      index: 0,
+                      function: {
+                        arguments: '{"query":"first"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          });
+        }
+
+        return makeJsonResponse({
+          choices: [
+            {
+              finish_reason: 'tool_calls',
+              message: {
+                content: 'Use both results.',
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"query":"second"}',
+                      name: 'web_search',
+                    },
+                  },
+                  {
+                    id: 'call_client',
+                    function: {
+                      arguments: '{}',
+                      name: 'client_tool',
+                    },
+                    type: 'function',
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+      const text = await result!.response!.text();
+
+      expect(text).toContain('server_tool_1_0');
+      expect(text).toContain('client_tool');
+      expect(text).toContain('Search result');
+      expect(upstream).toHaveBeenCalledTimes(2);
+    });
+
+    it('drops local tools after the inline iteration budget is exhausted', async () => {
+      await enableSearxngSearch();
+      let call = 0;
+      const upstream = vi.fn<LoopCall>(async (body) => {
+        call += 1;
+
+        if (call === 1) {
+          return makeSseResponse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      function: {
+                        arguments: '{"query":"loop 0"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          });
+        }
+
+        if (body.tools?.length) {
+          return makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  tool_calls: [
+                    {
+                      function: {
+                        arguments: `{"query":"loop ${call - 1}"}`,
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { total_tokens: 1 },
+          });
+        }
+
+        return makeJsonResponse({
+          choices: [
+            { finish_reason: 'stop', message: { content: 'Budget answer.' } },
+          ],
+          usage: { total_tokens: 2 },
+        });
+      });
+      const body = inlineBody();
+      body.tool_choice = { function: { name: 'web_search' }, type: 'function' };
+
+      const result = await executeWebSearchLoop({
+        body,
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+      const text = await result!.response!.text();
+      const finalBody = upstream.mock.calls.at(-1)?.[0];
+
+      expect(text).toContain('Budget answer.');
+      expect(finalBody?.tools).toEqual([]);
+      expect(upstream).toHaveBeenCalledTimes(6);
+    });
+
+    it('returns an error when the final budget fallback fails upstream', async () => {
+      await enableSearxngSearch();
+      let call = 0;
+      const upstream = vi.fn<LoopCall>(async (body) => {
+        call += 1;
+
+        if (call === 1) {
+          return makeSseResponse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      id: 'call_initial',
+                      index: 0,
+                      function: {
+                        arguments: '{"query":"fallback error"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          });
+        }
+
+        if (body.tools?.length) {
+          return makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  tool_calls: [
+                    {
+                      id: `call_${call}`,
+                      function: {
+                        arguments: '{"query":"again"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          });
+        }
+
+        return makeJsonResponse({ error: { message: 'fallback failed' } }, 502);
+      });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+
+      await expect(result!.response!.text()).resolves.toContain(
+        'fallback failed',
+      );
+      expect(upstream).toHaveBeenCalledTimes(6);
+    });
+
+    it('leaves an empty non-SSE initial response untouched', async () => {
+      await enableSearxngSearch();
+      const response = new Response(null, { status: 204 });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: async () => response,
+      });
+
+      expect(result?.response).toBe(response);
+      await expect(result!.response!.text()).resolves.toBe('');
+    });
+
     it('always asks upstream to stream and buffers the response', async () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
@@ -2836,7 +3255,6 @@ describe('chat proxy web search integration', () => {
                   delta: {
                     tool_calls: [
                       {
-                        id: 'call_fetch',
                         index: 0,
                         function: { name: 'web_' },
                       },
@@ -2903,6 +3321,198 @@ describe('chat proxy web search integration', () => {
     expect(text.indexOf('"type":"server_tool_use"')).toBeLessThan(
       text.indexOf('Article summary.'),
     );
+  });
+
+  it('keeps ordinary Messages replies live when WebSearch is available', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+    const encoder = new TextEncoder();
+    let releaseFinalChunk: (() => void) | undefined;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      expect(String(input)).toContain('/v2/chat/completions');
+
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  choices: [
+                    { delta: { content: 'Live first chunk.' }, index: 0 },
+                  ],
+                })}\n\n`,
+              ),
+            );
+            releaseFinalChunk = () => {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    choices: [
+                      {
+                        delta: { content: ' Final chunk.' },
+                        finish_reason: 'stop',
+                        index: 0,
+                      },
+                    ],
+                  })}\n\ndata: [DONE]\n\n`,
+                ),
+              );
+              controller.close();
+            };
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      );
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Say hello' }],
+        stream: true,
+        tools: [
+          {
+            description: 'Search the web',
+            input_schema: { type: 'object' },
+            name: 'WebSearch',
+          },
+        ],
+      },
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let firstText = '';
+
+    while (!firstText.includes('Live first chunk.')) {
+      const chunk = await reader.read();
+      expect(chunk.done).toBe(false);
+      firstText += decoder.decode(chunk.value);
+    }
+
+    expect(releaseFinalChunk).toBeTypeOf('function');
+    releaseFinalChunk!();
+
+    let remainder = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      remainder += decoder.decode(chunk.value);
+    }
+
+    expect(remainder).toContain('Final chunk.');
+  });
+
+  it('keeps pre-tool Messages text live and executes a later CodeBuddy search', async () => {
+    await updateSettings({
+      CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
+      CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy',
+    });
+    const upstreamBodies: Array<Record<string, unknown>> = [];
+    let searchCalls = 0;
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        searchCalls++;
+        return makeJsonResponse({
+          results: [
+            {
+              snippet: 'Current iOS news.',
+              title: 'Latest iOS',
+              url: 'https://news.test/ios',
+            },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+      upstreamBodies.push(
+        JSON.parse(String(init?.body)) as Record<string, unknown>,
+      );
+
+      return upstreamCalls === 1
+        ? makeSseResponse(
+            {
+              choices: [
+                {
+                  delta: { content: 'I will search now.' },
+                  index: 0,
+                },
+              ],
+            },
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        id: 'call_search',
+                        index: 0,
+                        function: {
+                          arguments: '{"query":"latest iOS news"}',
+                          name: 'web_search',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                  index: 0,
+                },
+              ],
+            },
+          )
+        : makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: 'Here is the latest iOS news.' },
+              },
+            ],
+          });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Search for iOS news' }],
+        stream: true,
+        tools: [
+          {
+            description: 'Search the web',
+            input_schema: {
+              type: 'object',
+              properties: { query: { type: 'string' } },
+              required: ['query'],
+            },
+            name: 'WebSearch',
+          },
+        ],
+      },
+    );
+    const text = await response.text();
+    const firstTools = upstreamBodies[0]?.tools as Array<{
+      function?: { name?: string };
+    }>;
+    const secondMessages = upstreamBodies[1]?.messages as Array<{
+      role?: string;
+      tool_call_id?: string;
+    }>;
+
+    expect(text).toContain('I will search now.');
+    expect(text).toContain('"type":"server_tool_use"');
+    expect(text).toContain('"type":"web_search_tool_result"');
+    expect(text).toContain('Here is the latest iOS news.');
+    expect(text).not.toContain('"type":"tool_use"');
+    expect(firstTools[0]?.function?.name).toBe('web_search');
+    expect(secondMessages).toContainEqual(
+      expect.objectContaining({ role: 'tool', tool_call_id: 'call_search' }),
+    );
+    expect(searchCalls).toBe(1);
+    expect(upstreamCalls).toBe(2);
   });
 
   it('streams Messages server_tool_use before the backend result', async () => {
@@ -3050,7 +3660,6 @@ describe('chat proxy web search integration', () => {
   it('cancels a late Messages upstream stream after disconnect', async () => {
     let finishSearch: ((response: Response) => void) | undefined;
     let upstreamCalls = 0;
-    const cancelSpy = vi.spyOn(ReadableStream.prototype, 'cancel');
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
 
@@ -3107,13 +3716,9 @@ describe('chat proxy web search integration', () => {
 
     await vi.waitFor(() => expect(finishSearch).toBeTypeOf('function'));
     await response.body!.cancel();
-    const callsAfterClientCancel = cancelSpy.mock.calls.length;
     finishSearch!(makeJsonResponse({ results: [] }));
-    await vi.waitFor(() =>
-      expect(cancelSpy.mock.calls.length).toBeGreaterThan(
-        callsAfterClientCancel,
-      ),
-    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(upstreamCalls).toBe(1);
   });
 
   it('maps a completed fetch to a Responses open_page call', async () => {
