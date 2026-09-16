@@ -1822,13 +1822,15 @@ describe('server local web search', () => {
   });
 
   describe('upstream streaming contract', () => {
-    const enableCodeBuddySearch = async (): Promise<void> => {
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
-      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    const enableSearxngSearch = async (): Promise<void> => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
         makeJsonResponse({
           results: [
             {
-              snippet: 'Search result',
+              content: 'Search result',
               title: 'Result',
               url: 'https://result.test',
             },
@@ -1844,7 +1846,7 @@ describe('server local web search', () => {
     });
 
     it('keeps malformed frames and returns mixed client tool calls', async () => {
-      await enableCodeBuddySearch();
+      await enableSearxngSearch();
       const upstream = vi.fn<LoopCall>(async () => {
         const toolChunk = {
           choices: [
@@ -1903,7 +1905,7 @@ describe('server local web search', () => {
     });
 
     it('aggregates usage when the turn after a streamed tool call completes', async () => {
-      await enableCodeBuddySearch();
+      await enableSearxngSearch();
       let call = 0;
       const upstream = vi.fn<LoopCall>(async () => {
         call += 1;
@@ -1929,6 +1931,7 @@ describe('server local web search', () => {
                   delta: {
                     tool_calls: [
                       {
+                        id: 'call_usage',
                         index: 0,
                         function: { arguments: '{"query":"usage"}' },
                       },
@@ -1973,11 +1976,12 @@ describe('server local web search', () => {
         total_tokens: 12,
       });
       expect(JSON.stringify(events)).toContain('Final answer.');
+      expect(JSON.stringify(events)).toContain('call_usage');
       expect(upstream).toHaveBeenCalledTimes(2);
     });
 
     it('returns a later upstream error inside the composite stream', async () => {
-      await enableCodeBuddySearch();
+      await enableSearxngSearch();
       let call = 0;
       const upstream = vi.fn<LoopCall>(async () => {
         call += 1;
@@ -2018,7 +2022,7 @@ describe('server local web search', () => {
     });
 
     it('returns later mixed client calls after executing another server tool', async () => {
-      await enableCodeBuddySearch();
+      await enableSearxngSearch();
       let call = 0;
       const upstream = vi.fn<LoopCall>(async () => {
         call += 1;
@@ -2088,7 +2092,7 @@ describe('server local web search', () => {
     });
 
     it('drops local tools after the inline iteration budget is exhausted', async () => {
-      await enableCodeBuddySearch();
+      await enableSearxngSearch();
       let call = 0;
       const upstream = vi.fn<LoopCall>(async (body) => {
         call += 1;
@@ -2158,8 +2162,73 @@ describe('server local web search', () => {
       expect(upstream).toHaveBeenCalledTimes(6);
     });
 
+    it('returns an error when the final budget fallback fails upstream', async () => {
+      await enableSearxngSearch();
+      let call = 0;
+      const upstream = vi.fn<LoopCall>(async (body) => {
+        call += 1;
+
+        if (call === 1) {
+          return makeSseResponse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      id: 'call_initial',
+                      index: 0,
+                      function: {
+                        arguments: '{"query":"fallback error"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          });
+        }
+
+        if (body.tools?.length) {
+          return makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  tool_calls: [
+                    {
+                      id: `call_${call}`,
+                      function: {
+                        arguments: '{"query":"again"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          });
+        }
+
+        return makeJsonResponse({ error: { message: 'fallback failed' } }, 502);
+      });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+
+      await expect(result!.response!.text()).resolves.toContain(
+        'fallback failed',
+      );
+      expect(upstream).toHaveBeenCalledTimes(6);
+    });
+
     it('leaves an empty non-SSE initial response untouched', async () => {
-      await enableCodeBuddySearch();
+      await enableSearxngSearch();
       const response = new Response(null, { status: 204 });
 
       const result = await executeWebSearchLoop({

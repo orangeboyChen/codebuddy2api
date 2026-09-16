@@ -547,10 +547,15 @@ const aggregateStreamingToolCalls = (
   const latestKeyByIndex = new Map<number, string>();
 
   deltas.forEach((delta, position) => {
+    const indexedKey =
+      typeof delta.index === 'number'
+        ? latestKeyByIndex.get(delta.index)
+        : undefined;
     const key =
+      indexedKey ??
       (delta.id ? `id:${delta.id}` : undefined) ??
       (typeof delta.index === 'number'
-        ? (latestKeyByIndex.get(delta.index) ?? `index:${delta.index}`)
+        ? `index:${delta.index}`
         : `position:${position}`);
     const current = calls.get(key) ?? {
       function: { arguments: '', name: '' },
@@ -996,6 +1001,14 @@ const createInlineServerToolStream = async ({
             'buffer',
           );
           finalPayload = (await response.json()) as ChatCompletionPayload;
+
+          if (!response.ok || finalPayload.error) {
+            emitJson(controller, finalPayload as JsonRecord);
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+            return;
+          }
+
           usage = sumUsage(usage, finalPayload.usage);
           finalPayload = {
             ...finalPayload,
