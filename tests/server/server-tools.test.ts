@@ -413,6 +413,37 @@ describe('server tool backends', () => {
   });
 
   describe('declaration stripping', () => {
+    it('keeps a client-declared web_search function when search cannot run', async () => {
+      // Search is selected but unconfigured (no SEARXNG_URL), so nothing can
+      // execute it — a client-owned function must survive untouched.
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      const clientTool = {
+        type: 'function',
+        function: { name: 'web_search', parameters: { type: 'object' } },
+      };
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [clientTool],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'No tools.' } },
+            ],
+          }),
+      });
+
+      // Nothing matched a server-tool declaration, so the request is left
+      // alone rather than rewritten.
+      expect(result).toBeNull();
+    });
+
     it('drops a server-declared search tool when no backend can run', async () => {
       // Both off: the loop runs if *either* tool can be executed, so leaving
       // fetch enabled would make it call upstream regardless of search.
@@ -734,6 +765,51 @@ describe('server tool backends', () => {
           server.close(() => resolve());
         });
       }
+    });
+
+    it('reports one reason when both failures agree', async () => {
+      // The host cannot resolve, so the local fallback fails with exactly the
+      // message the endpoint reports. Repeating it would just be noise.
+      const reason = 'Web fetch could not resolve host: a.test';
+      stubFetch(async () => {
+        throw new Error(reason);
+      });
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain(`Web fetch failed: ${reason}.`);
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.not.toContain('local fallback also failed');
+    });
+
+    it('handles a non-Error failure from the fallback', async () => {
+      stubFetch(async () => {
+        throw 'endpoint string failure';
+      });
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain('local fallback also failed');
     });
 
     it('reports both reasons when the endpoint and the fallback fail', async () => {
