@@ -30,8 +30,15 @@ import {
 } from '../shared/hy-thought-depth';
 import { withCodeBuddyToken } from '../search/token';
 import {
+  normalizeToolName,
+  WEB_FETCH_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
+} from '../search/tool';
+import {
+  attachServerToolExecutions,
   type ChatCompletionPayload,
   executeWebSearchLoop,
+  type ServerToolCallbacks,
   synthesizeChatCompletionStream,
 } from './web-search-loop';
 import {
@@ -2360,6 +2367,244 @@ const aggregateUpstreamStream = async (
   };
 };
 
+const isServerWebToolName = (name: string): boolean => {
+  const normalized = normalizeToolName(name);
+
+  return (
+    normalized === normalizeToolName(WEB_SEARCH_TOOL_NAME) ||
+    normalized === normalizeToolName(WEB_FETCH_TOOL_NAME)
+  );
+};
+
+const SERVER_WEB_TOOL_NAMES = [
+  normalizeToolName(WEB_SEARCH_TOOL_NAME),
+  normalizeToolName(WEB_FETCH_TOOL_NAME),
+];
+
+interface StreamProbeState {
+  toolNames: Map<string, string>;
+}
+
+const mergeToolName = (previous: string, incoming: string): string => {
+  if (!previous || incoming.startsWith(previous)) {
+    return incoming;
+  }
+
+  if (!incoming || previous.endsWith(incoming)) {
+    return previous;
+  }
+
+  return previous + incoming;
+};
+
+const classifyStreamFrame = (
+  frame: string,
+  state: StreamProbeState,
+  serverToolNames: string[],
+): 'passthrough' | 'server-tool' | null => {
+  const line = frame
+    .split('\n')
+    .find((segment) => segment.startsWith('data: '));
+
+  if (!line) {
+    return null;
+  }
+
+  const raw = line.slice(6).trim();
+
+  if (!raw || raw === '[DONE]') {
+    return raw === '[DONE]' ? 'passthrough' : null;
+  }
+
+  try {
+    const chunk = JSON.parse(raw) as ChatStreamChunk;
+
+    for (const choice of chunk.choices ?? []) {
+      const delta = choice.delta;
+      const toolCalls = delta?.tool_calls ?? [];
+      let hasNonServerTool = false;
+
+      for (const [position, toolCall] of toolCalls.entries()) {
+        const incoming = toolCall.function?.name;
+
+        if (typeof incoming !== 'string' || !incoming) {
+          continue;
+        }
+
+        const key =
+          typeof toolCall.index === 'number'
+            ? `index:${toolCall.index}`
+            : toolCall.id
+              ? `id:${toolCall.id}`
+              : `position:${position}`;
+        const name = mergeToolName(state.toolNames.get(key) ?? '', incoming);
+        const normalized = normalizeToolName(name);
+
+        state.toolNames.set(key, name);
+
+        if (isServerWebToolName(name) && serverToolNames.includes(normalized)) {
+          return 'server-tool';
+        }
+
+        if (
+          normalized &&
+          !serverToolNames.some((serverName) =>
+            serverName.startsWith(normalized),
+          )
+        ) {
+          hasNonServerTool = true;
+        }
+      }
+
+      if (
+        delta?.content ||
+        delta?.reasoning_content ||
+        delta?.reasoning ||
+        hasNonServerTool ||
+        choice.finish_reason !== undefined
+      ) {
+        return 'passthrough';
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+};
+
+const concatenateChunks = (chunks: Uint8Array[]): ArrayBuffer => {
+  const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const combined = new Uint8Array(size);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return combined.buffer;
+};
+
+const createResponseWithBody = (body: BodyInit, response: Response): Response =>
+  new Response(body, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+
+const createReplayStreamResponse = ({
+  chunks,
+  reader,
+  response,
+}: {
+  chunks: Uint8Array[];
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  response: Response;
+}): Response => {
+  let cancelled = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start: (controller) => {
+      for (const chunk of chunks) {
+        controller.enqueue(chunk);
+      }
+
+      const pump = async (): Promise<void> => {
+        while (true) {
+          const { done, value } = await reader.read();
+
+          if (cancelled) {
+            return;
+          }
+
+          if (done) {
+            reader.releaseLock();
+            controller.close();
+            return;
+          }
+
+          controller.enqueue(value);
+        }
+      };
+
+      void pump().catch((error) => {
+        if (!cancelled) {
+          controller.error(error);
+        }
+      });
+    },
+    async cancel(reason): Promise<void> {
+      cancelled = true;
+      try {
+        await reader.cancel(reason);
+      } finally {
+        reader.releaseLock();
+      }
+    },
+  });
+
+  return createResponseWithBody(stream, response);
+};
+
+const detectServerToolStream = async (
+  response: Response,
+  fallbackModel: string,
+  serverToolNames: string[],
+): Promise<Response> => {
+  if (!response.body) {
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: Uint8Array[] = [];
+  const state: StreamProbeState = { toolNames: new Map() };
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      reader.releaseLock();
+      return createResponseWithBody(concatenateChunks(chunks), response);
+    }
+
+    chunks.push(value);
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+
+    for (const frame of frames) {
+      const classification = classifyStreamFrame(frame, state, serverToolNames);
+
+      if (classification === 'passthrough') {
+        return createReplayStreamResponse({ chunks, reader, response });
+      }
+
+      if (classification === 'server-tool') {
+        while (true) {
+          const remainder = await reader.read();
+
+          if (remainder.done) {
+            reader.releaseLock();
+            break;
+          }
+
+          chunks.push(remainder.value);
+        }
+
+        return (
+          await aggregateUpstreamStream(
+            new Response(concatenateChunks(chunks)),
+            fallbackModel,
+          )
+        ).response;
+      }
+    }
+  }
+};
+
 export const getModelsForCredential = async ({
   bearerToken,
   credentialData,
@@ -2666,7 +2911,9 @@ const fetchChatCompletion = async ({
     );
   }
 
-  if (stream) {
+  const contentType = upstreamResponse.headers.get('content-type') ?? '';
+
+  if (stream && !contentType.toLowerCase().includes('application/json')) {
     return normalizeStreamingResponse({
       model: String(upstreamBody.model ?? 'unknown'),
       proxyContext: resolvedContext,
@@ -2677,8 +2924,6 @@ const fetchChatCompletion = async ({
 
   // Upstream only accepts `stream: true`, so a non-streaming caller is served
   // by buffering the SSE response and folding it into a single JSON payload.
-  const contentType = upstreamResponse.headers.get('content-type') ?? '';
-
   if (contentType.toLowerCase().includes('application/json')) {
     const payloadText = await upstreamResponse.text();
     let usage: unknown = null;
@@ -2725,6 +2970,7 @@ export const proxyChatCompletions = async (
   context?: ProxyContext,
   debugTrace?: DebugTrace,
   usageRoute = '/v1/chat/completions',
+  serverToolCallbacks?: ServerToolCallbacks,
 ): Promise<Response> => {
   if (!body.messages?.length) {
     return createErrorResponse(400, 'messages is required');
@@ -2749,22 +2995,40 @@ export const proxyChatCompletions = async (
         () =>
           executeWebSearchLoop({
             body: upstreamBody,
-            callUpstream: (loopBody) =>
-              fetchChatCompletion({
+            callbacks: serverToolCallbacks,
+            callUpstream: async (loopBody, mode) => {
+              const upstreamResponse = await fetchChatCompletion({
                 body: loopBody,
                 debugTrace,
                 request,
                 resolvedContext,
-                // Upstream rejects `stream: false` outright (code 11101), so
-                // the request always streams and the SSE response is buffered
-                // into a single payload the loop can inspect for tool calls.
-                stream: false,
+                // Probe the first meaningful SSE delta for streaming callers.
+                // Ordinary content stays live; only a server-tool call is
+                // buffered into a payload the execution loop can inspect.
+                stream: mode !== 'buffer',
                 // Already normalized, so pass it straight through; re-running
                 // buildUpstreamBody each iteration would re-apply prompt cache
                 // markers to the appended tool results.
                 upstreamBody: { ...loopBody, stream: true },
                 usageRoute,
-              }),
+              });
+
+              const detectedNames =
+                mode === 'detect-both'
+                  ? SERVER_WEB_TOOL_NAMES
+                  : mode === 'detect-search'
+                    ? [normalizeToolName(WEB_SEARCH_TOOL_NAME)]
+                    : [normalizeToolName(WEB_FETCH_TOOL_NAME)];
+
+              return mode !== 'buffer'
+                ? detectServerToolStream(
+                    upstreamResponse,
+                    String(loopBody.model ?? 'unknown'),
+                    detectedNames,
+                  )
+                : upstreamResponse;
+            },
+            detectInitialStream: Boolean(body.stream),
           }),
       );
 
@@ -2778,17 +3042,32 @@ export const proxyChatCompletions = async (
 
       if (webSearch?.response) {
         if (!webSearch.response.ok) {
-          return webSearch.response;
-        }
-
-        if (body.stream) {
-          return synthesizeChatCompletionStream(
-            (await webSearch.response.json()) as ChatCompletionPayload,
-            String(upstreamBody.model ?? 'unknown'),
+          return attachServerToolExecutions(
+            webSearch.response,
+            webSearch.executions,
           );
         }
 
-        return webSearch.response;
+        if (
+          body.stream &&
+          !webSearch.response.headers
+            .get('content-type')
+            ?.toLowerCase()
+            .includes('text/event-stream')
+        ) {
+          return attachServerToolExecutions(
+            synthesizeChatCompletionStream(
+              (await webSearch.response.json()) as ChatCompletionPayload,
+              String(upstreamBody.model ?? 'unknown'),
+            ),
+            webSearch.executions,
+          );
+        }
+
+        return attachServerToolExecutions(
+          webSearch.response,
+          webSearch.executions,
+        );
       }
     }
 

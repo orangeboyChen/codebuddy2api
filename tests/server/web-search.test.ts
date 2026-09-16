@@ -31,6 +31,8 @@ import {
 import { resetUsageStats } from '@/lib/server/domain/stats';
 import type { ChatRequestBody } from '@/lib/server/proxy/codebuddy';
 import { translateResponsesToolsToChat } from '@/lib/server/proxy/responses';
+import { handleResponsesRequest } from '@/lib/server/proxy/responses';
+import { handleMessagesRequest } from '@/lib/server/proxy/anthropic';
 import {
   executeWebSearchLoop,
   synthesizeChatCompletionStream,
@@ -61,6 +63,12 @@ const makeJsonResponse = (
     headers: { 'Content-Type': 'application/json' },
   });
 };
+
+const makeSseResponse = (...chunks: Record<string, unknown>[]): Response =>
+  new Response(
+    `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`,
+    { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } },
+  );
 
 type LoopCall = (body: ChatRequestBody) => Promise<Response>;
 
@@ -601,11 +609,10 @@ describe('server local web search', () => {
 
       // No upstream call: nothing can execute, so there is nothing to loop for.
       expect(callUpstream).not.toHaveBeenCalled();
-      // The typed declaration is still stripped. Forwarding it upstream would
-      // send a tool type the upstream does not implement, and handing it back
-      // would give the client a tool nobody runs.
       expect(result?.response).toBeNull();
-      expect(result?.body.tools).toEqual([]);
+      expect(result?.body.tools).toEqual([
+        { type: 'web_search_20260209', name: 'web_search' },
+      ]);
     });
 
     it.each([
@@ -2136,6 +2143,649 @@ describe('chat proxy web search integration', () => {
     // The loop ran before the stream was synthesized.
     expect(upstreamCalls.length).toBeGreaterThan(0);
   });
+
+  it('keeps ordinary replies live when server web tools are available', async () => {
+    const encoder = new TextEncoder();
+    let releaseFinalChunk: (() => void) | undefined;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        throw new Error('Search should not run for an ordinary reply');
+      }
+
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  choices: [{ delta: { content: 'First chunk.' }, index: 0 }],
+                })}\n\n`,
+              ),
+            );
+            releaseFinalChunk = () => {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    choices: [
+                      {
+                        delta: { content: ' Final chunk.' },
+                        finish_reason: 'stop',
+                        index: 0,
+                      },
+                    ],
+                  })}\n\ndata: [DONE]\n\n`,
+                ),
+              );
+              controller.close();
+            };
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } },
+      );
+    });
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'say hello' }],
+        stream: true,
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+      },
+    );
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+
+    expect(new TextDecoder().decode(first.value)).toContain('First chunk.');
+    expect(releaseFinalChunk).toBeTypeOf('function');
+
+    releaseFinalChunk!();
+
+    const remainder: string[] = [];
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      remainder.push(new TextDecoder().decode(chunk.value));
+    }
+
+    expect(remainder.join('')).toContain('Final chunk.');
+    expect(remainder.join('')).toContain('data: [DONE]');
+  });
+
+  it('keeps a passthrough fetch live when search executes locally', async () => {
+    await updateSettings({
+      CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+      CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+    });
+    const encoder = new TextEncoder();
+    let releaseFinalChunk: (() => void) | undefined;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        throw new Error('Search should not run for a passthrough fetch');
+      }
+
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  choices: [
+                    {
+                      delta: {
+                        tool_calls: [
+                          {
+                            id: 'call_fetch',
+                            index: 0,
+                            function: {
+                              arguments: '{"url":"https://page.test"}',
+                              name: 'web_fetch',
+                            },
+                          },
+                        ],
+                      },
+                      index: 0,
+                    },
+                  ],
+                })}\n\n`,
+              ),
+            );
+            releaseFinalChunk = () => {
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            };
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } },
+      );
+    });
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'read the page' }],
+        stream: true,
+        tools: [
+          { type: 'web_search_20260209', name: 'web_search' },
+          { type: 'web_fetch_20250910', name: 'web_fetch' },
+        ],
+      },
+    );
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+
+    expect(new TextDecoder().decode(first.value)).toContain('web_fetch');
+    expect(releaseFinalChunk).toBeTypeOf('function');
+    releaseFinalChunk!();
+    await reader.cancel();
+  });
+
+  it('emits Responses web_search_call lifecycle before the final message', async () => {
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        return makeJsonResponse({
+          results: [
+            {
+              content: 'Current result',
+              title: 'News',
+              url: 'https://news.test',
+            },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+      if (upstreamCalls === 1) {
+        return makeSseResponse(
+          {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      id: 'call_search',
+                      index: 0,
+                      function: { name: 'web_' },
+                    },
+                  ],
+                },
+                index: 0,
+              },
+            ],
+          },
+          {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      function: {
+                        arguments: '{"query":"latest news"}',
+                        name: 'search',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          },
+        );
+      }
+
+      return makeJsonResponse({
+        choices: [
+          { finish_reason: 'stop', message: { content: 'Latest answer.' } },
+        ],
+      });
+    });
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'What is new?',
+        stream: true,
+        tools: [{ type: 'web_search_preview' }],
+      },
+    );
+    const text = await response.text();
+
+    expect(text).toContain('"type":"web_search_call"');
+    expect(text).toContain('"type":"response.web_search_call.in_progress"');
+    expect(text).toContain('"type":"response.web_search_call.searching"');
+    expect(text).toContain('"type":"response.web_search_call.completed"');
+    expect(text).toContain('"action":{"type":"search","query":"latest news"}');
+    expect(text.indexOf('"type":"web_search_call"')).toBeLessThan(
+      text.indexOf('Latest answer.'),
+    );
+  });
+
+  it('streams Responses search progress before the backend finishes', async () => {
+    let finishSearch: ((response: Response) => void) | undefined;
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        return await new Promise<Response>((resolve) => {
+          finishSearch = resolve;
+        });
+      }
+
+      upstreamCalls++;
+      return upstreamCalls === 1
+        ? makeSseResponse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      id: 'call_search',
+                      index: 0,
+                      function: {
+                        arguments: '{"query":"live query"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          })
+        : makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'Live answer.' } },
+            ],
+          });
+    });
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'Search live',
+        stream: true,
+        tools: [{ type: 'web_search_preview' }],
+      },
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let beforeResult = '';
+
+    while (!beforeResult.includes('response.web_search_call.searching')) {
+      const chunk = await reader.read();
+      expect(chunk.done).toBe(false);
+      beforeResult += decoder.decode(chunk.value);
+    }
+
+    expect(finishSearch).toBeTypeOf('function');
+    expect(beforeResult).not.toContain('response.web_search_call.completed');
+    finishSearch!(makeJsonResponse({ results: [] }));
+
+    let afterResult = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      afterResult += decoder.decode(chunk.value);
+    }
+
+    expect(afterResult).toContain('response.web_search_call.completed');
+    expect(afterResult).toContain('Live answer.');
+  });
+
+  it('returns Anthropic server tool and fetch result blocks', async () => {
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch')) {
+        return makeJsonResponse({
+          content: 'Fetched article body.',
+          url: 'https://page.test/final',
+        });
+      }
+
+      if (url.includes('page.test')) {
+        throw new Error('The endpoint result should win the local fallback');
+      }
+
+      upstreamCalls++;
+      return upstreamCalls === 1
+        ? makeSseResponse(
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        id: 'call_fetch',
+                        index: 0,
+                        function: { name: 'web_' },
+                      },
+                    ],
+                  },
+                  index: 0,
+                },
+              ],
+            },
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        function: {
+                          arguments: '{"url":"https://page.test/article"}',
+                          name: 'fetch',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                  index: 0,
+                },
+              ],
+            },
+          )
+        : makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: 'Article summary.' },
+              },
+            ],
+          });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: 'Read https://page.test/article',
+          },
+        ],
+        stream: true,
+        tools: [
+          { type: 'web_fetch_20250910', name: 'web_fetch', input_schema: {} },
+        ],
+      },
+    );
+    const text = await response.text();
+
+    expect(text).toContain('"type":"server_tool_use"');
+    expect(text).toContain('"name":"web_fetch"');
+    expect(text).toContain('"type":"web_fetch_tool_result"');
+    expect(text).toContain('"type":"web_fetch_result"');
+    expect(text).toContain('"url":"https://page.test/final"');
+    expect(text).toContain('Fetched article body.');
+    expect(text.indexOf('"type":"server_tool_use"')).toBeLessThan(
+      text.indexOf('Article summary.'),
+    );
+  });
+
+  it('streams Messages server_tool_use before the backend result', async () => {
+    let finishSearch: ((response: Response) => void) | undefined;
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        return await new Promise<Response>((resolve) => {
+          finishSearch = resolve;
+        });
+      }
+
+      upstreamCalls++;
+      return upstreamCalls === 1
+        ? makeSseResponse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      id: 'call_search',
+                      index: 0,
+                      function: {
+                        arguments: '{"query":"live messages"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          })
+        : makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: 'Messages answer.' },
+              },
+            ],
+          });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Search live' }],
+        stream: true,
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let beforeResult = '';
+
+    while (!beforeResult.includes('"type":"server_tool_use"')) {
+      const chunk = await reader.read();
+      expect(chunk.done).toBe(false);
+      beforeResult += decoder.decode(chunk.value);
+    }
+
+    expect(finishSearch).toBeTypeOf('function');
+    expect(beforeResult).not.toContain('"type":"web_search_tool_result"');
+    finishSearch!(
+      makeJsonResponse({
+        results: [
+          { content: 'Live result', title: 'Live', url: 'https://live.test' },
+        ],
+      }),
+    );
+
+    let afterResult = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      afterResult += decoder.decode(chunk.value);
+    }
+
+    expect(afterResult).toContain('"type":"web_search_tool_result"');
+    expect(afterResult).toContain('Messages answer.');
+  });
+
+  it('maps a completed fetch to a Responses open_page call', async () => {
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch')) {
+        return makeJsonResponse({
+          content: 'Fetched documentation.',
+          url: 'https://docs.test/final',
+        });
+      }
+
+      if (url.includes('docs.test')) {
+        throw new Error('The endpoint result should win the local fallback');
+      }
+
+      upstreamCalls++;
+      return upstreamCalls === 1
+        ? makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  tool_calls: [
+                    {
+                      id: 'call_fetch',
+                      function: {
+                        arguments: '{"url":"https://docs.test/start"}',
+                        name: 'web_fetch',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        : makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'Documentation.' } },
+            ],
+          });
+    });
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'Read https://docs.test/start',
+        tools: [{ type: 'web_fetch_20250910', name: 'web_fetch' }],
+      },
+    );
+    const payload = (await response.json()) as {
+      output: Array<Record<string, unknown>>;
+    };
+
+    expect(payload.output[0]).toMatchObject({
+      type: 'web_search_call',
+      status: 'completed',
+      action: { type: 'open_page', url: 'https://docs.test/final' },
+    });
+    expect(payload.output[1]).toMatchObject({ type: 'message' });
+  });
+
+  it('includes completed search blocks in a non-streaming Messages response', async () => {
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        return makeJsonResponse({
+          results: [
+            {
+              content: 'Search snippet',
+              title: 'Search title',
+              url: 'https://result.test',
+            },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+      return upstreamCalls === 1
+        ? makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  tool_calls: [
+                    {
+                      id: 'call_search',
+                      function: {
+                        arguments: '{"query":"current status"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        : makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: 'Current answer.' },
+              },
+            ],
+          });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'What is current?' }],
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    const payload = (await response.json()) as {
+      content: Array<Record<string, unknown>>;
+      usage: Record<string, unknown>;
+    };
+
+    expect(payload.content[0]).toMatchObject({
+      type: 'server_tool_use',
+      name: 'web_search',
+      input: { query: 'current status' },
+    });
+    expect(payload.content[1]).toMatchObject({
+      type: 'web_search_tool_result',
+      content: [
+        {
+          type: 'web_search_result',
+          title: 'Search title',
+          url: 'https://result.test',
+        },
+      ],
+    });
+    expect(payload.content[2]).toMatchObject({
+      type: 'text',
+      text: 'Current answer.',
+    });
+    expect(payload.usage.server_tool_use).toEqual({
+      web_search_requests: 1,
+      web_fetch_requests: 0,
+    });
+  });
 });
 
 describe('proxy integration', () => {
@@ -2269,14 +2919,14 @@ describe('proxy integration', () => {
       upstreamCalls += 1;
 
       return upstreamCalls === 1
-        ? makeJsonResponse({
+        ? makeSseResponse({
             choices: [
               {
-                finish_reason: 'tool_calls',
-                message: {
+                delta: {
                   tool_calls: [
                     {
                       id: 'call_1',
+                      index: 0,
                       function: {
                         arguments: '{"query":"weather"}',
                         name: 'web_search',
@@ -2284,6 +2934,8 @@ describe('proxy integration', () => {
                     },
                   ],
                 },
+                finish_reason: 'tool_calls',
+                index: 0,
               },
             ],
           })

@@ -446,9 +446,7 @@ describe('server tool backends', () => {
       expect(result).toBeNull();
     });
 
-    it('drops a server-declared search tool when no backend can run', async () => {
-      // Both off: the loop runs if *either* tool can be executed, so leaving
-      // fetch enabled would make it call upstream regardless of search.
+    it('passes through a server-declared search tool when configured', async () => {
       await updateSettings({
         CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
         CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
@@ -468,7 +466,9 @@ describe('server tool backends', () => {
       });
 
       expect(result?.response).toBeNull();
-      expect(result?.body.tools).toEqual([]);
+      expect(result?.body.tools).toEqual([
+        { type: 'web_search_20260209', name: 'web_search' },
+      ]);
     });
 
     it('reads a query from the first non-empty string field', async () => {
@@ -1337,7 +1337,7 @@ describe('server tool backends', () => {
       expect(isMarkedServerTool(translated[0])).toBe(false);
     });
 
-    it('strips a translated server tool when fetch cannot run', async () => {
+    it('passes through a translated server tool when fetch is passthrough', async () => {
       await updateSettings({
         CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
 
@@ -1361,9 +1361,13 @@ describe('server tool backends', () => {
           }),
       });
 
-      // Would be forwarded before: the marker lets the loop know the client
-      // declared a server tool rather than implementing `web_fetch` itself.
-      expect(result?.body.tools).toEqual([]);
+      expect(result?.body.tools).toEqual([
+        expect.objectContaining({
+          type: 'function',
+          function: expect.objectContaining({ name: 'web_fetch' }),
+        }),
+      ]);
+      expect(isMarkedServerTool(result?.body.tools?.[0])).toBe(false);
     });
 
     it('takes over a client-declared web_fetch function when a backend is set', async () => {
@@ -1849,12 +1853,10 @@ describe('server tool backends', () => {
       resetWebSearchProviders();
     });
 
-    it('drops a fetch server-tool declaration it cannot execute', async () => {
+    it('passes through a fetch server-tool declaration', async () => {
       await updateSettings({
         CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
         CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
-
-        // Fetch is on but pointed at `none`, so no provider can serve it.
       });
 
       const callUpstream = vi.fn(async (_loopBody: ChatRequestBody) =>
@@ -1876,13 +1878,12 @@ describe('server tool backends', () => {
         callUpstream: callUpstream as never,
       });
 
-      // Nothing can serve either tool, so no upstream call is made — but the
-      // declaration is still rewritten before the request goes out.
+      // Passthrough never starts the local loop; the ordinary proxy path sends
+      // both tools upstream after the internal marker is removed.
       expect(callUpstream).not.toHaveBeenCalled();
       expect(result?.response).toBeNull();
-      // The server-tool declaration upstream would not understand is dropped,
-      // while the client's own function is untouched.
       expect(result?.body.tools).toEqual([
+        { type: 'web_fetch_20250910', name: 'web_fetch' },
         { type: 'function', function: { name: 'keep_me' } },
       ]);
     });

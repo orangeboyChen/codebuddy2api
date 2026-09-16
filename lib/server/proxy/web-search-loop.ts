@@ -7,8 +7,8 @@ import {
 import {
   resolveFetchProvider,
   resolveSearchProvider,
-  runWebFetch,
-  runWebSearch,
+  runWebFetchResult,
+  runWebSearchResult,
 } from '../search';
 
 import type { ChatRequestBody } from './codebuddy';
@@ -26,7 +26,9 @@ import {
 import type {
   WebFetchProvider,
   WebFetchQuery,
+  WebFetchResponse,
   WebSearchProvider,
+  WebSearchResponse,
 } from '../search/types';
 
 /**
@@ -40,9 +42,9 @@ import type {
  * The model then answers normally, and the client never learns the search ran
  * locally.
  *
- * The loop has to buffer: a tool call is only complete once the upstream
- * response ends, so a streaming client is served a synthesized stream after
- * the final iteration rather than a pass-through of upstream bytes.
+ * A streaming first response is probed until its first meaningful delta. Plain
+ * text and reasoning keep the real upstream stream, while a server-tool call
+ * is buffered because its arguments are only complete once that response ends.
  */
 
 const MAX_SEARCH_ITERATIONS = 5;
@@ -151,13 +153,6 @@ const isWebFetchTool = (tool: unknown): boolean =>
   classifyServerTool(tool, WEB_FETCH_TOOL_NAME, WEB_FETCH_TOOL_TYPE_PREFIX)
     .matches;
 
-/**
- * Whether `tool` is a provider-executed server-tool declaration.
- *
- * Used to strip declarations upstream would not understand. A plain function
- * tool the client named `web_search` or `web_fetch` is excluded: the client
- * resolves it itself, so removing it would take away a working capability.
- */
 const isServerDeclaredSearchTool = (tool: unknown): boolean =>
   classifyServerTool(tool, WEB_SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_TYPE_PREFIX)
     .serverDeclared;
@@ -166,6 +161,13 @@ const isServerDeclaredFetchTool = (tool: unknown): boolean =>
   classifyServerTool(tool, WEB_FETCH_TOOL_NAME, WEB_FETCH_TOOL_TYPE_PREFIX)
     .serverDeclared;
 
+/**
+ * Whether `tool` is a provider-executed server-tool declaration.
+ *
+ * Used to strip declarations upstream would not understand. A plain function
+ * tool the client named `web_search` or `web_fetch` is excluded: the client
+ * resolves it itself, so removing it would take away a working capability.
+ */
 /**
  * Whether `toolCall` is a call the proxy is meant to execute.
  *
@@ -192,75 +194,75 @@ const isWebFetchToolCall = (toolCall: ChatCompletionToolCall): boolean => {
 };
 
 /**
- * Swaps every supported server-tool declaration for the function tool upstream
- * can actually call, dropping any that cannot be executed.
+ * Swaps locally executed server-tool declarations for functions upstream can
+ * call. Passthrough tools keep their upstream representation.
  *
- * Returns `null` when nothing was swapped, so callers can skip the loop
- * entirely and keep the fast pass-through path.
- *
- * A server-tool declaration that cannot be executed is dropped rather than
- * passed through: advertising a tool that would be refused is worse than not
- * advertising it, since the model calls it and the turn is wasted.
- *
- * Whether a tool is taken over depends on the backend, not on how it was
- * declared — with a working backend the proxy runs it regardless of shape.
- * Provenance matters only when nothing can execute it, which is where a
- * client-owned function has to be preserved; see `classifyServerTool`.
+ * Returns `null` when no web tool is present. `executes` distinguishes a local
+ * backend from passthrough: the latter still strips the internal provenance
+ * marker, but never starts the server loop or buffers a stream.
  */
 const replaceServerTools = ({
   fetchEnabled,
+  fetchPassthrough,
   fetchProvider,
   searchEnabled,
+  searchPassthrough,
   searchProvider,
   tools,
 }: {
   fetchEnabled: boolean;
+  fetchPassthrough: boolean;
   fetchProvider: WebFetchProvider | null;
   searchEnabled: boolean;
+  searchPassthrough: boolean;
   searchProvider: WebSearchProvider | null;
   tools: unknown;
-}): unknown[] | null => {
+}): { executes: boolean; tools: unknown[] } | null => {
   if (!Array.isArray(tools) || !tools.length) {
     return null;
   }
 
-  let changed = false;
+  let matched = false;
+  let executes = false;
 
   const rewritten = tools.flatMap((tool): unknown[] => {
     if (isWebSearchTool(tool)) {
       if (searchEnabled && searchProvider) {
-        changed = true;
+        matched = true;
+        executes = true;
 
         return [{ type: 'function', function: buildWebSearchToolDefinition() }];
       }
 
-      // Cannot execute it: drop the declaration if upstream would not
-      // recognise it, otherwise leave the client's own tool untouched.
-      return isServerDeclaredSearchTool(tool) ? ((changed = true), []) : [tool];
+      if (!isServerDeclaredSearchTool(tool)) {
+        return [tool];
+      }
+
+      matched = true;
+      return searchPassthrough ? [stripServerToolMarker(tool)] : [];
     }
 
     if (isWebFetchTool(tool)) {
-      // A backend that can execute the tool takes it over, whatever shape the
-      // declaration arrived in — that is the point of the setting.
       if (fetchEnabled && fetchProvider) {
-        changed = true;
+        matched = true;
+        executes = true;
 
         return [{ type: 'function', function: buildWebFetchToolDefinition() }];
       }
 
-      // With no backend, provenance decides: a provider-executed declaration is
-      // dropped, while a client-owned function is left for the client to run.
-      return isServerDeclaredFetchTool(tool) ? ((changed = true), []) : [tool];
+      if (!isServerDeclaredFetchTool(tool)) {
+        return [tool];
+      }
+
+      matched = true;
+      return fetchPassthrough ? [stripServerToolMarker(tool)] : [];
     }
 
     // The marker is internal to this proxy, so it never reaches upstream.
     return [stripServerToolMarker(tool)];
   });
 
-  // Tracking `changed` explicitly rather than comparing lengths: swapping one
-  // declaration for one definition leaves the count identical, so a length
-  // check would silently skip the loop for the common single-tool request.
-  return changed ? rewritten : null;
+  return matched ? { executes, tools: rewritten } : null;
 };
 
 /**
@@ -449,15 +451,68 @@ const buildMixedTurnPayload = ({
  */
 export interface ServerToolLoopResult {
   body: ChatRequestBody;
+  executions: ServerToolExecution[];
   response: Response | null;
 }
+
+export type ServerToolInvocation =
+  | {
+      id: string;
+      input: { query: string };
+      type: 'web_search';
+    }
+  | {
+      id: string;
+      input: WebFetchQuery;
+      type: 'web_fetch';
+    };
+
+export type ServerToolExecution =
+  | (Extract<ServerToolInvocation, { type: 'web_search' }> & {
+      result: WebSearchResponse;
+    })
+  | (Extract<ServerToolInvocation, { type: 'web_fetch' }> & {
+      result: WebFetchResponse;
+    });
+
+export interface ServerToolCallbacks {
+  onCall?: (invocation: ServerToolInvocation) => void;
+  onResult?: (execution: ServerToolExecution) => void;
+}
+
+const serverToolExecutions = new WeakMap<Response, ServerToolExecution[]>();
+
+export const attachServerToolExecutions = (
+  response: Response,
+  executions: ServerToolExecution[],
+): Response => {
+  if (executions.length) {
+    serverToolExecutions.set(response, executions);
+  }
+
+  return response;
+};
+
+export const getServerToolExecutions = (
+  response: Response,
+): ServerToolExecution[] => serverToolExecutions.get(response) ?? [];
+
+export type ServerToolUpstreamMode =
+  'buffer' | 'detect-both' | 'detect-fetch' | 'detect-search';
 
 export const executeWebSearchLoop = async ({
   body,
   callUpstream,
+  callbacks,
+  detectInitialStream = Boolean(body.stream),
 }: {
   body: ChatRequestBody;
-  callUpstream: (body: ChatRequestBody) => Promise<Response>;
+  callUpstream: (
+    body: ChatRequestBody,
+    mode: ServerToolUpstreamMode,
+  ) => Promise<Response>;
+  callbacks?: ServerToolCallbacks;
+  detectInitialStream?: boolean;
 }): Promise<ServerToolLoopResult | null> => {
   const [searchEnabled, fetchEnabled, config] = await Promise.all([
     isWebSearchEnabled(),
@@ -476,28 +531,27 @@ export const executeWebSearchLoop = async ({
     ? resolveFetchProvider(config.CODEBUDDY_WEB_FETCH_BACKEND, resolveEndpoint)
     : null;
 
-  // Runs even when both tools are switched off. Typed server-tool declarations
-  // (`web_search_preview`, `web_fetch_20250910`) are meaningless to upstream, so
-  // they have to be stripped on the way out regardless of whether the proxy
-  // intends to execute them — otherwise the default configuration forwards a
-  // declaration upstream rejects, or hands back a tool nobody implements.
-  const tools = replaceServerTools({
+  const replacement = replaceServerTools({
     fetchEnabled,
+    fetchPassthrough: config.CODEBUDDY_WEB_FETCH_BACKEND === 'passthrough',
     fetchProvider,
     searchEnabled,
+    searchPassthrough: config.CODEBUDDY_WEB_SEARCH_BACKEND === 'passthrough',
     searchProvider,
     tools: body.tools,
   });
 
-  if (!tools) {
+  if (!replacement) {
     return null;
   }
+
+  const { executes, tools } = replacement;
 
   // Nothing can be executed, so there is nothing to loop for. The rewritten
   // `tools` still have to reach the caller: it forwards them upstream, and the
   // stripped declarations have to stay stripped on that path too.
-  if (!searchProvider && !fetchProvider) {
-    return { body: { ...body, tools }, response: null };
+  if (!executes) {
+    return { body: { ...body, tools }, executions: [], response: null };
   }
 
   const messages: JsonRecord[] = body.messages as JsonRecord[];
@@ -505,13 +559,33 @@ export const executeWebSearchLoop = async ({
   let response: Response | null = null;
   let payload: ChatCompletionPayload | null = null;
   let usage: unknown = null;
+  const executions: ServerToolExecution[] = [];
+  const initialMode: ServerToolUpstreamMode =
+    searchProvider && fetchProvider
+      ? 'detect-both'
+      : searchProvider
+        ? 'detect-search'
+        : 'detect-fetch';
 
   for (let iteration = 0; iteration < MAX_SEARCH_ITERATIONS; iteration++) {
-    response = await callUpstream(loopBody);
+    response = await callUpstream(
+      loopBody,
+      iteration === 0 && detectInitialStream ? initialMode : 'buffer',
+    );
+
+    if (
+      response.headers
+        .get('content-type')
+        ?.toLowerCase()
+        .includes('text/event-stream')
+    ) {
+      return { body: loopBody, executions, response };
+    }
+
     payload = (await response.json()) as ChatCompletionPayload;
 
     if (!response.ok || payload.error) {
-      return { body: loopBody, response };
+      return { body: loopBody, executions, response };
     }
 
     usage = sumUsage(usage, payload.usage);
@@ -520,33 +594,69 @@ export const executeWebSearchLoop = async ({
     const toolCalls = message?.tool_calls ?? [];
     const localCalls = toolCalls.filter(
       (toolCall) =>
-        isWebSearchToolCall(toolCall) || isWebFetchToolCall(toolCall),
+        (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
+        (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
     );
     const remainingCalls = toolCalls.filter(
       (toolCall) =>
-        !isWebSearchToolCall(toolCall) && !isWebFetchToolCall(toolCall),
+        (!searchProvider || !isWebSearchToolCall(toolCall)) &&
+        (!fetchProvider || !isWebFetchToolCall(toolCall)),
     );
 
     if (!localCalls.length) {
       break;
     }
 
-    const results = await Promise.all(
-      localCalls.map(async (toolCall) => ({
-        content: isWebFetchToolCall(toolCall)
-          ? await runWebFetch({
-              // Already resolved above; re-resolving would rebuild the provider
-              // for every call in the turn.
-              provider: fetchProvider,
-              query: extractFetchQuery(toolCall.function?.arguments),
-            })
-          : await runWebSearch({
-              provider: searchProvider,
-              query: extractSearchQuery(toolCall.function?.arguments),
-            }),
-        tool_call_id: toolCall.id ?? '',
-      })),
+    const invocations = localCalls.map(
+      (toolCall, index): ServerToolInvocation =>
+        isWebFetchToolCall(toolCall)
+          ? {
+              id: toolCall.id ?? `server_tool_${iteration}_${index}`,
+              input: extractFetchQuery(toolCall.function?.arguments),
+              type: 'web_fetch',
+            }
+          : {
+              id: toolCall.id ?? `server_tool_${iteration}_${index}`,
+              input: {
+                query: extractSearchQuery(toolCall.function?.arguments),
+              },
+              type: 'web_search',
+            },
     );
+    invocations.forEach((invocation) => callbacks?.onCall?.(invocation));
+
+    const results = await Promise.all(
+      invocations.map(async (invocation) => {
+        if (invocation.type === 'web_fetch') {
+          const result = await runWebFetchResult({
+            provider: fetchProvider,
+            query: invocation.input,
+          });
+          const execution: ServerToolExecution = { ...invocation, result };
+          callbacks?.onResult?.(execution);
+
+          return {
+            content: result.content,
+            execution,
+            tool_call_id: invocation.id,
+          };
+        }
+
+        const result = await runWebSearchResult({
+          provider: searchProvider,
+          query: invocation.input.query,
+        });
+        const execution: ServerToolExecution = { ...invocation, result };
+        callbacks?.onResult?.(execution);
+
+        return {
+          content: result.content,
+          execution,
+          tool_call_id: invocation.id,
+        };
+      }),
+    );
+    executions.push(...results.map((result) => result.execution));
 
     // A turn mixing server tools with client-side calls cannot be continued
     // locally: the client owns those calls, and re-issuing the transcript with
@@ -557,6 +667,7 @@ export const executeWebSearchLoop = async ({
     if (remainingCalls.length) {
       return {
         body: loopBody,
+        executions,
         response: Response.json(
           buildMixedTurnPayload({
             message,
@@ -594,21 +705,25 @@ export const executeWebSearchLoop = async ({
   // forever would hang the request, and returning `null` would hand the
   // unfinished tool call back to the client, which has no way to resolve it.
   if (!payload) {
-    const finalResponse = await callUpstream({
-      ...loopBody,
-      tools: (loopBody.tools ?? []).filter(
-        (tool) => !isWebSearchTool(tool) && !isWebFetchTool(tool),
-      ),
-    });
+    const finalResponse = await callUpstream(
+      {
+        ...loopBody,
+        tools: (loopBody.tools ?? []).filter(
+          (tool) => !isWebSearchTool(tool) && !isWebFetchTool(tool),
+        ),
+      },
+      'buffer',
+    );
     payload = (await finalResponse.json()) as ChatCompletionPayload;
     usage = sumUsage(usage, payload.usage);
 
     if (!finalResponse.ok || payload.error) {
-      return { body: loopBody, response: finalResponse };
+      return { body: loopBody, executions, response: finalResponse };
     }
 
     return {
       body: loopBody,
+      executions,
       response: Response.json(
         { ...payload, ...(usage ? { usage } : {}) },
         { status: finalResponse.status },
@@ -618,6 +733,7 @@ export const executeWebSearchLoop = async ({
 
   return {
     body: loopBody,
+    executions,
     response: Response.json(
       { ...payload, ...(usage ? { usage } : {}) },
       { status: response?.status ?? 200 },
@@ -626,9 +742,9 @@ export const executeWebSearchLoop = async ({
 };
 
 /**
- * Replays a buffered completion as chat-completion SSE. Used only for
- * streaming clients whose request ran the search loop; every other request
- * keeps the upstream response untouched.
+ * Replays a buffered completion as chat-completion SSE. Used only after a
+ * streaming request actually invokes a server-executed tool; ordinary answers
+ * keep the upstream response untouched.
  */
 export const synthesizeChatCompletionStream = (
   payload: ChatCompletionPayload,
