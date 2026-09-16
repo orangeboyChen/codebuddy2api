@@ -8,6 +8,7 @@ import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
   markServerTool,
+  normalizeToolName,
   WEB_FETCH_TOOL_NAME,
   WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
@@ -470,7 +471,9 @@ const toSupportedChatTool = (
   // rather than the enable toggles because those checks are asynchronous; the
   // proxy strips the tool again when the toggle is off.
   if (
-    toolType.startsWith(WEB_SEARCH_TOOL_TYPE_PREFIX) &&
+    normalizeToolName(toolType).startsWith(
+      normalizeToolName(WEB_SEARCH_TOOL_TYPE_PREFIX),
+    ) &&
     isLocalWebSearchConfigured()
   ) {
     const definition = buildWebSearchToolDefinition();
@@ -489,7 +492,11 @@ const toSupportedChatTool = (
   // Fetch needs no deployment-level configuration — the local backend is always
   // available and the CodeBuddy backend needs only a credential — so it is
   // advertised unconditionally and gated later by the enable toggle.
-  if (toolType.startsWith(WEB_FETCH_TOOL_TYPE_PREFIX)) {
+  if (
+    normalizeToolName(toolType).startsWith(
+      normalizeToolName(WEB_FETCH_TOOL_TYPE_PREFIX),
+    )
+  ) {
     const definition = buildWebFetchToolDefinition();
 
     return [

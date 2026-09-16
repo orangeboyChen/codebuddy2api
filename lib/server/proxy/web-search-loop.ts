@@ -16,6 +16,7 @@ import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
   isMarkedServerTool,
+  normalizeToolName,
   stripServerToolMarker,
   WEB_FETCH_TOOL_NAME,
   WEB_FETCH_TOOL_TYPE_PREFIX,
@@ -119,15 +120,19 @@ const classifyServerTool = (
 
   // A dedicated server-tool type (`web_search_20260209`, `web_fetch_20250910`,
   // `web_search_preview`) is unambiguous: only a provider-executed tool is
-  // declared that way.
-  if (type.startsWith(prefix)) {
+  // declared that way. The trailing date is part of the version, not the name,
+  // so the prefix is matched in canonical form — `WebFetch_20250910` arrives
+  // from upstream as readily as its snake_case spelling.
+  if (normalizeToolName(type).startsWith(normalizeToolName(prefix))) {
     return { matches: true, serverDeclared: true };
   }
 
   const fn = asRecord(record.function);
   const isBareName =
-    (typeof fn?.name === 'string' && fn.name === name) ||
-    (typeof record.name === 'string' && record.name.startsWith(prefix));
+    (typeof fn?.name === 'string' &&
+      normalizeToolName(fn.name) === normalizeToolName(name)) ||
+    (typeof record.name === 'string' &&
+      normalizeToolName(record.name).startsWith(normalizeToolName(prefix)));
 
   // A Responses translation has already flattened the declaration into a plain
   // function, so the type is gone by now; its marker is the only surviving
@@ -161,12 +166,29 @@ const isServerDeclaredFetchTool = (tool: unknown): boolean =>
   classifyServerTool(tool, WEB_FETCH_TOOL_NAME, WEB_FETCH_TOOL_TYPE_PREFIX)
     .serverDeclared;
 
+/**
+ * Whether `toolCall` is a call the proxy is meant to execute.
+ *
+ * Matched in canonical form because the name comes back from the model, which
+ * is under no obligation to repeat the spelling it was given: upstream echoes
+ * `web_fetch` as `WebFetch` often enough to matter here. A miss is not a
+ * fallback to the client — the call leaves the loop as an unanswered
+ * client-owned tool, so the fetch silently never happens.
+ */
 const isWebSearchToolCall = (toolCall: ChatCompletionToolCall): boolean => {
-  return toolCall.function?.name === WEB_SEARCH_TOOL_NAME;
+  return (
+    typeof toolCall.function?.name === 'string' &&
+    normalizeToolName(toolCall.function.name) ===
+      normalizeToolName(WEB_SEARCH_TOOL_NAME)
+  );
 };
 
 const isWebFetchToolCall = (toolCall: ChatCompletionToolCall): boolean => {
-  return toolCall.function?.name === WEB_FETCH_TOOL_NAME;
+  return (
+    typeof toolCall.function?.name === 'string' &&
+    normalizeToolName(toolCall.function.name) ===
+      normalizeToolName(WEB_FETCH_TOOL_NAME)
+  );
 };
 
 /**

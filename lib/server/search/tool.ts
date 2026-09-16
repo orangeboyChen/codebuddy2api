@@ -24,6 +24,22 @@ export const WEB_FETCH_TOOL_NAME = 'web_fetch';
 export const WEB_FETCH_TOOL_TYPE_PREFIX = 'web_fetch';
 
 /**
+ * Canonical form of a tool name or type, for comparison only.
+ *
+ * Upstream is not consistent about how it spells these. The wire format is
+ * snake_case (`web_fetch`), but a model echoes the call back as `WebFetch` or
+ * `Web Fetch` often enough that an exact comparison loses it. Case,
+ * underscores, hyphens and spaces carry no meaning in any of the spellings, so
+ * they are stripped rather than merely lowercased — `WebFetch` and `web_fetch`
+ * have to compare equal, and lowercasing alone cannot make that true.
+ */
+export const normalizeToolName = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[_\-\s]+/g, '');
+
+/**
  * The function tool handed to upstream. The description states *when* to call
  * it as well as what it does — models that reach for tools conservatively need
  * the trigger condition spelled out.
