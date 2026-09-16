@@ -2928,6 +2928,15 @@ describe('chat proxy web search integration', () => {
           {
             choices: [
               {
+                delta: { reasoning_content: 'I need current information.' },
+                finish_reason: null,
+                index: 0,
+              },
+            ],
+          },
+          {
+            choices: [
+              {
                 delta: {
                   tool_calls: [
                     {
@@ -2987,6 +2996,9 @@ describe('chat proxy web search integration', () => {
     expect(text).toContain('"type":"response.web_search_call.searching"');
     expect(text).toContain('"type":"response.web_search_call.completed"');
     expect(text).toContain('"action":{"type":"search","query":"latest news"}');
+    expect(text).not.toContain(
+      '"type":"function_call","call_id":"call_search"',
+    );
     expect(text.indexOf('"type":"web_search_call"')).toBeLessThan(
       text.indexOf('Latest answer.'),
     );
@@ -3008,24 +3020,35 @@ describe('chat proxy web search integration', () => {
 
       upstreamCalls++;
       return upstreamCalls === 1
-        ? makeSseResponse({
-            choices: [
-              {
-                delta: {
-                  tool_calls: [
-                    {
-                      function: {
-                        arguments: '{"url":"https://stream.test/page"}',
-                        name: 'web_fetch',
-                      },
-                    },
-                  ],
+        ? makeSseResponse(
+            {
+              choices: [
+                {
+                  delta: { reasoning_content: 'I need to read the page.' },
+                  finish_reason: null,
+                  index: 0,
                 },
-                finish_reason: 'tool_calls',
-                index: 0,
-              },
-            ],
-          })
+              ],
+            },
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        function: {
+                          arguments: '{"url":"https://stream.test/page"}',
+                          name: 'webfetch',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                  index: 0,
+                },
+              ],
+            },
+          )
         : makeJsonResponse({
             choices: [
               { finish_reason: 'stop', message: { content: 'Fetched.' } },
@@ -3048,6 +3071,7 @@ describe('chat proxy web search integration', () => {
     expect(text).toContain(
       '"action":{"type":"open_page","url":"https://stream.test/page"}',
     );
+    expect(text).not.toContain('"type":"function_call","call_id"');
   });
 
   it('streams ordinary Responses output with instructions', async () => {
@@ -3168,7 +3192,7 @@ describe('chat proxy web search integration', () => {
     expect(text).toContain('data: [DONE]');
   });
 
-  it('cancels a late Responses upstream stream after disconnect', async () => {
+  it('does not resume a Responses server-tool loop after disconnect', async () => {
     let finishSearch: ((response: Response) => void) | undefined;
     let upstreamCalls = 0;
     const cancelSpy = vi.spyOn(ReadableStream.prototype, 'cancel');
@@ -3222,12 +3246,12 @@ describe('chat proxy web search integration', () => {
     await vi.waitFor(() => expect(finishSearch).toBeTypeOf('function'));
     await response.body!.cancel();
     const callsAfterClientCancel = cancelSpy.mock.calls.length;
+    expect(callsAfterClientCancel).toBeGreaterThan(0);
     finishSearch!(makeJsonResponse({ results: [] }));
-    await vi.waitFor(() =>
-      expect(cancelSpy.mock.calls.length).toBeGreaterThan(
-        callsAfterClientCancel,
-      ),
-    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(upstreamCalls).toBe(1);
+    expect(cancelSpy.mock.calls.length).toBe(callsAfterClientCancel);
   });
 
   it('returns Anthropic server tool and fetch result blocks', async () => {

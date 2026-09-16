@@ -2023,6 +2023,7 @@ const createResponsesEventStream = async (
           debugTrace,
           '/v1/responses',
           {
+            emitStreamEvents: true,
             onCall: (invocation) => {
               const outputIndex = serverToolItems.length;
               const id = `ws_${crypto.randomUUID().replaceAll('-', '')}`;
