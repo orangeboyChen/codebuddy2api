@@ -11,6 +11,7 @@ import type {
   WebFetchQuery,
   WebFetchResponse,
   WebSearchProvider,
+  WebSearchResponse,
 } from './types';
 
 import { createCodeBuddyFetchProvider } from './providers/codebuddy-fetch';
@@ -155,7 +156,7 @@ const describeError = (error: unknown): string => {
  * With no explicit `provider` the backend is resolved from `backend`, the
  * setting the console owns.
  */
-export const runWebSearch = async ({
+export const runWebSearchResult = async ({
   backend,
   provider,
   query,
@@ -165,24 +166,33 @@ export const runWebSearch = async ({
   provider?: WebSearchProvider | null;
   query: string;
   resolveEndpoint?: EndpointResolver;
-}): Promise<string> => {
+}): Promise<WebSearchResponse> => {
   const resolved =
     provider !== undefined
       ? provider
       : resolveSearchProvider(backend, resolveEndpoint);
 
   if (!resolved) {
-    return 'Web search is unavailable: no local search backend is configured for this deployment.';
+    return {
+      content:
+        'Web search is unavailable: no local search backend is configured for this deployment.',
+      results: [],
+    };
   }
 
   try {
-    const result = await resolved.search(query);
-
-    return result.content;
+    return await resolved.search(query);
   } catch (error) {
-    return `Web search failed: ${describeError(error)}. Answer without search results and mention that the search failed.`;
+    return {
+      content: `Web search failed: ${describeError(error)}. Answer without search results and mention that the search failed.`,
+      results: [],
+    };
   }
 };
+
+export const runWebSearch = async (
+  options: Parameters<typeof runWebSearchResult>[0],
+): Promise<string> => (await runWebSearchResult(options)).content;
 
 /**
  * Runs a fetch, converting any failure into text for the model.
@@ -191,7 +201,7 @@ export const runWebSearch = async ({
  * model: the fix is usually to retry with a corrected URL, which the model can
  * only do if it sees the result.
  */
-export const runWebFetch = async ({
+export const runWebFetchResult = async ({
   backend,
   provider,
   query,
@@ -201,21 +211,28 @@ export const runWebFetch = async ({
   provider?: WebFetchProvider | null;
   query: WebFetchQuery;
   resolveEndpoint?: EndpointResolver;
-}): Promise<string> => {
+}): Promise<WebFetchResponse> => {
   const resolved =
     provider !== undefined
       ? provider
       : resolveFetchProvider(backend, resolveEndpoint);
 
   if (!resolved) {
-    return 'Web fetch is unavailable: no web fetch backend is enabled for this deployment.';
+    return {
+      content:
+        'Web fetch is unavailable: no web fetch backend is enabled for this deployment.',
+    };
   }
 
   try {
-    const result: WebFetchResponse = await resolved.fetch(query);
-
-    return result.content;
+    return await resolved.fetch(query);
   } catch (error) {
-    return `Web fetch failed: ${describeError(error)}. Answer without the fetched content and mention that the fetch failed.`;
+    return {
+      content: `Web fetch failed: ${describeError(error)}. Answer without the fetched content and mention that the fetch failed.`,
+    };
   }
 };
+
+export const runWebFetch = async (
+  options: Parameters<typeof runWebFetchResult>[0],
+): Promise<string> => (await runWebFetchResult(options)).content;
