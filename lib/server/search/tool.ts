@@ -132,3 +132,62 @@ export const stripServerToolMarker = <T>(tool: T): T => {
 
   return rest as T;
 };
+
+/**
+ * Where a server tool runs.
+ *
+ * The names say *who* executes the tool, because that is the decision being
+ * made. `codebuddy` and `codebuddy2api` are both server-side and differ only in
+ * who fetches: CodeBuddy's own agent-tool endpoint versus this machine.
+ * `passthrough` leaves the tool in the request, so the client (Claude Code,
+ * Codex) runs it itself.
+ */
+export type SearchBackend = 'codebuddy' | 'searxng' | 'passthrough';
+export type FetchBackend = 'codebuddy' | 'codebuddy2api' | 'passthrough';
+
+export const SEARCH_BACKENDS: readonly SearchBackend[] = [
+  'codebuddy',
+  'searxng',
+  'passthrough',
+];
+export const FETCH_BACKENDS: readonly FetchBackend[] = [
+  'codebuddy',
+  'codebuddy2api',
+  'passthrough',
+];
+
+export const DEFAULT_SEARCH_BACKEND: SearchBackend = 'searxng';
+export const DEFAULT_FETCH_BACKEND: FetchBackend = 'passthrough';
+
+/**
+ * Values accepted from an existing deployment's saved settings.
+ *
+ * `local` and `none` were the previous names and are still honoured so an
+ * upgrade does not silently change which side executes the tool — `none` in
+ * particular meant "client runs it", which is easy to mistake for "off".
+ */
+const RENAMED_BACKENDS: Record<string, string> = {
+  local: 'codebuddy2api',
+  none: 'passthrough',
+};
+
+const normalizeBackend = <T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  const current = RENAMED_BACKENDS[normalized] ?? normalized;
+
+  return (allowed as readonly string[]).includes(current)
+    ? (current as T)
+    : fallback;
+};
+
+export const normalizeSearchBackend = (value: unknown): SearchBackend =>
+  normalizeBackend(value, SEARCH_BACKENDS, DEFAULT_SEARCH_BACKEND);
+
+export const normalizeFetchBackend = (value: unknown): FetchBackend =>
+  normalizeBackend(value, FETCH_BACKENDS, DEFAULT_FETCH_BACKEND);

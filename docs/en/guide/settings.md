@@ -4,19 +4,17 @@ Settings controls service parameters, credential models, usage data, and console
 
 ## Service settings
 
-| Field                                     | Purpose                                                                                    |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| CodeBuddy API endpoint                    | Upstream URL; default `https://copilot.tencent.com`                                        |
-| Admin passkey RP ID / domain              | WebAuthn hostname only; do not include scheme or port                                      |
-| Authentication mode (auto/token)          | Upstream authentication method                                                             |
-| Network environment (internal/ioa/public) | Upstream network environment                                                               |
-| Log level                                 | Choose `DEBUG`, `INFO`, `WARNING`, or `ERROR`                                              |
-| API timeout, first token (minutes)        | Abort a request that produces no first delta in time; default `5`                          |
-| Enable local web search                   | Run `web_search` locally instead of forwarding it; default `off`                           |
-| Web search backend                        | Where `web_search` runs: `codebuddy`, `searxng`, or `none`                                 |
-| Enable local web fetch                    | Run `web_fetch` locally instead of forwarding it; default `off`                            |
-| Web fetch backend                         | Where `web_fetch` runs: `codebuddy`, `local`, or `none`                                    |
-| Translate thought depth for Hy models     | Convert downstream thinking parameters into the upstream `reasoning_effort`; default `off` |
+| Field                                     | Purpose                                                                                     |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
+| CodeBuddy API endpoint                    | Upstream URL; default `https://copilot.tencent.com`                                         |
+| Admin passkey RP ID / domain              | WebAuthn hostname only; do not include scheme or port                                       |
+| Authentication mode (auto/token)          | Upstream authentication method                                                              |
+| Network environment (internal/ioa/public) | Upstream network environment                                                                |
+| Log level                                 | Choose `DEBUG`, `INFO`, `WARNING`, or `ERROR`                                               |
+| API timeout, first token (minutes)        | Abort a request that produces no first delta in time; default `5`                           |
+| Web search backend                        | Who runs `web_search`: `codebuddy`, `searxng`, or `passthrough`. Default `searxng`          |
+| Web fetch backend                         | Who runs `web_fetch`: `codebuddy`, `codebuddy2api`, or `passthrough`. Default `passthrough` |
+| Translate thought depth for Hy models     | Convert downstream thinking parameters into the upstream `reasoning_effort`; default `off`  |
 
 Click **Save** after changing a field.
 
@@ -60,13 +58,13 @@ the work happened locally.
 
 Each tool has its own backend, chosen independently:
 
-| Tool         | Backend     | What it does                                                            |
-| ------------ | ----------- | ----------------------------------------------------------------------- |
-| `web_search` | `codebuddy` | Calls CodeBuddy's own `/agenttool/v1/search` with a saved credential.   |
-| `web_search` | `searxng`   | Queries a SearXNG instance. Default. Requires `SEARXNG_URL`.            |
-| `web_fetch`  | `codebuddy` | Calls CodeBuddy's own `/agenttool/v1/webfetch`. Returns extracted text. |
-| `web_fetch`  | `local`     | This server fetches the page directly and converts HTML to text.        |
-| either       | `none`      | Never run the tool; drop it from the request.                           |
+| Tool         | Backend         | What it does                                                            |
+| ------------ | --------------- | ----------------------------------------------------------------------- |
+| `web_search` | `codebuddy`     | Calls CodeBuddy's own `/agenttool/v1/search` with a saved credential.   |
+| `web_search` | `searxng`       | Queries a SearXNG instance. Default. Requires `SEARXNG_URL`.            |
+| `web_fetch`  | `codebuddy`     | Calls CodeBuddy's own `/agenttool/v1/webfetch`. Returns extracted text. |
+| `web_fetch`  | `codebuddy2api` | This server fetches the page directly and converts HTML to text.        |
+| either       | `none`          | Never run the tool; drop it from the request.                           |
 
 `codebuddy` is the reason to reach for this setting: it is the same endpoint the
 CodeBuddy CLI calls, so it needs no extra deployment and authenticates with the
@@ -75,14 +73,14 @@ deployments are unaffected, and the console hides the search setting entirely
 when `SEARXNG_URL` is unset — a deployment cannot advertise a tool it cannot
 execute.
 
-The `local` fetch backend treats the URL as untrusted input, since it comes from
+The `codebuddy2api` fetch backend treats the URL as untrusted input, since it comes from
 the model: private and loopback addresses are refused before connecting, and
 redirects are re-checked at every hop so a public URL cannot redirect onto the
 deployment's own network.
 
-Both tools default to off. Seed them before opening the console with
-`CODEBUDDY_WEB_SEARCH_BACKEND`, `CODEBUDDY_WEB_FETCH_BACKEND`,
-`CODEBUDDY_WEB_SEARCH_ENABLED`, and `CODEBUDDY_WEB_FETCH_ENABLED`.
+There is no separate enable switch: `passthrough` hands the tool to the client,
+so the backend choice cannot contradict itself. Both default to `none`. Seed them before opening the
+console with `CODEBUDDY_WEB_SEARCH_BACKEND` and `CODEBUDDY_WEB_FETCH_BACKEND`.
 
 ## Models and usage
 

@@ -64,9 +64,9 @@ Anthropic 客户端把搜索和抓取声明为服务端工具（`web_search_2026
 `local` 抓取后端把 URL 当作不可信输入——它来自模型：连接建立前就会拒绝私有地址和本机
 回环地址，并且每一跳重定向都会重新校验，因此公开的 URL 无法重定向到部署自身的网络。
 
-两个工具默认都关闭。可以在打开控制台之前用 `CODEBUDDY_WEB_SEARCH_BACKEND`、
-`CODEBUDDY_WEB_FETCH_BACKEND`、`CODEBUDDY_WEB_SEARCH_ENABLED`、
-`CODEBUDDY_WEB_FETCH_ENABLED` 预设。
+没有独立的启用开关：`none` 就是「关闭」，因此后端选择不可能自相矛盾。两者默认都是
+`none`。可以在打开控制台之前用 `CODEBUDDY_WEB_SEARCH_BACKEND`、
+`CODEBUDDY_WEB_FETCH_BACKEND` 预设。
 
 ## 凭证模型和用量
 

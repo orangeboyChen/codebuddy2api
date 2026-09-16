@@ -4,19 +4,17 @@
 
 ## サービス設定
 
-| 項目                                    | 用途                                                                       |
-| --------------------------------------- | -------------------------------------------------------------------------- |
-| CodeBuddy API エンドポイント            | 上流 URL。既定値は `https://copilot.tencent.com`                           |
-| 管理者 passkey RP ID / ドメイン         | WebAuthn の hostname。スキームとポートは含めない                           |
-| 認証モード（auto/token）                | 上流認証方式                                                               |
-| ネットワーク環境（internal/ioa/public） | 上流ネットワーク環境                                                       |
-| ログレベル                              | `DEBUG`、`INFO`、`WARNING`、`ERROR` を選択                                 |
-| API タイムアウト・最初のトークン (分)   | 最初の delta が返らないリクエストを打ち切る時間。既定値は `5`              |
-| ローカル Web 検索を有効化               | `web_search` を上流へ転送せずローカルで実行する。既定値は無効              |
-| Web 検索バックエンド                    | `web_search` の実行先：`codebuddy`、`searxng`、`none`                      |
-| ローカル Web フェッチを有効化           | `web_fetch` を上流へ転送せずローカルで実行する。既定値は無効               |
-| Web フェッチバックエンド                | `web_fetch` の実行先：`codebuddy`、`local`、`none`                         |
-| Hy モデルの思考深度を変換する           | 下流の思考パラメーターを上流の `reasoning_effort` へ変換する。既定値は無効 |
+| 項目                                    | 用途                                                                                      |
+| --------------------------------------- | ----------------------------------------------------------------------------------------- |
+| CodeBuddy API エンドポイント            | 上流 URL。既定値は `https://copilot.tencent.com`                                          |
+| 管理者 passkey RP ID / ドメイン         | WebAuthn の hostname。スキームとポートは含めない                                          |
+| 認証モード（auto/token）                | 上流認証方式                                                                              |
+| ネットワーク環境（internal/ioa/public） | 上流ネットワーク環境                                                                      |
+| ログレベル                              | `DEBUG`、`INFO`、`WARNING`、`ERROR` を選択                                                |
+| API タイムアウト・最初のトークン (分)   | 最初の delta が返らないリクエストを打ち切る時間。既定値は `5`                             |
+| Web 検索バックエンド                    | `web_search` の実行者：`codebuddy`、`searxng`、`passthrough`。既定値は `searxng`          |
+| Web フェッチバックエンド                | `web_fetch` の実行者：`codebuddy`、`codebuddy2api`、`passthrough`。既定値は `passthrough` |
+| Hy モデルの思考深度を変換する           | 下流の思考パラメーターを上流の `reasoning_effort` へ変換する。既定値は無効                |
 
 変更後に「保存」を押します。
 
@@ -70,9 +68,9 @@ Anthropic のクライアントは検索とフェッチをサーバーサイド�
 接続前にプライベートアドレスとループバックアドレスを拒否し、リダイレクトの各段で再検証する
 ため、公開 URL がデプロイ自身のネットワークへリダイレクトされることはありません。
 
-両ツールとも既定では無効です。コンソールを開く前に `CODEBUDDY_WEB_SEARCH_BACKEND`、
-`CODEBUDDY_WEB_FETCH_BACKEND`、`CODEBUDDY_WEB_SEARCH_ENABLED`、
-`CODEBUDDY_WEB_FETCH_ENABLED` で設定できます。
+有効化の個別スイッチはありません。`none` が「無効」そのものなので、バックエンドの選択が
+自己矛盾を起こすことはありません。両方とも既定値は `none` です。コンソールを開く前に
+`CODEBUDDY_WEB_SEARCH_BACKEND`、`CODEBUDDY_WEB_FETCH_BACKEND` で設定できます。
 
 ## モデルと使用量
 

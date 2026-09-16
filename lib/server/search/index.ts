@@ -1,4 +1,10 @@
 import { getCodeBuddyApiEndpoint } from '../domain/config';
+import {
+  normalizeFetchBackend,
+  normalizeSearchBackend,
+  type FetchBackend,
+  type SearchBackend,
+} from './tool';
 import { resolveCodeBuddyToken, type EndpointResolver } from './token';
 import type {
   WebFetchProvider,
@@ -26,42 +32,15 @@ import { createSearxngProviderFromEnv } from './providers/searxng';
  * cycle. Callers pass the chosen backend in instead.
  */
 
-export type SearchBackend = 'codebuddy' | 'searxng' | 'none';
-export type FetchBackend = 'codebuddy' | 'local' | 'none';
-
-export const SEARCH_BACKENDS: readonly SearchBackend[] = [
-  'codebuddy',
-  'searxng',
-  'none',
-];
-export const FETCH_BACKENDS: readonly FetchBackend[] = [
-  'codebuddy',
-  'local',
-  'none',
-];
-
-export const DEFAULT_SEARCH_BACKEND: SearchBackend = 'searxng';
-export const DEFAULT_FETCH_BACKEND: FetchBackend = 'none';
-
-const normalizeBackend = <T extends string>(
-  value: unknown,
-  allowed: readonly T[],
-  fallback: T,
-): T => {
-  const normalized = String(value ?? '')
-    .trim()
-    .toLowerCase();
-
-  return (allowed as readonly string[]).includes(normalized)
-    ? (normalized as T)
-    : fallback;
-};
-
-export const normalizeSearchBackend = (value: unknown): SearchBackend =>
-  normalizeBackend(value, SEARCH_BACKENDS, DEFAULT_SEARCH_BACKEND);
-
-export const normalizeFetchBackend = (value: unknown): FetchBackend =>
-  normalizeBackend(value, FETCH_BACKENDS, DEFAULT_FETCH_BACKEND);
+export type { FetchBackend, SearchBackend } from './tool';
+export {
+  DEFAULT_FETCH_BACKEND,
+  DEFAULT_SEARCH_BACKEND,
+  FETCH_BACKENDS,
+  normalizeFetchBackend,
+  normalizeSearchBackend,
+  SEARCH_BACKENDS,
+} from './tool';
 
 let cachedLocalFetch: WebFetchProvider | null = null;
 let cachedSearxng: WebSearchProvider | null | undefined;
@@ -102,7 +81,7 @@ export const resolveSearchProvider = (
 ): WebSearchProvider | null => {
   const resolved = normalizeSearchBackend(backend);
 
-  if (resolved === 'none') {
+  if (resolved === 'passthrough') {
     return null;
   }
 
@@ -123,11 +102,11 @@ export const resolveFetchProvider = (
 ): WebFetchProvider | null => {
   const resolved = normalizeFetchBackend(backend);
 
-  if (resolved === 'none') {
+  if (resolved === 'passthrough') {
     return null;
   }
 
-  if (resolved === 'local') {
+  if (resolved === 'codebuddy2api') {
     return getLocalFetchProvider();
   }
 
