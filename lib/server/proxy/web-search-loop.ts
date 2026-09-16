@@ -153,9 +153,11 @@ const isWebFetchTool = (tool: unknown): boolean =>
  * tool the client named `web_search` or `web_fetch` is excluded: the client
  * resolves it itself, so removing it would take away a working capability.
  */
-const isServerDeclaredTool = (tool: unknown): boolean =>
+const isServerDeclaredSearchTool = (tool: unknown): boolean =>
   classifyServerTool(tool, WEB_SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_TYPE_PREFIX)
-    .serverDeclared ||
+    .serverDeclared;
+
+const isServerDeclaredFetchTool = (tool: unknown): boolean =>
   classifyServerTool(tool, WEB_FETCH_TOOL_NAME, WEB_FETCH_TOOL_TYPE_PREFIX)
     .serverDeclared;
 
@@ -176,8 +178,12 @@ const isWebFetchToolCall = (toolCall: ChatCompletionToolCall): boolean => {
  *
  * A server-tool declaration that cannot be executed is dropped rather than
  * passed through: advertising a tool that would be refused is worse than not
- * advertising it, since the model calls it and the turn is wasted. A plain
- * function tool of the same name is left alone — see `classifyServerTool`.
+ * advertising it, since the model calls it and the turn is wasted.
+ *
+ * Whether a tool is taken over depends on the backend, not on how it was
+ * declared — with a working backend the proxy runs it regardless of shape.
+ * Provenance matters only when nothing can execute it, which is where a
+ * client-owned function has to be preserved; see `classifyServerTool`.
  */
 const replaceServerTools = ({
   fetchEnabled,
@@ -208,17 +214,21 @@ const replaceServerTools = ({
 
       // Cannot execute it: drop the declaration if upstream would not
       // recognise it, otherwise leave the client's own tool untouched.
-      return isServerDeclaredTool(tool) ? ((changed = true), []) : [tool];
+      return isServerDeclaredSearchTool(tool) ? ((changed = true), []) : [tool];
     }
 
     if (isWebFetchTool(tool)) {
+      // A backend that can execute the tool takes it over, whatever shape the
+      // declaration arrived in — that is the point of the setting.
       if (fetchEnabled && fetchProvider) {
         changed = true;
 
         return [{ type: 'function', function: buildWebFetchToolDefinition() }];
       }
 
-      return isServerDeclaredTool(tool) ? ((changed = true), []) : [tool];
+      // With no backend, provenance decides: a provider-executed declaration is
+      // dropped, while a client-owned function is left for the client to run.
+      return isServerDeclaredFetchTool(tool) ? ((changed = true), []) : [tool];
     }
 
     // The marker is internal to this proxy, so it never reaches upstream.

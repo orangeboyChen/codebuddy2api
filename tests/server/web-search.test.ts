@@ -4,7 +4,6 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 
 import {
-  getActiveConfig,
   getSettingLabels,
   isWebSearchEnabled,
   updateSettings,
@@ -13,6 +12,7 @@ import {
   getWebSearchProvider,
   isLocalWebSearchConfigured,
   resetWebSearchProviders,
+  resolveSearchProvider,
   runWebSearch,
 } from '@/lib/server/search';
 import {
@@ -475,7 +475,7 @@ describe('server local web search', () => {
       vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
 
       let call = 0;
       const callUpstream = vi.fn<LoopCall>(async () => {
@@ -564,7 +564,7 @@ describe('server local web search', () => {
     const enableSearch = async (): Promise<void> => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
     };
 
     it('skips requests that declare no web search tool', async () => {
@@ -583,7 +583,12 @@ describe('server local web search', () => {
     it('does not run the loop when the setting is disabled', async () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'false' });
+      // Both off: the loop runs if *either* tool can be executed, so leaving
+      // fetch enabled would make it call upstream regardless of search.
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
+      });
       const callUpstream = vi.fn<LoopCall>(async () => makeJsonResponse({}));
 
       const result = await executeWebSearchLoop({
@@ -1799,7 +1804,7 @@ describe('server local web search', () => {
     it('always asks upstream to stream and buffers the response', async () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
 
       const upstreamBodies: Array<Record<string, unknown>> = [];
       let call = 0;
@@ -1898,67 +1903,77 @@ describe('server local web search', () => {
   });
 
   describe('config gating', () => {
-    it('hides the setting label when no backend is configured', () => {
-      expect(
-        getSettingLabels('en-US').CODEBUDDY_WEB_SEARCH_ENABLED,
-      ).toBeUndefined();
-    });
-
-    it('shows the setting label when a backend is configured', () => {
-      process.env.SEARXNG_URL = 'https://searx.test';
-      resetWebSearchProviders();
-
-      expect(getSettingLabels('en-US').CODEBUDDY_WEB_SEARCH_ENABLED).toBe(
-        'Enable local web search',
+    it('labels the backend selector in every locale', () => {
+      expect(getSettingLabels('en-US').CODEBUDDY_WEB_SEARCH_BACKEND).toBe(
+        'Web search backend',
       );
-      expect(getSettingLabels('zh-CN').CODEBUDDY_WEB_SEARCH_ENABLED).toBe(
-        '启用本地 WebSearch',
+      expect(getSettingLabels('zh-CN').CODEBUDDY_WEB_SEARCH_BACKEND).toBe(
+        'WebSearch 后端',
+      );
+      expect(getSettingLabels('ja-JP').CODEBUDDY_WEB_SEARCH_BACKEND).toBe(
+        'Web 検索バックエンド',
       );
     });
 
-    it('keeps the setting disabled when no backend is configured', async () => {
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+    it('has no separate enable switch', () => {
+      // `none` is the off state, so a second control could only contradict it.
+      expect(getSettingLabels('en-US')).not.toHaveProperty(
+        'CODEBUDDY_WEB_SEARCH_ENABLED',
+      );
+    });
+
+    it('keeps the setting disabled when the backend is none', async () => {
+      // No SEARXNG_URL here, so `searxng` cannot be built — but `isWebSearchEnabled`
+      // only reflects the configured choice; the provider resolution is what
+      // degrades it to nothing.
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough' });
 
       await expect(isWebSearchEnabled()).resolves.toBe(false);
     });
 
-    it('accepts boolean and numeric console values', async () => {
+    it('degrades to no provider when the chosen backend is unconfigured', async () => {
+      // `searxng` is selected but SEARXNG_URL is unset, so no provider can be
+      // built and the tool is not advertised to the model.
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
+
+      expect(
+        resolveSearchProvider('searxng', async () => 'https://cb.test'),
+      ).toBeNull();
+    });
+
+    it('accepts the backend values from the console', async () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
 
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: true });
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
       await expect(isWebSearchEnabled()).resolves.toBe(true);
 
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 0 });
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough' });
       await expect(isWebSearchEnabled()).resolves.toBe(false);
 
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 1 });
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
       await expect(isWebSearchEnabled()).resolves.toBe(true);
     });
 
     it('reads the setting from the environment when nothing is persisted', async () => {
       process.env.SEARXNG_URL = 'https://searx.test';
-      process.env.CODEBUDDY_WEB_SEARCH_ENABLED = 'true';
+      process.env.CODEBUDDY_WEB_SEARCH_BACKEND = 'searxng';
       resetWebSearchProviders();
 
       await expect(isWebSearchEnabled()).resolves.toBe(true);
 
-      delete process.env.CODEBUDDY_WEB_SEARCH_ENABLED;
+      delete process.env.CODEBUDDY_WEB_SEARCH_BACKEND;
     });
 
-    it('coerces boolean-ish console values', async () => {
+    it('reflects the backend choice', async () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
 
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
-      await expect((await getActiveConfig()).CODEBUDDY_WEB_SEARCH_ENABLED).toBe(
-        true,
-      );
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
+      await expect(isWebSearchEnabled()).resolves.toBe(true);
 
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'false' });
-      await expect((await getActiveConfig()).CODEBUDDY_WEB_SEARCH_ENABLED).toBe(
-        false,
-      );
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough' });
+      await expect(isWebSearchEnabled()).resolves.toBe(false);
     });
   });
 });
@@ -2061,7 +2076,7 @@ describe('chat proxy web search integration', () => {
     process.env.CODEBUDDY_AUTH_MODE = 'token';
     process.env.SEARXNG_URL = 'https://searx.test';
     resetWebSearchProviders();
-    await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
   });
 
   afterEach(() => {
@@ -2170,7 +2185,7 @@ describe('proxy integration', () => {
   it('runs a local search end to end for a non-streaming request', async () => {
     process.env.SEARXNG_URL = 'https://searx.test';
     resetWebSearchProviders();
-    await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
 
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     let upstreamCalls = 0;
@@ -2240,7 +2255,7 @@ describe('proxy integration', () => {
   it('serves a synthesized stream when a search request asks to stream', async () => {
     process.env.SEARXNG_URL = 'https://searx.test';
     resetWebSearchProviders();
-    await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
 
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     let upstreamCalls = 0;
@@ -2294,7 +2309,7 @@ describe('proxy integration', () => {
   it('passes through untouched when no search tool is declared', async () => {
     process.env.SEARXNG_URL = 'https://searx.test';
     resetWebSearchProviders();
-    await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
 
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     fetchMock.mockImplementation(async () =>
@@ -2314,7 +2329,7 @@ describe('proxy integration', () => {
   it('returns the upstream failure when the search request errors', async () => {
     process.env.SEARXNG_URL = 'https://searx.test';
     resetWebSearchProviders();
-    await updateSettings({ CODEBUDDY_WEB_SEARCH_ENABLED: 'true' });
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
 
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     fetchMock.mockImplementation(async () =>

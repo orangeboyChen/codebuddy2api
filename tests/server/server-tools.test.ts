@@ -7,9 +7,13 @@ import { NextRequest } from 'next/server';
 import {
   getActiveConfig,
   isWebFetchEnabled,
+  isWebSearchEnabled,
   updateSettings,
 } from '@/lib/server/domain/config';
-import { createCodeBuddyFetchProvider } from '@/lib/server/search/providers/codebuddy-fetch';
+import {
+  createCodeBuddyFetchProvider,
+  normalizeFetchUrl,
+} from '@/lib/server/search/providers/codebuddy-fetch';
 import { createCodeBuddySearchProvider } from '@/lib/server/search/providers/codebuddy-search';
 import {
   createLocalFetchProvider,
@@ -133,7 +137,7 @@ describe('server tool backends', () => {
     it.each([
       ['codebuddy', 'codebuddy'],
       [' searxng ', 'searxng'],
-      ['NONE', 'none'],
+      ['PASSTHROUGH', 'passthrough'],
     ])('accepts %s as a search backend', (input, expected) => {
       expect(normalizeSearchBackend(input)).toBe(expected);
     });
@@ -144,8 +148,26 @@ describe('server tool backends', () => {
     });
 
     it('falls back to the default for an unknown fetch backend', () => {
-      expect(normalizeFetchBackend('bogus')).toBe('none');
-      expect(normalizeFetchBackend(null)).toBe('none');
+      expect(normalizeFetchBackend('bogus')).toBe('passthrough');
+      expect(normalizeFetchBackend(null)).toBe('passthrough');
+    });
+
+    it('accepts the previous backend names', () => {
+      // An upgrade must not silently change which side runs the tool: `local`
+      // and `none` are how these were saved before the rename.
+      expect(normalizeFetchBackend('local')).toBe('codebuddy2api');
+      expect(normalizeFetchBackend('none')).toBe('passthrough');
+      expect(normalizeSearchBackend('none')).toBe('passthrough');
+    });
+
+    it('resolves the renamed backends to the same providers', () => {
+      expect(
+        resolveFetchProvider('local', async () => 'https://cb.test')?.id,
+      ).toBe('local');
+      expect(
+        resolveFetchProvider('codebuddy2api', async () => 'https://cb.test')
+          ?.id,
+      ).toBe('local');
     });
 
     it('resolves no provider when the backend is none', () => {
@@ -391,12 +413,43 @@ describe('server tool backends', () => {
   });
 
   describe('declaration stripping', () => {
-    it('drops a server-declared search tool when search is disabled', async () => {
+    it('keeps a client-declared web_search function when search cannot run', async () => {
+      // Search is selected but unconfigured (no SEARXNG_URL), so nothing can
+      // execute it — a client-owned function must survive untouched.
       await updateSettings({
-        CODEBUDDY_WEB_FETCH_ENABLED: 'false',
-        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
         CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      const clientTool = {
+        type: 'function',
+        function: { name: 'web_search', parameters: { type: 'object' } },
+      };
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [clientTool],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'No tools.' } },
+            ],
+          }),
+      });
+
+      // Nothing matched a server-tool declaration, so the request is left
+      // alone rather than rewritten.
+      expect(result).toBeNull();
+    });
+
+    it('drops a server-declared search tool when no backend can run', async () => {
+      // Both off: the loop runs if *either* tool can be executed, so leaving
+      // fetch enabled would make it call upstream regardless of search.
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
       });
 
       const result = await executeWebSearchLoop({
@@ -420,7 +473,6 @@ describe('server tool backends', () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
       await updateSettings({
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'true',
         CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
       });
 
@@ -470,6 +522,40 @@ describe('server tool backends', () => {
 
       delete process.env.SEARXNG_URL;
       resetWebSearchProviders();
+    });
+  });
+
+  describe('url normalization', () => {
+    it('upgrades http to https', () => {
+      expect(normalizeFetchUrl('http://a.test/page')).toBe(
+        'https://a.test/page',
+      );
+    });
+
+    it('rewrites a github blob url to its raw equivalent', () => {
+      // Without this the fetch returns the GitHub HTML viewer rather than the
+      // file contents, which is almost never what was wanted.
+      expect(
+        normalizeFetchUrl('https://github.com/o/r/blob/main/README.md'),
+      ).toBe('https://raw.githubusercontent.com/o/r/main/README.md');
+    });
+
+    it('rewrites a github blob url given over http', () => {
+      expect(normalizeFetchUrl('http://github.com/o/r/blob/main/a.ts')).toBe(
+        'https://raw.githubusercontent.com/o/r/main/a.ts',
+      );
+    });
+
+    it('leaves an ordinary url untouched', () => {
+      expect(normalizeFetchUrl('https://a.test/page')).toBe(
+        'https://a.test/page',
+      );
+    });
+
+    it('leaves a non-blob github url untouched', () => {
+      expect(normalizeFetchUrl('https://github.com/o/r')).toBe(
+        'https://github.com/o/r',
+      );
     });
   });
 
@@ -633,6 +719,165 @@ describe('server tool backends', () => {
       }).fetch({ url: 'https://a.test/page' });
 
       expect(result.content).not.toContain('Requested focus');
+    });
+
+    it('falls back to a local fetch when the endpoint fails', async () => {
+      // This is the behaviour that keeps data flowing: the CLI races the
+      // endpoint against a local fetch, so an endpoint failure alone must not
+      // lose the page.
+      //
+      // The fallback uses `node:http` rather than `fetch`, so it cannot be
+      // stubbed — it gets a real local server and an injected resolver that
+      // points the hostname at it.
+      const server = http.createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('local copy of the page');
+      });
+      await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', resolve);
+      });
+      const address = server.address();
+
+      if (!address || typeof address === 'string') {
+        throw new Error('failed to start test server');
+      }
+
+      stubFetch(async () => makeJsonResponse({ msg: 'endpoint down' }, 502));
+
+      try {
+        const resolveHost: HostResolver = Object.assign(
+          async () => ['127.0.0.1'],
+          { trusted: true },
+        );
+
+        await expect(
+          runWebFetch({
+            provider: createCodeBuddyFetchProvider({
+              resolveEndpoint: async () => 'https://cb.test',
+              resolveHost,
+              resolveToken: async () => 'token',
+            }),
+            query: { url: `http://fallback.test:${address.port}/page` },
+          }),
+        ).resolves.toContain('local copy of the page');
+      } finally {
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        });
+      }
+    });
+
+    it('reports one reason when both failures agree', async () => {
+      // The host cannot resolve, so the local fallback fails with exactly the
+      // message the endpoint reports. Repeating it would just be noise.
+      const reason = 'Web fetch could not resolve host: a.test';
+      stubFetch(async () => {
+        throw new Error(reason);
+      });
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain(`Web fetch failed: ${reason}.`);
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.not.toContain('local fallback also failed');
+    });
+
+    it('handles a non-Error failure from the fallback', async () => {
+      stubFetch(async () => {
+        throw 'endpoint string failure';
+      });
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain('local fallback also failed');
+    });
+
+    it('reports both reasons when the endpoint and the fallback fail', async () => {
+      stubFetch(async () => makeJsonResponse({ msg: 'endpoint down' }, 502));
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain('local fallback also failed');
+    });
+
+    it('refuses a non-text response', async () => {
+      stubFetch(async () =>
+        makeJsonResponse({
+          content: 'binary bytes',
+          content_type: 'application/pdf',
+        }),
+      );
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/f.pdf' },
+        }),
+      ).resolves.toContain('non-text resource');
+    });
+
+    it('refuses an image response', async () => {
+      stubFetch(async () =>
+        makeJsonResponse({ content: 'bytes', content_type: 'image/png' }),
+      );
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/p.png' },
+        }),
+      ).resolves.toContain('non-text resource');
+    });
+
+    it('accepts a text response with a charset suffix', async () => {
+      stubFetch(async () =>
+        makeJsonResponse({
+          content: 'Hello there',
+          content_type: 'text/html; charset=utf-8',
+        }),
+      );
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain('Hello there');
     });
 
     it('reports a missing URL without calling the endpoint', async () => {
@@ -1060,9 +1305,8 @@ describe('server tool backends', () => {
 
     it('strips a translated server tool when fetch cannot run', async () => {
       await updateSettings({
-        CODEBUDDY_WEB_FETCH_ENABLED: 'true',
-        CODEBUDDY_WEB_FETCH_BACKEND: 'none',
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+
         CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
       });
 
@@ -1088,11 +1332,52 @@ describe('server tool backends', () => {
       expect(result?.body.tools).toEqual([]);
     });
 
+    it('takes over a client-declared web_fetch function when a backend is set', async () => {
+      // Regression guard: with an executable backend the proxy must run the
+      // tool itself. Leaving it to the client here silently disabled the
+      // setting for clients that happen to declare `web_fetch` themselves.
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
+      });
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'web_fetch',
+                parameters: { type: 'object' },
+              },
+            },
+          ],
+        } as ChatRequestBody,
+        callUpstream: async () =>
+          makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'No tools.' } },
+            ],
+          }),
+      });
+
+      const tools = (result?.body.tools ?? []) as Array<{
+        function: { name: string; parameters: Record<string, unknown> };
+      }>;
+
+      // Replaced with the proxy's definition, so the loop — not the client —
+      // resolves the call.
+      expect(tools).toHaveLength(1);
+      expect(tools[0]?.function.name).toBe('web_fetch');
+      expect(tools[0]?.function.parameters).toHaveProperty('properties.url');
+      expect(tools[0]?.function.parameters).toHaveProperty('properties.prompt');
+    });
+
     it('keeps a client function of the same name when fetch cannot run', async () => {
       await updateSettings({
-        CODEBUDDY_WEB_FETCH_ENABLED: 'true',
-        CODEBUDDY_WEB_FETCH_BACKEND: 'none',
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+
         CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
       });
 
@@ -1127,7 +1412,6 @@ describe('server tool backends', () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
       await updateSettings({
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'true',
         CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
       });
 
@@ -1161,20 +1445,26 @@ describe('server tool backends', () => {
   });
 
   describe('settings', () => {
-    it('defaults web fetch to off with a codebuddy backend', async () => {
+    it('runs search by default but leaves web fetch to the client', async () => {
       const config = await getActiveConfig();
 
-      expect(config.CODEBUDDY_WEB_FETCH_ENABLED).toBe(false);
-      expect(config.CODEBUDDY_WEB_FETCH_BACKEND).toBe('codebuddy');
       expect(config.CODEBUDDY_WEB_SEARCH_BACKEND).toBe('searxng');
+      expect(config.CODEBUDDY_WEB_FETCH_BACKEND).toBe('passthrough');
+
+      // Search stays on its historical default; fetch defaults to the client
+      // because a deployment has no basis for choosing a fetch backend itself.
+      await expect(isWebSearchEnabled()).resolves.toBe(true);
+      await expect(isWebFetchEnabled()).resolves.toBe(false);
     });
 
-    it('is disabled by default and enabled by the console', async () => {
-      await expect(isWebFetchEnabled()).resolves.toBe(false);
-
-      await updateSettings({ CODEBUDDY_WEB_FETCH_ENABLED: 'true' });
+    it('is enabled by choosing a backend', async () => {
+      await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api' });
 
       await expect(isWebFetchEnabled()).resolves.toBe(true);
+
+      await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough' });
+
+      await expect(isWebFetchEnabled()).resolves.toBe(false);
     });
   });
 
@@ -1333,8 +1623,7 @@ describe('server tool backends', () => {
 
     it('executes a web_fetch call through the local backend', async () => {
       await updateSettings({
-        CODEBUDDY_WEB_FETCH_ENABLED: 'true',
-        CODEBUDDY_WEB_FETCH_BACKEND: 'local',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
       });
 
       let call = 0;
@@ -1388,11 +1677,10 @@ describe('server tool backends', () => {
 
     it('drops a fetch server-tool declaration it cannot execute', async () => {
       await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
+
         // Fetch is on but pointed at `none`, so no provider can serve it.
-        CODEBUDDY_WEB_FETCH_ENABLED: 'true',
-        CODEBUDDY_WEB_FETCH_BACKEND: 'none',
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'true',
-        CODEBUDDY_WEB_SEARCH_BACKEND: 'none',
       });
 
       const callUpstream = vi.fn(async (_loopBody: ChatRequestBody) =>
@@ -1427,9 +1715,8 @@ describe('server tool backends', () => {
 
     it('drops a client-declared function it would otherwise keep once disabled', async () => {
       await updateSettings({
-        CODEBUDDY_WEB_FETCH_ENABLED: 'false',
         CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+
         CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
       });
 
@@ -1454,7 +1741,6 @@ describe('server tool backends', () => {
       process.env.SEARXNG_URL = 'https://searx.test';
       resetWebSearchProviders();
       await updateSettings({
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'true',
         CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
       });
       stubFetch(async (...args: unknown[]) => {
@@ -1521,9 +1807,8 @@ describe('server tool backends', () => {
 
     it('leaves a client-declared web_fetch function alone when disabled', async () => {
       await updateSettings({
-        CODEBUDDY_WEB_FETCH_ENABLED: 'false',
-        CODEBUDDY_WEB_FETCH_BACKEND: 'none',
-        CODEBUDDY_WEB_SEARCH_ENABLED: 'false',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+
         CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
       });
 

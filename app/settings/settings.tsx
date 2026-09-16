@@ -89,12 +89,12 @@ const settingsSelectOptions: Record<
   CODEBUDDY_WEB_SEARCH_BACKEND: [
     { label: 'codebuddy', value: 'codebuddy' },
     { label: 'searxng', value: 'searxng' },
-    { label: 'none', value: 'none' },
+    { label: 'passthrough', value: 'passthrough' },
   ],
   CODEBUDDY_WEB_FETCH_BACKEND: [
     { label: 'codebuddy', value: 'codebuddy' },
-    { label: 'local', value: 'local' },
-    { label: 'none', value: 'none' },
+    { label: 'codebuddy2api', value: 'codebuddy2api' },
+    { label: 'passthrough', value: 'passthrough' },
   ],
 };
 
@@ -107,11 +107,7 @@ const settingsPlaceholders: Record<string, string> = {
  * entries in the config; the server hides the web search label when no search
  * backend is configured, so the UI only ever sees it when it is usable.
  */
-const BOOLEAN_SETTING_KEYS = new Set([
-  'CODEBUDDY_WEB_SEARCH_ENABLED',
-  'CODEBUDDY_WEB_FETCH_ENABLED',
-  'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED',
-]);
+const BOOLEAN_SETTING_KEYS = new Set(['CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED']);
 
 /**
  * Maps a setting key to its helper text.
@@ -126,9 +122,7 @@ const settingHint = (
 ): string | undefined => {
   const hints: Record<string, string> = {
     CODEBUDDY_API_TIMEOUT_MINUTES: 'apiTimeoutHint',
-    CODEBUDDY_WEB_SEARCH_ENABLED: 'webSearchDescription',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'webSearchBackendHint',
-    CODEBUDDY_WEB_FETCH_ENABLED: 'webFetchDescription',
     CODEBUDDY_WEB_FETCH_BACKEND: 'webFetchBackendHint',
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'hyThoughtDepthHint',
   };

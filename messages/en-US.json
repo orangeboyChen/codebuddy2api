@@ -446,10 +446,8 @@
       "passkeyRpIdPlaceholder": "Leave empty to follow the current host",
       "saveSuccess": "Settings saved.",
       "title": "Service settings",
-      "webSearchDescription": "When enabled, web search is performed locally by Codebuddy2API.",
-      "webFetchDescription": "When enabled, web fetch is performed locally by Codebuddy2API.",
-      "webSearchBackendHint": "Where web search runs. codebuddy calls CodeBuddy's own agent-tool endpoint using a saved credential; searxng queries a SearXNG instance (configure SEARXNG_URL); none disables the tool.",
-      "webFetchBackendHint": "Where web fetch runs. codebuddy calls CodeBuddy's own agent-tool endpoint using a saved credential; local fetches the page from this server; none disables the tool.",
+      "webSearchBackendHint": "Where web search runs. codebuddy calls CodeBuddy's own agent-tool endpoint using a saved credential; searxng queries a SearXNG instance (configure SEARXNG_URL); none turns the tool off.",
+      "webFetchBackendHint": "Where web fetch runs. codebuddy calls CodeBuddy's own agent-tool endpoint using a saved credential, falling back to a direct fetch if it fails; local fetches the page from this server; none turns the tool off.",
       "usageCacheDescription": "Remove all stored usage events. This cannot be undone.",
       "usageCacheTitle": "Usage event cache"
     },

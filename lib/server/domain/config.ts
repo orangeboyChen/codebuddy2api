@@ -7,6 +7,7 @@ import {
   writeStorageJson,
 } from '../storage';
 import { isLocalWebSearchConfigured } from '../search/searxng-availability';
+import { normalizeFetchBackend, normalizeSearchBackend } from '../search/tool';
 import {
   getCredentialSupportedModels,
   listEligibleCredentialRecords,
@@ -19,9 +20,7 @@ export interface RuntimeConfig {
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa' | 'internal' | 'public';
   CODEBUDDY_LOG_LEVEL: string;
   CODEBUDDY_API_TIMEOUT_MINUTES: number;
-  CODEBUDDY_WEB_SEARCH_ENABLED: boolean;
   CODEBUDDY_WEB_SEARCH_BACKEND: string;
-  CODEBUDDY_WEB_FETCH_ENABLED: boolean;
   CODEBUDDY_WEB_FETCH_BACKEND: string;
   CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: boolean;
 }
@@ -71,10 +70,8 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa',
   CODEBUDDY_LOG_LEVEL: 'INFO',
   CODEBUDDY_API_TIMEOUT_MINUTES: DEFAULT_API_TIMEOUT_MINUTES,
-  CODEBUDDY_WEB_SEARCH_ENABLED: false,
   CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
-  CODEBUDDY_WEB_FETCH_ENABLED: false,
-  CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
+  CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
   CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: false,
 };
 let configMutationQueue: Promise<void> = Promise.resolve();
@@ -90,9 +87,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_INTERNET_ENVIRONMENT: 'Network environment (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'Log level',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API timeout, first token (minutes)',
-    CODEBUDDY_WEB_SEARCH_ENABLED: 'Enable local web search',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'Web search backend',
-    CODEBUDDY_WEB_FETCH_ENABLED: 'Enable local web fetch',
     CODEBUDDY_WEB_FETCH_BACKEND: 'Web fetch backend',
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'Translate thought depth for Hy models',
   },
@@ -103,9 +98,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_INTERNET_ENVIRONMENT: 'ネットワーク環境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'ログレベル',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API タイムアウト・最初のトークン (分)',
-    CODEBUDDY_WEB_SEARCH_ENABLED: 'ローカル Web 検索を有効化',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'Web 検索バックエンド',
-    CODEBUDDY_WEB_FETCH_ENABLED: 'ローカル Web フェッチを有効化',
     CODEBUDDY_WEB_FETCH_BACKEND: 'Web フェッチバックエンド',
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'Hy モデルの思考深度を変換する',
   },
@@ -116,9 +109,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_INTERNET_ENVIRONMENT: '网络环境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: '日志级别',
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API 超时时间,首个 token(分钟)',
-    CODEBUDDY_WEB_SEARCH_ENABLED: '启用本地 WebSearch',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'WebSearch 后端',
-    CODEBUDDY_WEB_FETCH_ENABLED: '启用本地 WebFetch',
     CODEBUDDY_WEB_FETCH_BACKEND: 'WebFetch 后端',
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: '为 Hy 系列模型转换思想深度',
   },
@@ -146,9 +137,7 @@ export const getSettingLabels = (
     return labels;
   }
 
-  const { CODEBUDDY_WEB_SEARCH_ENABLED: _hidden, ...visible } = labels;
-
-  return visible;
+  return labels;
 };
 
 export const SETTING_LABELS = getSettingLabels();
@@ -257,25 +246,10 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
       persisted.CODEBUDDY_API_TIMEOUT_MINUTES ??
         process.env.CODEBUDDY_API_TIMEOUT_MINUTES,
     ),
-    CODEBUDDY_WEB_SEARCH_ENABLED:
-      // The toggle is hidden while no SearXNG instance is configured, but a
-      // deployment that later drops SEARXNG_URL must not keep advertising a
-      // tool it can no longer execute, so the value is re-checked per request.
-      isLocalWebSearchConfigured() &&
-      normalizeValue(
-        'CODEBUDDY_WEB_SEARCH_ENABLED',
-        persisted.CODEBUDDY_WEB_SEARCH_ENABLED ??
-          process.env.CODEBUDDY_WEB_SEARCH_ENABLED,
-      ),
     CODEBUDDY_WEB_SEARCH_BACKEND: normalizeValue(
       'CODEBUDDY_WEB_SEARCH_BACKEND',
       persisted.CODEBUDDY_WEB_SEARCH_BACKEND ??
         process.env.CODEBUDDY_WEB_SEARCH_BACKEND,
-    ),
-    CODEBUDDY_WEB_FETCH_ENABLED: normalizeValue(
-      'CODEBUDDY_WEB_FETCH_ENABLED',
-      persisted.CODEBUDDY_WEB_FETCH_ENABLED ??
-        process.env.CODEBUDDY_WEB_FETCH_ENABLED,
     ),
     CODEBUDDY_WEB_FETCH_BACKEND: normalizeValue(
       'CODEBUDDY_WEB_FETCH_BACKEND',
@@ -291,23 +265,31 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
 };
 
 /**
- * Whether a web search tool call should be executed locally. Resolved per
- * request so toggling the setting in the console takes effect immediately.
+ * Whether a web search tool call should be executed locally.
+ *
+ * Derived from the backend choice rather than a separate switch: `none` *is*
+ * "off", so a second control would only add a way to contradict it. Resolved per
+ * request so a change in the console takes effect at once.
  */
 export const isWebSearchEnabled = async (): Promise<boolean> => {
   const config = await getActiveConfig();
 
-  return config.CODEBUDDY_WEB_SEARCH_ENABLED;
+  return (
+    normalizeSearchBackend(config.CODEBUDDY_WEB_SEARCH_BACKEND) !==
+    'passthrough'
+  );
 };
 
 /**
- * Whether a `web_fetch` tool call should be executed locally. Resolved per
- * request like {@link isWebSearchEnabled} so the console takes effect at once.
+ * Whether a `web_fetch` tool call should be executed locally, resolved the same
+ * way as {@link isWebSearchEnabled}.
  */
 export const isWebFetchEnabled = async (): Promise<boolean> => {
   const config = await getActiveConfig();
 
-  return config.CODEBUDDY_WEB_FETCH_ENABLED;
+  return (
+    normalizeFetchBackend(config.CODEBUDDY_WEB_FETCH_BACKEND) !== 'passthrough'
+  );
 };
 
 export const updateSettings = async (
