@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { NextRequest } from 'next/server';
 
 import {
@@ -29,7 +32,25 @@ import { resetUsageStats } from '@/lib/server/domain/stats';
 import type { ChatRequestBody } from '@/lib/server/proxy/codebuddy';
 import { buildWebFetchToolDefinition } from '@/lib/server/search/tool';
 import { executeWebSearchLoop } from '@/lib/server/proxy/web-search-loop';
-import { withCodeBuddyToken } from '@/lib/server/search/token';
+import { translateResponsesToolsToChat } from '@/lib/server/proxy/responses';
+import {
+  resolveCodeBuddyToken,
+  withCodeBuddyToken,
+} from '@/lib/server/search/token';
+
+/**
+ * Settings persist to storage, and the storage directory defaults to the
+ * process working directory — so writes here would leak into any test file that
+ * runs later in the same worker. Pointing storage at a scratch directory keeps
+ * this file's settings to itself.
+ */
+const tempRootDir = path.join(process.cwd(), '.tmp-test-server-tools-root');
+const tempDataDir = path.join(tempRootDir, '.codebuddy_data');
+const tempCredsDir = path.join(tempRootDir, '.codebuddy_creds');
+
+const cleanupDir = (): void => {
+  fs.rmSync(tempRootDir, { force: true, recursive: true });
+};
 
 const makeJsonResponse = (
   payload: Record<string, unknown>,
@@ -67,28 +88,19 @@ describe('server tool backends', () => {
   beforeEach(async () => {
     resetWebSearchProviders();
     resetCredentialRuntimeState();
-    // Settings persist in storage, so a test that enables a tool would
-    // otherwise leave it on for every test that runs after it.
-    await updateSettings({
-      CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
-      CODEBUDDY_WEB_FETCH_ENABLED: false,
-      CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
-      CODEBUDDY_WEB_SEARCH_ENABLED: false,
-    });
+    cleanupDir();
+    fs.mkdirSync(tempDataDir, { recursive: true });
+    fs.mkdirSync(tempCredsDir, { recursive: true });
+    vi.spyOn(process, 'cwd').mockReturnValue(tempRootDir);
   });
 
   afterEach(async () => {
-    await updateSettings({
-      CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
-      CODEBUDDY_WEB_FETCH_ENABLED: false,
-      CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
-      CODEBUDDY_WEB_SEARCH_ENABLED: false,
-    });
     resetWebSearchProviders();
     resetCredentialRuntimeState();
     resetUsageStats();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    cleanupDir();
   });
 
   describe('backend normalization', () => {
@@ -208,6 +220,82 @@ describe('server tool backends', () => {
       expect(mock).not.toHaveBeenCalled();
     });
 
+    it('shapes results that lack snippets or titles', async () => {
+      stubFetch(async () =>
+        makeJsonResponse({
+          results: [
+            { content: 'fallback snippet', url: 'https://a.test' },
+            { title: 'Only title' },
+            'not-an-object',
+          ],
+        }),
+      );
+
+      const result = await createCodeBuddySearchProvider({
+        resolveEndpoint: async () => 'https://cb.test',
+        resolveToken: async () => 'token',
+      }).search('anything here');
+
+      expect(result.results).toHaveLength(2);
+      expect(result.results[0]?.content).toBe('fallback snippet');
+      expect(result.results[1]?.title).toBe('Only title');
+      expect(result.content).toContain('(untitled)');
+    });
+
+    it('tolerates a payload with no results array', async () => {
+      stubFetch(async () => makeJsonResponse({}));
+
+      const result = await createCodeBuddySearchProvider({
+        resolveEndpoint: async () => 'https://cb.test',
+        resolveToken: async () => 'token',
+      }).search('anything here');
+
+      expect(result.results).toEqual([]);
+      expect(result.content).toContain('returned no results');
+    });
+
+    it('surfaces an error payload with no message', async () => {
+      stubFetch(async () => makeJsonResponse({ code: 7 }));
+
+      await expect(
+        runWebSearch({
+          provider: createCodeBuddySearchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: 'hello',
+        }),
+      ).resolves.toContain('Unknown error');
+    });
+
+    it('falls back to the status when the error body is empty', async () => {
+      stubFetch(async () => new Response('', { status: 500 }));
+
+      await expect(
+        runWebSearch({
+          provider: createCodeBuddySearchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: 'hello',
+        }),
+      ).resolves.toContain('failed with HTTP 500');
+    });
+
+    it('falls back to the status when the error body is not JSON', async () => {
+      stubFetch(async () => new Response('<html>502</html>', { status: 502 }));
+
+      await expect(
+        runWebSearch({
+          provider: createCodeBuddySearchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: 'hello',
+        }),
+      ).resolves.toContain('failed with HTTP 502');
+    });
+
     it('short-circuits an empty query without calling the endpoint', async () => {
       const mock = stubFetch(async () => makeJsonResponse({ results: [] }));
 
@@ -262,6 +350,75 @@ describe('server tool backends', () => {
           query: { url: 'https://a.test' },
         }),
       ).resolves.toContain('no readable content');
+    });
+
+    it('refuses to call the endpoint without a token', async () => {
+      const mock = stubFetch(async () => makeJsonResponse({ content: 'x' }));
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => null,
+          }),
+          query: { url: 'https://a.test' },
+        }),
+      ).resolves.toContain('Authentication required');
+      expect(mock).not.toHaveBeenCalled();
+    });
+
+    it('reports a non-ok HTTP status', async () => {
+      stubFetch(async () => makeJsonResponse({ msg: 'bad gateway' }, 502));
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test' },
+        }),
+      ).resolves.toContain('CodeBuddy web fetch error: bad gateway');
+    });
+
+    it('falls back to the status when the error body is empty', async () => {
+      stubFetch(async () => new Response('', { status: 503 }));
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test' },
+        }),
+      ).resolves.toContain('failed with HTTP 503');
+    });
+
+    it('surfaces an error payload with no message', async () => {
+      stubFetch(async () => makeJsonResponse({ code: 9 }));
+
+      await expect(
+        runWebFetch({
+          provider: createCodeBuddyFetchProvider({
+            resolveEndpoint: async () => 'https://cb.test',
+            resolveToken: async () => 'token',
+          }),
+          query: { url: 'https://a.test' },
+        }),
+      ).resolves.toContain('Unknown error');
+    });
+
+    it('falls back to the requested URL when none is returned', async () => {
+      stubFetch(async () => makeJsonResponse({ content: 'Body' }));
+
+      const result = await createCodeBuddyFetchProvider({
+        resolveEndpoint: async () => 'https://cb.test',
+        resolveToken: async () => 'token',
+      }).fetch({ url: 'https://a.test/page' });
+
+      expect(result.url).toBe('https://a.test/page');
+      expect(result.content).toContain('Body');
     });
 
     it('reports a missing URL without calling the endpoint', async () => {
@@ -369,6 +526,160 @@ describe('server tool backends', () => {
       ).resolves.toContain('not a valid absolute URL');
       expect(mock).not.toHaveBeenCalled();
     });
+
+    it('refuses localhost and other reserved hosts', async () => {
+      const mock = stubFetch(async () => makeJsonResponse({ content: 'x' }));
+
+      for (const url of [
+        'http://localhost/admin',
+        'http://internal.localhost/admin',
+        'http://[::1]/admin',
+        'http://[fd00::1]/admin',
+        'http://0.0.0.0/admin',
+        'http://172.20.0.1/admin',
+        'http://10.1.2.3/admin',
+        'http://192.168.1.1/admin',
+      ]) {
+        await expect(
+          runWebFetch({ provider: createLocalFetchProvider(), query: { url } }),
+        ).resolves.toContain('private or loopback');
+      }
+
+      expect(mock).not.toHaveBeenCalled();
+    });
+
+    it('allows a public host', async () => {
+      stubFetch(
+        async () =>
+          new Response('plain text body', {
+            headers: { 'Content-Type': 'text/plain' },
+            status: 200,
+          }),
+      );
+
+      const result = await runWebFetch({
+        provider: createLocalFetchProvider(),
+        query: { url: 'https://93.184.216.34/page' },
+      });
+
+      expect(result).toContain('plain text body');
+    });
+
+    it('reports a redirect with no target', async () => {
+      stubFetch(async () => new Response(null, { status: 302 }));
+
+      await expect(
+        runWebFetch({
+          provider: createLocalFetchProvider(),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain('redirect with no target');
+    });
+
+    it('reports too many redirects', async () => {
+      stubFetch(
+        async () =>
+          new Response(null, {
+            headers: { location: 'https://a.test/next' },
+            status: 302,
+          }),
+      );
+
+      await expect(
+        runWebFetch({
+          provider: createLocalFetchProvider(),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain('more than 5 redirects');
+    });
+
+    it('reports an HTTP error status', async () => {
+      stubFetch(async () => new Response('gone', { status: 404 }));
+
+      await expect(
+        runWebFetch({
+          provider: createLocalFetchProvider(),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain('Web fetch failed with HTTP 404');
+    });
+
+    it('reports a page with no readable text', async () => {
+      stubFetch(
+        async () =>
+          new Response('   ', {
+            headers: { 'Content-Type': 'text/html' },
+            status: 200,
+          }),
+      );
+
+      await expect(
+        runWebFetch({
+          provider: createLocalFetchProvider(),
+          query: { url: 'https://a.test/page' },
+        }),
+      ).resolves.toContain('no readable content');
+    });
+
+    it('follows a redirect to another public host', async () => {
+      let call = 0;
+      stubFetch(async () => {
+        call += 1;
+
+        return call === 1
+          ? new Response(null, {
+              headers: { location: 'https://b.test/final' },
+              status: 301,
+            })
+          : new Response('<p>Final page</p>', {
+              headers: { 'Content-Type': 'text/html' },
+              status: 200,
+            });
+      });
+
+      const result = await runWebFetch({
+        provider: createLocalFetchProvider(),
+        query: { url: 'https://a.test/page' },
+      });
+
+      expect(result).toContain('Final page');
+    });
+
+    it('decodes entities when converting html', async () => {
+      stubFetch(
+        async () =>
+          new Response('<p>a &amp; b &lt;c&gt; &#65;</p>', {
+            headers: { 'Content-Type': 'text/html' },
+            status: 200,
+          }),
+      );
+
+      const result = await runWebFetch({
+        provider: createLocalFetchProvider(),
+        query: { url: 'https://a.test/page' },
+      });
+
+      expect(result).toContain('a & b <c> A');
+    });
+
+    it('passes plain text through unchanged', async () => {
+      stubFetch(
+        async () =>
+          new Response('a &amp; b', {
+            headers: { 'Content-Type': 'text/plain' },
+            status: 200,
+          }),
+      );
+
+      // Entities are only decoded on the HTML path: a text/plain body is
+      // literal text, and decoding it would corrupt the content.
+      const result = await runWebFetch({
+        provider: createLocalFetchProvider(),
+        query: { url: 'https://a.test/t.txt' },
+      });
+
+      expect(result).toContain('a &amp; b');
+    });
   });
 
   describe('fetch tool definition', () => {
@@ -405,6 +716,46 @@ describe('server tool backends', () => {
     });
   });
 
+  describe('responses tool translation', () => {
+    it('emits web_fetch as a callable function', () => {
+      const result = translateResponsesToolsToChat([
+        { type: 'web_fetch_20250910', name: 'web_fetch' },
+      ]) as Array<{ function: { name: string } }>;
+
+      expect(result.map((entry) => entry.function.name)).toEqual(['web_fetch']);
+    });
+
+    it('emits both server tools when declared together', () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+
+      const result = translateResponsesToolsToChat([
+        { type: 'web_search_preview' },
+        { type: 'web_fetch_20250910', name: 'web_fetch' },
+      ]) as Array<{ function: { name: string } }>;
+
+      expect(result.map((entry) => entry.function.name)).toEqual([
+        'web_search',
+        'web_fetch',
+      ]);
+
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
+    });
+
+    it('leaves an unrelated server tool alone', () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+
+      expect(
+        translateResponsesToolsToChat([{ type: 'file_search' }]),
+      ).toBeUndefined();
+
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
+    });
+  });
+
   describe('token scoping', () => {
     it('uses the credential backing the request', async () => {
       const seen: string[] = [];
@@ -412,17 +763,78 @@ describe('server tool backends', () => {
       await withCodeBuddyToken(
         async () => 'scoped-token',
         async () => {
-          seen.push(
-            String(
-              await (
-                await import('@/lib/server/search/token')
-              ).resolveCodeBuddyToken(),
-            ),
-          );
+          seen.push(String(await resolveCodeBuddyToken()));
         },
       );
 
       expect(seen).toEqual(['scoped-token']);
+    });
+
+    it('falls back to a saved credential outside a request scope', async () => {
+      await withCredential();
+
+      await expect(resolveCodeBuddyToken()).resolves.toBe('cred-token');
+    });
+
+    it('reports no token when no credential exists', async () => {
+      await expect(resolveCodeBuddyToken()).resolves.toBeNull();
+    });
+
+    it('ignores a credential that carries no bearer token', async () => {
+      await addCredential({
+        access_token: '',
+        created_at: Math.floor(Date.now() / 1000),
+        user_id: 'empty',
+      });
+
+      await expect(resolveCodeBuddyToken()).resolves.toBeNull();
+    });
+  });
+
+  describe('registry fallbacks', () => {
+    it('normalizes a blank search backend to the default', () => {
+      expect(normalizeSearchBackend('')).toBe('searxng');
+    });
+
+    it('falls back to searxng for an unknown search backend', () => {
+      // No SEARXNG_URL here, so the fallback resolves to a backend that cannot
+      // be constructed — the point is that an unknown value is not an error.
+      expect(
+        resolveSearchProvider('bogus', async () => 'https://cb.test'),
+      ).toBeNull();
+    });
+
+    it('falls back to no backend for an unknown fetch backend', () => {
+      // Unlike search, an unrecognised fetch value resolves to nothing: silently
+      // enabling a backend that fetches arbitrary model-supplied URLs would be
+      // the wrong default.
+      expect(
+        resolveFetchProvider('bogus', async () => 'https://cb.test'),
+      ).toBeNull();
+    });
+
+    it('reports no provider when the search backend resolves to none', () => {
+      expect(
+        resolveSearchProvider('none', async () => 'https://cb.test'),
+      ).toBeNull();
+    });
+
+    it('reuses one local fetch provider across calls', () => {
+      expect(resolveFetchProvider('local', async () => 'https://cb.test')).toBe(
+        resolveFetchProvider('local', async () => 'https://cb.test'),
+      );
+    });
+
+    it('reports no configured backend when a search runs unscoped', async () => {
+      await expect(
+        runWebSearch({ backend: 'searxng', query: 'hello' }),
+      ).resolves.toContain('no local search backend is configured');
+    });
+
+    it('reports no enabled backend when a fetch runs unscoped', async () => {
+      await expect(
+        runWebFetch({ backend: 'none', query: { url: 'https://a.test' } }),
+      ).resolves.toContain('no web fetch backend is enabled');
     });
   });
 
