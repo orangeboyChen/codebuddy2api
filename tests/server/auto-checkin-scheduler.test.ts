@@ -263,6 +263,20 @@ describe('auto check-in scheduler', () => {
       expect(retry).toEqual(['failing.json']);
     });
 
+    it('ignores a credential that disappears mid-tick', async () => {
+      // The record can be removed between listing and checking in; the tick
+      // must not fail the whole sweep.
+      await seed('vanishing.json', {
+        auto_checkin_enabled: true,
+        auto_checkin_time: '09:00',
+      });
+      checkinAccount.mockRejectedValueOnce(new Error('gone'));
+
+      const checkedIn = await runAutoCheckinTick(localDate(2026, 3, 5, 9, 30));
+
+      expect(checkedIn).toEqual([]);
+    });
+
     it('handles multiple accounts independently', async () => {
       await seed('a.json', {
         auto_checkin_enabled: true,
@@ -316,6 +330,40 @@ describe('auto check-in scheduler', () => {
 
     it('does not throw when stopped without starting', () => {
       expect(() => stopAutoCheckinScheduler()).not.toThrow();
+    });
+
+    it('skips a tick while the previous one is still running', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+
+      try {
+        let release: (() => void) | undefined;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+
+        // Hold the first tick open so the interval fires again mid-flight.
+        getAccountStatus.mockImplementation(async (filenames?: string[]) => {
+          await gate;
+
+          const filename = filenames?.[0] ?? 'unknown.json';
+
+          return [notClaimed(filename)];
+        });
+
+        startAutoCheckinScheduler();
+
+        vi.advanceTimersByTime(30 * 60 * 1000);
+        await Promise.resolve();
+        vi.advanceTimersByTime(30 * 60 * 1000);
+
+        // Still only the in-flight tick: the overlap guard held.
+        expect(getAccountStatus.mock.calls.length).toBeLessThanOrEqual(1);
+
+        release?.();
+        await gate;
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

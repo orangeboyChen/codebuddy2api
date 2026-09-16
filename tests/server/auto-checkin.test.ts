@@ -14,8 +14,9 @@ import {
   isValidAutoCheckinTime,
 } from '@/lib/server/domain/auto-checkin-settings';
 import {
-  updateAutoCheckinSettings,
+  recordAutoCheckinRun,
   resetAutoCheckinRun,
+  updateAutoCheckinSettings,
 } from '@/lib/server/domain/auto-checkin';
 import { resetStorageRuntime } from '@/lib/server/storage';
 
@@ -207,6 +208,23 @@ describe('auto check-in settings', () => {
 
     it('ignores a credential that no longer exists', async () => {
       await expect(resetAutoCheckinRun('gone.json')).resolves.toBeUndefined();
+    });
+
+    it('records the run date', async () => {
+      await seed('recorded.json');
+
+      await recordAutoCheckinRun('recorded.json', '2026-03-05');
+
+      const credential = await findCredentialRecordByFilename('recorded.json');
+      expect(credential?.data.auto_checkin_last_date).toBe('2026-03-05');
+    });
+
+    it('ignores recording for a credential that no longer exists', async () => {
+      // The record can be removed between a successful claim and the write;
+      // that must not fail the sweep.
+      await expect(
+        recordAutoCheckinRun('gone.json', '2026-03-05'),
+      ).resolves.toBeUndefined();
     });
   });
 

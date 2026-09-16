@@ -63,8 +63,8 @@ export const localTimeKey = (now: Date): string => {
  * makes a missed tick recover instead of waiting a full day.
  */
 const isSlotDue = ({ now, time }: { now: Date; time: string }): boolean => {
-  const [slotHours, slotMinutes] = time.split(':').map(Number);
-  const slotTotal = (slotHours ?? 0) * 60 + (slotMinutes ?? 0);
+  const [slotHours = '0', slotMinutes = '0'] = time.split(':');
+  const slotTotal = Number(slotHours) * 60 + Number(slotMinutes);
 
   return now.getHours() * 60 + now.getMinutes() >= slotTotal;
 };
