@@ -52,7 +52,12 @@
       "checkinAll": "全部签到",
       "empty": "暂无凭据",
       "quotaUnknown": "额度未知",
-      "quotaUsed": "剩余额度 {percent}%"
+      "quotaUsed": "剩余额度 {percent}%",
+      "autoCheckin": "自动签到",
+      "autoCheckinDescription": "开启后，服务会在选定时间每天为该账号自动签到一次（需服务处于运行状态）。",
+      "autoCheckinTime": "时间",
+      "autoCheckinSaved": "自动签到已保存",
+      "autoCheckinFailed": "自动签到保存失败"
     },
     "dashboard": {
       "welcomeTitle": "做好蹬的准备了吗？",

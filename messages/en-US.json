@@ -52,7 +52,12 @@
       "checkinAll": "Check in all",
       "empty": "No credentials",
       "quotaUnknown": "Unknown quota",
-      "quotaUsed": "{percent}% quota remaining"
+      "quotaUsed": "{percent}% quota remaining",
+      "autoCheckin": "Automatic check-in",
+      "autoCheckinDescription": "Check this account in once a day at the chosen time, while the gateway is running.",
+      "autoCheckinTime": "Time",
+      "autoCheckinSaved": "Automatic check-in saved",
+      "autoCheckinFailed": "Could not save automatic check-in"
     },
     "dashboard": {
       "welcomeTitle": "Ready to crank through some tokens?",

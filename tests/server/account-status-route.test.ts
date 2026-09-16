@@ -9,6 +9,16 @@ vi.mock('@/lib/server/domain/account-status', () => ({
   getAccountStatus: vi.fn(),
   getAccountStatusCredentials: vi.fn(),
 }));
+vi.mock('@/lib/server/domain/auto-checkin', () => ({
+  updateAutoCheckinSettings: vi.fn(),
+}));
+vi.mock('@/lib/server/domain/auto-checkin-settings', () => ({
+  isValidAutoCheckinTime: (value: unknown) =>
+    typeof value === 'string' && /^([01]\d|2[0-3]):([0-5]\d)$/.test(value),
+}));
+
+const { updateAutoCheckinSettings } =
+  await import('@/lib/server/domain/auto-checkin');
 
 const { getAdminSessionErrorResponse } =
   await import('@/lib/server/admin/session');
@@ -39,6 +49,77 @@ describe('account status admin route', () => {
     vi.mocked(getAccountStatus).mockResolvedValue([]);
     vi.mocked(checkinAccounts).mockResolvedValue([]);
     vi.mocked(checkinAccount).mockResolvedValue({} as never);
+    vi.mocked(updateAutoCheckinSettings).mockResolvedValue({
+      enabled: true,
+      time: '09:00',
+    });
+  });
+
+  describe('auto check-in', () => {
+    it('saves the enabled flag and time', async () => {
+      const response = await POST(
+        request({
+          action: 'auto-checkin',
+          enabled: true,
+          filename: 'one.json',
+          time: '08:30',
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(updateAutoCheckinSettings).toHaveBeenCalledWith('one.json', {
+        enabled: true,
+        time: '08:30',
+      });
+      await expect(response.json()).resolves.toEqual({
+        autoCheckin: { enabled: true, time: '09:00' },
+        filename: 'one.json',
+      });
+    });
+
+    it('requires a filename', async () => {
+      const response = await POST(
+        request({ action: 'auto-checkin', enabled: true }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(updateAutoCheckinSettings).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed time before touching storage', async () => {
+      const response = await POST(
+        request({
+          action: 'auto-checkin',
+          filename: 'one.json',
+          time: '25:00',
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(updateAutoCheckinSettings).not.toHaveBeenCalled();
+    });
+
+    it('reports a failure to update', async () => {
+      vi.mocked(updateAutoCheckinSettings).mockRejectedValueOnce(
+        new Error('Credential is unavailable'),
+      );
+
+      const response = await POST(
+        request({ action: 'auto-checkin', filename: 'gone.json' }),
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: 'Credential is unavailable',
+      });
+    });
+
+    it('leaves check-in and refresh actions untouched', async () => {
+      await POST(request({ action: 'checkin', filename: 'one.json' }));
+
+      expect(updateAutoCheckinSettings).not.toHaveBeenCalled();
+      expect(checkinAccount).toHaveBeenCalledWith('one.json');
+    });
   });
 
   it('requires an administrator session', async () => {

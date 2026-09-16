@@ -27,6 +27,8 @@ import { SectionTitle } from './section-title';
 import { ToggleOption } from './toggle-option';
 
 export interface CredentialSummary {
+  auto_checkin_enabled: boolean;
+  auto_checkin_time: string;
   created_at: number | null;
   domain: string;
   email: string;
