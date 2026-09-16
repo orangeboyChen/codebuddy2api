@@ -2021,6 +2021,86 @@ describe('server local web search', () => {
       );
     });
 
+    it('synthesizes an error for an empty later upstream failure', async () => {
+      await enableSearxngSearch();
+      let call = 0;
+      const upstream = vi.fn<LoopCall>(async () => {
+        call += 1;
+
+        return call === 1
+          ? makeSseResponse({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        id: 'call_search',
+                        index: 0,
+                        function: {
+                          arguments: '{"query":"error"}',
+                          name: 'web_search',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                  index: 0,
+                },
+              ],
+            })
+          : new Response(null, { status: 502 });
+      });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+
+      await expect(result!.response!.text()).resolves.toContain(
+        'Upstream request failed with status 502',
+      );
+    });
+
+    it('rejects invalid JSON from a successful later upstream response', async () => {
+      await enableSearxngSearch();
+      let call = 0;
+      const upstream = vi.fn<LoopCall>(async () => {
+        call += 1;
+
+        return call === 1
+          ? makeSseResponse({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        id: 'call_search',
+                        index: 0,
+                        function: {
+                          arguments: '{"query":"invalid follow-up"}',
+                          name: 'web_search',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                  index: 0,
+                },
+              ],
+            })
+          : new Response('not json', { status: 200 });
+      });
+
+      const result = await executeWebSearchLoop({
+        body: inlineBody(),
+        callbacks: { emitStreamEvents: true },
+        callUpstream: upstream,
+      });
+
+      await expect(result!.response!.text()).rejects.toThrow();
+    });
+
     it('returns later mixed client calls after executing another server tool', async () => {
       await enableSearxngSearch();
       let call = 0;
@@ -2433,10 +2513,12 @@ describe('responses tool translation', () => {
     resetWebSearchProviders();
   });
 
-  it('drops web_search_preview when no backend is configured', () => {
-    expect(
-      translateResponsesToolsToChat([{ type: 'web_search_preview' }]),
-    ).toBeUndefined();
+  it('translates web_search_preview without requiring SearXNG', () => {
+    const tools = translateResponsesToolsToChat([
+      { type: 'web_search_preview' },
+    ]) as Array<{ function: { name: string } }>;
+
+    expect(tools.map((tool) => tool.function.name)).toEqual(['web_search']);
   });
 
   it('translates web_search_preview into a callable function when configured', () => {
@@ -2906,11 +2988,14 @@ describe('chat proxy web search integration', () => {
   });
 
   it('emits Responses web_search_call lifecycle before the final message', async () => {
+    delete process.env.SEARXNG_URL;
+    resetWebSearchProviders();
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
     let upstreamCalls = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
 
-      if (url.includes('searx.test')) {
+      if (url.includes('/agenttool/v1/search')) {
         return makeJsonResponse({
           results: [
             {
@@ -2990,6 +3075,27 @@ describe('chat proxy web search integration', () => {
       },
     );
     const text = await response.text();
+    const events = text
+      .split('\n\n')
+      .flatMap((frame) =>
+        frame
+          .split('\n')
+          .filter((line) => line.startsWith('data: '))
+          .map((line) => line.slice(6)),
+      )
+      .filter((payload) => payload !== '[DONE]')
+      .map((payload) => JSON.parse(payload) as Record<string, unknown>);
+    const addedItems = events.filter(
+      (event) => event.type === 'response.output_item.added',
+    ) as Array<{
+      item: { type: string };
+      output_index: number;
+    }>;
+    const completed = events.find(
+      (event) => event.type === 'response.completed',
+    ) as {
+      response: { output: Array<{ type: string }> };
+    };
 
     expect(text).toContain('"type":"web_search_call"');
     expect(text).toContain('"type":"response.web_search_call.in_progress"');
@@ -3001,6 +3107,12 @@ describe('chat proxy web search integration', () => {
     );
     expect(text.indexOf('"type":"web_search_call"')).toBeLessThan(
       text.indexOf('Latest answer.'),
+    );
+    expect(new Set(addedItems.map((event) => event.output_index)).size).toBe(
+      addedItems.length,
+    );
+    expect(completed.response.output.map((item) => item.type)).toEqual(
+      addedItems.map((event) => event.item.type),
     );
   });
 
@@ -3192,6 +3304,114 @@ describe('chat proxy web search integration', () => {
     expect(text).toContain('data: [DONE]');
   });
 
+  it('terminates Responses with an error when a post-tool request fails', async () => {
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        return makeJsonResponse({ results: [] });
+      }
+
+      upstreamCalls++;
+      return upstreamCalls === 1
+        ? makeSseResponse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      id: 'call_search',
+                      index: 0,
+                      function: {
+                        arguments: '{"query":"error after search"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          })
+        : makeJsonResponse({ error: { message: 'follow-up failed' } }, 502);
+    });
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'Search and fail',
+        stream: true,
+        tools: [{ type: 'web_search_preview' }],
+      },
+    );
+    const text = await response.text();
+
+    expect(text).toContain('"type":"response.error"');
+    expect(text).toContain('Upstream CodeBuddy request failed');
+    expect(text).not.toContain('"type":"response.completed"');
+  });
+
+  it.each([
+    ['string', 'follow-up string', 'follow-up string'],
+    [
+      'message-less object',
+      { code: 'upstream_error' },
+      'Upstream request failed',
+    ],
+  ])(
+    'maps a %s post-tool error payload to a terminal Responses error',
+    async (_label, error, expectedMessage) => {
+      let upstreamCalls = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+
+        if (url.includes('searx.test')) {
+          return makeJsonResponse({ results: [] });
+        }
+
+        upstreamCalls++;
+        return upstreamCalls === 1
+          ? makeSseResponse({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        id: 'call_search',
+                        index: 0,
+                        function: {
+                          arguments: '{"query":"error payload"}',
+                          name: 'web_search',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                  index: 0,
+                },
+              ],
+            })
+          : makeJsonResponse({ error });
+      });
+
+      const response = await handleResponsesRequest(
+        makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+        {
+          input: 'Search and report the error',
+          stream: true,
+          tools: [{ type: 'web_search_preview' }],
+        },
+      );
+      const text = await response.text();
+
+      expect(text).toContain('"type":"response.error"');
+      expect(text).toContain(expectedMessage);
+      expect(text).not.toContain('"type":"response.completed"');
+    },
+  );
+
   it('does not resume a Responses server-tool loop after disconnect', async () => {
     let finishSearch: ((response: Response) => void) | undefined;
     let upstreamCalls = 0;
@@ -3252,6 +3472,224 @@ describe('chat proxy web search integration', () => {
 
     expect(upstreamCalls).toBe(1);
     expect(cancelSpy.mock.calls.length).toBe(callsAfterClientCancel);
+  });
+
+  it('drops an unexecutable Anthropic server tool but keeps a client function', async () => {
+    delete process.env.SEARXNG_URL;
+    resetWebSearchProviders();
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
+    const upstreamBodies: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      upstreamBodies.push(
+        JSON.parse(String(init?.body)) as Record<string, unknown>,
+      );
+
+      return makeJsonResponse({
+        choices: [{ finish_reason: 'stop', message: { content: 'Done.' } }],
+      });
+    });
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 256,
+        messages: [{ role: 'user', content: 'Search' }],
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 256,
+        messages: [{ role: 'user', content: 'Use my function' }],
+        tools: [{ name: 'web_search', input_schema: {} }],
+      },
+    );
+
+    expect(upstreamBodies[0]?.tools).toEqual([]);
+    expect(upstreamBodies[1]?.tools).toEqual([
+      expect.objectContaining({
+        type: 'function',
+        function: expect.objectContaining({ name: 'web_search' }),
+      }),
+    ]);
+  });
+
+  it('replays Anthropic server-tool history as paired tool messages', async () => {
+    let upstreamBody: Record<string, unknown> | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+
+      return makeJsonResponse({
+        choices: [
+          { finish_reason: 'stop', message: { content: 'Follow-up.' } },
+        ],
+      });
+    });
+    const encryptedContent = btoa(
+      JSON.stringify({
+        content: 'Search snippet',
+        title: 'Result title',
+        url: 'https://result.test',
+      }),
+    );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 256,
+        messages: [
+          { role: 'user', content: 'Research this' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'server_tool_use',
+                id: 'srv_search',
+                name: 'web_search',
+                input: { query: 'current topic' },
+              },
+              {
+                type: 'web_search_tool_result',
+                tool_use_id: 'srv_search',
+                content: [
+                  {
+                    type: 'web_search_result',
+                    title: 'Result title',
+                    url: 'https://result.test',
+                    encrypted_content: encryptedContent,
+                  },
+                ],
+              },
+              {
+                type: 'server_tool_use',
+                id: 'srv_fetch',
+                name: 'web_fetch',
+                input: { url: 'https://result.test' },
+              },
+              {
+                type: 'web_fetch_tool_result',
+                tool_use_id: 'srv_fetch',
+                content: {
+                  type: 'web_fetch_result',
+                  url: 'https://result.test',
+                  content: {
+                    type: 'document',
+                    source: {
+                      type: 'text',
+                      media_type: 'text/plain',
+                      data: 'Fetched body',
+                    },
+                  },
+                },
+              },
+              { type: 'text', text: 'Initial answer.' },
+            ],
+          },
+          { role: 'user', content: 'Continue' },
+        ],
+      },
+    );
+
+    const messages = upstreamBody?.messages as Array<Record<string, unknown>>;
+    expect(messages.slice(1, 6)).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: null,
+        tool_calls: [expect.objectContaining({ id: 'srv_search' })],
+      }),
+      expect.objectContaining({
+        role: 'tool',
+        tool_call_id: 'srv_search',
+        content: expect.stringContaining('Search snippet'),
+      }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: null,
+        tool_calls: [expect.objectContaining({ id: 'srv_fetch' })],
+      }),
+      expect.objectContaining({
+        role: 'tool',
+        tool_call_id: 'srv_fetch',
+        content: expect.stringContaining('Fetched body'),
+      }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'Initial answer.',
+      }),
+    ]);
+    expect(JSON.stringify(messages)).not.toContain('encrypted_content');
+    expect(JSON.stringify(messages)).not.toContain('server_tool_use');
+  });
+
+  it('replays partial Anthropic server-tool results without leaking opaque data', async () => {
+    let upstreamBody: Record<string, unknown> | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+
+      return makeJsonResponse({
+        choices: [{ finish_reason: 'stop', message: { content: 'Handled.' } }],
+      });
+    });
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 256,
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              { type: 'server_tool_use' },
+              {
+                type: 'web_search_tool_result',
+                content: [
+                  null,
+                  {
+                    url: 'https://fallback.test',
+                    snippet: 'Visible snippet',
+                  },
+                  { title: 'Text title', text: 'Visible text' },
+                  {
+                    encrypted_content: btoa(
+                      JSON.stringify({ content: 'Decoded only' }),
+                    ),
+                    title: 'Fallback title',
+                    url: 'https://item.test',
+                  },
+                  { encrypted_content: 'not-base64' },
+                ],
+              },
+              {
+                type: 'server_tool_use',
+                id: 'fetch_partial',
+                name: 'web_fetch',
+              },
+              {
+                type: 'web_fetch_tool_result',
+                tool_use_id: 'fetch_partial',
+                content: { url: 42, content: 'missing document' },
+              },
+              { type: 'text' },
+            ],
+          },
+          { role: 'user', content: 'Continue' },
+        ],
+      },
+    );
+
+    const serialized = JSON.stringify(upstreamBody?.messages);
+    expect(serialized).toContain('Visible snippet');
+    expect(serialized).toContain('Visible text');
+    expect(serialized).toContain('Decoded only');
+    expect(serialized).toContain('"name":"unknown"');
+    expect(serialized).not.toContain('encrypted_content');
   });
 
   it('returns Anthropic server tool and fetch result blocks', async () => {

@@ -7,7 +7,6 @@ import {
 } from '../domain/config';
 import { getCredentialSupportedModels } from '../domain/credentials';
 import type { DebugTrace } from '../domain/debug';
-import { isLocalWebSearchConfigured } from '../search';
 import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
@@ -149,7 +148,7 @@ interface StreamingToolCallState {
 }
 
 interface StreamingMessageState {
-  outputIndex: number;
+  outputIndex: number | null;
   outputItemId: string;
 }
 
@@ -480,16 +479,13 @@ const toSupportedChatTool = (
   const toolType = typeof tool.type === 'string' ? tool.type : 'function';
 
   // Server-side search and fetch carry no function schema, so the generic
-  // branch below drops them. Emit them as functions when they can be executed
-  // locally: the proxy loop then runs them and folds the findings back in,
-  // which is the only way a Responses client gets results. Gated on capability
-  // rather than the enable toggles because those checks are asynchronous; the
-  // proxy strips the tool again when the toggle is off.
+  // branch below drops them. Emit them as functions unconditionally and let
+  // the proxy loop resolve the configured backend asynchronously. SearXNG
+  // needs local configuration, while CodeBuddy search does not.
   if (
     normalizeToolName(toolType).startsWith(
       normalizeToolName(WEB_SEARCH_TOOL_TYPE_PREFIX),
-    ) &&
-    isLocalWebSearchConfigured()
+    )
   ) {
     const definition = buildWebSearchToolDefinition();
 
@@ -1342,6 +1338,8 @@ const mapChatStreamToResponsesEventStream = (
   providedServerToolItems?: ResponsesServerToolItem[],
   emitOpeningEvents = true,
   emitServerToolLifecycle = true,
+  providedOutputIndexAllocator?: () => number,
+  rejectErrorPayloads = false,
 ): Response => {
   if (!upstreamResponse.ok || !upstreamResponse.body) {
     return upstreamResponse;
@@ -1363,14 +1361,20 @@ const mapChatStreamToResponsesEventStream = (
       };
     });
   let outputText = '';
+  let nextOutputIndex =
+    serverToolItems.reduce(
+      (maximum, item) => Math.max(maximum, item.outputIndex),
+      -1,
+    ) + 1;
+  const allocateOutputIndex =
+    providedOutputIndexAllocator ?? (() => nextOutputIndex++);
   const messageState: StreamingMessageState = {
-    outputIndex: serverToolItems.length,
+    outputIndex: null,
     outputItemId: createMessageId(),
   };
   let messageAddedEmitted = false;
   const toolCallStates = new Map<string, StreamingToolCallState>();
   const toolCallStateKeys = new Map<string, string>();
-  let nextToolCallOutputIndex = serverToolItems.length + 1;
   let latestUsage: unknown = null;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
@@ -1421,6 +1425,7 @@ const mapChatStreamToResponsesEventStream = (
           return;
         }
 
+        messageState.outputIndex ??= allocateOutputIndex();
         enqueueEvent({
           type: 'response.output_item.added',
           item: buildStreamingMessageItem('in_progress'),
@@ -1634,20 +1639,31 @@ const mapChatStreamToResponsesEventStream = (
                 previous_response_id: previousResponseId,
                 usage: mapChatUsageToResponses(latestUsage),
                 output: [
-                  ...serverToolItems.map(({ completed }) => completed),
-                  ...(outputText
-                    ? [buildStreamingMessageItem('completed')]
+                  ...serverToolItems.map(({ completed, outputIndex }) => ({
+                    item: completed,
+                    outputIndex,
+                  })),
+                  ...(outputText && messageState.outputIndex !== null
+                    ? [
+                        {
+                          item: buildStreamingMessageItem('completed'),
+                          outputIndex: messageState.outputIndex,
+                        },
+                      ]
                     : []),
-                  ...[...toolCallStates.values()].map((toolCallState) =>
-                    buildResponsesToolCallOutputItem(defaults.tools, {
+                  ...[...toolCallStates.values()].map((toolCallState) => ({
+                    item: buildResponsesToolCallOutputItem(defaults.tools, {
                       arguments: toolCallState.arguments,
                       callId: toolCallState.callId,
                       id: toolCallState.outputItemId,
                       name: toolCallState.name || 'function',
                       status: 'completed',
                     }),
-                  ),
-                ],
+                    outputIndex: toolCallState.outputIndex,
+                  })),
+                ]
+                  .sort((left, right) => left.outputIndex - right.outputIndex)
+                  .map(({ item }) => item),
               },
             });
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
@@ -1707,8 +1723,28 @@ const mapChatStreamToResponsesEventStream = (
                     tool_calls?: ChatResponseToolCall[];
                   };
                 }>;
+                error?: unknown;
                 usage?: unknown;
               };
+              if (rejectErrorPayloads && payload.error) {
+                const error =
+                  typeof payload.error === 'object'
+                    ? (payload.error as { message?: unknown })
+                    : null;
+                streamRejected = true;
+                enqueueEvent({
+                  type: 'response.error',
+                  error: {
+                    message:
+                      typeof error?.message === 'string'
+                        ? error.message
+                        : typeof payload.error === 'string'
+                          ? payload.error
+                          : 'Upstream request failed',
+                  },
+                });
+                break;
+              }
               // The final upstream chunk carries the aggregated usage, so
               // remember it for the downstream response.completed event.
               if (payload.usage !== undefined) {
@@ -1755,16 +1791,17 @@ const mapChatStreamToResponsesEventStream = (
                 const canonicalKey =
                   existingCanonicalKey ??
                   getStreamingToolCallCanonicalKey(toolCall, position);
-                const current = toolCallStates.get(canonicalKey) ?? {
+                const existing = toolCallStates.get(canonicalKey);
+                const outputIndex = existing
+                  ? existing.outputIndex
+                  : allocateOutputIndex();
+                const current = existing ?? {
                   addedEmitted: false,
                   arguments: '',
                   canonicalKey,
-                  callId: normalizeToolCallId(
-                    toolCall.id,
-                    nextToolCallOutputIndex,
-                  ),
+                  callId: normalizeToolCallId(toolCall.id, outputIndex),
                   name: '',
-                  outputIndex: nextToolCallOutputIndex++,
+                  outputIndex,
                   outputItemId: createResponseOutputId(),
                   pendingArgumentDeltas: [],
                 };
@@ -1966,6 +2003,8 @@ const createResponsesEventStream = async (
   const responseId = createResponseId();
   const serverToolItems: ResponsesServerToolItem[] = [];
   const itemsByInvocationId = new Map<string, ResponsesServerToolItem>();
+  let nextOutputIndex = 0;
+  const allocateOutputIndex = (): number => nextOutputIndex++;
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
 
@@ -2025,7 +2064,7 @@ const createResponsesEventStream = async (
           {
             emitStreamEvents: true,
             onCall: (invocation) => {
-              const outputIndex = serverToolItems.length;
+              const outputIndex = allocateOutputIndex();
               const id = `ws_${crypto.randomUUID().replaceAll('-', '')}`;
               const item = {
                 completed: buildResponsesWebSearchCallItem(
@@ -2108,6 +2147,8 @@ const createResponsesEventStream = async (
           serverToolItems,
           false,
           false,
+          allocateOutputIndex,
+          true,
         );
         const reader = mappedResponse.body!.getReader();
         activeReader = reader;

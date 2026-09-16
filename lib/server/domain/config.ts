@@ -6,7 +6,6 @@ import {
   readStorageJson,
   writeStorageJson,
 } from '../storage';
-import { isLocalWebSearchConfigured } from '../search/searxng-availability';
 import { normalizeFetchBackend, normalizeSearchBackend } from '../search/tool';
 import {
   getCredentialSupportedModels,
@@ -118,26 +117,13 @@ const SETTING_LABELS_BY_LOCALE: Record<
 /**
  * Labels for the settings the console should render.
  *
- * Only the web search toggle is conditional, and it is keyed off SearXNG
- * because that backend is the one configured in the environment rather than
- * the console. Hiding the label keeps the setting out of both the rendered
- * form and the save payload, so an unconfigured deployment cannot enable a
- * feature with nothing behind it.
- *
- * The backend selectors are always shown once their toggle is on: CodeBuddy's
- * own endpoints need no deployment-level configuration beyond a credential, so
- * there is nothing to check at render time.
+ * The backend selectors are always shown because CodeBuddy's own endpoints
+ * need no deployment-level configuration beyond a credential.
  */
 export const getSettingLabels = (
   locale: ConfigLabelLocale = 'zh-CN',
 ): Partial<Record<keyof RuntimeConfig, string>> => {
-  const labels = SETTING_LABELS_BY_LOCALE[locale];
-
-  if (isLocalWebSearchConfigured()) {
-    return labels;
-  }
-
-  return labels;
+  return SETTING_LABELS_BY_LOCALE[locale];
 };
 
 export const SETTING_LABELS = getSettingLabels();

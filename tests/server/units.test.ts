@@ -5270,15 +5270,21 @@ describe('server units', () => {
       },
     ]);
 
-    expect(result).toHaveLength(6);
-    expect(result?.[0]).toEqual({
+    expect(result).toHaveLength(7);
+    expect(result?.[0]).toMatchObject({
+      type: 'function',
+      function: {
+        name: 'web_search',
+      },
+    });
+    expect(result?.[1]).toEqual({
       type: 'function',
       function: {
         name: 'lookup_weather',
         parameters: { type: 'object', properties: {} },
       },
     });
-    expect(result?.[1]).toEqual({
+    expect(result?.[2]).toEqual({
       type: 'function',
       function: {
         name: 'search_files',
@@ -5288,17 +5294,13 @@ describe('server units', () => {
         },
       },
     });
-    expect(result?.[2]).toEqual({
+    expect(result?.[3]).toMatchObject({
       type: 'function',
       function: {
-        name: 'search_web',
-        parameters: {
-          type: 'object',
-          properties: { query: { type: 'string' } },
-        },
+        name: 'web_search',
       },
     });
-    expect(result?.[3]).toEqual({
+    expect(result?.[4]).toEqual({
       type: 'function',
       function: {
         name: 'svc__mcp_tool',
@@ -5309,7 +5311,7 @@ describe('server units', () => {
         },
       },
     });
-    expect(result?.[4]).toEqual({
+    expect(result?.[5]).toEqual({
       type: 'function',
       function: {
         name: 'docs__lookup',
@@ -5320,7 +5322,7 @@ describe('server units', () => {
         },
       },
     });
-    expect(result?.[5]).toEqual({
+    expect(result?.[6]).toEqual({
       type: 'function',
       function: {
         name: 'tool_search',

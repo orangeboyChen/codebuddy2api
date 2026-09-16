@@ -446,30 +446,33 @@ describe('server tool backends', () => {
       expect(result).toBeNull();
     });
 
-    it('passes through a server-declared search tool when configured', async () => {
-      await updateSettings({
-        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
-        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
-      });
+    it.each(['passthrough', 'PASSTHROUGH', 'none'])(
+      'passes through a server-declared search tool for %s',
+      async (backend) => {
+        await updateSettings({
+          CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+          CODEBUDDY_WEB_SEARCH_BACKEND: backend,
+        });
 
-      const result = await executeWebSearchLoop({
-        body: {
-          messages: [{ content: 'hi', role: 'user' }],
-          tools: [{ type: 'web_search_20260209', name: 'web_search' }],
-        } as ChatRequestBody,
-        callUpstream: async () =>
-          makeJsonResponse({
-            choices: [
-              { finish_reason: 'stop', message: { content: 'No tools.' } },
-            ],
-          }),
-      });
+        const result = await executeWebSearchLoop({
+          body: {
+            messages: [{ content: 'hi', role: 'user' }],
+            tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+          } as ChatRequestBody,
+          callUpstream: async () =>
+            makeJsonResponse({
+              choices: [
+                { finish_reason: 'stop', message: { content: 'No tools.' } },
+              ],
+            }),
+        });
 
-      expect(result?.response).toBeNull();
-      expect(result?.body.tools).toEqual([
-        { type: 'web_search_20260209', name: 'web_search' },
-      ]);
-    });
+        expect(result?.response).toBeNull();
+        expect(result?.body.tools).toEqual([
+          { type: 'web_search_20260209', name: 'web_search' },
+        ]);
+      },
+    );
 
     it('reads a query from the first non-empty string field', async () => {
       process.env.SEARXNG_URL = 'https://searx.test';

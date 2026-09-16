@@ -19,9 +19,12 @@ import {
   toUpstreamTimeoutMessage,
 } from '../shared/upstream-timeout';
 import {
+  markServerTool,
   normalizeToolName,
   WEB_FETCH_TOOL_NAME,
+  WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
+  WEB_SEARCH_TOOL_TYPE_PREFIX,
 } from '../search/tool';
 
 const MAX_STREAM_FRAME_LENGTH = 1_000_000;
@@ -241,6 +244,78 @@ interface ChatMessage {
   tool_call_id?: string;
 }
 
+const decodeOpaqueServerToolContent = (value: unknown): unknown => {
+  if (typeof value !== 'string' || !value) {
+    return null;
+  }
+
+  try {
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (character) =>
+      character.charCodeAt(0),
+    );
+
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    return null;
+  }
+};
+
+const formatAnthropicServerToolResult = (
+  block: AnthropicContentBlock,
+): string => {
+  if (block.type === 'web_search_tool_result' && Array.isArray(block.content)) {
+    return block.content
+      .map((value, index) => {
+        const item =
+          value && typeof value === 'object'
+            ? (value as Record<string, unknown>)
+            : {};
+        const decoded = decodeOpaqueServerToolContent(item.encrypted_content);
+        const source =
+          decoded && typeof decoded === 'object'
+            ? (decoded as Record<string, unknown>)
+            : item;
+        const title = String(source.title ?? item.title ?? '').trim();
+        const url = String(source.url ?? item.url ?? '').trim();
+        const text = String(
+          source.content ?? source.snippet ?? source.text ?? '',
+        ).trim();
+
+        return [
+          `${index + 1}. ${title || url || 'Search result'}`,
+          ...(url ? [`URL: ${url}`] : []),
+          ...(text ? [text] : []),
+        ].join('\n');
+      })
+      .join('\n\n');
+  }
+
+  if (
+    block.type === 'web_fetch_tool_result' &&
+    block.content &&
+    typeof block.content === 'object'
+  ) {
+    const result = block.content as Record<string, unknown>;
+    const document =
+      result.content && typeof result.content === 'object'
+        ? (result.content as Record<string, unknown>)
+        : null;
+    const source =
+      document?.source && typeof document.source === 'object'
+        ? (document.source as Record<string, unknown>)
+        : null;
+    const url = typeof result.url === 'string' ? result.url : '';
+    const text = typeof source?.data === 'string' ? source.data : '';
+
+    return [url, text].filter(Boolean).join('\n\n');
+  }
+
+  return typeof block.content === 'string'
+    ? block.content
+    : stringifyContent(block.content);
+};
+
 const mapAnthropicContentToChat = (
   content: string | AnthropicContentBlock[],
   role: 'user' | 'assistant',
@@ -249,10 +324,6 @@ const mapAnthropicContentToChat = (
     return [{ role, content }];
   }
 
-  // Collect text, structured tool calls, and tool results separately so
-  // the OpenAI upstream receives proper tool_calls / tool messages instead
-  // of flattened text. This preserves the call↔result relationship that
-  // multi-step tool loops rely on.
   const parts: Array<string | ChatTextBlock> = [];
   const toolCalls: Array<{
     id: string;
@@ -263,6 +334,22 @@ const mapAnthropicContentToChat = (
     };
   }> = [];
   const toolResults: ChatMessage[] = [];
+  const messages: ChatMessage[] = [];
+  const flushAssistantMessage = (): void => {
+    const textContent = mapTextPartsToChatContent(parts);
+
+    if (!toolCalls.length && !textContent.length) {
+      return;
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: textContent.length ? textContent : null,
+      ...(toolCalls.length ? { tool_calls: [...toolCalls] } : {}),
+    });
+    parts.length = 0;
+    toolCalls.length = 0;
+  };
 
   for (const block of content) {
     if (block.type === 'text') {
@@ -273,7 +360,7 @@ const mapAnthropicContentToChat = (
           ? { type: 'text', text, cache_control: block.cache_control }
           : text,
       );
-    } else if (block.type === 'tool_use') {
+    } else if (block.type === 'tool_use' || block.type === 'server_tool_use') {
       toolCalls.push({
         id: block.id ?? createAnthropicId('toolu'),
         type: 'function',
@@ -282,16 +369,23 @@ const mapAnthropicContentToChat = (
           arguments: JSON.stringify(block.input ?? {}),
         },
       });
-    } else if (block.type === 'tool_result') {
-      const resultContent =
-        typeof block.content === 'string'
-          ? block.content
-          : stringifyContent(block.content);
-      toolResults.push({
+    } else if (
+      block.type === 'tool_result' ||
+      block.type === 'web_search_tool_result' ||
+      block.type === 'web_fetch_tool_result'
+    ) {
+      const resultMessage: ChatMessage = {
         role: 'tool',
-        content: resultContent,
+        content: formatAnthropicServerToolResult(block),
         tool_call_id: block.tool_use_id ?? '',
-      });
+      };
+
+      if (role === 'assistant') {
+        flushAssistantMessage();
+        messages.push(resultMessage);
+      } else {
+        toolResults.push(resultMessage);
+      }
     } else if (block.type === 'thinking') {
       // Skip thinking blocks in conversation history for OpenAI compat.
     } else {
@@ -299,38 +393,14 @@ const mapAnthropicContentToChat = (
     }
   }
 
-  const textContent = mapTextPartsToChatContent(parts);
-  const messages: ChatMessage[] = [];
-
-  // Emit tool results before any free-form text so the tool result stays
-  // adjacent to the preceding assistant tool_calls in the OpenAI message
-  // history. Upstream APIs that validate tool-call adjacency can reject
-  // or ignore a tool result separated from its call by a user message.
   if (role === 'user') {
     messages.push(...toolResults);
-  }
-
-  // For an assistant message with tool calls, content can be null per the
-  // OpenAI spec. For user messages, keep text if present.
-  if (role === 'assistant') {
-    messages.push({
-      role: 'assistant',
-      content:
-        Array.isArray(textContent) && textContent.length === 0
-          ? null
-          : textContent || null,
-      ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
-    });
-  } else if (
-    Array.isArray(textContent) ? textContent.length > 0 : textContent
-  ) {
-    messages.push({ role: 'user', content: textContent });
-  }
-
-  // For assistant messages, tool results are not expected, but push any
-  // that slipped through after the assistant message.
-  if (role === 'assistant') {
-    messages.push(...toolResults);
+    const textContent = mapTextPartsToChatContent(parts);
+    if (textContent.length) {
+      messages.push({ role: 'user', content: textContent });
+    }
+  } else {
+    flushAssistantMessage();
   }
 
   return messages;
@@ -365,14 +435,23 @@ const mapAnthropicToolsToChat = (
     return undefined;
   }
 
-  return tools.map((tool) => ({
-    type: 'function',
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.input_schema,
-    },
-  }));
+  return tools.map((tool) => {
+    const mapped = {
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.input_schema,
+      },
+    };
+    const normalizedType = normalizeToolName(tool.type ?? '');
+    const serverDeclared = [
+      WEB_SEARCH_TOOL_TYPE_PREFIX,
+      WEB_FETCH_TOOL_TYPE_PREFIX,
+    ].some((prefix) => normalizedType.startsWith(normalizeToolName(prefix)));
+
+    return serverDeclared ? markServerTool(mapped) : mapped;
+  });
 };
 
 const shouldBridgeAnthropicServerTools = async (
