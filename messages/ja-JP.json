@@ -447,6 +447,9 @@
       "saveSuccess": "設定を保存しました。",
       "title": "サービス設定",
       "webSearchDescription": "有効にすると、WebSearch は Codebuddy2API 側でローカルに実行されます。",
+      "webFetchDescription": "有効にすると、WebFetch は Codebuddy2API 側でローカルに実行されます。",
+      "webSearchBackendHint": "Web 検索の実行先。codebuddy は保存済み資格情報を使って CodeBuddy の agent-tool エンドポイントを呼びます。searxng は SearXNG インスタンスに問い合わせます（SEARXNG_URL の設定が必要）。none はこのツールを無効化します。",
+      "webFetchBackendHint": "Web フェッチの実行先。codebuddy は保存済み資格情報を使って CodeBuddy の agent-tool エンドポイントを呼びます。local はこのサーバーから直接ページを取得します。none はこのツールを無効化します。",
       "usageCacheDescription": "保存済みの使用量イベントをすべて削除します。この操作は元に戻せません。",
       "usageCacheTitle": "使用量イベントキャッシュ"
     },

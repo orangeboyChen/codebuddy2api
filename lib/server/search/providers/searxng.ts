@@ -1,3 +1,11 @@
+import {
+  clampInteger,
+  collapse,
+  formatSearchResults,
+  MAX_SNIPPET_LENGTH,
+  MAX_TITLE_LENGTH,
+  readEnv,
+} from '../shared';
 import type {
   WebSearchProvider,
   WebSearchResponse,
@@ -17,8 +25,6 @@ const MAX_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RESULTS = 5;
 const MAX_MAX_RESULTS = 10;
 const MAX_QUERY_LENGTH = 500;
-const MAX_TITLE_LENGTH = 200;
-const MAX_SNIPPET_LENGTH = 800;
 
 export interface SearxngOptions {
   apiKey?: string;
@@ -28,31 +34,6 @@ export interface SearxngOptions {
   timeoutMs?: number;
   url: string;
 }
-
-const clampInteger = (
-  raw: string | undefined,
-  fallback: number,
-  min: number,
-  max: number,
-): number => {
-  if (!raw) {
-    return fallback;
-  }
-
-  const parsed = Number.parseInt(raw.trim(), 10);
-
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-
-  return Math.min(Math.max(parsed, min), max);
-};
-
-const readEnv = (name: string): string => {
-  const value = process.env[name];
-
-  return typeof value === 'string' ? value.trim() : '';
-};
 
 /**
  * Appends engine selection to the query using SearXNG's bang syntax.
@@ -83,51 +64,6 @@ const buildSearxngQuery = (query: string, engines?: string): string => {
   }
 
   return `${bangs.join(' ')} ${query}`;
-};
-
-const collapse = (value: string, maxLength: number): string => {
-  const collapsed = value.replace(/\s+/g, ' ').trim();
-
-  return collapsed.length > maxLength
-    ? `${collapsed.slice(0, maxLength - 1).trimEnd()}…`
-    : collapsed;
-};
-
-const formatResults = (query: string, results: WebSearchResult[]): string => {
-  if (!results.length) {
-    return `Web search for "${query}" returned no results. Answer from your own knowledge and say that the search found nothing.`;
-  }
-
-  // Output size is already bounded: at most MAX_MAX_RESULTS entries, each with
-  // its snippet truncated to MAX_SNIPPET_LENGTH.
-  const lines: string[] = [
-    `Web search results for "${query}" (${results.length} result${results.length === 1 ? '' : 's'}):`,
-    '',
-  ];
-
-  results.forEach((result, index) => {
-    const title = result.title?.trim() || '(untitled)';
-    const url = result.url?.trim() ?? '';
-    const snippet = result.content?.trim() ?? '';
-
-    lines.push(`${index + 1}. ${title}`);
-
-    if (url) {
-      lines.push(`   URL: ${url}`);
-    }
-
-    if (snippet) {
-      lines.push(`   ${snippet}`);
-    }
-
-    lines.push('');
-  });
-
-  lines.push(
-    'Cite the URL of any result you rely on. If the results do not answer the question, say so instead of guessing.',
-  );
-
-  return lines.join('\n');
 };
 
 const asResult = (item: Record<string, unknown>): WebSearchResult => {
@@ -224,7 +160,10 @@ export const createSearxngProvider = (
         .slice(0, maxResults)
         .map(asResult);
 
-      return { content: formatResults(trimmedQuery, results), results };
+      return {
+        content: formatSearchResults(trimmedQuery, results),
+        results,
+      };
     } finally {
       clearTimeout(timer);
     }

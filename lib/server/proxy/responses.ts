@@ -5,7 +5,11 @@ import { getCredentialSupportedModels } from '../domain/credentials';
 import type { DebugTrace } from '../domain/debug';
 import { isLocalWebSearchConfigured } from '../search';
 import {
+  buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
+  markServerTool,
+  WEB_FETCH_TOOL_NAME,
+  WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
   WEB_SEARCH_TOOL_TYPE_PREFIX,
 } from '../search/tool';
@@ -49,6 +53,16 @@ interface SupportedChatTool {
   kind: 'custom' | 'function' | 'mcp' | 'tool_search';
   namespace?: string;
   originalName: string;
+  /**
+   * True when the client declared this as a provider-executed server tool
+   * (`web_search_20260209`, `web_fetch_20250910`, `web_search_preview`) rather
+   * than as its own function.
+   *
+   * Translation turns both into ordinary functions for upstream, so without this
+   * the proxy cannot tell them apart later — and the difference decides whether a
+   * tool that cannot be executed is dropped or forwarded.
+   */
+  serverDeclared?: boolean;
   serverLabel?: string;
   tool: Record<string, unknown>;
 }
@@ -449,12 +463,12 @@ const toSupportedChatTool = (
 ): SupportedChatTool[] => {
   const toolType = typeof tool.type === 'string' ? tool.type : 'function';
 
-  // Server-side search has no function schema, so the generic branch below
-  // drops it. Emit it as a function when a local backend is configured: the
-  // proxy loop then executes it locally and folds the findings back in, which
-  // is the only way a Responses client gets search results. Gated on the
-  // backend rather than the enable toggle because that check is synchronous;
-  // the proxy strips the tool again when the toggle is off.
+  // Server-side search and fetch carry no function schema, so the generic
+  // branch below drops them. Emit them as functions when they can be executed
+  // locally: the proxy loop then runs them and folds the findings back in,
+  // which is the only way a Responses client gets results. Gated on capability
+  // rather than the enable toggles because those checks are asynchronous; the
+  // proxy strips the tool again when the toggle is off.
   if (
     toolType.startsWith(WEB_SEARCH_TOOL_TYPE_PREFIX) &&
     isLocalWebSearchConfigured()
@@ -466,6 +480,24 @@ const toSupportedChatTool = (
         chatName: WEB_SEARCH_TOOL_NAME,
         kind: 'function',
         originalName: WEB_SEARCH_TOOL_NAME,
+        serverDeclared: true,
+        tool: definition,
+      },
+    ];
+  }
+
+  // Fetch needs no deployment-level configuration — the local backend is always
+  // available and the CodeBuddy backend needs only a credential — so it is
+  // advertised unconditionally and gated later by the enable toggle.
+  if (toolType.startsWith(WEB_FETCH_TOOL_TYPE_PREFIX)) {
+    const definition = buildWebFetchToolDefinition();
+
+    return [
+      {
+        chatName: WEB_FETCH_TOOL_NAME,
+        kind: 'function',
+        originalName: WEB_FETCH_TOOL_NAME,
+        serverDeclared: true,
         tool: definition,
       },
     ];
@@ -801,6 +833,7 @@ export const translateResponsesToolsToChat = (
     return {
       type: 'function',
       function: tool.tool,
+      ...(tool.serverDeclared ? markServerTool({}) : {}),
     };
   });
 };

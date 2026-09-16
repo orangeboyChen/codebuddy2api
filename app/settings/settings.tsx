@@ -86,6 +86,16 @@ const settingsSelectOptions: Record<
     { label: 'WARNING', value: 'WARNING' },
     { label: 'ERROR', value: 'ERROR' },
   ],
+  CODEBUDDY_WEB_SEARCH_BACKEND: [
+    { label: 'codebuddy', value: 'codebuddy' },
+    { label: 'searxng', value: 'searxng' },
+    { label: 'none', value: 'none' },
+  ],
+  CODEBUDDY_WEB_FETCH_BACKEND: [
+    { label: 'codebuddy', value: 'codebuddy' },
+    { label: 'local', value: 'local' },
+    { label: 'none', value: 'none' },
+  ],
 };
 
 const settingsPlaceholders: Record<string, string> = {
@@ -99,8 +109,33 @@ const settingsPlaceholders: Record<string, string> = {
  */
 const BOOLEAN_SETTING_KEYS = new Set([
   'CODEBUDDY_WEB_SEARCH_ENABLED',
+  'CODEBUDDY_WEB_FETCH_ENABLED',
   'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED',
 ]);
+
+/**
+ * Maps a setting key to its helper text.
+ *
+ * A lookup table rather than the chained ternary it replaced: four keys already
+ * made the inline version hard to read, and the server-tool settings come in
+ * pairs (a toggle plus its backend) that each need their own explanation.
+ */
+const settingHint = (
+  settingKey: string,
+  translations: (key: string) => string,
+): string | undefined => {
+  const hints: Record<string, string> = {
+    CODEBUDDY_API_TIMEOUT_MINUTES: 'apiTimeoutHint',
+    CODEBUDDY_WEB_SEARCH_ENABLED: 'webSearchDescription',
+    CODEBUDDY_WEB_SEARCH_BACKEND: 'webSearchBackendHint',
+    CODEBUDDY_WEB_FETCH_ENABLED: 'webFetchDescription',
+    CODEBUDDY_WEB_FETCH_BACKEND: 'webFetchBackendHint',
+    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'hyThoughtDepthHint',
+  };
+  const key = hints[settingKey];
+
+  return key ? translations(`settingsPanel.${key}`) : undefined;
+};
 
 const isTruthySetting = (value: SettingsValue): boolean => {
   return value === true || value === 'true' || value === '1';
@@ -429,15 +464,7 @@ const Settings = () => {
           ) : (
             Object.entries(settings.labels).map(([settingKey, label]) => (
               <SettingField
-                hint={
-                  settingKey === 'CODEBUDDY_API_TIMEOUT_MINUTES'
-                    ? translations('settingsPanel.apiTimeoutHint')
-                    : settingKey === 'CODEBUDDY_WEB_SEARCH_ENABLED'
-                      ? translations('settingsPanel.webSearchDescription')
-                      : settingKey === 'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED'
-                        ? translations('settingsPanel.hyThoughtDepthHint')
-                        : undefined
-                }
+                hint={settingHint(settingKey, translations)}
                 key={settingKey}
                 label={label}
                 onChange={(value) => onChange(settingKey, value)}
