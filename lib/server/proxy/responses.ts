@@ -1913,12 +1913,11 @@ const createResponsesEventStream = async (
 ): Promise<Response> => {
   const translatedTools = translateResponsesToolsToChat(defaults.tools);
   const translatedToolNames = new Set(
-    (translatedTools ?? []).flatMap((tool) => {
-      if (!tool || typeof tool !== 'object') return [];
-      const fn = (tool as { function?: { name?: unknown } }).function;
-
-      return typeof fn?.name === 'string' ? [normalizeToolName(fn.name)] : [];
-    }),
+    (
+      (translatedTools ?? []) as Array<{
+        function: { name: string };
+      }>
+    ).map((tool) => normalizeToolName(tool.function.name)),
   );
   const [searchEnabled, fetchEnabled] = await Promise.all([
     translatedToolNames.has(normalizeToolName(WEB_SEARCH_TOOL_NAME))
@@ -1972,13 +1971,13 @@ const createResponsesEventStream = async (
 
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
-      const enqueueEvent = (payload: Record<string, unknown>): void => {
+      const enqueueEvent = (
+        payload: Record<string, unknown> & { type: string },
+      ): void => {
         if (cancelled) return;
-        const eventType =
-          typeof payload.type === 'string' ? payload.type : 'message';
         controller.enqueue(
           encoder.encode(
-            `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`,
+            `event: ${payload.type}\ndata: ${JSON.stringify(payload)}\n\n`,
           ),
         );
       };
@@ -2060,8 +2059,7 @@ const createResponsesEventStream = async (
               });
             },
             onResult: (execution) => {
-              const item = itemsByInvocationId.get(execution.id);
-              if (!item) return;
+              const item = itemsByInvocationId.get(execution.id)!;
               const id = String(item.inProgress.id);
               item.completed = buildResponsesWebSearchCallItem(
                 execution,
@@ -2082,6 +2080,11 @@ const createResponsesEventStream = async (
             },
           },
         );
+
+        if (cancelled) {
+          await upstreamResponse.body?.cancel();
+          return;
+        }
 
         if (!upstreamResponse.ok || !upstreamResponse.body) {
           enqueueEvent({

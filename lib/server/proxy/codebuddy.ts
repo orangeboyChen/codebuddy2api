@@ -2461,7 +2461,7 @@ const classifyStreamFrame = (
         delta?.reasoning_content ||
         delta?.reasoning ||
         hasNonServerTool ||
-        choice.finish_reason !== undefined
+        choice.finish_reason != null
       ) {
         return 'passthrough';
       }

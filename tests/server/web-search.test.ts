@@ -615,6 +615,22 @@ describe('server local web search', () => {
       ]);
     });
 
+    it('drops an unconfigured non-passthrough server declaration', async () => {
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
+      const callUpstream = vi.fn<LoopCall>(async () => makeJsonResponse({}));
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+        },
+        callUpstream,
+      });
+
+      expect(callUpstream).not.toHaveBeenCalled();
+      expect(result?.body.tools).toEqual([]);
+    });
+
     it.each([
       [
         'anthropic server tool',
@@ -1354,9 +1370,7 @@ describe('server local web search', () => {
                 {
                   finish_reason: 'tool_calls',
                   message: {
-                    tool_calls: [
-                      { id: 'c1', function: { name: 'web_search' } },
-                    ],
+                    tool_calls: [{ function: { name: 'web_search' } }],
                   },
                 },
               ],
@@ -2289,6 +2303,189 @@ describe('chat proxy web search integration', () => {
     await reader.cancel();
   });
 
+  it('replays ignorable SSE frames before ordinary content', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        [
+          ': keepalive\n\n',
+          'data: \n\n',
+          'data: {invalid\n\n',
+          `data: ${JSON.stringify({})}\n\n`,
+          `data: ${JSON.stringify({
+            choices: [{ delta: { tool_calls: [{ function: {} }] } }],
+          })}\n\n`,
+          `data: ${JSON.stringify({
+            choices: [{ delta: { content: 'Ordinary answer.' }, index: 0 }],
+          })}\n\n`,
+          'data: [DONE]\n\n',
+        ].join(''),
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'Say hello' }],
+        stream: true,
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+      },
+    );
+
+    expect(await response.text()).toContain('Ordinary answer.');
+  });
+
+  it('passes through a stream that ends before meaningful content', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('data: [DONE]\n\n', {
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'Say nothing' }],
+        stream: true,
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+      },
+    );
+
+    expect(await response.text()).toContain('data: [DONE]');
+  });
+
+  it.each([
+    ['id', { id: 'call_search' }],
+    ['position', {}],
+  ])('detects fragmented local tool names keyed by %s', async (_label, key) => {
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        return makeJsonResponse({ results: [] });
+      }
+
+      upstreamCalls++;
+      return upstreamCalls === 1
+        ? makeSseResponse(
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [{ ...key, function: { name: 'web_' } }],
+                  },
+                  finish_reason: null,
+                  index: 0,
+                },
+              ],
+            },
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        ...key,
+                        function: {
+                          arguments: '{"query":"fragments"}',
+                          name: 'search',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                  index: 0,
+                },
+              ],
+            },
+          )
+        : makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'Found.' } },
+            ],
+          });
+    });
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'Search fragments' }],
+        stream: true,
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+      },
+    );
+
+    expect(await response.text()).toContain('Found.');
+    expect(upstreamCalls).toBe(2);
+  });
+
+  it('preserves an upstream SSE response without a body', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, {
+        headers: { 'Content-Type': 'text/event-stream' },
+        status: 204,
+      }),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'No body' }],
+        stream: true,
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+      },
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.body).toBeNull();
+  });
+
+  it('propagates an upstream failure after replay starts', async () => {
+    const encoder = new TextEncoder();
+    let failStream: (() => void) | undefined;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  choices: [{ delta: { content: 'Partial.' }, index: 0 }],
+                })}\n\n`,
+              ),
+            );
+            failStream = () => controller.error(new Error('stream failed'));
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ role: 'user', content: 'Fail later' }],
+        stream: true,
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+      },
+    );
+
+    expect(failStream).toBeTypeOf('function');
+    failStream!();
+    await expect(response.text()).rejects.toThrow('stream failed');
+  });
+
   it('emits Responses web_search_call lifecycle before the final message', async () => {
     let upstreamCalls = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -2321,6 +2518,7 @@ describe('chat proxy web search integration', () => {
                     },
                   ],
                 },
+                finish_reason: null,
                 index: 0,
               },
             ],
@@ -2358,6 +2556,7 @@ describe('chat proxy web search integration', () => {
       makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
       {
         input: 'What is new?',
+        instructions: 'Use current sources.',
         stream: true,
         tools: [{ type: 'web_search_preview' }],
       },
@@ -2372,6 +2571,89 @@ describe('chat proxy web search integration', () => {
     expect(text.indexOf('"type":"web_search_call"')).toBeLessThan(
       text.indexOf('Latest answer.'),
     );
+  });
+
+  it('streams a Responses open_page lifecycle for local fetch', async () => {
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch')) {
+        return makeJsonResponse({ content: 'Fetched stream.' });
+      }
+
+      if (url.includes('stream.test')) {
+        throw new Error('The endpoint result should win the local fallback');
+      }
+
+      upstreamCalls++;
+      return upstreamCalls === 1
+        ? makeSseResponse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      function: {
+                        arguments: '{"url":"https://stream.test/page"}',
+                        name: 'web_fetch',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+                index: 0,
+              },
+            ],
+          })
+        : makeJsonResponse({
+            choices: [
+              { finish_reason: 'stop', message: { content: 'Fetched.' } },
+            ],
+          });
+    });
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'Fetch the page',
+        stream: true,
+        tools: [{ type: 'web_fetch_20250910', name: 'web_fetch' }],
+      },
+    );
+    const text = await response.text();
+
+    expect(text).toContain('response.web_search_call.in_progress');
+    expect(text).toContain('response.web_search_call.completed');
+    expect(text).toContain(
+      '"action":{"type":"open_page","url":"https://stream.test/page"}',
+    );
+  });
+
+  it('streams ordinary Responses output with instructions', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeSseResponse({
+        choices: [
+          {
+            delta: { content: 'Instruction answer.' },
+            finish_reason: 'stop',
+            index: 0,
+          },
+        ],
+      }),
+    );
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'Answer normally',
+        instructions: 'Be concise.',
+        stream: true,
+      },
+    );
+
+    expect(await response.text()).toContain('Instruction answer.');
   });
 
   it('streams Responses search progress before the backend finishes', async () => {
@@ -2448,6 +2730,87 @@ describe('chat proxy web search integration', () => {
     expect(afterResult).toContain('Live answer.');
   });
 
+  it('streams a Responses error when local tool upstream execution fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeJsonResponse({ error: { message: 'upstream failed' } }, 502),
+    );
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'Search live',
+        stream: true,
+        tools: [{ type: 'web_search_preview' }],
+      },
+    );
+    const text = await response.text();
+
+    expect(text).toContain('"type":"response.error"');
+    expect(text).toContain('data: [DONE]');
+  });
+
+  it('cancels a late Responses upstream stream after disconnect', async () => {
+    let finishSearch: ((response: Response) => void) | undefined;
+    let upstreamCalls = 0;
+    const cancelSpy = vi.spyOn(ReadableStream.prototype, 'cancel');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        return await new Promise<Response>((resolve) => {
+          finishSearch = resolve;
+        });
+      }
+
+      upstreamCalls++;
+      if (upstreamCalls === 1) {
+        return makeSseResponse({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"query":"cancel response"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+              index: 0,
+            },
+          ],
+        });
+      }
+
+      return makeJsonResponse({
+        choices: [
+          { finish_reason: 'stop', message: { content: 'Late answer.' } },
+        ],
+      });
+    });
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'Search and disconnect',
+        stream: true,
+        tools: [{ type: 'web_search_preview' }],
+      },
+    );
+
+    await vi.waitFor(() => expect(finishSearch).toBeTypeOf('function'));
+    await response.body!.cancel();
+    const callsAfterClientCancel = cancelSpy.mock.calls.length;
+    finishSearch!(makeJsonResponse({ results: [] }));
+    await vi.waitFor(() =>
+      expect(cancelSpy.mock.calls.length).toBeGreaterThan(
+        callsAfterClientCancel,
+      ),
+    );
+  });
+
   it('returns Anthropic server tool and fetch result blocks', async () => {
     await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
     let upstreamCalls = 0;
@@ -2457,7 +2820,6 @@ describe('chat proxy web search integration', () => {
       if (url.includes('/agenttool/v1/webfetch')) {
         return makeJsonResponse({
           content: 'Fetched article body.',
-          url: 'https://page.test/final',
         });
       }
 
@@ -2536,7 +2898,7 @@ describe('chat proxy web search integration', () => {
     expect(text).toContain('"name":"web_fetch"');
     expect(text).toContain('"type":"web_fetch_tool_result"');
     expect(text).toContain('"type":"web_fetch_result"');
-    expect(text).toContain('"url":"https://page.test/final"');
+    expect(text).toContain('"url":"https://page.test/article"');
     expect(text).toContain('Fetched article body.');
     expect(text.indexOf('"type":"server_tool_use"')).toBeLessThan(
       text.indexOf('Article summary.'),
@@ -2633,6 +2995,127 @@ describe('chat proxy web search integration', () => {
     expect(afterResult).toContain('Messages answer.');
   });
 
+  it('streams a Messages error when local tool upstream execution fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeJsonResponse({ error: { message: 'upstream failed' } }, 502),
+    );
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Search live' }],
+        stream: true,
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+
+    expect(await response.text()).toContain('"type":"error"');
+  });
+
+  it.each([
+    [
+      'an empty body',
+      new Response(null, { status: 502 }),
+      'Upstream CodeBuddy request failed',
+    ],
+    ['a JSON string detail', makeJsonResponse({ detail: '123' }, 502), '123'],
+  ])(
+    'maps %s from a non-streaming Messages failure',
+    async (_label, failure, message) => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(failure);
+
+      const response = await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+        {
+          max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Fail normally' }],
+        },
+      );
+      const payload = (await response.json()) as {
+        error: { message: string };
+      };
+
+      expect(response.status).toBe(502);
+      expect(payload.error.message).toBe(message);
+    },
+  );
+
+  it('cancels a late Messages upstream stream after disconnect', async () => {
+    let finishSearch: ((response: Response) => void) | undefined;
+    let upstreamCalls = 0;
+    const cancelSpy = vi.spyOn(ReadableStream.prototype, 'cancel');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        return await new Promise<Response>((resolve) => {
+          finishSearch = resolve;
+        });
+      }
+
+      upstreamCalls++;
+      if (upstreamCalls === 1) {
+        return makeSseResponse({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"query":"cancel messages"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+              index: 0,
+            },
+          ],
+        });
+      }
+
+      return makeJsonResponse({
+        choices: [
+          { finish_reason: 'stop', message: { content: 'Late answer.' } },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Search and disconnect' }],
+        stream: true,
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+
+    await vi.waitFor(() => expect(finishSearch).toBeTypeOf('function'));
+    await response.body!.cancel();
+    const callsAfterClientCancel = cancelSpy.mock.calls.length;
+    finishSearch!(makeJsonResponse({ results: [] }));
+    await vi.waitFor(() =>
+      expect(cancelSpy.mock.calls.length).toBeGreaterThan(
+        callsAfterClientCancel,
+      ),
+    );
+  });
+
   it('maps a completed fetch to a Responses open_page call', async () => {
     await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
     let upstreamCalls = 0;
@@ -2642,7 +3125,6 @@ describe('chat proxy web search integration', () => {
       if (url.includes('/agenttool/v1/webfetch')) {
         return makeJsonResponse({
           content: 'Fetched documentation.',
-          url: 'https://docs.test/final',
         });
       }
 
@@ -2691,7 +3173,7 @@ describe('chat proxy web search integration', () => {
     expect(payload.output[0]).toMatchObject({
       type: 'web_search_call',
       status: 'completed',
-      action: { type: 'open_page', url: 'https://docs.test/final' },
+      action: { type: 'open_page', url: 'https://docs.test/start' },
     });
     expect(payload.output[1]).toMatchObject({ type: 'message' });
   });
@@ -2706,8 +3188,6 @@ describe('chat proxy web search integration', () => {
           results: [
             {
               content: 'Search snippet',
-              title: 'Search title',
-              url: 'https://result.test',
             },
           ],
         });
@@ -2772,8 +3252,8 @@ describe('chat proxy web search integration', () => {
       content: [
         {
           type: 'web_search_result',
-          title: 'Search title',
-          url: 'https://result.test',
+          title: '',
+          url: '',
         },
       ],
     });

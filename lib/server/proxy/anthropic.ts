@@ -673,7 +673,6 @@ const mapOpenAIStreamToAnthropicSSE = (
   model: string,
   options?: {
     emitMessageStart?: boolean;
-    emitServerToolBlocks?: boolean;
     initialContentBlockCount?: number;
     messageId?: string;
     serverToolExecutions?: ServerToolExecution[];
@@ -696,7 +695,6 @@ const mapOpenAIStreamToAnthropicSSE = (
   const messageId = options?.messageId ?? createAnthropicId('msg');
   const serverToolExecutions =
     options?.serverToolExecutions ?? getServerToolExecutions(upstreamResponse);
-  const serverToolBlocks = buildAnthropicServerToolBlocks(serverToolExecutions);
   const toolUseStates = new Map<string, StreamingToolUseState>();
   let nextToolIndex = 0;
   let started = options?.emitMessageStart === false;
@@ -711,7 +709,6 @@ const mapOpenAIStreamToAnthropicSSE = (
   let finishReason: string | null = null;
   let hasToolCalls = false;
   let usage: OpenAIUsage | undefined;
-  let serverToolBlocksEmitted = false;
 
   const enqueueEvent = (event: Record<string, unknown>): void => {
     controller.enqueue(
@@ -764,31 +761,6 @@ const mapOpenAIStreamToAnthropicSSE = (
           },
         },
       });
-    }
-
-    if (!serverToolBlocksEmitted && options?.emitServerToolBlocks !== false) {
-      serverToolBlocksEmitted = true;
-      for (const block of serverToolBlocks) {
-        const index = contentBlockCount;
-        const isServerToolUse = block.type === 'server_tool_use';
-        enqueueEvent({
-          type: 'content_block_start',
-          index,
-          content_block: isServerToolUse ? { ...block, input: {} } : block,
-        });
-        if (isServerToolUse) {
-          enqueueEvent({
-            type: 'content_block_delta',
-            index,
-            delta: {
-              type: 'input_json_delta',
-              partial_json: JSON.stringify(block.input ?? {}),
-            },
-          });
-        }
-        enqueueEvent({ type: 'content_block_stop', index });
-        contentBlockCount++;
-      }
     }
 
     if (chunk.usage) {
@@ -1208,13 +1180,18 @@ const createAnthropicServerToolEventStream = (
                 index,
                 content_block: {
                   ...resultBlock,
-                  tool_use_id: toolUseIds.get(execution.id) ?? execution.id,
+                  tool_use_id: toolUseIds.get(execution.id)!,
                 },
               });
               enqueueEvent({ type: 'content_block_stop', index });
             },
           },
         );
+
+        if (cancelled) {
+          await upstreamResponse.body?.cancel();
+          return;
+        }
 
         if (!upstreamResponse.ok || !upstreamResponse.body) {
           enqueueEvent({
@@ -1230,7 +1207,6 @@ const createAnthropicServerToolEventStream = (
           model,
           {
             emitMessageStart: false,
-            emitServerToolBlocks: false,
             initialContentBlockCount: contentBlockCount,
             messageId,
             serverToolExecutions: executions,

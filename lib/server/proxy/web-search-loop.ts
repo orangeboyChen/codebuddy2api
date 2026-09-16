@@ -203,7 +203,6 @@ const isWebFetchToolCall = (toolCall: ChatCompletionToolCall): boolean => {
  */
 const replaceServerTools = ({
   fetchEnabled,
-  fetchPassthrough,
   fetchProvider,
   searchEnabled,
   searchPassthrough,
@@ -211,7 +210,6 @@ const replaceServerTools = ({
   tools,
 }: {
   fetchEnabled: boolean;
-  fetchPassthrough: boolean;
   fetchProvider: WebFetchProvider | null;
   searchEnabled: boolean;
   searchPassthrough: boolean;
@@ -255,7 +253,7 @@ const replaceServerTools = ({
       }
 
       matched = true;
-      return fetchPassthrough ? [stripServerToolMarker(tool)] : [];
+      return [stripServerToolMarker(tool)];
     }
 
     // The marker is internal to this proxy, so it never reaches upstream.
@@ -533,7 +531,6 @@ export const executeWebSearchLoop = async ({
 
   const replacement = replaceServerTools({
     fetchEnabled,
-    fetchPassthrough: config.CODEBUDDY_WEB_FETCH_BACKEND === 'passthrough',
     fetchProvider,
     searchEnabled,
     searchPassthrough: config.CODEBUDDY_WEB_SEARCH_BACKEND === 'passthrough',
@@ -708,7 +705,7 @@ export const executeWebSearchLoop = async ({
     const finalResponse = await callUpstream(
       {
         ...loopBody,
-        tools: (loopBody.tools ?? []).filter(
+        tools: loopBody.tools!.filter(
           (tool) => !isWebSearchTool(tool) && !isWebFetchTool(tool),
         ),
       },
@@ -736,7 +733,7 @@ export const executeWebSearchLoop = async ({
     executions,
     response: Response.json(
       { ...payload, ...(usage ? { usage } : {}) },
-      { status: response?.status ?? 200 },
+      { status: response!.status },
     ),
   };
 };
