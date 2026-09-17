@@ -22,7 +22,7 @@ import type { ProxyContext } from '@/lib/server/proxy/codebuddy';
 import {
   attachServerToolExecutions,
   getServerToolExecutions,
-} from '@/lib/server/proxy/web-search-loop';
+} from '@/lib/server/proxy/server-tools';
 import {
   handleResponsesRequest,
   resetResponseSessions,

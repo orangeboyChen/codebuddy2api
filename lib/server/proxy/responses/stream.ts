@@ -41,7 +41,7 @@ import type {
   StreamingToolCallState,
   TranscriptMessage,
 } from './types';
-import { getServerToolExecutions } from '../web-search-loop';
+import { getServerToolExecutions } from '../server-tools';
 import { MAX_RESPONSE_SESSION_TOTAL_BYTES } from './session';
 
 const MAX_STREAM_BUFFER_LENGTH = 1_000_000;

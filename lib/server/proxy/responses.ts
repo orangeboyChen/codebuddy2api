@@ -16,6 +16,7 @@ import type { NextRequest } from 'next/server';
 import { getDefaultModel } from '../domain/config';
 import { getCredentialSupportedModels } from '../domain/credentials';
 import type { DebugTrace } from '../domain/debug';
+import { withCodeBuddyToken } from '../search/token';
 import { createErrorResponse } from '../shared/http';
 import { resolveRequestAccessKey } from './auth';
 import {
@@ -41,7 +42,12 @@ import {
 } from './responses/tools';
 import { prepareTranscript } from './responses/transcript';
 import type { ResponsesRequestBody } from './responses/types';
-import { getServerToolExecutions } from './web-search-loop';
+import {
+  getServerToolExecutions,
+  hasExecutableServerTool,
+  prepareServerToolTurn,
+  runServerToolTurn,
+} from './server-tools';
 
 export const handleResponsesRequest = async (
   request: NextRequest,
@@ -165,6 +171,19 @@ export const handleResponsesRequest = async (
       );
     }
 
+    const translatedTools = translateResponsesToolsToChat(
+      prepared.defaults.tools,
+    );
+
+    // Classified on the translated tools, which keep a provider-executed
+    // declaration's type. A client's own function — including one named
+    // `web_search` — arrives as `function` and stays the client's to resolve.
+    const serverTools = await prepareServerToolTurn(translatedTools);
+    const rewrite = serverTools?.rewrite ?? null;
+    const willRunServerTool = Boolean(
+      rewrite && hasExecutableServerTool(rewrite.executable),
+    );
+
     const chatBody = {
       model: prepared.model,
       messages: [
@@ -178,12 +197,55 @@ export const handleResponsesRequest = async (
       ],
       max_tokens: body.max_output_tokens,
       stream: false,
-      tools: translateResponsesToolsToChat(prepared.defaults.tools),
+      // Rewritten even when nothing will be executed: upstream has no server
+      // tools, so a declared type would be a shape it rejects.
+      tools: rewrite ? rewrite.tools : translatedTools,
       tool_choice: translateResponsesToolChoiceToChatWithTools(
         prepared.defaults.tools,
         prepared.defaults.tool_choice,
       ),
     };
+
+    /**
+     * One hop upstream, running any server tool the model asks for on the way.
+     *
+     * Both branches are needed because the turn only exists when something is
+     * executable; otherwise the request goes upstream as it stands, with every
+     * tool call coming back to the client.
+     */
+    const callUpstream = async (
+      loopBody: Record<string, unknown>,
+      stream: boolean,
+    ): Promise<Response> =>
+      willRunServerTool && rewrite
+        ? (
+            await withCodeBuddyToken(
+              () => Promise.resolve(proxyContext.auth.bearerToken),
+              () =>
+                runServerToolTurn({
+                  body: loopBody as never,
+                  callUpstream: (turnBody, turnStream) =>
+                    proxyChatCompletions(
+                      request,
+                      { ...turnBody, stream: turnStream } as never,
+                      proxyContext,
+                      debugTrace,
+                      '/v1/responses',
+                    ),
+                  fetchProvider: serverTools!.providers.fetchProvider,
+                  rewrite,
+                  searchProvider: serverTools!.providers.searchProvider,
+                  stream,
+                }),
+            )
+          ).response
+        : proxyChatCompletions(
+            request,
+            { ...loopBody, stream } as never,
+            proxyContext,
+            debugTrace,
+            '/v1/responses',
+          );
 
     // Image generation has no chat-protocol equivalent, so the model's call is
     // executed here and replayed with the image folded in. Only meaningful when
@@ -196,14 +258,9 @@ export const handleResponsesRequest = async (
         serverToolExecutions,
       } = await executeImageGenerationLoop({
         body: chatBody,
-        callUpstream: (loopBody) =>
-          proxyChatCompletions(
-            request,
-            loopBody as never,
-            proxyContext,
-            debugTrace,
-            '/v1/responses',
-          ),
+        // Buffered so the tool call can be inspected before any delta reaches
+        // the client. Any server tool the hop asked for runs inside this call.
+        callUpstream: (loopBody) => callUpstream(loopBody, false),
         context: proxyContext,
         request,
       });
@@ -236,13 +293,7 @@ export const handleResponsesRequest = async (
       );
     }
 
-    const upstreamResponse = await proxyChatCompletions(
-      request,
-      chatBody as never,
-      proxyContext,
-      debugTrace,
-      '/v1/responses',
-    );
+    const upstreamResponse = await callUpstream(chatBody, false);
 
     if (!upstreamResponse.ok) {
       return upstreamResponse;
@@ -252,6 +303,10 @@ export const handleResponsesRequest = async (
       string,
       unknown
     >;
+    // Read off the response rather than returned by the call: a turn rebuilds
+    // the response, and the image-generation loop above drives upstream itself,
+    // so a returned field would have to be threaded through every layer in
+    // between.
     const serverToolExecutions = getServerToolExecutions(upstreamResponse);
 
     return Response.json(

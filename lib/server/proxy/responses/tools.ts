@@ -6,7 +6,6 @@ import { createErrorResponse } from '../../shared/http';
 import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
-  markServerTool,
   normalizeToolName,
   WEB_FETCH_TOOL_NAME,
   WEB_FETCH_TOOL_TYPE_PREFIX,
@@ -129,9 +128,13 @@ export const toSupportedChatTool = (
   const toolType = typeof tool.type === 'string' ? tool.type : 'function';
 
   // Server-side search and fetch carry no function schema, so the generic
-  // branch below drops them. Emit them as functions unconditionally and let
-  // the proxy loop resolve the configured backend asynchronously. SearXNG
-  // needs local configuration, while CodeBuddy search does not.
+  // branch below drops them. Emit them as functions unconditionally and let the
+  // route resolve the configured backend asynchronously. SearXNG needs local
+  // configuration, while CodeBuddy search does not.
+  //
+  // The declared type is kept, not flattened: it is the only thing that
+  // distinguishes a provider-executed tool from the client's own function, and
+  // a client's own `web_search` must stay the client's to resolve.
   if (
     normalizeToolName(toolType).startsWith(
       normalizeToolName(WEB_SEARCH_TOOL_TYPE_PREFIX),
@@ -144,7 +147,7 @@ export const toSupportedChatTool = (
         chatName: WEB_SEARCH_TOOL_NAME,
         kind: 'function',
         originalName: WEB_SEARCH_TOOL_NAME,
-        serverDeclared: true,
+        serverType: toolType,
         tool: definition,
       },
     ];
@@ -165,7 +168,7 @@ export const toSupportedChatTool = (
         chatName: WEB_FETCH_TOOL_NAME,
         kind: 'function',
         originalName: WEB_FETCH_TOOL_NAME,
-        serverDeclared: true,
+        serverType: toolType,
         tool: definition,
       },
     ];
@@ -181,7 +184,6 @@ export const toSupportedChatTool = (
         chatName: IMAGE_GENERATION_CHAT_TOOL_NAME,
         kind: 'function' as const,
         originalName: IMAGE_GENERATION_TOOL_TYPE,
-        serverDeclared: true,
         tool: buildImageGenerationChatTool(),
       },
     ];
@@ -389,9 +391,11 @@ export const translateResponsesToolsToChat = (
 
   return supported.map((tool) => {
     return {
-      type: 'function',
+      // A provider-executed declaration keeps its declared type so it is still
+      // recognisable downstream. Everything else is an ordinary function, which
+      // upstream understands.
+      type: tool.serverType ?? 'function',
       function: tool.tool,
-      ...(tool.serverDeclared ? markServerTool({}) : {}),
     };
   });
 };

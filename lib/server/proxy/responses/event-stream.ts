@@ -8,13 +8,8 @@
 
 import type { NextRequest } from 'next/server';
 
-import { isWebFetchEnabled, isWebSearchEnabled } from '../../domain/config';
 import type { DebugTrace } from '../../domain/debug';
-import {
-  normalizeToolName,
-  WEB_FETCH_TOOL_NAME,
-  WEB_SEARCH_TOOL_NAME,
-} from '../../search/tool';
+import { withCodeBuddyToken } from '../../search/token';
 import { createSseResponse, encodeDoneFrame } from '../../shared/sse';
 import { proxyChatCompletions, type ProxyContext } from '../codebuddy';
 import { executeImageGenerationLoop } from '../image-generation';
@@ -36,6 +31,11 @@ import type {
   ResponseSessionDefaults,
   TranscriptMessage,
 } from './types';
+import {
+  hasExecutableServerTool,
+  prepareServerToolTurn,
+  runServerToolTurn,
+} from '../server-tools';
 
 export const createResponsesEventStream = async (
   request: NextRequest,
@@ -48,21 +48,15 @@ export const createResponsesEventStream = async (
   debugTrace?: DebugTrace,
 ): Promise<Response> => {
   const translatedTools = translateResponsesToolsToChat(defaults.tools);
-  const translatedToolNames = new Set(
-    (
-      (translatedTools ?? []) as Array<{
-        function: { name: string };
-      }>
-    ).map((tool) => normalizeToolName(tool.function.name)),
+
+  // Classified on the translated tools, which keep a provider-executed
+  // declaration's type. A client's own function — including one named
+  // `web_search` — arrives as `function` and is left to the client.
+  const prepared = await prepareServerToolTurn(translatedTools);
+  const rewrite = prepared?.rewrite ?? null;
+  const willRunServerTool = Boolean(
+    rewrite && hasExecutableServerTool(rewrite.executable),
   );
-  const [searchEnabled, fetchEnabled] = await Promise.all([
-    translatedToolNames.has(normalizeToolName(WEB_SEARCH_TOOL_NAME))
-      ? isWebSearchEnabled()
-      : false,
-    translatedToolNames.has(normalizeToolName(WEB_FETCH_TOOL_NAME))
-      ? isWebFetchEnabled()
-      : false,
-  ]);
 
   const chatBody = {
     model,
@@ -74,12 +68,55 @@ export const createResponsesEventStream = async (
     ],
     max_tokens: maxOutputTokens,
     stream: true,
-    tools: translatedTools,
+    // Rewritten even when nothing will be executed: upstream has no server
+    // tools, so a declared type would be a shape it rejects.
+    tools: rewrite ? rewrite.tools : translatedTools,
     tool_choice: translateResponsesToolChoiceToChatWithTools(
       defaults.tools,
       defaults.tool_choice,
     ),
   };
+
+  /**
+   * One hop upstream, running any server tool the model asks for on the way.
+   *
+   * The image loop drives upstream itself, so the turn has to be reachable from
+   * here too — a hop can ask for an image and a search at once, and the search
+   * still has to run.
+   */
+  const callUpstream = async (
+    loopBody: Record<string, unknown>,
+    stream: boolean,
+  ): Promise<Response> =>
+    willRunServerTool && rewrite
+      ? (
+          await withCodeBuddyToken(
+            () => Promise.resolve(proxyContext.auth.bearerToken),
+            () =>
+              runServerToolTurn({
+                body: loopBody as never,
+                callUpstream: (turnBody, turnStream) =>
+                  proxyChatCompletions(
+                    request,
+                    { ...turnBody, stream: turnStream } as never,
+                    proxyContext,
+                    debugTrace,
+                    '/v1/responses',
+                  ),
+                fetchProvider: prepared!.providers.fetchProvider,
+                rewrite,
+                searchProvider: prepared!.providers.searchProvider,
+                stream,
+              }),
+          )
+        ).response
+      : proxyChatCompletions(
+          request,
+          { ...loopBody, stream } as never,
+          proxyContext,
+          debugTrace,
+          '/v1/responses',
+        );
 
   // Image generation is executed locally, so a streaming request has to be
   // buffered first to see whether the model asked for an image. Without this
@@ -94,15 +131,10 @@ export const createResponsesEventStream = async (
       await executeImageGenerationLoop({
         body: chatBody,
         // Buffered so the tool call can be inspected before any delta reaches
-        // the client; the ordinary path below stays live.
-        callUpstream: (loopBody) =>
-          proxyChatCompletions(
-            request,
-            { ...loopBody, stream: false } as never,
-            proxyContext,
-            debugTrace,
-            '/v1/responses',
-          ),
+        // the client; the ordinary path below stays live. Any server tool the
+        // hop asked for runs inside this call, and its lifecycle is replayed
+        // from `serverToolExecutions` rather than announced live.
+        callUpstream: (loopBody) => callUpstream(loopBody, false),
         context: proxyContext,
         request,
       });
@@ -126,17 +158,17 @@ export const createResponsesEventStream = async (
     );
   }
 
-  if (!searchEnabled && !fetchEnabled) {
-    const upstreamResponse = await proxyChatCompletions(
-      request,
-      chatBody as never,
-      proxyContext,
-      debugTrace,
-      '/v1/responses',
-    );
-
+  // Nothing local to run: the request goes upstream as it stands and every tool
+  // call comes back to the client.
+  if (!willRunServerTool) {
     return mapChatStreamToResponsesEventStream(
-      upstreamResponse,
+      await proxyChatCompletions(
+        request,
+        chatBody as never,
+        proxyContext,
+        debugTrace,
+        '/v1/responses',
+      ),
       defaults,
       transcript,
       model,
@@ -183,96 +215,94 @@ export const createResponsesEventStream = async (
       });
 
       const run = async (): Promise<void> => {
-        const upstreamResponse = await proxyChatCompletions(
-          request,
-          {
-            model,
-            messages: [
-              ...(defaults.instructions
-                ? [{ role: 'system', content: defaults.instructions }]
-                : []),
-              ...normalizeTranscriptMessageToolNames(
-                transcript,
-                defaults.tools,
-              ),
-            ],
-            max_tokens: maxOutputTokens,
-            stream: true,
-            tools: translatedTools,
-            tool_choice: translateResponsesToolChoiceToChatWithTools(
-              defaults.tools,
-              defaults.tool_choice,
-            ),
-          },
-          proxyContext,
-          debugTrace,
-          '/v1/responses',
-          {
-            emitStreamEvents: true,
-            onCall: (invocation) => {
-              const outputIndex = allocateOutputIndex();
-              const id = `ws_${crypto.randomUUID().replaceAll('-', '')}`;
-              const item = {
-                completed: buildResponsesWebSearchCallItem(
-                  invocation,
+        const { fetchProvider, searchProvider } = prepared!.providers;
+
+        const { response } = await withCodeBuddyToken(
+          () => Promise.resolve(proxyContext.auth.bearerToken),
+          () =>
+            runServerToolTurn({
+              body: chatBody as never,
+              callUpstream: (body, stream) =>
+                proxyChatCompletions(
+                  request,
+                  { ...body, stream } as never,
+                  proxyContext,
+                  debugTrace,
+                  '/v1/responses',
+                ),
+              fetchProvider,
+              onCall: (invocation) => {
+                const outputIndex = allocateOutputIndex();
+                const id = `ws_${crypto.randomUUID().replaceAll('-', '')}`;
+                const item = {
+                  completed: buildResponsesWebSearchCallItem(
+                    invocation,
+                    'completed',
+                    id,
+                  ),
+                  inProgress: buildResponsesWebSearchCallItem(
+                    invocation,
+                    'in_progress',
+                    id,
+                  ),
+                  outputIndex,
+                };
+                serverToolItems.push(item);
+                itemsByInvocationId.set(invocation.id, item);
+                enqueueEvent({
+                  type: 'response.output_item.added',
+                  item: item.inProgress,
+                  output_index: outputIndex,
+                  response_id: responseId,
+                });
+                enqueueEvent({
+                  type: 'response.web_search_call.in_progress',
+                  item_id: id,
+                  output_index: outputIndex,
+                });
+                enqueueEvent({
+                  type: 'response.web_search_call.searching',
+                  item_id: id,
+                  output_index: outputIndex,
+                });
+              },
+              onResult: (execution) => {
+                const item = itemsByInvocationId.get(execution.id);
+
+                if (!item) {
+                  return;
+                }
+
+                const id = String(item.inProgress.id);
+                item.completed = buildResponsesWebSearchCallItem(
+                  execution,
                   'completed',
                   id,
-                ),
-                inProgress: buildResponsesWebSearchCallItem(
-                  invocation,
-                  'in_progress',
-                  id,
-                ),
-                outputIndex,
-              };
-              serverToolItems.push(item);
-              itemsByInvocationId.set(invocation.id, item);
-              enqueueEvent({
-                type: 'response.output_item.added',
-                item: item.inProgress,
-                output_index: outputIndex,
-                response_id: responseId,
-              });
-              enqueueEvent({
-                type: 'response.web_search_call.in_progress',
-                item_id: id,
-                output_index: outputIndex,
-              });
-              enqueueEvent({
-                type: 'response.web_search_call.searching',
-                item_id: id,
-                output_index: outputIndex,
-              });
-            },
-            onResult: (execution) => {
-              const item = itemsByInvocationId.get(execution.id)!;
-              const id = String(item.inProgress.id);
-              item.completed = buildResponsesWebSearchCallItem(
-                execution,
-                'completed',
-                id,
-              );
-              enqueueEvent({
-                type: 'response.web_search_call.completed',
-                item_id: id,
-                output_index: item.outputIndex,
-              });
-              enqueueEvent({
-                type: 'response.output_item.done',
-                item: item.completed,
-                output_index: item.outputIndex,
-                response_id: responseId,
-              });
-            },
-          },
+                );
+                enqueueEvent({
+                  type: 'response.web_search_call.completed',
+                  item_id: id,
+                  output_index: item.outputIndex,
+                });
+                enqueueEvent({
+                  type: 'response.output_item.done',
+                  item: item.completed,
+                  output_index: item.outputIndex,
+                  response_id: responseId,
+                });
+              },
+              rewrite: rewrite!,
+              searchProvider,
+              stream: true,
+            }),
         );
 
         if (cancelled) {
-          await upstreamResponse.body?.cancel();
+          await response.body?.cancel();
           return;
         }
 
-        if (!upstreamResponse.ok || !upstreamResponse.body) {
+        if (!response.ok) {
           enqueueEvent({
             type: 'response.error',
             error: { message: 'Upstream request failed' },
@@ -283,7 +313,7 @@ export const createResponsesEventStream = async (
         }
 
         const mappedResponse = mapChatStreamToResponsesEventStream(
-          upstreamResponse,
+          response,
           defaults,
           transcript,
           model,

@@ -55,3 +55,15 @@ export const encodeEventFrame = (type: string, data: unknown): Uint8Array =>
 /** The frame that ends an SSE stream. */
 export const encodeDoneFrame = (): Uint8Array =>
   encoder.encode(`${DONE_FRAME_TEXT}\n\n`);
+
+/**
+ * Whether a response is already an SSE stream.
+ *
+ * Every route branches on this, because upstream answers with JSON rather than
+ * SSE both when it refuses a request and when the caller was never streaming —
+ * and the two have to be read the same way.
+ */
+export const isEventStream = (response: Response): boolean =>
+  (response.headers.get('content-type') ?? '')
+    .toLowerCase()
+    .includes('text/event-stream');

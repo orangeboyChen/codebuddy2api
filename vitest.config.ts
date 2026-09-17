@@ -33,6 +33,10 @@ const vitestConfig = defineConfig({
       'dist/**',
       'e2e/**',
       'node_modules/**',
+      // A git worktree is a full checkout, so it carries its own copy of the
+      // suite — and, once built, a second copy under `.next/standalone`.
+      // Collecting those runs stale tests against the current tree.
+      '.worktrees/**',
     ],
     coverage: {
       provider: 'v8',

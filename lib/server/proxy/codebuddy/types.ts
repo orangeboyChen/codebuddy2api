@@ -1,9 +1,3 @@
-import {
-  normalizeToolName,
-  WEB_FETCH_TOOL_NAME,
-  WEB_SEARCH_TOOL_NAME,
-} from '../../search/tool';
-
 /**
  * Chat completions are called from browser-side clients as well as servers, so
  * this route's streams carry the CORS header the other protocols do not need.
@@ -125,13 +119,4 @@ export interface ProxyContext {
 export interface DiscoveredModel {
   displayName: string;
   id: string;
-}
-
-export const SERVER_WEB_TOOL_NAMES = [
-  normalizeToolName(WEB_SEARCH_TOOL_NAME),
-  normalizeToolName(WEB_FETCH_TOOL_NAME),
-];
-
-export interface StreamProbeState {
-  toolNames: Map<string, string>;
 }

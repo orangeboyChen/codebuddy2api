@@ -23,13 +23,13 @@ import { getCodeBuddyApiEndpoint } from '../domain/config';
 import type { ProxyContext } from './codebuddy';
 import { buildUpstreamHeaders } from './codebuddy';
 import {
+  foldIntermediateTexts,
   getServerToolExecutions,
-  withIntermediateTurns,
   type ChatCompletionMessage,
   type ChatCompletionPayload,
   type ChatCompletionToolCall,
   type ServerToolExecution,
-} from './web-search-loop';
+} from './server-tools';
 
 export const IMAGE_GENERATION_TOOL_TYPE = 'image_generation';
 
@@ -489,12 +489,7 @@ export const executeImageGenerationLoop = async ({
         executions,
         response: rebuildResponse(
           response,
-          withIntermediateTurns({
-            executions: [],
-            payload,
-            reasonings: [],
-            texts: intermediateTexts,
-          }).payload,
+          foldIntermediateTexts(payload, intermediateTexts),
         ),
         serverToolExecutions,
       };
@@ -559,12 +554,10 @@ export const executeImageGenerationLoop = async ({
     executions,
     response: rebuildResponse(
       lastResponse ?? new Response(null, { status: 502 }),
-      withIntermediateTurns({
-        executions: [],
-        payload: clearClosingHop(lastPayload ?? {}),
-        reasonings: [],
-        texts: intermediateTexts,
-      }).payload,
+      foldIntermediateTexts(
+        clearClosingHop(lastPayload ?? {}),
+        intermediateTexts,
+      ),
     ),
     serverToolExecutions,
   };

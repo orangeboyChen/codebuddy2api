@@ -36,7 +36,7 @@ import type {
 import type {
   ServerToolExecution,
   ServerToolInvocation,
-} from '../web-search-loop';
+} from '../server-tools';
 
 export const mapChatResponseToResponsesPayload = async (
   accessKeyId: string | null,

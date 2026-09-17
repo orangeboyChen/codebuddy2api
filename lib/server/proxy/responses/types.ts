@@ -31,15 +31,16 @@ export interface SupportedChatTool {
   namespace?: string;
   originalName: string;
   /**
-   * True when the client declared this as a provider-executed server tool
-   * (`web_search_20260209`, `web_fetch_20250910`, `web_search_preview`) rather
-   * than as its own function.
+   * The type the client declared this tool with, when it asked the *provider*
+   * to run it (`web_search_preview`, `web_fetch_20250910`) rather than
+   * declaring a function of its own.
    *
-   * Translation turns both into ordinary functions for upstream, so without this
-   * the proxy cannot tell them apart later — and the difference decides whether a
-   * tool that cannot be executed is dropped or forwarded.
+   * Translation keeps that type on the chat tool instead of flattening it to
+   * `function`, which is what lets the proxy recognise a provider-executed
+   * declaration after translation. A client's own function — including one
+   * named `web_search` — arrives as `function` and is left to the client.
    */
-  serverDeclared?: boolean;
+  serverType?: string;
   serverLabel?: string;
   tool: Record<string, unknown>;
 }
