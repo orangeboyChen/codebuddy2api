@@ -1283,9 +1283,23 @@ const createAnthropicServerToolEventStream = (
         }
 
         if (!upstreamResponse.ok || !upstreamResponse.body) {
+          // A rate limit has to arrive as `rate_limit_error`, or a client that
+          // retries on that type alone will treat an exhausted quota as a
+          // generic failure and stop retrying — so the upstream status drives
+          // the event type even though the envelope is already streaming and
+          // the HTTP status cannot be changed.
+          const message = upstreamResponse.ok
+            ? 'Upstream request failed'
+            : await getUpstreamErrorMessage(upstreamResponse).catch(
+                () => 'Upstream request failed',
+              );
+
           enqueueEvent({
             type: 'error',
-            error: { type: 'api_error', message: 'Upstream request failed' },
+            error: {
+              type: anthropicErrorType(upstreamResponse.status),
+              message,
+            },
           });
           controller.close();
           return;
@@ -1429,26 +1443,28 @@ export const handleMessagesRequest = async (
   }
 };
 
+export const anthropicErrorType = (status: number): string =>
+  status === 401
+    ? 'authentication_error'
+    : status === 403
+      ? 'permission_error'
+      : status === 404
+        ? 'not_found_error'
+        : status === 413
+          ? 'request_too_large'
+          : status === 429
+            ? 'rate_limit_error'
+            : status === 529
+              ? 'overloaded_error'
+              : status >= 500
+                ? 'api_error'
+                : 'invalid_request_error';
+
 export const createAnthropicError = (
   status: number,
   message: string,
 ): Response => {
-  const type =
-    status === 401
-      ? 'authentication_error'
-      : status === 403
-        ? 'permission_error'
-        : status === 404
-          ? 'not_found_error'
-          : status === 413
-            ? 'request_too_large'
-            : status === 429
-              ? 'rate_limit_error'
-              : status === 529
-                ? 'overloaded_error'
-                : status >= 500
-                  ? 'api_error'
-                  : 'invalid_request_error';
+  const type = anthropicErrorType(status);
 
   return Response.json(
     {
