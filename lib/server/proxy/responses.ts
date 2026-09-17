@@ -19,9 +19,11 @@ import {
 } from '../search/tool';
 import {
   buildImageGenerationChatTool,
+  buildResponsesImageGenerationCallItem,
   executeImageGenerationLoop,
   IMAGE_GENERATION_CHAT_TOOL_NAME,
   IMAGE_GENERATION_TOOL_TYPE,
+  type ImageGenerationExecution,
 } from './image-generation';
 import {
   extractImageUrl,
@@ -1354,6 +1356,7 @@ const mapChatResponseToResponsesPayload = async (
   previousResponseId: string | null,
   upstreamPayload: Record<string, unknown>,
   serverToolExecutions: ServerToolExecution[],
+  imageExecutions: ImageGenerationExecution[] = [],
 ): Promise<Record<string, unknown>> => {
   const responseId = createResponseId();
   const choices = Array.isArray(upstreamPayload.choices)
@@ -1367,9 +1370,17 @@ const mapChatResponseToResponsesPayload = async (
     : [];
   const outputText = stringifyContent(firstChoice.message?.content);
   const createdAt = Math.floor(Date.now() / 1000);
-  const output: Array<Record<string, unknown>> = serverToolExecutions.map(
-    (execution) => buildResponsesWebSearchCallItem(execution, 'completed'),
-  );
+  const output: Array<Record<string, unknown>> = [
+    ...serverToolExecutions.map((execution) =>
+      buildResponsesWebSearchCallItem(execution, 'completed'),
+    ),
+    // Image generation is executed locally, so the standard
+    // `image_generation_call` item has to be synthesized here — the chat
+    // upstream has no notion of it.
+    ...imageExecutions.map((execution) =>
+      buildResponsesImageGenerationCallItem(execution),
+    ),
+  ];
   const transcriptToolCalls = buildAssistantTranscriptToolCalls(
     toolCalls,
     defaults.tools,
@@ -1454,6 +1465,81 @@ const buildResponsesWebSearchCallItem = (
               : execution.input.url,
         },
 });
+
+/**
+ * Emits an already-buffered chat payload as a Responses SSE stream.
+ *
+ * Used when a request had to be buffered to inspect it — image generation is
+ * executed locally, so the call cannot be forwarded before it is seen. The
+ * client still asked for `stream: true`, so the buffered result is replayed as
+ * the same event sequence a live stream would have produced.
+ */
+const mapChatResponseToResponsesStream = async (
+  upstreamPayload: Record<string, unknown>,
+  defaults: ResponseSessionDefaults,
+  transcript: TranscriptMessage[],
+  model: string,
+  previousResponseId: string | null,
+  proxyContext: ProxyContext,
+  imageExecutions: ImageGenerationExecution[],
+): Promise<Response> => {
+  const payload = await mapChatResponseToResponsesPayload(
+    proxyContext.accessKeyId,
+    proxyContext.credentialFilename,
+    defaults,
+    transcript,
+    model,
+    previousResponseId,
+    upstreamPayload,
+    [],
+    imageExecutions,
+  );
+  // The mapper creates and persists the session id, so the stream has to reuse
+  // it: advertising a different one would leave a client unable to continue the
+  // turn, because nothing was stored under the id it was given.
+  const responseId = String(payload.id);
+  const output = payload.output as Array<Record<string, unknown>>;
+
+  const frames = [
+    {
+      response: { ...payload, output: [], status: 'in_progress' },
+      type: 'response.created',
+    },
+    {
+      response: { id: responseId, status: 'in_progress' },
+      type: 'response.in_progress',
+    },
+    ...output.map((item, output_index) => ({
+      item,
+      output_index,
+      response_id: responseId,
+      type: 'response.output_item.added',
+    })),
+    ...output.map((item, output_index) => ({
+      item,
+      output_index,
+      response_id: responseId,
+      type: 'response.output_item.done',
+    })),
+    { response: { ...payload, id: responseId }, type: 'response.completed' },
+  ];
+
+  const body = [
+    ...frames.map(
+      (frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}`,
+    ),
+    'data: [DONE]',
+    '',
+  ].join('\n\n');
+
+  return new Response(body, {
+    headers: {
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+    },
+  });
+};
 
 const mapChatStreamToResponsesEventStream = (
   upstreamResponse: Response,
@@ -2093,25 +2179,70 @@ const createResponsesEventStream = async (
       : false,
   ]);
 
+  const chatBody = {
+    model,
+    messages: [
+      ...(defaults.instructions
+        ? [{ role: 'system', content: defaults.instructions }]
+        : []),
+      ...normalizeTranscriptMessageToolNames(transcript, defaults.tools),
+    ],
+    max_tokens: maxOutputTokens,
+    stream: true,
+    tools: translatedTools,
+    tool_choice: translateResponsesToolChoiceToChatWithTools(
+      defaults.tools,
+      defaults.tool_choice,
+    ),
+  };
+
+  // Image generation is executed locally, so a streaming request has to be
+  // buffered first to see whether the model asked for an image. Without this
+  // the call is forwarded as an ordinary function_call the client is expected
+  // to resolve — and nothing would ever generate the image.
+  //
+  // Handled before the server-tool branch below: a turn may declare both, and
+  // gating on search/fetch would silently skip generation whenever those were
+  // enabled.
+  if (hasImageGenerationTool(defaults.tools)) {
+    const { executions, response } = await executeImageGenerationLoop({
+      body: chatBody,
+      // Buffered so the tool call can be inspected before any delta reaches
+      // the client; the ordinary path below stays live.
+      callUpstream: (loopBody) =>
+        proxyChatCompletions(
+          request,
+          { ...loopBody, stream: false } as never,
+          proxyContext,
+          debugTrace,
+          '/v1/responses',
+        ),
+      context: proxyContext,
+      request,
+    });
+
+    // Always consumed, even when nothing was generated: the loop has already
+    // sent the turn upstream, and re-issuing it would bill twice and could
+    // return a different answer than the one inspected.
+    if (!response.ok) {
+      return response;
+    }
+
+    return mapChatResponseToResponsesStream(
+      (await response.json()) as Record<string, unknown>,
+      defaults,
+      transcript,
+      model,
+      previousResponseId,
+      proxyContext,
+      executions,
+    );
+  }
+
   if (!searchEnabled && !fetchEnabled) {
     const upstreamResponse = await proxyChatCompletions(
       request,
-      {
-        model,
-        messages: [
-          ...(defaults.instructions
-            ? [{ role: 'system', content: defaults.instructions }]
-            : []),
-          ...normalizeTranscriptMessageToolNames(transcript, defaults.tools),
-        ],
-        max_tokens: maxOutputTokens,
-        stream: true,
-        tools: translatedTools,
-        tool_choice: translateResponsesToolChoiceToChatWithTools(
-          defaults.tools,
-          defaults.tool_choice,
-        ),
-      },
+      chatBody as never,
       proxyContext,
       debugTrace,
       '/v1/responses',
@@ -2463,43 +2594,45 @@ export const handleResponsesRequest = async (
     // the tool was actually declared; otherwise the loop returns null and the
     // ordinary upstream call runs.
     if (hasImageGenerationTool(prepared.defaults.tools)) {
-      const imageResponse = await executeImageGenerationLoop({
-        body: chatBody,
-        callUpstream: (loopBody) =>
-          proxyChatCompletions(
-            request,
-            loopBody as never,
-            proxyContext,
-            debugTrace,
-            '/v1/responses',
-          ),
-        context: proxyContext,
-        request,
-      });
+      const { executions, response: imageResponse } =
+        await executeImageGenerationLoop({
+          body: chatBody,
+          callUpstream: (loopBody) =>
+            proxyChatCompletions(
+              request,
+              loopBody as never,
+              proxyContext,
+              debugTrace,
+              '/v1/responses',
+            ),
+          context: proxyContext,
+          request,
+        });
 
-      if (imageResponse) {
-        if (!imageResponse.ok) {
-          return imageResponse;
-        }
-
-        const imagePayload = (await imageResponse.json()) as Record<
-          string,
-          unknown
-        >;
-
-        return Response.json(
-          await mapChatResponseToResponsesPayload(
-            proxyContext.accessKeyId,
-            proxyContext.credentialFilename,
-            prepared.defaults,
-            prepared.transcript,
-            prepared.model,
-            prepared.previousResponseId,
-            imagePayload,
-            getServerToolExecutions(imageResponse),
-          ),
-        );
+      // Always consumed: the loop has already sent the turn upstream, and
+      // re-issuing it would bill twice and could return a different answer.
+      if (!imageResponse.ok) {
+        return imageResponse;
       }
+
+      const imagePayload = (await imageResponse.json()) as Record<
+        string,
+        unknown
+      >;
+
+      return Response.json(
+        await mapChatResponseToResponsesPayload(
+          proxyContext.accessKeyId,
+          proxyContext.credentialFilename,
+          prepared.defaults,
+          prepared.transcript,
+          prepared.model,
+          prepared.previousResponseId,
+          imagePayload,
+          getServerToolExecutions(imageResponse),
+          executions,
+        ),
+      );
     }
 
     const upstreamResponse = await proxyChatCompletions(

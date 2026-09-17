@@ -54,7 +54,7 @@ const STREAM_TEXT_CHUNK_LENGTH = 1024;
 
 type JsonRecord = Record<string, unknown>;
 
-interface ChatCompletionToolCall {
+export interface ChatCompletionToolCall {
   id?: string;
   index?: number;
   type?: string;
@@ -64,7 +64,7 @@ interface ChatCompletionToolCall {
   };
 }
 
-interface ChatCompletionMessage {
+export interface ChatCompletionMessage {
   content?: string | null;
   reasoning?: string;
   reasoning_content?: string;
@@ -572,7 +572,9 @@ const buildMixedTurnPayload = ({
   };
 };
 
-const readReasoning = (message: ChatCompletionMessage | undefined): string => {
+export const readReasoning = (
+  message: ChatCompletionMessage | undefined,
+): string => {
   if (!message) {
     return '';
   }
@@ -624,8 +626,12 @@ const buildIntermediateTurns = ({
  *
  * The same hops are also re-grouped into `turns`, because the folded strings
  * cannot express where one hop ends and the next begins.
+ *
+ * Shared with the image-generation loop, which has the same shape: a local
+ * tool call is replayed with its result appended, so only the final hop's
+ * message would otherwise survive.
  */
-const withIntermediateTurns = ({
+export const withIntermediateTurns = ({
   executions,
   payload,
   reasonings,
