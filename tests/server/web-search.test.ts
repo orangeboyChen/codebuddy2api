@@ -3565,6 +3565,63 @@ describe('chat proxy web search integration', () => {
     );
   });
 
+  it('leaves a client-declared web_fetch to the client on the Responses route', async () => {
+    // The Responses API has no `web_fetch` server tool — only `web_search`. A
+    // client that declares one as a plain function owns it and resolves it
+    // itself, and no backend setting changes that: the setting chooses who runs
+    // the *proxy's* tool, not whether the proxy may take the client's.
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+    let pageFetches = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch') || url.includes('page.test')) {
+        pageFetches += 1;
+
+        return makeJsonResponse({ content: 'Fetched body.' });
+      }
+
+      upstreamCalls += 1;
+
+      return makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'tool_calls',
+            message: {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  id: 'call_fetch',
+                  function: {
+                    arguments: '{"url":"https://page.test/a"}',
+                    name: 'web_fetch',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+    });
+
+    const response = await handleResponsesRequest(
+      makeNextRequest('http://localhost/v1/responses', { method: 'POST' }),
+      {
+        input: 'Fetch the page',
+        tools: [{ type: 'function', name: 'web_fetch' }],
+      },
+    );
+    const body = await response.text();
+
+    // The proxy neither fetched nor re-asked upstream: the call is handed back
+    // for the client to resolve.
+    expect(pageFetches).toBe(0);
+    expect(upstreamCalls).toBe(1);
+    expect(body).not.toContain('open_page');
+  });
+
   it('streams a Responses open_page lifecycle for local fetch', async () => {
     await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
     let upstreamCalls = 0;
