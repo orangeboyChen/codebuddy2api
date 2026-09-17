@@ -9,6 +9,7 @@ import {
   trimStorageDebugLogs,
   writeStorageJson,
 } from '../storage';
+import { asRecord } from '../shared/content';
 
 export interface DebugLogEntry {
   credentialFilename: string | null;
@@ -714,12 +715,6 @@ const captureIndependentResponseSnapshot = async (
     headers: toHeadersRecord(clone.headers),
     status: clone.status,
   };
-};
-
-const asRecord = (value: unknown): Record<string, unknown> | null => {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 };
 
 const toTokenCount = (value: unknown): number => {
