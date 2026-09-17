@@ -419,7 +419,7 @@ export const executeImageGenerationLoop = async ({
             payload,
             reasonings: [],
             texts: intermediateTexts,
-          }),
+          }).payload,
         ),
       };
     }
@@ -482,7 +482,7 @@ export const executeImageGenerationLoop = async ({
         payload: lastPayload ?? {},
         reasonings: [],
         texts: intermediateTexts,
-      }),
+      }).payload,
     ),
   };
 };

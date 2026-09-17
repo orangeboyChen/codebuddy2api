@@ -11,6 +11,7 @@ import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
 import {
   getServerToolStreamEvent,
   getServerToolExecutions,
+  getServerToolTurns,
   type ServerToolExecution,
   type ServerToolTurn,
 } from './web-search-loop';
@@ -138,12 +139,6 @@ interface OpenAIChatResponse {
   id?: string;
   model?: string;
   choices?: OpenAIChatChoice[];
-  /**
-   * Per-hop grouping emitted by the local server-tool loop. Not part of the
-   * OpenAI protocol — it survives only as far as this file, which turns it into
-   * Anthropic content blocks.
-   */
-  turns?: ServerToolTurn[];
   usage?: OpenAIUsage;
 }
 
@@ -1662,6 +1657,10 @@ export const handleMessagesRequest = async (
 
     const model = String(chatBody.model ?? 'unknown');
     const serverToolExecutions = getServerToolExecutions(upstreamResponse);
+    // Carried beside the response rather than inside it: the OpenAI-shaped
+    // payload the loop emits must stay protocol-clean for chat-completions
+    // clients, so this file reads the grouping off the response itself.
+    const turns = getServerToolTurns(upstreamResponse);
 
     if (body.stream) {
       return mapOpenAIStreamToAnthropicSSE(upstreamResponse, model);
@@ -1670,12 +1669,7 @@ export const handleMessagesRequest = async (
     const payload = (await upstreamResponse.json()) as OpenAIChatResponse;
 
     return Response.json(
-      mapOpenAIResponseToAnthropic(
-        payload,
-        model,
-        serverToolExecutions,
-        payload.turns,
-      ),
+      mapOpenAIResponseToAnthropic(payload, model, serverToolExecutions, turns),
     );
   } catch (error) {
     return createAnthropicError(

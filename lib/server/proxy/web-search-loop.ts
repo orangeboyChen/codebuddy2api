@@ -88,15 +88,6 @@ export interface ChatCompletionPayload {
   id?: string;
   model?: string;
   object?: string;
-  /**
-   * One entry per server-tool hop, in the order the model produced them.
-   *
-   * Carries the grouping `message.content` / `reasoning_content` cannot: a
-   * multi-hop turn joins every hop into one string per kind, which loses where
-   * one hop's reasoning ends and the next begins. Absent when no hop ran, so
-   * callers fall back to the OpenAI-shaped fields.
-   */
-  turns?: ServerToolTurn[];
   usage?: unknown;
 }
 
@@ -541,7 +532,7 @@ const buildMixedTurnPayload = ({
   payload: ChatCompletionPayload;
   remainingCalls: ChatCompletionToolCall[];
   searchResults: string[];
-  usage: unknown;
+  usage?: unknown;
 }): ChatCompletionPayload => {
   const existingText =
     typeof message?.content === 'string' && message.content.trim()
@@ -624,8 +615,11 @@ const buildIntermediateTurns = ({
  * dropping it hides the model's reasoning from the user and leaves the
  * client's transcript out of step with what the model actually said.
  *
- * The same hops are also re-grouped into `turns`, because the folded strings
- * cannot express where one hop ends and the next begins.
+ * The same hops are also re-grouped into the `turns` half of the result,
+ * because the folded strings cannot express where one hop ends and the next
+ * begins. That half travels beside the response rather than inside it: the
+ * payload is what an OpenAI-protocol client receives, and `turns` is not part
+ * of that protocol, so it is handed over out of band like `executions`.
  *
  * Shared with the image-generation loop, which has the same shape: a local
  * tool call is replayed with its result appended, so only the final hop's
@@ -641,13 +635,13 @@ export const withIntermediateTurns = ({
   payload: ChatCompletionPayload;
   reasonings: string[];
   texts: string[];
-}): ChatCompletionPayload => {
+}): { payload: ChatCompletionPayload; turns: ServerToolTurn[] } => {
   const extraText = texts.filter(Boolean).join('\n\n');
   const extraReasoning = reasonings.filter(Boolean).join('\n\n');
   const [first, ...rest] = payload.choices ?? [];
 
   if (!first) {
-    return payload;
+    return { payload, turns: [] };
   }
 
   const message = first.message ?? {};
@@ -658,7 +652,7 @@ export const withIntermediateTurns = ({
   // still have run tools, which is exactly the case a caller consuming `turns`
   // needs: a hop that called a tool without speaking first is still a hop.
   if (!extraText && !extraReasoning && !executions.length) {
-    return payload;
+    return { payload, turns: [] };
   }
 
   const content = [extraText, existingText].filter(Boolean).join('\n\n');
@@ -667,7 +661,20 @@ export const withIntermediateTurns = ({
     .join('\n\n');
 
   return {
-    ...payload,
+    payload: {
+      ...payload,
+      choices: [
+        {
+          ...first,
+          message: {
+            ...message,
+            content,
+            ...(reasoning ? { reasoning_content: reasoning } : {}),
+          },
+        },
+        ...rest,
+      ],
+    },
     // Per-hop grouping for renderers that can express it. The joined strings
     // above stay as the OpenAI-shaped view; a client that builds Anthropic
     // content blocks needs to know where one hop's reasoning ends and the next
@@ -678,17 +685,6 @@ export const withIntermediateTurns = ({
       reasonings: [...reasonings, readReasoning(message)],
       texts: [...texts, existingText],
     }),
-    choices: [
-      {
-        ...first,
-        message: {
-          ...message,
-          content,
-          ...(reasoning ? { reasoning_content: reasoning } : {}),
-        },
-      },
-      ...rest,
-    ],
   };
 };
 
@@ -703,6 +699,17 @@ export interface ServerToolLoopResult {
   body: ChatRequestBody;
   executions: ServerToolExecution[];
   response: Response | null;
+  /**
+   * One entry per server-tool hop, in the order the model produced them.
+   *
+   * Carries the grouping `message.content` / `reasoning_content` cannot: a
+   * multi-hop turn joins every hop into one string per kind, which loses where
+   * one hop's reasoning ends and the next begins. Travels beside the response
+   * rather than inside it, because it is not part of the OpenAI protocol — a
+   * block renderer reads it off the response through `getServerToolTurns`.
+   * Empty when no hop ran.
+   */
+  turns: ServerToolTurn[];
 }
 
 export type ServerToolInvocation =
@@ -798,6 +805,29 @@ export const attachServerToolExecutions = (
 export const getServerToolExecutions = (
   response: Response,
 ): ServerToolExecution[] => serverToolExecutions.get(response) ?? [];
+
+/**
+ * Per-hop grouping, kept off the wire for the same reason `executions` is: it
+ * is not part of the OpenAI protocol, so a `/v1/chat/completions` client must
+ * not see it — a strict validator can reject the extra field, and the tool
+ * data would otherwise be sent twice.
+ */
+const serverToolTurns = new WeakMap<Response, ServerToolTurn[]>();
+
+export const attachServerToolTurns = (
+  response: Response,
+  turns: ServerToolTurn[],
+): Response => {
+  if (turns.length) {
+    serverToolTurns.set(response, turns);
+  }
+
+  return response;
+};
+
+export const getServerToolTurns = (
+  response: Response,
+): ServerToolTurn[] | undefined => serverToolTurns.get(response);
 
 export type ServerToolUpstreamMode =
   'buffer' | 'detect-both' | 'detect-fetch' | 'detect-search' | 'stream';
@@ -1157,7 +1187,7 @@ const createInlineServerToolStream = async ({
   const contentType = firstResponse.headers.get('content-type') ?? '';
 
   if (!contentType.toLowerCase().includes('text/event-stream')) {
-    return { body, executions: [], response: firstResponse };
+    return { body, executions: [], response: firstResponse, turns: [] };
   }
 
   const executions: ServerToolExecution[] = [];
@@ -1635,6 +1665,9 @@ const createInlineServerToolStream = async ({
       status: firstResponse.status,
       statusText: firstResponse.statusText,
     }),
+    // The streamed path already emits each hop in order, so no grouping has
+    // to be reconstructed downstream.
+    turns: [],
   };
 };
 
@@ -1690,7 +1723,12 @@ export const executeWebSearchLoop = async ({
   // `tools` still have to reach the caller: it forwards them upstream, and the
   // stripped declarations have to stay stripped on that path too.
   if (!executes) {
-    return { body: { ...body, tools }, executions: [], response: null };
+    return {
+      body: { ...body, tools },
+      executions: [],
+      response: null,
+      turns: [],
+    };
   }
 
   const messages: JsonRecord[] = body.messages as JsonRecord[];
@@ -1738,7 +1776,7 @@ export const executeWebSearchLoop = async ({
         ?.toLowerCase()
         .includes('text/event-stream')
     ) {
-      return { body: loopBody, executions, response };
+      return { body: loopBody, executions, response, turns: [] };
     }
 
     // The payload is only needed to detect a tool call or a failure, so read
@@ -1752,6 +1790,7 @@ export const executeWebSearchLoop = async ({
         body: loopBody,
         executions,
         response: await buildServerToolFailureResponse(response),
+        turns: [],
       };
     }
 
@@ -1841,28 +1880,57 @@ export const executeWebSearchLoop = async ({
     // turn. The findings ride along in the message text only for routes that
     // cannot render them structurally; see `buildMixedTurnPayload`.
     if (remainingCalls.length) {
+      const { payload: folded, turns: priorTurns } = withIntermediateTurns({
+        executions: intermediateExecutions,
+        payload,
+        reasonings: intermediateReasonings,
+        texts: intermediateTexts,
+      });
+      // The hops already run, plus this one's own: it called server tools
+      // before handing the client's calls back, so it is a hop like any other
+      // and has to stay grouped with them. Dropping it would leave the block
+      // renderer with no grouping at all, flattening every hop's prose ahead
+      // of the tool blocks.
+      //
+      // `withIntermediateTurns` already built this hop as its closing entry —
+      // the one that carries the current message's prose — but without the
+      // calls, because it runs before they exist. So the calls are added to
+      // that entry rather than appended as a new hop, which would repeat the
+      // prose. Only when there are no earlier hops does it return nothing and
+      // a fresh entry has to be built here.
+      const currentTurn: ServerToolTurn = {
+        // With no earlier hops there is no closing entry to carry the prose,
+        // so this hop's own text and reasoning are used directly. They are
+        // what `withIntermediateTurns` folded into `folded` above, and a block
+        // renderer renders purely from `turns` once it is non-empty, so
+        // leaving them out would drop everything the model said here.
+        ...(priorTurns.at(-1) ?? {
+          reasoning: iterationReasoning,
+          text: iterationText,
+        }),
+        executions: results.map((result) => result.execution),
+      };
+      const mixedTurns: ServerToolTurn[] = [
+        ...priorTurns.slice(0, -1),
+        currentTurn,
+      ];
+      const mixed = buildMixedTurnPayload({
+        findingsAsStructuredBlocks: callbacks?.findingsAsStructuredBlocks,
+        // `buildMixedTurnPayload` reads this iteration's text and reasoning
+        // off `message`, so only the earlier iterations go on top; the
+        // current one is folded in by the helper itself.
+        message: folded.choices?.[0]?.message,
+        payload,
+        remainingCalls,
+        searchResults: results.map((result) => result.content),
+        usage,
+      });
+
       return {
         body: loopBody,
         executions,
-        response: Response.json(
-          buildMixedTurnPayload({
-            findingsAsStructuredBlocks: callbacks?.findingsAsStructuredBlocks,
-            // `buildMixedTurnPayload` reads this iteration's text and reasoning
-            // off `message`, so only the earlier iterations go on top; the
-            // current one is folded in by the helper itself.
-            message: withIntermediateTurns({
-              payload,
-              executions: intermediateExecutions,
-              reasonings: intermediateReasonings,
-              texts: intermediateTexts,
-            }).choices?.[0]?.message,
-            payload,
-            remainingCalls,
-            searchResults: results.map((result) => result.content),
-            usage,
-          }),
-          { status: response.status },
-        ),
+        response: Response.json(mixed, { status: response.status }),
+        turns: mixedTurns,
       };
     }
 
@@ -1922,42 +1990,49 @@ export const executeWebSearchLoop = async ({
         body: loopBody,
         executions,
         response: await buildServerToolFailureResponse(finalResponse),
+        turns: [],
       };
     }
+
+    const final = withIntermediateTurns({
+      executions: intermediateExecutions,
+      payload,
+      reasonings: intermediateReasonings,
+      texts: intermediateTexts,
+    });
 
     return {
       body: loopBody,
       executions,
       response: Response.json(
         {
-          ...withIntermediateTurns({
-            payload,
-            executions: intermediateExecutions,
-            reasonings: intermediateReasonings,
-            texts: intermediateTexts,
-          }),
+          ...final.payload,
           ...(usage ? { usage } : {}),
         },
         { status: finalResponse.status },
       ),
+      turns: final.turns,
     };
   }
+
+  const final = withIntermediateTurns({
+    executions: intermediateExecutions,
+    payload,
+    reasonings: intermediateReasonings,
+    texts: intermediateTexts,
+  });
 
   return {
     body: loopBody,
     executions,
     response: Response.json(
       {
-        ...withIntermediateTurns({
-          payload,
-          executions: intermediateExecutions,
-          reasonings: intermediateReasonings,
-          texts: intermediateTexts,
-        }),
+        ...final.payload,
         ...(usage ? { usage } : {}),
       },
       { status: response!.status },
     ),
+    turns: final.turns,
   };
 };
 
