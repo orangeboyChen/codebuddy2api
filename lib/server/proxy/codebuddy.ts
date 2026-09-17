@@ -36,6 +36,7 @@ import {
 } from '../search/tool';
 import {
   attachServerToolExecutions,
+  attachServerToolTurns,
   type ChatCompletionPayload,
   executeWebSearchLoop,
   type ServerToolCallbacks,
@@ -3116,11 +3117,17 @@ export const proxyChatCompletions = async (
       }
 
       if (webSearch?.response) {
-        if (!webSearch.response.ok) {
-          return attachServerToolExecutions(
-            webSearch.response,
-            webSearch.executions,
+        // The hop grouping rides beside the response rather than inside its
+        // body, so the OpenAI-shaped payload a chat client receives stays
+        // protocol-clean. See `attachServerToolTurns`.
+        const attachServerToolResult = (response: Response): Response =>
+          attachServerToolTurns(
+            attachServerToolExecutions(response, webSearch.executions),
+            webSearch.turns,
           );
+
+        if (!webSearch.response.ok) {
+          return attachServerToolResult(webSearch.response);
         }
 
         if (
@@ -3130,19 +3137,15 @@ export const proxyChatCompletions = async (
             ?.toLowerCase()
             .includes('text/event-stream')
         ) {
-          return attachServerToolExecutions(
+          return attachServerToolResult(
             synthesizeChatCompletionStream(
               (await webSearch.response.json()) as ChatCompletionPayload,
               String(upstreamBody.model ?? 'unknown'),
             ),
-            webSearch.executions,
           );
         }
 
-        return attachServerToolExecutions(
-          webSearch.response,
-          webSearch.executions,
-        );
+        return attachServerToolResult(webSearch.response);
       }
     }
 

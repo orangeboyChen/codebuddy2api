@@ -6075,6 +6075,247 @@ describe('proxy integration', () => {
     ).toEqual(['server_tool_use', 'web_fetch_tool_result', 'text:Done.']);
   });
 
+  it('keeps earlier hops grouped when a later hop mixes in a client tool', async () => {
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch')) {
+        return makeJsonResponse({ content: 'Fetched body.' });
+      }
+
+      upstreamCalls += 1;
+
+      // The first hop searches on its own; the second runs a server tool and
+      // also asks the client for one of its own. The loop has to hand the
+      // client's call back, and the hop metadata still has to reach the
+      // block renderer — losing it flattens every hop's prose ahead of the
+      // tool blocks, which is the bug this guards.
+      return upstreamCalls === 1
+        ? makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: 'Checking first.',
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_first',
+                      function: {
+                        arguments: '{"url":"https://page.test/a"}',
+                        name: 'web_fetch',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        : makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: 'Now yours.',
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_second',
+                      function: {
+                        arguments: '{"url":"https://page.test/b"}',
+                        name: 'web_fetch',
+                      },
+                    },
+                    {
+                      id: 'call_client',
+                      function: {
+                        arguments: '{"city":"Berlin"}',
+                        name: 'weather',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          });
+    });
+
+    const response = await handleMessagesRequest(
+      new NextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Read both' }],
+        tools: [
+          { type: 'web_fetch_20260209', name: 'web_fetch', input_schema: {} },
+          { name: 'weather', input_schema: {}, type: 'custom' },
+        ],
+      },
+    );
+
+    const payload = (await response.json()) as {
+      content: Array<{ text?: string; type: string }>;
+    };
+
+    // The first hop stays ahead of the second hop's fetch instead of both
+    // fetches collapsing to the end, and the client's own call survives as a
+    // tool_use the client has to resolve.
+    expect(
+      payload.content.map((block) =>
+        block.type === 'text' ? `text:${block.text}` : block.type,
+      ),
+    ).toEqual([
+      'text:Checking first.',
+      'server_tool_use',
+      'web_fetch_tool_result',
+      'text:Now yours.',
+      'server_tool_use',
+      'web_fetch_tool_result',
+      'tool_use',
+    ]);
+  });
+
+  it('keeps hop metadata off the OpenAI chat-completions response', async () => {
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch')) {
+        return makeJsonResponse({ content: 'Fetched body.' });
+      }
+
+      upstreamCalls += 1;
+
+      return upstreamCalls === 1
+        ? makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: 'Looking it up.',
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_fetch',
+                      function: {
+                        arguments: '{"url":"https://page.test/a"}',
+                        name: 'web_fetch',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        : makeJsonResponse({
+            choices: [{ finish_reason: 'stop', message: { content: 'Done.' } }],
+          });
+    });
+
+    const response = await proxyChatCompletions(makeProxyRequest(), {
+      messages: [{ role: 'user', content: 'Read https://page.test/a' }],
+      tools: [
+        { name: 'web_fetch', type: 'function' },
+        { type: 'web_fetch_20260209', name: 'web_fetch' },
+      ],
+    });
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    // The per-hop grouping is not part of the OpenAI protocol. Serializing it
+    // here would hand chat clients a field that names internal tool inputs and
+    // results, which strict validators reject and every other client receives
+    // as duplicated tool data.
+    expect(Object.keys(payload)).not.toContain('turns');
+    expect(JSON.stringify(payload)).not.toContain('web_fetch_tool_result');
+    // Guards against the assertion passing because the loop never ran: a
+    // two-hop turn is what would have carried the grouping in the first place.
+    expect(upstreamCalls).toBe(2);
+  });
+
+  it('keeps the prose of a first hop that mixes in a client tool', async () => {
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch')) {
+        return makeJsonResponse({ content: 'Fetched body.' });
+      }
+
+      // The very first response already carries both a locally executed tool
+      // and a client-owned one. There is no earlier hop to fold, so the hop
+      // metadata has to be built from this iteration alone.
+      return makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'tool_calls',
+            message: {
+              content: 'Let me check, then you decide.',
+              reasoning_content: 'I need the page first.',
+              role: 'assistant',
+              tool_calls: [
+                {
+                  id: 'call_fetch',
+                  function: {
+                    arguments: '{"url":"https://page.test/a"}',
+                    name: 'web_fetch',
+                  },
+                },
+                {
+                  id: 'call_client',
+                  function: {
+                    arguments: '{"city":"Berlin"}',
+                    name: 'weather',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      new NextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Read it' }],
+        tools: [
+          { type: 'web_fetch_20260209', name: 'web_fetch', input_schema: {} },
+          { name: 'weather', input_schema: {}, type: 'custom' },
+        ],
+      },
+    );
+
+    const payload = (await response.json()) as {
+      content: Array<{ text?: string; thinking?: string; type: string }>;
+    };
+
+    // A block renderer renders purely from the hop metadata once it is
+    // non-empty, so this hop's prose has to be on the turn: leaving it off
+    // drops everything the model said here, not just reorders it.
+    expect(
+      payload.content.map((block) =>
+        block.type === 'thinking'
+          ? `thinking:${block.thinking}`
+          : block.type === 'text'
+            ? `text:${block.text}`
+            : block.type,
+      ),
+    ).toEqual([
+      'thinking:I need the page first.',
+      'text:Let me check, then you decide.',
+      'server_tool_use',
+      'web_fetch_tool_result',
+      'tool_use',
+    ]);
+  });
+
   it('passes through untouched when no search tool is declared', async () => {
     process.env.SEARXNG_URL = 'https://searx.test';
     resetWebSearchProviders();
