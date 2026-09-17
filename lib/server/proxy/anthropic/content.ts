@@ -1,4 +1,4 @@
-import { stringifyContent } from '../shared/content';
+import { stringifyContent } from '../../shared/content';
 import type {
   AnthropicContentBlock,
   AnthropicImageSource,
@@ -7,7 +7,7 @@ import type {
   ChatImageBlock,
   ChatTextBlock,
   ChatTextContent,
-} from './anthropic-types';
+} from './types';
 
 // ---------------------------------------------------------------------------
 // Helpers

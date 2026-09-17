@@ -25,22 +25,22 @@ import {
   resolveProxyContextByCredentialFilename,
 } from './codebuddy';
 import { executeImageGenerationLoop } from './image-generation';
-import { mapChatResponseToResponsesPayload } from './responses-payload';
+import { mapChatResponseToResponsesPayload } from './responses/payload';
 import {
   getResponseSession,
   getValidatedPreviousSession,
   storeUpstreamResponseBinding,
-} from './responses-session';
-import { createResponsesEventStream } from './responses-event-stream';
+} from './responses/session';
+import { createResponsesEventStream } from './responses/event-stream';
 import {
   getResponsesCompatibilityError,
   hasImageGenerationTool,
   normalizeTranscriptMessageToolNames,
   translateResponsesToolsToChat,
   translateResponsesToolChoiceToChatWithTools,
-} from './responses-tools';
-import { prepareTranscript } from './responses-transcript';
-import type { ResponsesRequestBody } from './responses-types';
+} from './responses/tools';
+import { prepareTranscript } from './responses/transcript';
+import type { ResponsesRequestBody } from './responses/types';
 import { getServerToolExecutions } from './web-search-loop';
 
 export const handleResponsesRequest = async (
@@ -283,5 +283,5 @@ export const handleResponsesRequest = async (
   }
 };
 
-export { translateResponsesToolsToChat } from './responses-tools';
-export { resetResponseSessions } from './responses-session';
+export { translateResponsesToolsToChat } from './responses/tools';
+export { resetResponseSessions } from './responses/session';

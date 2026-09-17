@@ -2,29 +2,29 @@
 // Responses SSE stream mapping
 // ---------------------------------------------------------------------------
 
-import { createSseResponse, encodeDoneFrame } from '../shared/sse';
+import { createSseResponse, encodeDoneFrame } from '../../shared/sse';
 import {
   createStreamCloser,
   readTimeoutFrame,
   responsesStreamErrorChunks,
   toUpstreamTimeoutMessage,
-} from '../shared/upstream-timeout';
-import type { ProxyContext } from './codebuddy';
+} from '../../shared/upstream-timeout';
+import type { ProxyContext } from '../codebuddy';
 
-import { storeResponseSession } from './responses-session';
-import { buildResponsesWebSearchCallItem } from './responses-payload';
+import { storeResponseSession } from './session';
+import { buildResponsesWebSearchCallItem } from './payload';
 import {
   createMessageId,
   createResponseId,
   createResponseOutputId,
   createResponseReasoningId,
   normalizeToolCallId,
-} from './responses-ids';
+} from './ids';
 import {
   buildResponsesToolCallOutputItem,
   getResponsesToolCallArgumentDeltaEventType,
   hasSupportedLongerToolNamePrefix,
-} from './responses-tools';
+} from './tools';
 import {
   buildStreamingAssistantTranscriptToolCalls,
   getAssistantTranscriptContent,
@@ -32,7 +32,7 @@ import {
   getStreamingToolCallLookupKeys,
   mapChatUsageToResponses,
   REASONING_PREFIX,
-} from './responses-transcript';
+} from './transcript';
 import type {
   ChatResponseToolCall,
   ResponsesServerToolItem,
@@ -40,9 +40,9 @@ import type {
   StreamingMessageState,
   StreamingToolCallState,
   TranscriptMessage,
-} from './responses-types';
-import { getServerToolExecutions } from './web-search-loop';
-import { MAX_RESPONSE_SESSION_TOTAL_BYTES } from './responses-session';
+} from './types';
+import { getServerToolExecutions } from '../web-search-loop';
+import { MAX_RESPONSE_SESSION_TOTAL_BYTES } from './session';
 
 const MAX_STREAM_BUFFER_LENGTH = 1_000_000;
 const MAX_STREAM_TEXT_LENGTH = 2_000_000;

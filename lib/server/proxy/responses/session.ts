@@ -2,18 +2,15 @@
 // Response session persistence
 // ---------------------------------------------------------------------------
 
-import type { ProxyContext } from './codebuddy';
+import type { ProxyContext } from '../codebuddy';
 import {
   deleteStorageJson,
   getStorageBackendMeta,
   listStorageJson,
   readStorageJson,
   writeStorageJson,
-} from '../storage';
-import type {
-  ResponseSession,
-  ResponseSessionMetadata,
-} from './responses-types';
+} from '../../storage';
+import type { ResponseSession, ResponseSessionMetadata } from './types';
 
 export const MAX_RESPONSE_SESSIONS = 1_000;
 export const RESPONSE_SESSION_TTL_MS = 60 * 60 * 1000;

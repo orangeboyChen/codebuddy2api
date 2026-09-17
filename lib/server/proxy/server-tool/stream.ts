@@ -1,9 +1,6 @@
-import { isLocalServerToolCall } from './server-tool-classify';
-import type {
-  ChatCompletionMessage,
-  ChatCompletionToolCall,
-} from './server-tool-types';
-import type { WebFetchProvider, WebSearchProvider } from '../search/types';
+import { isLocalServerToolCall } from './classify';
+import type { ChatCompletionMessage, ChatCompletionToolCall } from './types';
+import type { WebFetchProvider, WebSearchProvider } from '../../search/types';
 
 export const mergeStreamingToolName = (
   previous: string,

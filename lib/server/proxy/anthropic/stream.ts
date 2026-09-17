@@ -1,35 +1,32 @@
 import type { NextRequest } from 'next/server';
 
-import type { DebugTrace } from '../domain/debug';
-import { createSseResponse } from '../shared/sse';
+import type { DebugTrace } from '../../domain/debug';
+import { createSseResponse } from '../../shared/sse';
 import {
   anthropicStreamErrorChunks,
   createStreamCloser,
   toUpstreamTimeoutMessage,
-} from '../shared/upstream-timeout';
-import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
-import { createAnthropicId } from './anthropic-content';
-import {
-  anthropicErrorType,
-  getUpstreamErrorMessage,
-} from './anthropic-errors';
+} from '../../shared/upstream-timeout';
+import { proxyChatCompletions, type ChatRequestBody } from '../codebuddy';
+import { createAnthropicId } from './content';
+import { anthropicErrorType, getUpstreamErrorMessage } from './errors';
 import {
   buildAnthropicServerToolBlocks,
   mapFinishReasonToAnthropic,
   mapOpenAIUsageToAnthropic,
-} from './anthropic-response';
-import { MAX_STREAM_FRAME_LENGTH } from './anthropic-types';
+} from './response';
+import { MAX_STREAM_FRAME_LENGTH } from './types';
 import type {
   OpenAIStreamChunk,
   OpenAIStreamError,
   OpenAIUsage,
   StreamingToolUseState,
-} from './anthropic-types';
+} from './types';
 import {
   getServerToolExecutions,
   getServerToolStreamEvent,
   type ServerToolExecution,
-} from './web-search-loop';
+} from '../web-search-loop';
 
 // ---------------------------------------------------------------------------
 // Response translation: OpenAI SSE → Anthropic SSE (streaming)

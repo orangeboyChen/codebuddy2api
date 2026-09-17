@@ -15,27 +15,27 @@ import {
   isWebFetchTool,
   isWebSearchTool,
   replaceServerTools,
-} from './server-tool-classify';
+} from './server-tool/classify';
 import {
   buildServerToolInvocation,
   executeServerToolInvocations,
-} from './server-tool-execution';
+} from './server-tool/execution';
 import {
   buildServerToolFailureResponse,
   parseBufferedPayload,
   readBufferedChatCompletionPayload,
-} from './server-tool-payload';
-import { synthesizeChatCompletionStream } from './server-tool-sse';
+} from './server-tool/payload';
+import { synthesizeChatCompletionStream } from './server-tool/sse';
 import {
   type ServerToolProbe,
   probeServerToolStream,
-} from './server-tool-stream';
+} from './server-tool/stream';
 import {
   buildMixedTurnPayload,
   readReasoning,
   sumUsage,
   withIntermediateTurns,
-} from './server-tool-turns';
+} from './server-tool/turns';
 import {
   MAX_SEARCH_ITERATIONS,
   SERVER_TOOL_STREAM_EVENT_KEY,
@@ -49,7 +49,7 @@ import {
   type ServerToolStreamEvent,
   type ServerToolTurn,
   type ServerToolUpstreamMode,
-} from './server-tool-types';
+} from './server-tool/types';
 
 /**
  * Server-side web search for upstreams that do not implement it.
@@ -909,7 +909,7 @@ export type {
   ServerToolStreamEvent,
   ServerToolTurn,
   ServerToolUpstreamMode,
-} from './server-tool-types';
+} from './server-tool/types';
 
 export {
   attachServerToolExecutions,
@@ -917,8 +917,8 @@ export {
   getServerToolExecutions,
   getServerToolStreamEvent,
   getServerToolTurns,
-} from './server-tool-execution';
+} from './server-tool/execution';
 
-export { synthesizeChatCompletionStream } from './server-tool-sse';
+export { synthesizeChatCompletionStream } from './server-tool/sse';
 
-export { withIntermediateTurns } from './server-tool-turns';
+export { withIntermediateTurns } from './server-tool/turns';

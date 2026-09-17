@@ -8,34 +8,34 @@
 
 import type { NextRequest } from 'next/server';
 
-import { isWebFetchEnabled, isWebSearchEnabled } from '../domain/config';
-import type { DebugTrace } from '../domain/debug';
+import { isWebFetchEnabled, isWebSearchEnabled } from '../../domain/config';
+import type { DebugTrace } from '../../domain/debug';
 import {
   normalizeToolName,
   WEB_FETCH_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
-} from '../search/tool';
-import { createSseResponse, encodeDoneFrame } from '../shared/sse';
-import { proxyChatCompletions, type ProxyContext } from './codebuddy';
-import { executeImageGenerationLoop } from './image-generation';
+} from '../../search/tool';
+import { createSseResponse, encodeDoneFrame } from '../../shared/sse';
+import { proxyChatCompletions, type ProxyContext } from '../codebuddy';
+import { executeImageGenerationLoop } from '../image-generation';
 import {
   buildResponsesWebSearchCallItem,
   mapChatResponseToResponsesStream,
-} from './responses-payload';
-import { createResponseId } from './responses-ids';
+} from './payload';
+import { createResponseId } from './ids';
 
-import { mapChatStreamToResponsesEventStream } from './responses-stream';
+import { mapChatStreamToResponsesEventStream } from './stream';
 import {
   hasImageGenerationTool,
   normalizeTranscriptMessageToolNames,
   translateResponsesToolsToChat,
   translateResponsesToolChoiceToChatWithTools,
-} from './responses-tools';
+} from './tools';
 import type {
   ResponsesServerToolItem,
   ResponseSessionDefaults,
   TranscriptMessage,
-} from './responses-types';
+} from './types';
 
 export const createResponsesEventStream = async (
   request: NextRequest,

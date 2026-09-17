@@ -1,4 +1,4 @@
-import { asRecord, readReasoning } from '../shared/content';
+import { asRecord, readReasoning } from '../../shared/content';
 import type {
   ChatCompletionMessage,
   ChatCompletionPayload,
@@ -6,7 +6,7 @@ import type {
   JsonRecord,
   ServerToolExecution,
   ServerToolTurn,
-} from './server-tool-types';
+} from './types';
 
 export const sumUsage = (accumulated: unknown, incoming: unknown): unknown => {
   const left = asRecord(accumulated);

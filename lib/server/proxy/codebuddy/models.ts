@@ -1,15 +1,15 @@
 import type { NextRequest } from 'next/server';
 
-import { resolveRequestAccessKey } from './auth';
-import { getCodeBuddyApiEndpoint } from '../domain/config';
+import { resolveRequestAccessKey } from '../auth';
+import { getCodeBuddyApiEndpoint } from '../../domain/config';
 import {
   type CredentialData,
   type CredentialRecord,
   getCredentialSupportedModels,
   listEligibleCredentialRecords,
-} from '../domain/credentials';
-import { getCredentialValue } from './codebuddy-context';
-import type { DiscoveredModel } from './codebuddy-types';
+} from '../../domain/credentials';
+import { getCredentialValue } from './context';
+import type { DiscoveredModel } from './types';
 
 export const getModelsForCredential = async ({
   bearerToken,

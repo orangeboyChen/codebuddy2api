@@ -1,10 +1,10 @@
-import { createAnthropicId } from './anthropic-content';
+import { createAnthropicId } from './content';
 import type {
   AnthropicContentBlock,
   OpenAIChatResponse,
   OpenAIUsage,
-} from './anthropic-types';
-import type { ServerToolExecution, ServerToolTurn } from './web-search-loop';
+} from './types';
+import type { ServerToolExecution, ServerToolTurn } from '../web-search-loop';
 
 // ---------------------------------------------------------------------------
 // Response translation: OpenAI → Anthropic (non-streaming)

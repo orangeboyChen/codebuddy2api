@@ -2,7 +2,7 @@ import {
   normalizeToolName,
   WEB_FETCH_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
-} from '../search/tool';
+} from '../../search/tool';
 
 /**
  * Chat completions are called from browser-side clients as well as servers, so

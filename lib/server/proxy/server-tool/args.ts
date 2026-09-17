@@ -1,5 +1,5 @@
-import { asRecord } from '../shared/content';
-import type { WebFetchQuery } from '../search/types';
+import { asRecord } from '../../shared/content';
+import type { WebFetchQuery } from '../../search/types';
 
 /**
  * Reads one string field out of a tool-call argument object.

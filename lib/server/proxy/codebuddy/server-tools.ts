@@ -2,9 +2,9 @@ import {
   normalizeToolName,
   WEB_FETCH_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
-} from '../search/tool';
-import { aggregateUpstreamStream } from './codebuddy-chat-stream';
-import { type ChatStreamChunk, type StreamProbeState } from './codebuddy-types';
+} from '../../search/tool';
+import { aggregateUpstreamStream } from './chat-stream';
+import { type ChatStreamChunk, type StreamProbeState } from './types';
 
 export const isServerWebToolName = (name: string): boolean => {
   const normalized = normalizeToolName(name);

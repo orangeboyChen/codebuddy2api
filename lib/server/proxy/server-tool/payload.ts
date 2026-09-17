@@ -1,5 +1,5 @@
-import { extractErrorMessage } from '../shared/http';
-import type { ChatCompletionPayload } from './server-tool-types';
+import { extractErrorMessage } from '../../shared/http';
+import type { ChatCompletionPayload } from './types';
 
 /**
  * Rebuilds a failed upstream response so its body can be read again.

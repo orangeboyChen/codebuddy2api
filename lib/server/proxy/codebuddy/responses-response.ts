@@ -1,21 +1,21 @@
-import { createSseResponse, encodeDoneFrame } from '../shared/sse';
+import { createSseResponse, encodeDoneFrame } from '../../shared/sse';
 import {
   chatStreamErrorChunks,
   createStreamCloser,
   readTimeoutFrame,
   toUpstreamTimeoutMessage,
-} from '../shared/upstream-timeout';
+} from '../../shared/upstream-timeout';
 import {
   extractResponsesUsage,
   mapResponsesUsageToChat,
   parseUsageHeader,
   recordProxyUsage,
-} from './codebuddy-usage';
+} from './usage';
 import {
   CORS_HEADERS,
   MAX_STREAM_FRAME_LENGTH,
   type ProxyContext,
-} from './codebuddy-types';
+} from './types';
 
 export const normalizeStopSequences = (
   stop: string | string[] | undefined,

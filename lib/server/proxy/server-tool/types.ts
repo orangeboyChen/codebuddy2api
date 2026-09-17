@@ -2,8 +2,8 @@ import type {
   WebFetchQuery,
   WebFetchResponse,
   WebSearchResponse,
-} from '../search/types';
-import type { ChatRequestBody } from './codebuddy';
+} from '../../search/types';
+import type { ChatRequestBody } from '../codebuddy';
 
 export const MAX_SEARCH_ITERATIONS = 5;
 export const STREAM_TEXT_CHUNK_LENGTH = 1024;

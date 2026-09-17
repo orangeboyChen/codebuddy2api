@@ -1,9 +1,9 @@
-import { createSseResponse, encodeDoneFrame } from '../shared/sse';
+import { createSseResponse, encodeDoneFrame } from '../../shared/sse';
 import {
   STREAM_TEXT_CHUNK_LENGTH,
   type ChatCompletionPayload,
   type JsonRecord,
-} from './server-tool-types';
+} from './types';
 
 /**
  * Replays a buffered completion as chat-completion SSE. Used only after a

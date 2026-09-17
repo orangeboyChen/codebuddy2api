@@ -2,15 +2,15 @@
 // Transcript construction and usage mapping
 // ---------------------------------------------------------------------------
 
-import { getDefaultModel } from '../domain/config';
-import { stringifyContent } from '../shared/content';
-import { extractImageUrl, isImageContentPart } from './codebuddy';
-import { createResponseOutputId, normalizeToolCallId } from './responses-ids';
+import { getDefaultModel } from '../../domain/config';
+import { stringifyContent } from '../../shared/content';
+import { extractImageUrl, isImageContentPart } from '../codebuddy';
+import { createResponseOutputId, normalizeToolCallId } from './ids';
 import {
   getValidatedPreviousSession,
   MAX_RESPONSE_TRANSCRIPT_MESSAGES,
-} from './responses-session';
-import { findSupportedToolByName } from './responses-tools';
+} from './session';
+import { findSupportedToolByName } from './tools';
 import type {
   ChatContentPart,
   ChatResponseToolCall,
@@ -21,7 +21,7 @@ import type {
   StreamingToolCallState,
   TranscriptContent,
   TranscriptMessage,
-} from './responses-types';
+} from './types';
 
 export const buildAssistantTranscriptToolCalls = (
   toolCalls: ChatResponseToolCall[],

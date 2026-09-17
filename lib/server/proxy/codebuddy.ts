@@ -3,36 +3,36 @@ import type { NextRequest } from 'next/server';
 import {
   aggregateUpstreamStream,
   normalizeStreamingResponse,
-} from './codebuddy-chat-stream';
-import { resolveProxyContext } from './codebuddy-context';
+} from './codebuddy/chat-stream';
+import { resolveProxyContext } from './codebuddy/context';
 import {
   buildResponsesBodyFromChat,
   getUnsupportedResponsesChatOptions,
   normalizeResponsesUpstreamBody,
-} from './codebuddy-responses-request';
+} from './codebuddy/responses-request';
 import {
   mapResponsesPayloadToChat,
   mapResponsesStreamToChat,
-} from './codebuddy-responses-response';
-import { detectServerToolStream } from './codebuddy-server-tools';
+} from './codebuddy/responses-response';
+import { detectServerToolStream } from './codebuddy/server-tools';
 import {
   SERVER_WEB_TOOL_NAMES,
   type ChatRequestBody,
   type ProxyContext,
-} from './codebuddy-types';
+} from './codebuddy/types';
 import {
   extractResponsesId,
   extractResponsesUsage,
   logUpstreamFailure,
   parseUsageHeader,
   recordProxyUsage,
-} from './codebuddy-usage';
-import { trackResponsesUsageStream } from './codebuddy-usage-stream';
+} from './codebuddy/usage';
+import { trackResponsesUsageStream } from './codebuddy/usage-stream';
 import {
   buildUpstreamBody,
   buildUpstreamHeaders,
   headersToRecord,
-} from './codebuddy-upstream';
+} from './codebuddy/upstream';
 import {
   enqueueUpstreamResponseSnapshot,
   setDebugTraceCredential,
@@ -671,20 +671,20 @@ export type {
   ChatRequestBody,
   DiscoveredModel,
   ProxyContext,
-} from './codebuddy-types';
+} from './codebuddy/types';
 export {
   createProxyContextFromCredential,
   resolveProxyContext,
   resolveProxyContextByCredentialFilename,
-} from './codebuddy-context';
-export { buildUpstreamHeaders } from './codebuddy-upstream';
+} from './codebuddy/context';
+export { buildUpstreamHeaders } from './codebuddy/upstream';
 export {
   extractImageUrl,
   isImageContentPart,
-} from './codebuddy-responses-request';
+} from './codebuddy/responses-request';
 export {
   getModelsByCredential,
   getModelsForCredential,
   getModelsForCredentials,
   getModelsResponse,
-} from './codebuddy-models';
+} from './codebuddy/models';

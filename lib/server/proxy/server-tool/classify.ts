@@ -1,4 +1,4 @@
-import { asRecord } from '../shared/content';
+import { asRecord } from '../../shared/content';
 import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
@@ -9,9 +9,9 @@ import {
   WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
   WEB_SEARCH_TOOL_TYPE_PREFIX,
-} from '../search/tool';
-import type { WebFetchProvider, WebSearchProvider } from '../search/types';
-import type { ChatCompletionToolCall } from './server-tool-types';
+} from '../../search/tool';
+import type { WebFetchProvider, WebSearchProvider } from '../../search/types';
+import type { ChatCompletionToolCall } from './types';
 
 /**
  * Recognises one server-tool declaration.

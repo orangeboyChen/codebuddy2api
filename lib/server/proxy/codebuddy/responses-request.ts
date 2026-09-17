@@ -1,6 +1,6 @@
-import { stringifyContent } from '../shared/content';
-import { resolveHyResponsesReasoning } from '../shared/hy-thought-depth';
-import type { ChatRequestBody } from './codebuddy-types';
+import { stringifyContent } from '../../shared/content';
+import { resolveHyResponsesReasoning } from '../../shared/hy-thought-depth';
+import type { ChatRequestBody } from './types';
 
 export const isImageContentPart = (part: unknown): boolean => {
   if (!part || typeof part !== 'object') {

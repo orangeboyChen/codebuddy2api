@@ -1,8 +1,8 @@
-import { runWebFetchResult, runWebSearchResult } from '../search';
-import type { WebFetchProvider, WebSearchProvider } from '../search/types';
-import { asRecord } from '../shared/content';
-import { extractFetchQuery, extractSearchQuery } from './server-tool-args';
-import { isWebFetchToolCall } from './server-tool-classify';
+import { runWebFetchResult, runWebSearchResult } from '../../search';
+import type { WebFetchProvider, WebSearchProvider } from '../../search/types';
+import { asRecord } from '../../shared/content';
+import { extractFetchQuery, extractSearchQuery } from './args';
+import { isWebFetchToolCall } from './classify';
 import {
   SERVER_TOOL_STREAM_EVENT_KEY,
   type ChatCompletionToolCall,
@@ -11,7 +11,7 @@ import {
   type ServerToolInvocation,
   type ServerToolStreamEvent,
   type ServerToolTurn,
-} from './server-tool-types';
+} from './types';
 
 export const getServerToolStreamEvent = (
   value: unknown,

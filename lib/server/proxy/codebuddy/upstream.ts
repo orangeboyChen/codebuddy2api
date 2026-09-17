@@ -1,10 +1,10 @@
 import type { NextRequest } from 'next/server';
 
-import { getCodeBuddyApiEndpoint, getDefaultModel } from '../domain/config';
-import { getCredentialSupportedModels } from '../domain/credentials';
-import { resolveHyChatThinking } from '../shared/hy-thought-depth';
-import { getRequestHeaderMap } from '../shared/http';
-import { getCredentialValue } from './codebuddy-context';
+import { getCodeBuddyApiEndpoint, getDefaultModel } from '../../domain/config';
+import { getCredentialSupportedModels } from '../../domain/credentials';
+import { resolveHyChatThinking } from '../../shared/hy-thought-depth';
+import { getRequestHeaderMap } from '../../shared/http';
+import { getCredentialValue } from './context';
 import {
   type CacheableTextBlock,
   type ChatRequestBody,
@@ -14,7 +14,7 @@ import {
   type OpenAIMessage,
   type ProxyContext,
   type ResolvedAuth,
-} from './codebuddy-types';
+} from './types';
 
 export const hasPromptCacheControl = (content: unknown): boolean => {
   return (

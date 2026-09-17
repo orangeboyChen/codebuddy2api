@@ -2,7 +2,7 @@
 // Responses <-> Chat tool translation
 // ---------------------------------------------------------------------------
 
-import { createErrorResponse } from '../shared/http';
+import { createErrorResponse } from '../../shared/http';
 import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
@@ -12,18 +12,18 @@ import {
   WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
   WEB_SEARCH_TOOL_TYPE_PREFIX,
-} from '../search/tool';
+} from '../../search/tool';
 import {
   buildImageGenerationChatTool,
   IMAGE_GENERATION_CHAT_TOOL_NAME,
   IMAGE_GENERATION_TOOL_TYPE,
-} from './image-generation';
+} from '../image-generation';
 import type {
   ResponsesRequestBody,
   SupportedChatTool,
   SupportedResponsesTool,
   TranscriptMessage,
-} from './responses-types';
+} from './types';
 
 export const TOOL_SEARCH_PROXY_NAME = 'tool_search';
 export const CUSTOM_TOOL_INPUT_FIELD = 'input';

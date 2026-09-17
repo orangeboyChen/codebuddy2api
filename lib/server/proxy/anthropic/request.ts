@@ -2,8 +2,8 @@ import {
   getDefaultModel,
   isWebFetchEnabled,
   isWebSearchEnabled,
-} from '../domain/config';
-import { stringifyContent } from '../shared/content';
+} from '../../domain/config';
+import { stringifyContent } from '../../shared/content';
 import {
   markServerTool,
   normalizeToolName,
@@ -11,13 +11,13 @@ import {
   WEB_FETCH_TOOL_TYPE_PREFIX,
   WEB_SEARCH_TOOL_NAME,
   WEB_SEARCH_TOOL_TYPE_PREFIX,
-} from '../search/tool';
+} from '../../search/tool';
 import {
   buildChatImageUrl,
   createAnthropicId,
   extractSystemText,
   mapContentPartsToChat,
-} from './anthropic-content';
+} from './content';
 import type {
   AnthropicContentBlock,
   AnthropicMessage,
@@ -26,7 +26,7 @@ import type {
   ChatContentPart,
   ChatImageBlock,
   ChatMessage,
-} from './anthropic-types';
+} from './types';
 
 // ---------------------------------------------------------------------------
 // Request translation: Anthropic → OpenAI

@@ -1,4 +1,4 @@
-import { extractErrorMessage } from '../shared/http';
+import { extractErrorMessage } from '../../shared/http';
 
 export const anthropicErrorType = (status: number): string =>
   status === 401

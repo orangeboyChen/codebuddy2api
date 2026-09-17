@@ -5,20 +5,20 @@ import {
   anthropicErrorType,
   createAnthropicError,
   getUpstreamErrorMessage,
-} from './anthropic-errors';
+} from './anthropic/errors';
 import {
   buildChatRequestBody,
   shouldBridgeAnthropicServerTools,
-} from './anthropic-request';
-import { mapOpenAIResponseToAnthropic } from './anthropic-response';
+} from './anthropic/request';
+import { mapOpenAIResponseToAnthropic } from './anthropic/response';
 import {
   createAnthropicServerToolEventStream,
   mapOpenAIStreamToAnthropicSSE,
-} from './anthropic-stream';
+} from './anthropic/stream';
 import type {
   AnthropicMessagesRequestBody,
   OpenAIChatResponse,
-} from './anthropic-types';
+} from './anthropic/types';
 import { proxyChatCompletions, type ChatRequestBody } from './codebuddy';
 import { getServerToolExecutions, getServerToolTurns } from './web-search-loop';
 

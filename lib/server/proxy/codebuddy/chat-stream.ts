@@ -1,11 +1,11 @@
-import { createErrorResponse } from '../shared/http';
-import { createSseResponse } from '../shared/sse';
+import { createErrorResponse } from '../../shared/http';
+import { createSseResponse } from '../../shared/sse';
 import {
   chatStreamErrorChunks,
   createStreamCloser,
   toUpstreamTimeoutMessage,
-} from '../shared/upstream-timeout';
-import { recordProxyUsage } from './codebuddy-usage';
+} from '../../shared/upstream-timeout';
+import { recordProxyUsage } from './usage';
 import {
   type ChatStreamChunk,
   type ChatStreamDelta,
@@ -15,7 +15,7 @@ import {
   type ToolCallChunk,
   type ToolCallMapping,
   type ToolCallNormalizationState,
-} from './codebuddy-types';
+} from './types';
 
 export const aggregateToolCalls = (
   toolCalls: NonNullable<ChatStreamDelta['tool_calls']>,

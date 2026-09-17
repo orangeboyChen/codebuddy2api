@@ -1,15 +1,15 @@
 import type { NextRequest } from 'next/server';
 
-import { resolveRequestAccessKey } from './auth';
+import { resolveRequestAccessKey } from '../auth';
 import {
   type CredentialRecord,
   findEligibleCredentialRecordByFilename,
   findCredentialRecordByFilename,
   getCredentialProxySettings,
   resolveCredentialForRequest,
-} from '../domain/credentials';
-import { getRequestHeaderMap } from '../shared/http';
-import type { ProxyContext } from './codebuddy-types';
+} from '../../domain/credentials';
+import { getRequestHeaderMap } from '../../shared/http';
+import type { ProxyContext } from './types';
 
 export const getCredentialAffinityKey = (
   request: NextRequest,

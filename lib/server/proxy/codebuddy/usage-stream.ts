@@ -2,13 +2,13 @@ import {
   createStreamCloser,
   responsesStreamErrorChunks,
   toUpstreamTimeoutMessage,
-} from '../shared/upstream-timeout';
+} from '../../shared/upstream-timeout';
 import {
   extractResponsesId,
   extractResponsesUsage,
   recordProxyUsage,
-} from './codebuddy-usage';
-import { MAX_STREAM_FRAME_LENGTH, type ProxyContext } from './codebuddy-types';
+} from './usage';
+import { MAX_STREAM_FRAME_LENGTH, type ProxyContext } from './types';
 
 export const trackResponsesUsageStream = async ({
   fallbackUsage,

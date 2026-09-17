@@ -2,41 +2,41 @@
 // Non-streaming Responses payload assembly
 // ---------------------------------------------------------------------------
 
-import { stringifyContent } from '../shared/content';
+import { stringifyContent } from '../../shared/content';
 import {
   createSseResponse,
   DONE_FRAME_TEXT,
   eventFrameText,
-} from '../shared/sse';
-import type { ProxyContext } from './codebuddy';
+} from '../../shared/sse';
+import type { ProxyContext } from '../codebuddy';
 import {
   buildResponsesImageGenerationCallItem,
   type ImageGenerationExecution,
-} from './image-generation';
+} from '../image-generation';
 import {
   createMessageId,
   createResponseId,
   createResponseOutputId,
   createResponseReasoningId,
   normalizeToolCallId,
-} from './responses-ids';
-import { storeResponseSession } from './responses-session';
-import { buildResponsesToolCallOutputItem } from './responses-tools';
+} from './ids';
+import { storeResponseSession } from './session';
+import { buildResponsesToolCallOutputItem } from './tools';
 import {
   buildAssistantTranscriptToolCalls,
   getAssistantTranscriptContent,
   mapChatUsageToResponses,
   REASONING_PREFIX,
-} from './responses-transcript';
+} from './transcript';
 import type {
   ChatResponseMessage,
   ResponseSessionDefaults,
   TranscriptMessage,
-} from './responses-types';
+} from './types';
 import type {
   ServerToolExecution,
   ServerToolInvocation,
-} from './web-search-loop';
+} from '../web-search-loop';
 
 export const mapChatResponseToResponsesPayload = async (
   accessKeyId: string | null,

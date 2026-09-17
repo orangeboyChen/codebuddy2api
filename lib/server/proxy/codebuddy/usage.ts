@@ -1,5 +1,5 @@
-import { recordUsageEvent, type UsageSnapshot } from '../domain/usage';
-import type { ProxyContext } from './codebuddy-types';
+import { recordUsageEvent, type UsageSnapshot } from '../../domain/usage';
+import type { ProxyContext } from './types';
 
 export const toUsageSnapshot = (usage: unknown): UsageSnapshot | null => {
   if (!usage || typeof usage !== 'object') {
