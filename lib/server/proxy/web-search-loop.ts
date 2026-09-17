@@ -338,15 +338,20 @@ const replaceServerTools = ({
     }
 
     if (isWebFetchTool(tool)) {
+      // A client-owned function of the same name wins over the backend, exactly
+      // as it does for search. The backend setting chooses who runs the *proxy's*
+      // tool; it is not a licence to take over a tool the client declared and
+      // resolves itself. Without this, a client that ships its own `web_fetch`
+      // loses it the moment a deployment picks a backend.
+      if (!isServerDeclaredFetchTool(tool)) {
+        return [tool];
+      }
+
       if (fetchEnabled && fetchProvider) {
         matched = true;
         executes = true;
 
         return [{ type: 'function', function: buildWebFetchToolDefinition() }];
-      }
-
-      if (!isServerDeclaredFetchTool(tool)) {
-        return [tool];
       }
 
       matched = true;

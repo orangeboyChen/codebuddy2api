@@ -1373,10 +1373,14 @@ describe('server tool backends', () => {
       expect(isMarkedServerTool(result?.body.tools?.[0])).toBe(false);
     });
 
-    it('takes over a client-declared web_fetch function when a backend is set', async () => {
-      // Regression guard: with an executable backend the proxy must run the
-      // tool itself. Leaving it to the client here silently disabled the
-      // setting for clients that happen to declare `web_fetch` themselves.
+    it('leaves a client-declared web_fetch function alone when a backend is set', async () => {
+      // The backend setting chooses who runs the *proxy's* tool, not whether
+      // the proxy may take over one the client declared. A client that ships
+      // its own `web_fetch` keeps resolving it — otherwise picking a backend
+      // would silently disable a capability the client asked for.
+      //
+      // The client's own parameters are the proof: the proxy's definition has
+      // `properties.url`, the client's here is `{ type: 'object' }`.
       await updateSettings({
         CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
         CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
@@ -1403,16 +1407,9 @@ describe('server tool backends', () => {
           }),
       });
 
-      const tools = (result?.body.tools ?? []) as Array<{
-        function: { name: string; parameters: Record<string, unknown> };
-      }>;
-
-      // Replaced with the proxy's definition, so the loop — not the client —
-      // resolves the call.
-      expect(tools).toHaveLength(1);
-      expect(tools[0]?.function.name).toBe('web_fetch');
-      expect(tools[0]?.function.parameters).toHaveProperty('properties.url');
-      expect(tools[0]?.function.parameters).toHaveProperty('properties.prompt');
+      // Nothing matched a server-tool declaration, so the loop declines to
+      // touch the request at all.
+      expect(result).toBeNull();
     });
 
     it('keeps a client function of the same name when fetch cannot run', async () => {
@@ -1632,6 +1629,18 @@ describe('server tool backends', () => {
   });
 
   describe('proxy integration', () => {
+    /**
+     * A `web_fetch` declaration as it arrives from a client: an Anthropic
+     * server-tool type run through the Responses translator, which is what
+     * marks it as provider-executed. Declaring the proxy's own definition
+     * directly would skip that step and arrive unmarked — indistinguishable
+     * from a tool the client owns.
+     */
+    const translatedFetchTools = (): unknown[] =>
+      translateResponsesToolsToChat([
+        { type: 'web_fetch_20250910', name: 'web_fetch' },
+      ]) ?? [];
+
     const runOnce = async ({
       fetchImpl,
       tools,
@@ -1706,7 +1715,7 @@ describe('server tool backends', () => {
             status: 200,
           });
         },
-        tools: [{ type: 'function', function: buildWebFetchToolDefinition() }],
+        tools: translatedFetchTools(),
       });
 
       const payload = (await response.json()) as {
@@ -1765,7 +1774,7 @@ describe('server tool backends', () => {
             status: 200,
           });
         },
-        tools: [{ type: 'function', function: buildWebFetchToolDefinition() }],
+        tools: translatedFetchTools(),
       });
 
       const payload = (await response.json()) as {
@@ -1981,6 +1990,71 @@ describe('server tool backends', () => {
 
       delete process.env.SEARXNG_URL;
       resetWebSearchProviders();
+    });
+
+    it('hands a client-declared web_fetch call back even with a backend set', async () => {
+      // End-to-end companion to the declaration-level guard: the backend is
+      // executable, so the only thing keeping this the client's call is the
+      // declaration being client-owned. The model calls the tool, the proxy
+      // must not answer it — the unresolved call goes back to the client.
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
+      });
+
+      let upstreamCalls = 0;
+      let pageFetches = 0;
+      const response = await runOnce({
+        fetchImpl: async (...args: unknown[]) => {
+          const url = String(args[0]);
+
+          if (url.includes('a.test/page')) {
+            pageFetches += 1;
+
+            return new Response('<html><body><p>Page body</p></body></html>', {
+              headers: { 'Content-Type': 'text/html' },
+              status: 200,
+            });
+          }
+
+          upstreamCalls += 1;
+
+          return makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  tool_calls: [
+                    {
+                      id: 'c1',
+                      function: {
+                        arguments: '{"url":"https://a.test/page"}',
+                        name: 'web_fetch',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          });
+        },
+        tools: [
+          {
+            type: 'function',
+            function: { name: 'web_fetch', parameters: { type: 'object' } },
+          },
+        ],
+      });
+
+      const payload = (await response.json()) as {
+        choices: Array<{ message: { tool_calls?: unknown[] } }>;
+      };
+
+      // The proxy never fetched the page and never re-asked upstream; the call
+      // comes back for the client to resolve.
+      expect(pageFetches).toBe(0);
+      expect(upstreamCalls).toBe(1);
+      expect(payload.choices[0]?.message.tool_calls).toHaveLength(1);
     });
 
     it('leaves a client-declared web_fetch function alone when disabled', async () => {
