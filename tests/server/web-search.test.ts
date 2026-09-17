@@ -5377,6 +5377,99 @@ describe('chat proxy web search integration', () => {
     expect(JSON.stringify(payload)).not.toContain('Cite the URL');
   });
 
+  it('does not stream folded findings when a structured block carries them', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        return makeJsonResponse({
+          results: [
+            { snippet: 'snip', title: 'Result', url: 'https://r.test' },
+          ],
+        });
+      }
+
+      // The very first upstream turn mixes the local search with a client
+      // call. That branch emits its own text delta rather than going through
+      // `buildMixedTurnPayload`, so it needs the same opt-out.
+      return makeSseResponse({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  id: 'call_search',
+                  index: 0,
+                  function: {
+                    arguments: '{"query":"two results"}',
+                    name: 'web_search',
+                  },
+                },
+                {
+                  id: 'call_client',
+                  index: 1,
+                  function: { arguments: '{}', name: 'client_tool' },
+                  type: 'function',
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+            index: 0,
+          },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Mixed turn' }],
+        stream: true,
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    const text = await response.text();
+
+    // Structured result block present, findings not repeated as prose.
+    expect(text).toContain('"type":"web_search_tool_result"');
+
+    // `handleMessagesRequest` answers in Anthropic SSE, so the text lives in
+    // `content_block_delta` frames as `text_delta` — not in `choices`.
+    const contentDeltas = (
+      await readSseEvents(
+        new Response(text, {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+    )
+      .flatMap((payload) => {
+        try {
+          const parsed = JSON.parse(payload) as {
+            delta?: { text?: string; type?: string };
+          };
+
+          return parsed.delta?.type === 'text_delta' && parsed.delta.text
+            ? [parsed.delta.text]
+            : [];
+        } catch {
+          return [];
+        }
+      })
+      .join('');
+
+    expect(contentDeltas).not.toContain('https://r.test');
+    expect(contentDeltas).not.toContain('Cite the URL');
+  });
+
   it('keeps folding findings for routes without a structured channel', async () => {
     await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
 

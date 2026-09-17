@@ -1144,7 +1144,11 @@ const createInlineServerToolStream = async ({
         executions.push(...results.map((result) => result.execution));
 
         if (remainingCalls.length) {
-          const findings = results.map((result) => result.content).join('\n\n');
+          // Same opt-out as `buildMixedTurnPayload`: the result event above
+          // already carries these findings, so a text copy would be the second.
+          const findings = callbacks.findingsAsStructuredBlocks
+            ? ''
+            : results.map((result) => result.content).join('\n\n');
           if (findings) {
             emitJson(controller, {
               choices: [{ delta: { content: findings }, index: 0 }],
