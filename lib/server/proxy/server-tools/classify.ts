@@ -186,12 +186,8 @@ export const rewriteServerTools = ({
   declarations: ServerToolDeclarations;
   fetchProvider: unknown;
   searchProvider: unknown;
-  tools: unknown;
-}): RewrittenServerTools | null => {
-  if (!Array.isArray(tools)) {
-    return null;
-  }
-
+  tools: unknown[];
+}): RewrittenServerTools => {
   // Ambiguity is resolved in the client's favour; see
   // {@link hasAmbiguousServerToolName}.
   const ambiguous = hasAmbiguousServerToolName(tools);

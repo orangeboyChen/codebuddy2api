@@ -6,7 +6,7 @@ import {
 } from '../../domain/config';
 import { resolveFetchProvider, resolveSearchProvider } from '../../search';
 import type { WebFetchProvider, WebSearchProvider } from '../../search/types';
-import { asRecord, readReasoning } from '../../shared/content';
+import { readReasoning } from '../../shared/content';
 import type { ChatRequestBody } from '../codebuddy';
 import {
   buildServerToolInvocation,
@@ -15,6 +15,7 @@ import {
 import {
   findServerToolDeclarations,
   getForcedToolName,
+  type RewrittenServerTools,
   rewriteServerTools,
 } from './classify';
 import { readBufferedChatCompletionPayload } from './payload';
@@ -99,7 +100,7 @@ export const prepareServerToolTurn = async (
     fetchProvider: WebFetchProvider | null;
     searchProvider: WebSearchProvider | null;
   };
-  rewrite: NonNullable<ReturnType<typeof rewriteServerTools>>;
+  rewrite: RewrittenServerTools;
 } | null> => {
   const declarations = findServerToolDeclarations(tools);
 
@@ -107,19 +108,21 @@ export const prepareServerToolTurn = async (
     return null;
   }
 
+  // `declarations` is only non-null when `tools` is a non-empty array, so the
+  // rewrite cannot decline.
+  const toolList = tools as unknown[];
+
   const { fetchProvider, searchProvider } = await resolveServerToolBackends();
-  const rewrite = rewriteServerTools({
-    declarations,
-    fetchProvider,
-    searchProvider,
-    tools,
-  });
 
-  if (!rewrite) {
-    return null;
-  }
-
-  return { providers: { fetchProvider, searchProvider }, rewrite };
+  return {
+    providers: { fetchProvider, searchProvider },
+    rewrite: rewriteServerTools({
+      declarations,
+      fetchProvider,
+      searchProvider,
+      tools: toolList,
+    }),
+  };
 };
 
 /**
@@ -360,18 +363,3 @@ export const foldIntermediateTexts = (
     ],
   };
 };
-
-/** Reads the payload of a buffered upstream response. */
-export const readJsonResponse = async (
-  response: Response,
-): Promise<Record<string, unknown>> => {
-  const text = await response.text();
-
-  try {
-    return asRecord(JSON.parse(text)) ?? {};
-  } catch {
-    return {};
-  }
-};
-
-export type { ChatCompletionMessage };

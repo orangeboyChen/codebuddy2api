@@ -1,14 +1,26 @@
 import {
+  buildServerToolInvocation,
   classifyServerToolDeclaration,
+  executeServerToolInvocations,
   findServerToolDeclarations,
   foldIntermediateTexts,
   getForcedToolName,
+  attachServerToolExecutions,
+  getServerToolExecutions,
+  prepareServerToolTurn,
   hasAmbiguousServerToolName,
   hasExecutableServerTool,
+  parseBufferedPayload,
+  readBufferedChatCompletionPayload,
+  resolveServerToolBackends,
   rewriteServerTools,
   runServerToolTurn,
   type ServerToolInvocation,
 } from '@/lib/server/proxy/server-tools';
+import { isEventStream } from '@/lib/server/shared/sse';
+import { updateSettings } from '@/lib/server/domain/config';
+import { resetWebSearchProviders } from '@/lib/server/search';
+import type { ChatRequestBody } from '@/lib/server/proxy/codebuddy';
 import type {
   WebFetchProvider,
   WebSearchProvider,
@@ -214,17 +226,6 @@ describe('server tool classification', () => {
   });
 
   describe('rewriteServerTools', () => {
-    it('returns null when there is no tool list', () => {
-      expect(
-        rewriteServerTools({
-          declarations: { fetch: false, search: true },
-          fetchProvider: null,
-          searchProvider: makeSearchProvider(),
-          tools: undefined,
-        }),
-      ).toBeNull();
-    });
-
     it('swaps a runnable search declaration for a function upstream can call', () => {
       const rewrite = rewriteServerTools({
         declarations: { fetch: false, search: true },
@@ -313,6 +314,15 @@ describe('server tool classification', () => {
     });
   });
 
+  describe('prepareServerToolTurn', () => {
+    it('declines when no provider-executed tool is declared', async () => {
+      await expect(
+        prepareServerToolTurn([claudeCodeWebSearch]),
+      ).resolves.toBeNull();
+      await expect(prepareServerToolTurn(undefined)).resolves.toBeNull();
+    });
+  });
+
   describe('getForcedToolName', () => {
     it('reads the name from either protocol shape', () => {
       expect(getForcedToolName({ type: 'tool', name: 'web_search' })).toBe(
@@ -333,21 +343,21 @@ describe('server tool classification', () => {
   });
 });
 
+const body = {
+  messages: [{ role: 'user', content: 'when did it ship?' }],
+  model: 'test-model',
+  stream: false,
+};
+
+const makeRewrite = (searchProvider: WebSearchProvider | null) =>
+  rewriteServerTools({
+    declarations: { fetch: false, search: true },
+    fetchProvider: null,
+    searchProvider,
+    tools: [{ type: SEARCH_TYPE, name: 'web_search' }],
+  })!;
+
 describe('server tool turn', () => {
-  const body = {
-    messages: [{ role: 'user', content: 'when did it ship?' }],
-    model: 'test-model',
-    stream: false,
-  };
-
-  const makeRewrite = (searchProvider: WebSearchProvider | null) =>
-    rewriteServerTools({
-      declarations: { fetch: false, search: true },
-      fetchProvider: null,
-      searchProvider,
-      tools: [{ type: SEARCH_TYPE, name: 'web_search' }],
-    })!;
-
   it('asks upstream once when the model does not call a server tool', async () => {
     const callUpstream = vi.fn(async () =>
       makeJsonResponse({
@@ -598,5 +608,371 @@ describe('foldIntermediateTexts', () => {
 
     expect(foldIntermediateTexts(payload, [])).toBe(payload);
     expect(foldIntermediateTexts({}, ['text'])).toEqual({});
+  });
+});
+
+describe('server tool plumbing', () => {
+  describe('buildServerToolInvocation', () => {
+    it('reads a fetch call and keeps the tool call id', () => {
+      expect(
+        buildServerToolInvocation(
+          {
+            id: 'call_fetch',
+            function: {
+              arguments: '{"url":"https://a.test","prompt":"the price"}',
+              name: 'web_fetch',
+            },
+          },
+          0,
+        ),
+      ).toEqual({
+        id: 'call_fetch',
+        input: { prompt: 'the price', url: 'https://a.test' },
+        type: 'web_fetch',
+      });
+    });
+
+    it('falls back to a positional id when the model sends none', () => {
+      expect(
+        buildServerToolInvocation({ function: { name: 'web_search' } }, 3),
+      ).toEqual({
+        id: 'server_tool_3',
+        input: { query: '' },
+        type: 'web_search',
+      });
+    });
+  });
+
+  describe('executeServerToolInvocations', () => {
+    it('runs a fetch through the fetch provider', async () => {
+      const results = await executeServerToolInvocations({
+        fetchProvider: makeFetchProvider(),
+        invocations: [
+          {
+            id: 'call_fetch',
+            input: { url: 'https://a.test' },
+            type: 'web_fetch',
+          },
+        ],
+        searchProvider: null,
+      });
+
+      expect(results).toEqual([
+        {
+          content: 'Fetched https://a.test',
+          execution: {
+            id: 'call_fetch',
+            input: { url: 'https://a.test' },
+            result: {
+              content: 'Fetched https://a.test',
+              url: 'https://a.test',
+            },
+            type: 'web_fetch',
+          },
+          tool_call_id: 'call_fetch',
+        },
+      ]);
+    });
+
+    it('reports an unconfigured fetch backend as text rather than failing', async () => {
+      const results = await executeServerToolInvocations({
+        fetchProvider: null,
+        invocations: [
+          {
+            id: 'call_fetch',
+            input: { url: 'https://a.test' },
+            type: 'web_fetch',
+          },
+        ],
+        searchProvider: null,
+      });
+
+      expect(results[0]?.content).toContain('no web fetch backend');
+    });
+  });
+
+  describe('parseBufferedPayload', () => {
+    it('returns the parsed payload', () => {
+      expect(parseBufferedPayload('{"choices":[]}', true)).toEqual({
+        choices: [],
+      });
+    });
+
+    it('rethrows a malformed body the upstream called successful', () => {
+      expect(() => parseBufferedPayload('not json', true)).toThrow();
+    });
+
+    it('tolerates a malformed body on a failure status', () => {
+      expect(parseBufferedPayload('not json', false)).toEqual({});
+    });
+  });
+
+  describe('readBufferedChatCompletionPayload', () => {
+    it('falls back to the raw body when a failure carries no message', () => {
+      // A payload with only a code has nothing to extract, and the JSON is
+      // still the only record of what happened, so it beats the generic
+      // "Upstream request failed" — which says only that something failed.
+      const response = new Response('{"error":{"code":6004}}', {
+        headers: { 'Content-Type': 'application/json' },
+        status: 429,
+      });
+
+      return expect(
+        readBufferedChatCompletionPayload(response),
+      ).resolves.toEqual({
+        error: { message: '{"error":{"code":6004}}', status: 429 },
+      });
+    });
+
+    it('uses the generic message when the failure body is empty', () => {
+      const response = new Response('', {
+        headers: { 'Content-Type': 'application/json' },
+        status: 429,
+      });
+
+      return expect(
+        readBufferedChatCompletionPayload(response),
+      ).resolves.toEqual({
+        error: {
+          message: 'Upstream request failed with status 429',
+          status: 429,
+        },
+      });
+    });
+
+    it('prefers the nested upstream message over the generic one', () => {
+      const response = new Response('{"error":{"message":"quota exceeded"}}', {
+        headers: { 'Content-Type': 'application/json' },
+        status: 429,
+      });
+
+      return expect(
+        readBufferedChatCompletionPayload(response),
+      ).resolves.toEqual({
+        error: { message: 'quota exceeded', status: 429 },
+      });
+    });
+
+    it('reports an error payload on a successful status', () => {
+      const response = new Response('{"error":{"message":"nope"}}', {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      });
+
+      return expect(
+        readBufferedChatCompletionPayload(response),
+      ).resolves.toEqual({ error: { message: 'nope' } });
+    });
+  });
+
+  describe('getServerToolExecutions', () => {
+    it('reports none for a response that ran no tools', () => {
+      expect(getServerToolExecutions(new Response('{}'))).toEqual([]);
+    });
+  });
+
+  describe('isEventStream', () => {
+    it('tells an SSE response from a buffered one', () => {
+      expect(
+        isEventStream(
+          new Response('{}', {
+            headers: { 'Content-Type': 'text/event-stream' },
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        isEventStream(
+          new Response('{}', {
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      ).toBe(false);
+      // No content-type at all: upstream omitted it on a failure.
+      expect(isEventStream(new Response('{}'))).toBe(false);
+    });
+  });
+
+  describe('resolveServerToolBackends', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      resetWebSearchProviders();
+    });
+
+    it('resolves nothing when both backends are passthrough', async () => {
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
+      });
+
+      await expect(resolveServerToolBackends()).resolves.toEqual({
+        fetchProvider: null,
+        searchProvider: null,
+      });
+    });
+
+    it('resolves the configured backends', async () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      const { fetchProvider, searchProvider } =
+        await resolveServerToolBackends();
+      delete process.env.SEARXNG_URL;
+
+      expect(fetchProvider?.id).toBe('local');
+      expect(searchProvider?.id).toBe('searxng');
+    });
+  });
+
+  describe('relaxToolChoice', () => {
+    const runWith = async (toolChoice: unknown) => {
+      const sentBodies: ChatRequestBody[] = [];
+      let calls = 0;
+
+      await runServerToolTurn({
+        body: {
+          ...body,
+          tool_choice: toolChoice,
+        } as never,
+        callUpstream: async (nextBody) => {
+          calls += 1;
+          sentBodies.push(nextBody);
+
+          return calls === 1
+            ? makeJsonResponse(
+                assistantToolCall('web_search', '{"query":"ship"}'),
+              )
+            : makeJsonResponse({ choices: [] });
+        },
+        fetchProvider: null,
+        rewrite: makeRewrite(makeSearchProvider()),
+        searchProvider: makeSearchProvider(),
+        stream: false,
+      });
+
+      return sentBodies[1]?.tool_choice;
+    };
+
+    it('leaves an unrelated tool_choice alone', async () => {
+      await expect(runWith('auto')).resolves.toBe('auto');
+    });
+
+    it('leaves a forced client tool alone', async () => {
+      await expect(
+        runWith({ type: 'function', function: { name: 'Read' } }),
+      ).resolves.toEqual({ type: 'function', function: { name: 'Read' } });
+    });
+
+    it('carries no tool_choice through when none was set', async () => {
+      await expect(runWith(undefined)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('foldIntermediateTexts', () => {
+    it('ignores extra text when the payload has no choices', () => {
+      expect(foldIntermediateTexts({ choices: [] }, ['orphan'])).toEqual({
+        choices: [],
+      });
+    });
+  });
+});
+
+describe('server tool edge cases', () => {
+  it('builds a search invocation from a call with no name at all', () => {
+    expect(buildServerToolInvocation({}, 2)).toEqual({
+      id: 'server_tool_2',
+      input: { query: '' },
+      type: 'web_search',
+    });
+  });
+
+  it('reports no executions when a turn ran but upstream sent no message', async () => {
+    let calls = 0;
+    const outcome = await runServerToolTurn({
+      body,
+      callUpstream: async () => {
+        calls += 1;
+
+        return calls === 1
+          ? makeJsonResponse({ choices: [{ finish_reason: 'stop' }] })
+          : makeJsonResponse({ choices: [] });
+      },
+      fetchProvider: null,
+      rewrite: makeRewrite(makeSearchProvider()),
+      searchProvider: makeSearchProvider(),
+      stream: false,
+    });
+
+    expect(outcome.executions).toEqual([]);
+    expect(outcome.preamble).toEqual({ reasoning: '', text: '' });
+  });
+
+  it('runs a turn whose body carries no messages', async () => {
+    let calls = 0;
+    const sentBodies: ChatRequestBody[] = [];
+    const outcome = await runServerToolTurn({
+      body: { model: 'test-model', stream: false } as ChatRequestBody,
+      callUpstream: async (nextBody) => {
+        calls += 1;
+        sentBodies.push(nextBody);
+
+        return calls === 1
+          ? makeJsonResponse(
+              assistantToolCall('web_search', '{"query":"ship"}'),
+            )
+          : makeJsonResponse({ choices: [] });
+      },
+      fetchProvider: null,
+      rewrite: makeRewrite(makeSearchProvider()),
+      searchProvider: makeSearchProvider(),
+      stream: false,
+    });
+
+    expect(outcome.executions).toHaveLength(1);
+    // Only the assistant message and the tool result were appended.
+    expect((sentBodies[1] as { messages: unknown[] }).messages).toHaveLength(2);
+  });
+
+  it('leaves a tool_choice with no name to the follow-up', async () => {
+    let calls = 0;
+    const sentBodies: ChatRequestBody[] = [];
+
+    await runServerToolTurn({
+      body: { ...body, tool_choice: { type: 'auto' } } as never,
+      callUpstream: async (nextBody) => {
+        calls += 1;
+        sentBodies.push(nextBody);
+
+        return calls === 1
+          ? makeJsonResponse(
+              assistantToolCall('web_search', '{"query":"ship"}'),
+            )
+          : makeJsonResponse({ choices: [] });
+      },
+      fetchProvider: null,
+      rewrite: makeRewrite(makeSearchProvider()),
+      searchProvider: makeSearchProvider(),
+      stream: false,
+    });
+
+    expect(sentBodies[1].tool_choice).toEqual({ type: 'auto' });
+  });
+
+  it('folds extra text into a choice that carries no message', () => {
+    const folded = foldIntermediateTexts({ choices: [{ index: 0 }] }, [
+      'earlier',
+    ]);
+
+    expect(folded.choices?.[0]?.message?.content).toBe('earlier');
+  });
+
+  it('records nothing when a turn attaches no executions', () => {
+    const response = new Response('{}');
+
+    expect(attachServerToolExecutions(response, [])).toBe(response);
+    expect(getServerToolExecutions(response)).toEqual([]);
   });
 });
