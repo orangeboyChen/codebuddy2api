@@ -759,7 +759,7 @@ const getCredentialValue = (
   return null;
 };
 
-const buildUpstreamHeaders = async (
+export const buildUpstreamHeaders = async (
   request: NextRequest,
   auth: ResolvedAuth,
 ): Promise<HeadersInit> => {
@@ -883,6 +883,58 @@ const buildUpstreamBody = async (
     thinking: hyThinking.thinking,
     reasoning_effort: hyThinking.reasoningEffort,
   };
+};
+
+export const isImageContentPart = (part: unknown): boolean => {
+  if (!part || typeof part !== 'object') {
+    return false;
+  }
+
+  const value = part as { image_url?: unknown; type?: unknown };
+
+  if (value.type === 'image_url' || value.type === 'input_image') {
+    return true;
+  }
+
+  // Accept the shapes an OpenAI-compatible client may send even when `type`
+  // is absent or unexpected: any part carrying an image URL is an image.
+  return (
+    typeof value.image_url === 'string' ||
+    Boolean(
+      value.image_url &&
+      typeof value.image_url === 'object' &&
+      typeof (value.image_url as { url?: unknown }).url === 'string',
+    )
+  );
+};
+
+/**
+ * Reads the image URL out of a Responses `input_image` / `image_url` part.
+ * Returns undefined when the part carries no usable URL, so callers can drop it
+ * rather than forwarding a block the upstream would reject.
+ */
+export const extractImageUrl = (part: unknown): string | undefined => {
+  if (!part || typeof part !== 'object') {
+    return undefined;
+  }
+
+  const { image_url: imageUrl } = part as { image_url?: unknown };
+
+  // `input_image` carries a bare URL string; the OpenAI Chat-style
+  // `image_url` part nests it under `url`.
+  if (typeof imageUrl === 'string') {
+    return imageUrl || undefined;
+  }
+
+  if (
+    imageUrl &&
+    typeof imageUrl === 'object' &&
+    typeof (imageUrl as { url?: unknown }).url === 'string'
+  ) {
+    return (imageUrl as { url: string }).url || undefined;
+  }
+
+  return undefined;
 };
 
 const stringifyResponsesInputContent = (content: unknown): string => {
@@ -1149,9 +1201,24 @@ const buildResponsesBodyFromChat = async (
       )
       .map((message) => {
         if (message.role === 'tool') {
+          // A tool may return an image, e.g. a screenshot. The upstream
+          // `function_call_output` carries `output` as structured content, so
+          // an image part is preserved there; stringifying it would hand the
+          // model a base64 dump instead of the image.
+          const toolOutput = Array.isArray(message.content)
+            ? message.content.filter(
+                (part) => part !== null && part !== undefined,
+              )
+            : message.content;
+          const hasImage = Array.isArray(toolOutput)
+            ? toolOutput.some(isImageContentPart)
+            : isImageContentPart(toolOutput);
+
           return {
             call_id: message.tool_call_id,
-            output: stringifyResponsesInputContent(message.content),
+            output: hasImage
+              ? mapChatContentToResponses(toolOutput)
+              : stringifyResponsesInputContent(toolOutput),
             type: 'function_call_output',
           };
         }

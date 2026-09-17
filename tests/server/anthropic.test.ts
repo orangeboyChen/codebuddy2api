@@ -1873,4 +1873,426 @@ describe('anthropic messages api', () => {
     expect(thinkingBlock?.thinking).toBe('Let me think...');
     expect(textBlock?.text).toBe('The answer is 42.');
   });
+
+  describe('image content blocks', () => {
+    const captureUpstreamBody = async (
+      credentialOverrides: Record<string, unknown>,
+      content: Array<
+        | { type: 'text'; text: string; cache_control?: { type: string } }
+        | {
+            type: 'image';
+            source?: Record<string, string>;
+            content?: string;
+            cache_control?: { type: string };
+          }
+        | {
+            type: 'tool_result';
+            tool_use_id: string;
+            content?: Array<{
+              type: 'text' | 'image';
+              text?: string;
+              source?: Record<string, string>;
+            }>;
+          }
+      >,
+    ): Promise<Record<string, unknown>> => {
+      const credential = await addCredential({
+        bearer_token: 'anthropic-image-token',
+        user_id: 'anthropic-image@example.com',
+        ...credentialOverrides,
+      });
+      const accessKey = await createAccessKey({
+        credentialFilenames: [credential.filename],
+        name: 'Anthropic Image Key',
+      });
+      let upstreamBody: Record<string, unknown> | undefined;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+        upstreamBody = JSON.parse(String(init?.body)) as Record<
+          string,
+          unknown
+        >;
+
+        return makeJsonResponse({
+          choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+        });
+      });
+
+      await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${accessKey.secret}` },
+        }),
+        {
+          max_tokens: 256,
+          messages: [{ role: 'user', content }],
+          model: 'claude-sonnet-4.6',
+        },
+      );
+
+      expect(upstreamBody).toBeDefined();
+      return upstreamBody as Record<string, unknown>;
+    };
+
+    const getLastUserContent = (
+      upstreamBody: Record<string, unknown>,
+    ): unknown => {
+      const messages = upstreamBody.messages as Array<
+        Record<string, unknown>
+      > | null;
+      const userMessages = (messages ?? []).filter((m) => m.role === 'user');
+
+      return userMessages[userMessages.length - 1]?.content;
+    };
+
+    it('converts a base64 image to a data URI image_url part', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          { type: 'text', text: 'What is in this image?' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'iVBORw0KGgo=',
+            },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        { type: 'text', text: 'What is in this image?' },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' },
+        },
+      ]);
+    });
+
+    it('maps an image to input_image on the Responses upstream', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: true, upstream_protocol: 'responses' },
+        [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/jpeg',
+              data: '/9j/4AAQSkZJRg==',
+            },
+          },
+          { type: 'text', text: 'Describe it.' },
+        ],
+      );
+
+      const input = upstreamBody.input as Array<Record<string, unknown>>;
+      const userInput = input.filter((item) => item.role === 'user');
+      expect(userInput[userInput.length - 1]?.content).toEqual([
+        {
+          type: 'input_image',
+          image_url: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+        },
+        { type: 'input_text', text: 'Describe it.' },
+      ]);
+    });
+
+    it('passes through an image with a url source', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          {
+            type: 'image',
+            source: { type: 'url', url: 'https://example.com/a.png' },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'https://example.com/a.png' },
+        },
+      ]);
+    });
+
+    it('defaults the media type when one is omitted', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [{ type: 'image', source: { type: 'base64', data: 'AAAA' } }],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,AAAA' },
+        },
+      ]);
+    });
+
+    it('falls back to text when the image source is unusable', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          { type: 'image', source: { type: 'base64' } },
+          { type: 'text', text: 'still here' },
+        ],
+      );
+
+      const content = getLastUserContent(upstreamBody);
+      expect(content).toContain('still here');
+      expect(content).toContain('base64');
+    });
+
+    it('stringifies an image block that has no source at all', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [{ type: 'image', content: 'base64data' }],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toContain('base64data');
+    });
+
+    it('keeps an image-only message instead of dropping it', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/gif', data: 'R0lGOD' },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/gif;base64,R0lGOD' },
+        },
+      ]);
+    });
+
+    it('preserves cache_control on a converted image block', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,AAAA' },
+          cache_control: { type: 'ephemeral' },
+        },
+      ]);
+    });
+
+    it('extracts an image nested inside a tool result', async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+        );
+
+      await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+        {
+          model: 'claude-sonnet-4.6',
+          max_tokens: 1024,
+          messages: [
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_shot',
+                  name: 'screenshot',
+                  input: {},
+                },
+              ],
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'toolu_shot',
+                  content: [
+                    { type: 'text', text: 'Took a screenshot.' },
+                    {
+                      type: 'image',
+                      source: {
+                        type: 'base64',
+                        media_type: 'image/png',
+                        data: 'iVBORw0KGgo=',
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      );
+
+      const upstreamBody = JSON.parse(
+        String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+      ) as {
+        messages: Array<{
+          role: string;
+          content: unknown;
+          tool_call_id?: string;
+        }>;
+      };
+      const toolMessage = upstreamBody.messages.find(
+        (m) => m.tool_call_id === 'toolu_shot',
+      );
+
+      expect(toolMessage?.content).toEqual([
+        { type: 'text', text: 'Took a screenshot.' },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' },
+        },
+      ]);
+    });
+
+    it('drops a nested image whose source is unusable', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_bad',
+            content: [
+              { type: 'text', text: 'took one' },
+              { type: 'image', source: {} },
+            ],
+          },
+        ],
+      );
+
+      const messages = upstreamBody.messages as Array<Record<string, unknown>>;
+      const toolMessage = messages.find((m) => m.role === 'tool');
+      expect(toolMessage?.content).toBe('took one');
+    });
+
+    it('keeps an image in an assistant message alongside tool calls', async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+        );
+
+      await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+        {
+          model: 'claude-sonnet-4.6',
+          max_tokens: 1024,
+          messages: [
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: 'image/png',
+                    data: 'AAAA',
+                  },
+                  cache_control: { type: 'ephemeral' },
+                },
+                {
+                  type: 'tool_use',
+                  id: 'toolu_mixed',
+                  name: 'search',
+                  input: { query: 'q' },
+                },
+              ],
+            },
+          ],
+        },
+      );
+
+      const upstreamBody = JSON.parse(
+        String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+      ) as { messages: Array<Record<string, unknown>> };
+      const assistant = upstreamBody.messages.find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.content).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,AAAA' },
+          cache_control: { type: 'ephemeral' },
+        },
+      ]);
+      expect(assistant?.tool_calls).toEqual([
+        expect.objectContaining({ id: 'toolu_mixed' }),
+      ]);
+    });
+
+    it('emits structured text blocks when an image has a cache_control sibling', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          { type: 'text', text: 'look', cache_control: { type: 'ephemeral' } },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        { type: 'text', text: 'look', cache_control: { type: 'ephemeral' } },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,AAAA' },
+        },
+      ]);
+    });
+
+    it('leaves a tool result without images as plain text', async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+        );
+
+      await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+        {
+          model: 'claude-sonnet-4.6',
+          max_tokens: 1024,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'toolu_plain',
+                  content: [{ type: 'text', text: 'just text' }],
+                },
+              ],
+            },
+          ],
+        },
+      );
+
+      const upstreamBody = JSON.parse(
+        String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+      ) as { messages: Array<{ role: string; content: unknown }> };
+
+      expect(upstreamBody.messages.some((m) => m.content === 'just text')).toBe(
+        true,
+      );
+    });
+  });
 });

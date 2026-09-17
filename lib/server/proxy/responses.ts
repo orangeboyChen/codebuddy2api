@@ -18,6 +18,14 @@ import {
   WEB_SEARCH_TOOL_TYPE_PREFIX,
 } from '../search/tool';
 import {
+  buildImageGenerationChatTool,
+  executeImageGenerationLoop,
+  IMAGE_GENERATION_CHAT_TOOL_NAME,
+  IMAGE_GENERATION_TOOL_TYPE,
+} from './image-generation';
+import {
+  extractImageUrl,
+  isImageContentPart,
   proxyChatCompletions,
   proxyResponsesUpstream,
   resolveProxyContext,
@@ -122,9 +130,28 @@ interface ChatResponseMessage {
   tool_calls?: ChatResponseToolCall[];
 }
 
+interface ChatImagePart {
+  image_url: { url: string };
+  type: 'image_url';
+}
+
+interface ChatTextPart {
+  text: string;
+  type: 'text';
+}
+
+type ChatContentPart = string | ChatTextPart | ChatImagePart;
+
+/**
+ * Transcript content. Images are kept as structured parts so they survive the
+ * Chat-shaped round trip through the transcript and reach the model as images
+ * instead of a JSON dump.
+ */
+type TranscriptContent = string | ChatContentPart[];
+
 interface TranscriptMessage {
   role: string;
-  content: string | null;
+  content: TranscriptContent | null;
   tool_calls?: Array<{
     id: string;
     type: string;
@@ -521,6 +548,22 @@ const toSupportedChatTool = (
     ];
   }
 
+  // Image generation has no chat-protocol equivalent, so the declaration is
+  // rewritten as a function and the call is executed by the proxy. It is
+  // advertised only on the chat path: the responses passthrough hands the
+  // native declaration straight to the upstream, which supports it.
+  if (toolType === IMAGE_GENERATION_TOOL_TYPE) {
+    return [
+      {
+        chatName: IMAGE_GENERATION_CHAT_TOOL_NAME,
+        kind: 'function' as const,
+        originalName: IMAGE_GENERATION_TOOL_TYPE,
+        serverDeclared: true,
+        tool: buildImageGenerationChatTool(),
+      },
+    ];
+  }
+
   if (toolType === 'namespace') {
     const namespaceName = typeof tool.name === 'string' ? tool.name.trim() : '';
     const children = (
@@ -604,6 +647,23 @@ const toSupportedChatTool = (
       },
     },
   ];
+};
+
+/**
+ * True when the client declared an `image_generation` tool. Gating on this
+ * keeps the ordinary path free of an extra upstream round trip.
+ */
+const hasImageGenerationTool = (
+  tools: ResponsesRequestBody['tools'],
+): boolean => {
+  return Boolean(
+    tools?.some(
+      (tool) =>
+        typeof tool?.type === 'string' &&
+        tool.type.toLowerCase().replaceAll('-', '_') ===
+          IMAGE_GENERATION_TOOL_TYPE,
+    ),
+  );
 };
 
 const getSupportedChatTools = (
@@ -741,6 +801,52 @@ const getAssistantTranscriptContent = (
   return toolCalls?.length ? outputText || null : outputText;
 };
 
+/**
+ * Keeps image parts as structured content so the chat path can rebuild them
+ * upstream. Text parts are still flattened: the transcript is persisted across
+ * turns and replayed as Chat messages, and the Responses converter only
+ * recognises images in the OpenAI `image_url` shape.
+ */
+const mapInputContentToTranscriptContent = (
+  content: unknown,
+): TranscriptContent | null => {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const parts = content.filter((part) => part !== null && part !== undefined);
+
+  if (!parts.some(isImageContentPart)) {
+    return null;
+  }
+
+  const mapped = parts.flatMap((part): ChatContentPart[] => {
+    if (typeof part === 'string') {
+      return [part];
+    }
+
+    if (isImageContentPart(part)) {
+      const imageUrl = extractImageUrl(part);
+
+      return imageUrl
+        ? [{ image_url: { url: imageUrl }, type: 'image_url' }]
+        : [];
+    }
+
+    if (part && typeof part === 'object' && 'text' in part) {
+      return [String((part as { text?: unknown }).text ?? '')];
+    }
+
+    return [];
+  });
+
+  return mapped.length ? mapped : null;
+};
+
 const stringifyContent = (value: unknown): string => {
   if (typeof value === 'string') {
     return value;
@@ -788,17 +894,24 @@ const mapInputItemToMessage = (item: ResponsesInputItem): TranscriptMessage => {
   }
 
   if (item.type === 'function_call_output' || item.type === 'mcp_call_output') {
+    // A tool may return an image, e.g. a screenshot. Keep it structured so the
+    // Responses converter can rebuild it as an image; stringifying would hand
+    // the model the base64 payload as text.
+    const outputContent =
+      mapInputContentToTranscriptContent(item.output) ??
+      stringifyContent(item.output);
+
     if (item.call_id) {
       return {
         role: 'tool',
-        content: stringifyContent(item.output),
+        content: outputContent,
         tool_call_id: item.call_id,
       };
     }
 
     return {
       role: 'user',
-      content: stringifyContent(item.output),
+      content: outputContent,
     };
   }
 
@@ -806,6 +919,19 @@ const mapInputItemToMessage = (item: ResponsesInputItem): TranscriptMessage => {
     return {
       role: 'user',
       content: JSON.stringify(item),
+    };
+  }
+
+  // Every other item type returns above, so what is left is a plain message:
+  // either one with a declared `type: 'message'`, or one carrying only
+  // `role`/`content`. Images are kept structured so the chat path can rebuild
+  // them; a message without an image stays flattened.
+  const imageContent = mapInputContentToTranscriptContent(item.content);
+
+  if (imageContent !== null) {
+    return {
+      role: item.role ?? 'user',
+      content: imageContent,
     };
   }
 
@@ -1091,7 +1217,9 @@ const prepareTranscript = async (
     body.messages.forEach((item) => {
       transcript.push({
         role: item.role ?? 'user',
-        content: stringifyContent(item.content),
+        content:
+          mapInputContentToTranscriptContent(item.content) ??
+          stringifyContent(item.content),
       });
     });
   } else if (typeof body.input === 'string') {
@@ -2310,27 +2438,73 @@ export const handleResponsesRequest = async (
       );
     }
 
+    const chatBody = {
+      model: prepared.model,
+      messages: [
+        ...(prepared.defaults.instructions
+          ? [{ role: 'system', content: prepared.defaults.instructions }]
+          : []),
+        ...normalizeTranscriptMessageToolNames(
+          prepared.transcript,
+          prepared.defaults.tools,
+        ),
+      ],
+      max_tokens: body.max_output_tokens,
+      stream: false,
+      tools: translateResponsesToolsToChat(prepared.defaults.tools),
+      tool_choice: translateResponsesToolChoiceToChatWithTools(
+        prepared.defaults.tools,
+        prepared.defaults.tool_choice,
+      ),
+    };
+
+    // Image generation has no chat-protocol equivalent, so the model's call is
+    // executed here and replayed with the image folded in. Only meaningful when
+    // the tool was actually declared; otherwise the loop returns null and the
+    // ordinary upstream call runs.
+    if (hasImageGenerationTool(prepared.defaults.tools)) {
+      const imageResponse = await executeImageGenerationLoop({
+        body: chatBody,
+        callUpstream: (loopBody) =>
+          proxyChatCompletions(
+            request,
+            loopBody as never,
+            proxyContext,
+            debugTrace,
+            '/v1/responses',
+          ),
+        context: proxyContext,
+        request,
+      });
+
+      if (imageResponse) {
+        if (!imageResponse.ok) {
+          return imageResponse;
+        }
+
+        const imagePayload = (await imageResponse.json()) as Record<
+          string,
+          unknown
+        >;
+
+        return Response.json(
+          await mapChatResponseToResponsesPayload(
+            proxyContext.accessKeyId,
+            proxyContext.credentialFilename,
+            prepared.defaults,
+            prepared.transcript,
+            prepared.model,
+            prepared.previousResponseId,
+            imagePayload,
+            getServerToolExecutions(imageResponse),
+          ),
+        );
+      }
+    }
+
     const upstreamResponse = await proxyChatCompletions(
       request,
-      {
-        model: prepared.model,
-        messages: [
-          ...(prepared.defaults.instructions
-            ? [{ role: 'system', content: prepared.defaults.instructions }]
-            : []),
-          ...normalizeTranscriptMessageToolNames(
-            prepared.transcript,
-            prepared.defaults.tools,
-          ),
-        ],
-        max_tokens: body.max_output_tokens,
-        stream: false,
-        tools: translateResponsesToolsToChat(prepared.defaults.tools),
-        tool_choice: translateResponsesToolChoiceToChatWithTools(
-          prepared.defaults.tools,
-          prepared.defaults.tool_choice,
-        ),
-      },
+      chatBody as never,
       proxyContext,
       debugTrace,
       '/v1/responses',
