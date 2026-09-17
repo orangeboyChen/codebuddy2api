@@ -12,9 +12,14 @@ import {
 } from '@/lib/server/domain/credentials';
 import {
   executeImageGeneration,
+  executeImageGenerationLoop,
   isImageGenerationToolCall,
 } from '@/lib/server/proxy/image-generation';
 import type { ProxyContext } from '@/lib/server/proxy/codebuddy';
+import {
+  attachServerToolExecutions,
+  getServerToolExecutions,
+} from '@/lib/server/proxy/web-search-loop';
 import {
   handleResponsesRequest,
   resetResponseSessions,
@@ -556,6 +561,68 @@ describe('Responses image support', () => {
       expect(text).not.toContain('"type":"function_call"');
       expect(text).toContain('event: response.output_item.added');
       expect(text).toContain('event: response.completed');
+    });
+
+    it('replays buffered text as delta events', async () => {
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        chatCall += 1;
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                content: null,
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"prompt":"a cat"}',
+                      name: 'image_generation',
+                    },
+                    id: 'call_1',
+                    type: 'function',
+                  },
+                ],
+              }
+            : { content: 'Here is your cat.' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw me a cat',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      const text = await response.text();
+
+      // A client that renders as it reads subscribes to deltas, so arriving
+      // whole in response.completed would show nothing until the turn ends.
+      expect(text).toContain('event: response.output_text.delta');
+      expect(text).toContain('"delta":"Here is your cat."');
+      expect(text).toContain('event: response.output_text.done');
+    });
+
+    it('replays deltas even when the model never calls the tool', async () => {
+      // Regression: buffering happens because the tool was declared, so a
+      // turn that never used it still lost its streamed text.
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeChatResponse({ content: 'A long answer about cats.' }),
+      );
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'tell me about cats',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      const text = await response.text();
+      expect(text).toContain('"delta":"A long answer about cats."');
     });
 
     it('marks a URL-only result completed without inline data', async () => {
@@ -1119,6 +1186,156 @@ describe('Responses image support', () => {
         )
         .filter((message) => message.role === 'tool');
       expect(toolMessages[0]?.tool_call_id).toBe('');
+    });
+  });
+
+  describe('rebuilt response shape', () => {
+    /**
+     * The loop rebuilds every response it hands back, and server-tool
+     * executions are keyed on `Response` identity — so reading them off the
+     * rebuilt response finds nothing and a search that ran is reported as no
+     * search at all. They have to travel with the loop result instead.
+     */
+    it('carries server-tool executions past the rebuild', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeImageResponse([{ b64_json: 'QUJD' }]),
+      );
+
+      const executions = [
+        {
+          id: 'ws_1',
+          input: { query: 'cats' },
+          result: { content: 'Cats are small carnivores.', results: [] },
+          type: 'web_search' as const,
+        },
+      ];
+
+      const { response, serverToolExecutions } =
+        await executeImageGenerationLoop({
+          body: { messages: [{ content: 'hi', role: 'user' }], model: 'm' },
+          callUpstream: () =>
+            Promise.resolve(
+              attachServerToolExecutions(
+                makeChatResponse({ content: 'the answer' }),
+                executions,
+              ),
+            ),
+          context: makeContext(),
+          request: makeRequest(),
+        });
+
+      expect(serverToolExecutions).toHaveLength(1);
+      // Regression: the executions used to be read off the rebuilt response,
+      // which always reported none.
+      expect(getServerToolExecutions(response)).toHaveLength(0);
+    });
+
+    it('drops framing headers the rebuilt body no longer matches', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeImageResponse([{ b64_json: 'QUJD' }]),
+      );
+
+      let chatCall = 0;
+      const { response } = await executeImageGenerationLoop({
+        body: { messages: [{ content: 'hi', role: 'user' }], model: 'm' },
+        callUpstream: () => {
+          chatCall += 1;
+          const body = JSON.stringify({
+            choices: [
+              {
+                message:
+                  chatCall === 1
+                    ? {
+                        content: 'Let me draw that for you right now.',
+                        tool_calls: [
+                          {
+                            function: {
+                              arguments: '{"prompt":"a cat"}',
+                              name: 'image_generation',
+                            },
+                            id: 'call_1',
+                            type: 'function',
+                          },
+                        ],
+                      }
+                    : { content: 'Here it is.' },
+              },
+            ],
+          });
+
+          return Promise.resolve(
+            new Response(body, {
+              headers: {
+                'Content-Encoding': 'gzip',
+                'Content-Length': String(Buffer.byteLength(body)),
+                'Content-Type': 'application/json',
+              },
+              status: 200,
+            }),
+          );
+        },
+        context: makeContext(),
+        request: makeRequest(),
+      });
+
+      // The folded prose makes the body longer than the upstream declared, so
+      // a copied content-length would truncate it, and the body is plaintext
+      // regardless of how the upstream encoded its own.
+      expect(response.headers.get('content-length')).toBeNull();
+      expect(response.headers.get('content-encoding')).toBeNull();
+      const text = await response.text();
+      expect(Buffer.byteLength(text)).toBeGreaterThan(0);
+    });
+
+    it('ends the turn without a dangling call when the cap is reached', async () => {
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        chatCall += 1;
+        // Every hop asks for another image, so the loop exits on the cap.
+        return makeChatResponse({
+          content: `prose ${chatCall}`,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"prompt":"a cat"}',
+                name: 'image_generation',
+              },
+              id: `call_${chatCall}`,
+              type: 'function',
+            },
+          ],
+        });
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat',
+        model: 'claude-sonnet-4.6',
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      const payload = (await response.json()) as {
+        output: Array<Record<string, unknown>>;
+      };
+      const types = payload.output.map((item) => item.type);
+
+      // The closing hop's call was executed, so reporting it as a pending
+      // function_call would ask the client to resolve work already done.
+      expect(types).not.toContain('function_call');
+      expect(
+        types.filter((type) => type === 'image_generation_call'),
+      ).toHaveLength(3);
+
+      const message = payload.output.find(
+        (item) => item.type === 'message',
+      ) as {
+        content: Array<{ text: string }>;
+      };
+      // Each hop's prose once — the closing hop used to be appended twice.
+      expect(message.content[0].text).toBe('prose 1\n\nprose 2\n\nprose 3');
     });
   });
 
