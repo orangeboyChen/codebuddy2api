@@ -33,6 +33,13 @@ const MAX_STREAM_FRAME_LENGTH = 1_000_000;
 // Anthropic Messages API types
 // ---------------------------------------------------------------------------
 
+interface AnthropicImageSource {
+  type?: string;
+  media_type?: string;
+  data?: string;
+  url?: string;
+}
+
 interface AnthropicContentBlock {
   type: string;
   text?: string;
@@ -43,6 +50,7 @@ interface AnthropicContentBlock {
   thinking?: string;
   tool_use_id?: string;
   content?: unknown;
+  source?: AnthropicImageSource;
 }
 
 interface AnthropicMessage {
@@ -144,6 +152,25 @@ interface ChatTextBlock {
   type: 'text';
 }
 
+/**
+ * An image part in the OpenAI Chat shape. Emitted in this shape rather than a
+ * native Anthropic one because the request is translated to Chat before it
+ * reaches CodeBuddy: the `chat` upstream forwards it verbatim and the
+ * `responses` upstream converts it to `input_image`.
+ */
+interface ChatImageBlock {
+  image_url: { url: string };
+  type: 'image_url';
+}
+
+type ChatContentPart = string | ChatTextBlock | ChatImageBlock;
+
+type ChatContent = string | Array<ChatTextBlock | ChatImageBlock>;
+
+/**
+ * Text-only content, used where images are not representable — the system
+ * prompt and the intermediate text-part buffer.
+ */
 type ChatTextContent = string | ChatTextBlock[];
 
 // ---------------------------------------------------------------------------
@@ -200,6 +227,87 @@ const mapTextPartsToChatContent = (
   ]);
 };
 
+/**
+ * Builds the `image_url` value for an Anthropic image block. Base64 sources
+ * become a data URI because the upstream Chat/Responses APIs expect a URL;
+ * `url` sources pass through untouched. Returns undefined for an unusable
+ * source so the caller can fall back to a text placeholder rather than
+ * emitting a block the upstream would reject.
+ */
+const buildChatImageUrl = (
+  source: AnthropicImageSource | undefined,
+): string | undefined => {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  if (source.type === 'url' || (!source.data && source.url)) {
+    return typeof source.url === 'string' && source.url
+      ? source.url
+      : undefined;
+  }
+
+  if (typeof source.data !== 'string' || !source.data) {
+    return undefined;
+  }
+
+  const mediaType =
+    typeof source.media_type === 'string' && source.media_type
+      ? source.media_type
+      : 'image/png';
+
+  return `data:${mediaType};base64,${source.data}`;
+};
+
+/**
+ * Like `mapTextPartsToChatContent`, but keeps image parts as real image
+ * blocks instead of collapsing them into text. Falls back to the text-only
+ * result when nothing resolved to an image.
+ */
+const mapContentPartsToChat = (parts: ChatContentPart[]): ChatContent => {
+  const hasImage = parts.some(
+    (part) => typeof part === 'object' && part.type === 'image_url',
+  );
+
+  if (!hasImage) {
+    return mapTextPartsToChatContent(
+      parts.filter(
+        (part): part is string | ChatTextBlock =>
+          typeof part === 'string' || part.type === 'text',
+      ),
+    );
+  }
+
+  const blocks: Array<ChatTextBlock | ChatImageBlock> = [];
+  let pendingText: Array<string | ChatTextBlock> = [];
+
+  const flushText = (): void => {
+    if (!pendingText.length) {
+      return;
+    }
+    const textContent = mapTextPartsToChatContent(pendingText);
+    if (typeof textContent === 'string') {
+      blocks.push({ type: 'text', text: textContent });
+    } else {
+      blocks.push(...textContent);
+    }
+    pendingText = [];
+  };
+
+  for (const part of parts) {
+    if (typeof part === 'object' && part.type === 'image_url') {
+      flushText();
+      blocks.push(part);
+      continue;
+    }
+    pendingText.push(part);
+  }
+
+  flushText();
+
+  return blocks;
+};
+
 const extractSystemText = (
   system: string | AnthropicContentBlock[] | undefined,
 ): ChatTextContent => {
@@ -232,7 +340,7 @@ const extractSystemText = (
 
 interface ChatMessage {
   role: string;
-  content: ChatTextContent | null;
+  content: ChatContent | null;
   tool_calls?: Array<{
     id: string;
     type: string;
@@ -324,7 +432,7 @@ const mapAnthropicContentToChat = (
     return [{ role, content }];
   }
 
-  const parts: Array<string | ChatTextBlock> = [];
+  const parts: ChatContentPart[] = [];
   const toolCalls: Array<{
     id: string;
     type: string;
@@ -336,15 +444,16 @@ const mapAnthropicContentToChat = (
   const toolResults: ChatMessage[] = [];
   const messages: ChatMessage[] = [];
   const flushAssistantMessage = (): void => {
-    const textContent = mapTextPartsToChatContent(parts);
+    const content = mapContentPartsToChat(parts);
+    const hasContent = typeof content === 'string' ? content.length > 0 : true;
 
-    if (!toolCalls.length && !textContent.length) {
+    if (!toolCalls.length && !hasContent) {
       return;
     }
 
     messages.push({
       role: 'assistant',
-      content: textContent.length ? textContent : null,
+      content: hasContent ? content : null,
       ...(toolCalls.length ? { tool_calls: [...toolCalls] } : {}),
     });
     parts.length = 0;
@@ -388,6 +497,20 @@ const mapAnthropicContentToChat = (
       }
     } else if (block.type === 'thinking') {
       // Skip thinking blocks in conversation history for OpenAI compat.
+    } else if (block.type === 'image' && block.source) {
+      // Anthropic sends `{ type: 'image', source: { type: 'base64' | 'url',
+      // media_type, data | url } }`. Emit a real image block so the upstream
+      // model sees the image; without this branch the block fell through to
+      // `stringifyContent` and the model received a JSON dump of the base64
+      // payload as text. An `image` block with no `source` is not a real
+      // Anthropic image, so it keeps the generic stringified handling.
+      const imageUrl = buildChatImageUrl(block.source);
+
+      parts.push(
+        imageUrl
+          ? { type: 'image_url', image_url: { url: imageUrl } }
+          : stringifyContent(block),
+      );
     } else {
       parts.push(stringifyContent(block));
     }
@@ -395,9 +518,10 @@ const mapAnthropicContentToChat = (
 
   if (role === 'user') {
     messages.push(...toolResults);
-    const textContent = mapTextPartsToChatContent(parts);
-    if (textContent.length) {
-      messages.push({ role: 'user', content: textContent });
+    const content = mapContentPartsToChat(parts);
+    const hasContent = typeof content === 'string' ? content.length > 0 : true;
+    if (hasContent) {
+      messages.push({ role: 'user', content });
     }
   } else {
     flushAssistantMessage();

@@ -1873,4 +1873,188 @@ describe('anthropic messages api', () => {
     expect(thinkingBlock?.thinking).toBe('Let me think...');
     expect(textBlock?.text).toBe('The answer is 42.');
   });
+
+  describe('image content blocks', () => {
+    const captureUpstreamBody = async (
+      credentialOverrides: Record<string, unknown>,
+      content: Array<
+        | { type: 'text'; text: string }
+        | { type: 'image'; source?: Record<string, string>; content?: string }
+      >,
+    ): Promise<Record<string, unknown>> => {
+      const credential = await addCredential({
+        bearer_token: 'anthropic-image-token',
+        user_id: 'anthropic-image@example.com',
+        ...credentialOverrides,
+      });
+      const accessKey = await createAccessKey({
+        credentialFilenames: [credential.filename],
+        name: 'Anthropic Image Key',
+      });
+      let upstreamBody: Record<string, unknown> | undefined;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+        upstreamBody = JSON.parse(String(init?.body)) as Record<
+          string,
+          unknown
+        >;
+
+        return makeJsonResponse({
+          choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+        });
+      });
+
+      await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${accessKey.secret}` },
+        }),
+        {
+          max_tokens: 256,
+          messages: [{ role: 'user', content }],
+          model: 'claude-sonnet-4.6',
+        },
+      );
+
+      expect(upstreamBody).toBeDefined();
+      return upstreamBody as Record<string, unknown>;
+    };
+
+    const getLastUserContent = (
+      upstreamBody: Record<string, unknown>,
+    ): unknown => {
+      const messages = upstreamBody.messages as Array<
+        Record<string, unknown>
+      > | null;
+      const userMessages = (messages ?? []).filter((m) => m.role === 'user');
+
+      return userMessages[userMessages.length - 1]?.content;
+    };
+
+    it('converts a base64 image to a data URI image_url part', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          { type: 'text', text: 'What is in this image?' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'iVBORw0KGgo=',
+            },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        { type: 'text', text: 'What is in this image?' },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' },
+        },
+      ]);
+    });
+
+    it('maps an image to input_image on the Responses upstream', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: true, upstream_protocol: 'responses' },
+        [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/jpeg',
+              data: '/9j/4AAQSkZJRg==',
+            },
+          },
+          { type: 'text', text: 'Describe it.' },
+        ],
+      );
+
+      const input = upstreamBody.input as Array<Record<string, unknown>>;
+      const userInput = input.filter((item) => item.role === 'user');
+      expect(userInput[userInput.length - 1]?.content).toEqual([
+        {
+          type: 'input_image',
+          image_url: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+        },
+        { type: 'input_text', text: 'Describe it.' },
+      ]);
+    });
+
+    it('passes through an image with a url source', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          {
+            type: 'image',
+            source: { type: 'url', url: 'https://example.com/a.png' },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'https://example.com/a.png' },
+        },
+      ]);
+    });
+
+    it('defaults the media type when one is omitted', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [{ type: 'image', source: { type: 'base64', data: 'AAAA' } }],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,AAAA' },
+        },
+      ]);
+    });
+
+    it('falls back to text when the image source is unusable', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          { type: 'image', source: { type: 'base64' } },
+          { type: 'text', text: 'still here' },
+        ],
+      );
+
+      const content = getLastUserContent(upstreamBody);
+      expect(content).toContain('still here');
+      expect(content).toContain('base64');
+    });
+
+    it('stringifies an image block that has no source at all', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [{ type: 'image', content: 'base64data' }],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toContain('base64data');
+    });
+
+    it('keeps an image-only message instead of dropping it', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/gif', data: 'R0lGOD' },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/gif;base64,R0lGOD' },
+        },
+      ]);
+    });
+  });
 });
