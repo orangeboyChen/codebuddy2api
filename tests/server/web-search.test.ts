@@ -5623,7 +5623,12 @@ describe('proxy integration', () => {
       const url = String(input);
 
       if (url.includes('/agenttool/v1/webfetch')) {
-        return makeJsonResponse({ content: 'Fetched body.' });
+        // Backends report the URL they actually read, which follows redirects
+        // and so can differ from the one the model asked for.
+        return makeJsonResponse({
+          content: 'Fetched body.',
+          url: 'https://page.test/a?redirected=1',
+        });
       }
 
       upstreamCalls += 1;
@@ -5680,7 +5685,12 @@ describe('proxy integration', () => {
     );
 
     const payload = (await response.json()) as {
-      content: Array<{ thinking?: string; text?: string; type: string }>;
+      content: Array<{
+        thinking?: string;
+        text?: string;
+        type: string;
+        content?: { url?: string };
+      }>;
     };
     const blocks = payload.content.map((block) =>
       block.type === 'thinking'
@@ -5700,6 +5710,10 @@ describe('proxy integration', () => {
       'thinking:The page confirms it.',
       'text:Here is what it said.',
     ]);
+    // The result carries the URL the backend read, not the one requested.
+    expect(payload.content[3]?.content?.url).toBe(
+      'https://page.test/a?redirected=1',
+    );
     expect(upstreamCalls).toBe(2);
   });
 

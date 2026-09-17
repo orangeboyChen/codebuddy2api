@@ -484,28 +484,31 @@ const readReasoning = (message: ChatCompletionMessage | undefined): string => {
 };
 
 /**
- * Pairs each hop's reasoning with the text it produced, keeping hop order.
+ * Pairs each hop's reasoning and text with the calls that hop made.
  *
- * `texts` and `reasonings` are parallel arrays — one entry per hop that ran a
- * server tool — so zipping them back together is what restores the grouping a
- * joined string cannot express. A hop that produced only one of the two still
- * yields an entry; the missing side stays empty.
+ * The three arrays are index-aligned — entry N is hop N — so zipping them back
+ * together is what restores the grouping a joined string cannot express. `texts`
+ * and `reasonings` are one entry longer than `executions`, because the closing
+ * hop answers instead of calling another tool.
  */
 const buildIntermediateTurns = ({
-  executions = [],
+  executions,
   reasonings,
   texts,
 }: {
-  executions?: ServerToolExecution[][];
+  executions: ServerToolExecution[][];
   reasonings: string[];
   texts: string[];
 }): ServerToolTurn[] =>
   Array.from(
     { length: Math.max(reasonings.length, texts.length) },
     (_, index) => ({
+      // Only `executions` can run short: the closing hop answers without
+      // calling anything, so it has an entry in the prose arrays but none here.
+      // The three arrays stay aligned because every hop appends to all of them.
       executions: executions[index] ?? [],
-      reasoning: reasonings[index] ?? '',
-      text: texts[index] ?? '',
+      reasoning: reasonings[index],
+      text: texts[index],
     }),
   );
 
@@ -527,7 +530,7 @@ const withIntermediateTurns = ({
   reasonings,
   texts,
 }: {
-  executions?: ServerToolExecution[][];
+  executions: ServerToolExecution[][];
   payload: ChatCompletionPayload;
   reasonings: string[];
   texts: string[];
@@ -547,7 +550,7 @@ const withIntermediateTurns = ({
   // Nothing from the earlier hops and nothing to fold in — but the hops may
   // still have run tools, which is exactly the case a caller consuming `turns`
   // needs: a hop that called a tool without speaking first is still a hop.
-  if (!extraText && !extraReasoning && !executions?.length) {
+  if (!extraText && !extraReasoning && !executions.length) {
     return payload;
   }
 
