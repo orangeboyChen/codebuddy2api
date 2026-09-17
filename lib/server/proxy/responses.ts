@@ -5,6 +5,13 @@ import {
   isWebFetchEnabled,
   isWebSearchEnabled,
 } from '../domain/config';
+import { stringifyContent } from '../shared/content';
+import {
+  createSseResponse,
+  DONE_FRAME_TEXT,
+  encodeDoneFrame,
+  eventFrameText,
+} from '../shared/sse';
 import { getCredentialSupportedModels } from '../domain/credentials';
 import type { DebugTrace } from '../domain/debug';
 import {
@@ -869,34 +876,6 @@ const mapInputContentToTranscriptContent = (
   });
 
   return mapped.length ? mapped : null;
-};
-
-const stringifyContent = (value: unknown): string => {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        if (typeof item === 'string') {
-          return item;
-        }
-
-        if (item && typeof item === 'object' && 'text' in item) {
-          return String((item as { text?: unknown }).text ?? '');
-        }
-
-        return JSON.stringify(item);
-      })
-      .join('');
-  }
-
-  if (value === undefined || value === null) {
-    return '';
-  }
-
-  return JSON.stringify(value);
 };
 
 /**
@@ -1775,20 +1754,12 @@ const mapChatResponseToResponsesStream = async (
   });
 
   const body = [
-    ...frames.map(
-      (frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}`,
-    ),
-    'data: [DONE]',
+    ...frames.map((frame) => eventFrameText(String(frame.type), frame)),
+    DONE_FRAME_TEXT,
     '',
   ].join('\n\n');
 
-  return new Response(body, {
-    headers: {
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Content-Type': 'text/event-stream; charset=utf-8',
-    },
-  });
+  return createSseResponse(body);
 };
 
 const mapChatStreamToResponsesEventStream = (
@@ -2091,7 +2062,7 @@ const mapChatStreamToResponsesEventStream = (
                 type: 'response.error',
                 error: { message: 'Failed to persist response session' },
               });
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.enqueue(encodeDoneFrame());
               releaseReader();
               controller.close();
               return;
@@ -2186,7 +2157,7 @@ const mapChatStreamToResponsesEventStream = (
                   .map(({ item }) => item),
               },
             });
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.enqueue(encodeDoneFrame());
             releaseReader();
             controller.close();
             return;
@@ -2451,14 +2422,7 @@ const mapChatStreamToResponsesEventStream = (
     },
   });
 
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Content-Type': 'text/event-stream; charset=utf-8',
-    },
-  });
+  return createSseResponse(stream, { status: 200 });
 };
 
 const createResponsesEventStream = async (
@@ -2701,7 +2665,7 @@ const createResponsesEventStream = async (
             type: 'response.error',
             error: { message: 'Upstream request failed' },
           });
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.enqueue(encodeDoneFrame());
           controller.close();
           return;
         }
@@ -2747,13 +2711,7 @@ const createResponsesEventStream = async (
     },
   });
 
-  return new Response(stream, {
-    headers: {
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Content-Type': 'text/event-stream; charset=utf-8',
-    },
-  });
+  return createSseResponse(stream);
 };
 
 export const handleResponsesRequest = async (

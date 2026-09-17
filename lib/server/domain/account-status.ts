@@ -5,6 +5,7 @@ import {
   type CredentialRecord,
 } from './credentials';
 import { getModelsForCredential } from '../proxy/codebuddy';
+import { asRecord } from '../shared/content';
 
 export interface AccountStatusSnapshot {
   checkin: { claimed: boolean | null; message: string | null };
@@ -25,11 +26,6 @@ const getBearerToken = (credential: CredentialRecord): string =>
   String(
     credential.data.bearer_token ?? credential.data.access_token ?? '',
   ).trim();
-
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-  value && typeof value === 'object'
-    ? (value as Record<string, unknown>)
-    : null;
 
 const findValue = (value: unknown, keys: string[]): unknown => {
   const record = asRecord(value);

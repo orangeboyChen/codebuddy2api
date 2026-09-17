@@ -51,6 +51,16 @@ import {
   toUpstreamTimeoutMessage,
 } from '../shared/upstream-timeout';
 import { recordUsageEvent, type UsageSnapshot } from '../domain/usage';
+import { stringifyContent } from '../shared/content';
+import { createSseResponse, encodeDoneFrame } from '../shared/sse';
+
+/**
+ * Chat completions are called from browser-side clients as well as servers, so
+ * this route's streams carry the CORS header the other protocols do not need.
+ */
+const CORS_HEADERS: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+};
 
 interface OpenAIMessage {
   role?: string;
@@ -948,30 +958,13 @@ export const extractImageUrl = (part: unknown): string | undefined => {
   return undefined;
 };
 
-const stringifyResponsesInputContent = (content: unknown): string => {
-  if (typeof content === 'string') return content;
-  if (content === null || content === undefined) return '';
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part === 'object' && 'text' in part) {
-          return String((part as { text?: unknown }).text ?? '');
-        }
-        return JSON.stringify(part);
-      })
-      .join('');
-  }
-  return JSON.stringify(content);
-};
-
 const mapChatContentToResponses = (
   content: unknown,
 ): Array<Record<string, unknown>> => {
   if (!Array.isArray(content)) {
     return [
       {
-        text: stringifyResponsesInputContent(content),
+        text: stringifyContent(content),
         type: 'input_text',
       },
     ];
@@ -1163,9 +1156,7 @@ const normalizeResponsesUpstreamBody = async (
       );
     })
     .map((message) => {
-      return stringifyResponsesInputContent(
-        (message as { content?: unknown }).content,
-      );
+      return stringifyContent((message as { content?: unknown }).content);
     })
     .filter(Boolean)
     .join('\n\n');
@@ -1202,7 +1193,7 @@ const buildResponsesBodyFromChat = async (
     ?.filter(
       (message) => message.role === 'system' || message.role === 'developer',
     )
-    .map((message) => stringifyResponsesInputContent(message.content))
+    .map((message) => stringifyContent(message.content))
     .filter(Boolean)
     .join('\n\n');
   const input =
@@ -1229,7 +1220,7 @@ const buildResponsesBodyFromChat = async (
             call_id: message.tool_call_id,
             output: hasImage
               ? mapChatContentToResponses(toolOutput)
-              : stringifyResponsesInputContent(toolOutput),
+              : stringifyContent(toolOutput),
             type: 'function_call_output',
           };
         }
@@ -1627,7 +1618,7 @@ const mapResponsesStreamToChat = (
             );
           }
           enqueueUsage(controller);
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.enqueue(encodeDoneFrame());
           await recordStreamUsage();
           reader.releaseLock();
           reader = null;
@@ -1643,7 +1634,7 @@ const mapResponsesStreamToChat = (
               'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}\n\n',
             ),
           );
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.enqueue(encodeDoneFrame());
           await cancelAndReleaseReader();
           await recordStreamUsage();
           controller.close();
@@ -1657,7 +1648,7 @@ const mapResponsesStreamToChat = (
                 'data: {"error":{"message":"Upstream SSE frame exceeds the maximum size"}}\n\n',
               ),
             );
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.enqueue(encodeDoneFrame());
             await cancelAndReleaseReader();
             await recordStreamUsage();
             controller.close();
@@ -1877,7 +1868,7 @@ const mapResponsesStreamToChat = (
               emittedFinish = true;
               emitted = true;
               if (stoppedLocally) {
-                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                controller.enqueue(encodeDoneFrame());
                 await cancelAndReleaseReader('Stop sequence matched');
                 await recordStreamUsage();
                 controller.close();
@@ -1919,7 +1910,7 @@ const mapResponsesStreamToChat = (
               emittedFinish = true;
               emitted = true;
               if (stoppedLocally) {
-                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                controller.enqueue(encodeDoneFrame());
                 await cancelAndReleaseReader('Stop sequence matched');
                 await recordStreamUsage();
                 controller.close();
@@ -1948,7 +1939,7 @@ const mapResponsesStreamToChat = (
                   `data: ${JSON.stringify({ error: { message } })}\n\n`,
                 ),
               );
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.enqueue(encodeDoneFrame());
               await cancelAndReleaseReader();
               await recordStreamUsage();
               controller.close();
@@ -1968,13 +1959,8 @@ const mapResponsesStreamToChat = (
     },
   });
 
-  return new Response(stream, {
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Content-Type': 'text/event-stream; charset=utf-8',
-    },
+  return createSseResponse(stream, {
+    headers: CORS_HEADERS,
     status: upstreamResponse.status,
   });
 };
@@ -2162,14 +2148,9 @@ const normalizeStreamingResponse = ({
   upstreamResponse: Response;
 }): Response => {
   if (!upstreamResponse.body) {
-    return new Response(null, {
+    return createSseResponse(null, {
+      headers: CORS_HEADERS,
       status: upstreamResponse.status,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-        'Content-Type': 'text/event-stream; charset=utf-8',
-      },
     });
   }
 
@@ -2308,14 +2289,9 @@ const normalizeStreamingResponse = ({
     },
   });
 
-  return new Response(stream, {
+  return createSseResponse(stream, {
+    headers: CORS_HEADERS,
     status: upstreamResponse.status,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Content-Type': 'text/event-stream; charset=utf-8',
-    },
   });
 };
 

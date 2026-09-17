@@ -10,7 +10,9 @@ import {
   runWebFetchResult,
   runWebSearchResult,
 } from '../search';
+import { asRecord, readReasoning } from '../shared/content';
 import { extractErrorMessage } from '../shared/http';
+import { createSseResponse, encodeDoneFrame } from '../shared/sse';
 
 import type { ChatRequestBody } from './codebuddy';
 import {
@@ -185,12 +187,6 @@ const readBufferedChatCompletionPayload = async (
   }
 
   return payload;
-};
-
-const asRecord = (value: unknown): JsonRecord | null => {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as JsonRecord)
-    : null;
 };
 
 /**
@@ -561,20 +557,6 @@ const buildMixedTurnPayload = ({
         : choice,
     ),
   };
-};
-
-export const readReasoning = (
-  message: ChatCompletionMessage | undefined,
-): string => {
-  if (!message) {
-    return '';
-  }
-
-  if (typeof message.reasoning_content === 'string') {
-    return message.reasoning_content;
-  }
-
-  return typeof message.reasoning === 'string' ? message.reasoning : '';
 };
 
 /**
@@ -1335,7 +1317,7 @@ const createInlineServerToolStream = async ({
             object: `${responseObject}.chunk`,
             usage,
           });
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.enqueue(encodeDoneFrame());
           controller.close();
           return;
         }
@@ -1387,7 +1369,7 @@ const createInlineServerToolStream = async ({
 
             if (!response.ok || buffered.error) {
               emitJson(controller, buffered as JsonRecord);
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.enqueue(encodeDoneFrame());
               controller.close();
               return;
             }
@@ -1570,7 +1552,7 @@ const createInlineServerToolStream = async ({
 
             if (!response.ok || finalPayload.error) {
               emitJson(controller, finalPayload as JsonRecord);
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.enqueue(encodeDoneFrame());
               controller.close();
               return;
             }
@@ -2149,18 +2131,13 @@ export const synthesizeChatCompletionStream = (
         });
       }
 
-      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.enqueue(encodeDoneFrame());
       controller.close();
     },
   });
 
-  return new Response(stream, {
+  return createSseResponse(stream, {
+    headers: { 'Access-Control-Allow-Origin': '*' },
     status: 200,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Content-Type': 'text/event-stream; charset=utf-8',
-    },
   });
 };

@@ -20,7 +20,9 @@ import {
   createStreamCloser,
   toUpstreamTimeoutMessage,
 } from '../shared/upstream-timeout';
+import { stringifyContent } from '../shared/content';
 import { extractErrorMessage } from '../shared/http';
+import { createSseResponse } from '../shared/sse';
 import {
   markServerTool,
   normalizeToolName,
@@ -192,34 +194,6 @@ type ChatTextContent = string | ChatTextBlock[];
 
 const createAnthropicId = (prefix: string): string => {
   return `${prefix}_${crypto.randomUUID().replaceAll('-', '')}`;
-};
-
-const stringifyContent = (value: unknown): string => {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        if (typeof item === 'string') {
-          return item;
-        }
-
-        if (item && typeof item === 'object' && 'text' in item) {
-          return String((item as { text?: unknown }).text ?? '');
-        }
-
-        return JSON.stringify(item);
-      })
-      .join('');
-  }
-
-  if (value === undefined || value === null) {
-    return '';
-  }
-
-  return JSON.stringify(value);
 };
 
 const mapTextPartsToChatContent = (
@@ -1059,14 +1033,7 @@ const mapOpenAIStreamToAnthropicSSE = (
   },
 ): Response => {
   if (!upstreamResponse.body) {
-    return new Response(null, {
-      status: upstreamResponse.status,
-      headers: {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      },
-    });
+    return createSseResponse(null, { status: upstreamResponse.status });
   }
 
   const encoder = new TextEncoder();
@@ -1531,14 +1498,7 @@ const mapOpenAIStreamToAnthropicSSE = (
     },
   });
 
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    },
-  });
+  return createSseResponse(stream, { status: 200 });
 };
 
 const createAnthropicServerToolEventStream = (
@@ -1659,13 +1619,7 @@ const createAnthropicServerToolEventStream = (
     },
   });
 
-  return new Response(stream, {
-    headers: {
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Content-Type': 'text/event-stream; charset=utf-8',
-    },
-  });
+  return createSseResponse(stream);
 };
 
 const getUpstreamErrorMessage = async (response: Response): Promise<string> => {
