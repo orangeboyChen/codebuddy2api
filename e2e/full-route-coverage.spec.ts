@@ -877,6 +877,11 @@ test.describe('Full route coverage', () => {
     page,
   }) => {
     await page.goto('/dashboard');
+    await expect(page).toHaveURL(/\/dashboard$/);
+    // `main` renders on every page, so asserting on it proves nothing about
+    // which document is loaded. Wait on the URL instead, otherwise the next
+    // history navigation can start before this one lands and abort.
+    let previous = '/dashboard';
     for (const route of [
       '/usage',
       '/credentials',
@@ -884,11 +889,14 @@ test.describe('Full route coverage', () => {
       '/debug',
     ]) {
       await page.goto(route);
-      await expect(page.locator('main')).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`${route}$`));
       await page.goBack();
+      await expect(page).toHaveURL(new RegExp(`${previous}$`));
       await expect(page.locator('main')).toBeVisible();
       await page.goForward();
+      await expect(page).toHaveURL(new RegExp(`${route}$`));
       await expect(page.locator('main')).toBeVisible();
+      previous = route;
     }
   });
 
