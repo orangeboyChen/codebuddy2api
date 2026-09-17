@@ -62,12 +62,19 @@ export const handleMessagesRequest = async (
       ? rewrite.tools
       : ((chatBody.tools as unknown[] | undefined) ?? undefined);
 
+    /**
+     * One round trip upstream.
+     *
+     * The tools come from `turnBody`, never pinned back on here: the turn
+     * decides what to offer on each hop, and overriding it would undo the
+     * withdrawal it does once the search budget is spent.
+     */
     const callUpstream =
       (context?: ProxyContext) =>
       (turnBody: ChatRequestBody, stream: boolean): Promise<Response> =>
         proxyChatCompletions(
           request,
-          { ...turnBody, tools: upstreamTools, stream },
+          { ...turnBody, stream },
           context,
           debugTrace,
           '/v1/messages',
@@ -94,7 +101,6 @@ export const handleMessagesRequest = async (
               fetchProvider,
               rewrite,
               searchProvider,
-              stream: Boolean(body.stream),
             }),
         );
 
@@ -119,7 +125,11 @@ export const handleMessagesRequest = async (
     }
 
     const upstreamResponse = await callUpstream()(
-      chatBody as ChatRequestBody,
+      // `upstreamTools` matters here even though no turn runs: when a server
+      // tool is declared but nothing on this deployment can execute it, the
+      // declaration still has to be rewritten, or upstream is sent a
+      // `web_search_20250305` type it has never heard of.
+      { ...chatBody, tools: upstreamTools } as ChatRequestBody,
       Boolean(body.stream),
     );
 

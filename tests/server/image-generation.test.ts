@@ -1478,6 +1478,75 @@ describe('Responses image support', () => {
       expect(text).toContain('event: response.web_search_call.completed');
     });
 
+    it('carries prose written before the search through the image path', async () => {
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+
+        if (url.includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        // The search backend has to answer for an execution to be recorded.
+        if (url.includes('/agenttool/v1/search')) {
+          return makeImageResponse({
+            results: [
+              {
+                content: 'Current result',
+                title: 'News',
+                url: 'https://news.test',
+              },
+            ],
+          });
+        }
+
+        chatCall += 1;
+
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                // Speaks before asking, so the turn has a preamble to carry.
+                content: 'Let me search for that first.',
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"query":"cats"}',
+                      name: 'web_search',
+                    },
+                    id: 'search_1',
+                    type: 'function',
+                  },
+                  {
+                    function: {
+                      arguments: '{"prompt":"a cat"}',
+                      name: 'image_generation',
+                    },
+                    id: 'call_1',
+                    type: 'function',
+                  },
+                ],
+              }
+            : { content: 'Here it is.' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'search then draw',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }, { type: 'web_search_preview' }],
+      } as never);
+
+      const text = await response.text();
+
+      expect(text).toContain('Let me search for that first.');
+      expect(text).toContain('event: response.web_search_call.completed');
+    });
+
     it('replays a buffered stream whose turn produced no message', async () => {
       // No prose anywhere and a surviving client call on the capped hop means
       // the mapper emits no message item, so the replay has nothing to

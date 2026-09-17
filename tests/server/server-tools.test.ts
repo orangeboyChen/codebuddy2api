@@ -7,15 +7,16 @@ import {
   getForcedToolName,
   attachServerToolExecutions,
   getServerToolExecutions,
-  prepareServerToolTurn,
   hasAmbiguousServerToolName,
   hasExecutableServerTool,
+  readMaxUses,
   parseBufferedPayload,
   readBufferedChatCompletionPayload,
   resolveServerToolBackends,
   rewriteServerTools,
   runServerToolTurn,
   type ServerToolInvocation,
+  type ServerToolTurnOutcome,
 } from '@/lib/server/proxy/server-tools';
 import { isEventStream } from '@/lib/server/shared/sse';
 import { updateSettings } from '@/lib/server/domain/config';
@@ -185,11 +186,24 @@ describe('server tool classification', () => {
   });
 
   describe('name collisions', () => {
-    it('flags a client function that collides with an injected server tool', () => {
+    it('does not treat the client’s WebSearch as a collision', () => {
+      // This pairing is Claude Code's normal shape in a single request, so
+      // calling it ambiguous disabled the server tool outright — the client
+      // then received a `web_search` tool_use it had no handler for.
       expect(
         hasAmbiguousServerToolName([
           { type: SEARCH_TYPE, name: 'web_search' },
           claudeCodeWebSearch,
+        ]),
+      ).toBe(false);
+    });
+
+    it('flags a genuine name clash: the same name, two kinds', () => {
+      // Here the model really could not say which it meant, so neither runs.
+      expect(
+        hasAmbiguousServerToolName([
+          { type: SEARCH_TYPE, name: 'web_search' },
+          { name: 'web_search', input_schema: {} },
         ]),
       ).toBe(true);
     });
@@ -212,12 +226,37 @@ describe('server tool classification', () => {
      * way to say which it meant, so the call goes to the client rather than
      * being guessed at.
      */
-    it('declines to execute either tool when the names collide', () => {
+    it('runs the server tool when the client’s own WebSearch is present', () => {
       const rewrite = rewriteServerTools({
         declarations: { fetch: false, search: true },
         fetchProvider: null,
         searchProvider: makeSearchProvider(),
         tools: [{ type: SEARCH_TYPE, name: 'web_search' }, claudeCodeWebSearch],
+      });
+
+      // The declared type already tells them apart, so the search runs and the
+      // client keeps its own tool.
+      expect(rewrite?.executable).toEqual({ fetch: false, search: true });
+      expect(hasExecutableServerTool(rewrite!.executable)).toBe(true);
+      expect(rewrite?.classifyCall({ function: { name: 'web_search' } })).toBe(
+        'web_search',
+      );
+      // The client's own tool, left for it: it declared `WebSearch` itself, so
+      // the respelled-name fallback is deliberately not registered.
+      expect(rewrite?.classifyCall({ function: { name: 'WebSearch' } })).toBe(
+        null,
+      );
+    });
+
+    it('declines both tools when the names are genuinely identical', () => {
+      const rewrite = rewriteServerTools({
+        declarations: { fetch: false, search: true },
+        fetchProvider: null,
+        searchProvider: makeSearchProvider(),
+        tools: [
+          { type: SEARCH_TYPE, name: 'web_search' },
+          { name: 'web_search', input_schema: {} },
+        ],
       });
 
       expect(rewrite?.executable).toEqual({ fetch: false, search: false });
@@ -241,11 +280,9 @@ describe('server tool classification', () => {
           function: expect.objectContaining({ name: 'web_search' }),
         },
       ]);
-      // Dropped from the follow-up, or the model could search again there.
-      expect(rewrite?.followUpTools).toEqual([]);
     });
 
-    it('keeps a declaration with no backend callable for the client', () => {
+    it('withdraws a declaration no backend can run, rather than offering it', () => {
       const rewrite = rewriteServerTools({
         declarations: { fetch: false, search: true },
         fetchProvider: null,
@@ -254,7 +291,10 @@ describe('server tool classification', () => {
       });
 
       expect(rewrite?.executable).toEqual({ fetch: false, search: false });
-      expect(rewrite?.followUpTools).toHaveLength(1);
+      // Offering the tool anyway would have the model call it and hand the
+      // client a `tool_use` for a name it declared as provider-executed and
+      // has no handler for: no search, and a turn it cannot complete.
+      expect(rewrite?.tools).toEqual([]);
     });
 
     it('leaves a client function untouched in both tool lists', () => {
@@ -269,15 +309,25 @@ describe('server tool classification', () => {
       });
 
       // The client's own function is forwarded verbatim; only the server
-      // declaration is rewritten, and only the rewritten one is dropped from
-      // the follow-up.
+      // declaration is rewritten.
+      expect(rewrite?.tools[0]).toEqual({
+        type: 'function',
+        function: expect.objectContaining({ name: 'web_search' }),
+      });
       expect(rewrite?.tools[1]).toEqual({ name: 'Read', input_schema: {} });
-      expect(rewrite?.followUpTools).toEqual([
-        { name: 'Read', input_schema: {} },
-      ]);
     });
 
-    it('recognises the model’s own spelling of a call it injected', () => {
+    /**
+     * The regression, from the other side. `WebSearch` is the tool *Claude
+     * Code* declares and resolves itself; normalised it is indistinguishable
+     * from the server tool, so a loose match here is what let the proxy answer
+     * calls the client meant to handle.
+     *
+     * The names the proxy injected are its own, so an exact match is all that
+     * is needed — and a miss means the call is the client's, which is the safe
+     * direction to be wrong in.
+     */
+    it('recognises its own calls, including when upstream respells them', () => {
       const rewrite = rewriteServerTools({
         declarations: { fetch: true, search: true },
         fetchProvider: makeFetchProvider(),
@@ -288,38 +338,28 @@ describe('server tool classification', () => {
         ],
       });
 
-      // Upstream echoes these back in camel case often enough to matter.
+      // Ours, exactly as handed to upstream.
+      expect(
+        rewrite?.isExecutableCall({ function: { name: 'web_search' } }),
+      ).toBe(true);
+      expect(
+        rewrite?.isExecutableCall({ function: { name: 'web_fetch' } }),
+      ).toBe(true);
+
+      // Respelled by upstream. Safe to accept precisely because this request
+      // declares no client function of that name, so a call spelled `WebSearch`
+      // can only be our own tool coming back in another hand.
       expect(
         rewrite?.isExecutableCall({ function: { name: 'WebSearch' } }),
       ).toBe(true);
       expect(
-        rewrite?.isExecutableCall({ function: { name: 'WebFetch' } }),
+        rewrite?.isExecutableCall({ function: { name: 'Web Fetch' } }),
       ).toBe(true);
+
+      // Still not ours.
       expect(rewrite?.isExecutableCall({ function: { name: 'Read' } })).toBe(
         false,
       );
-    });
-
-    it('does not claim a call when the tool has no backend', () => {
-      const rewrite = rewriteServerTools({
-        declarations: { fetch: false, search: true },
-        fetchProvider: null,
-        searchProvider: null,
-        tools: [{ type: SEARCH_TYPE, name: 'web_search' }],
-      });
-
-      expect(
-        rewrite?.isExecutableCall({ function: { name: 'web_search' } }),
-      ).toBe(false);
-    });
-  });
-
-  describe('prepareServerToolTurn', () => {
-    it('declines when no provider-executed tool is declared', async () => {
-      await expect(
-        prepareServerToolTurn([claudeCodeWebSearch]),
-      ).resolves.toBeNull();
-      await expect(prepareServerToolTurn(undefined)).resolves.toBeNull();
     });
   });
 
@@ -346,7 +386,6 @@ describe('server tool classification', () => {
 const body = {
   messages: [{ role: 'user', content: 'when did it ship?' }],
   model: 'test-model',
-  stream: false,
 };
 
 const makeRewrite = (searchProvider: WebSearchProvider | null) =>
@@ -373,13 +412,16 @@ describe('server tool turn', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     expect(callUpstream).toHaveBeenCalledTimes(1);
     expect(outcome.executions).toEqual([]);
-    // The answer it already wrote is the whole turn.
-    expect(outcome.preamble.text).toBe('Yesterday.');
+    // It answered outright, so there is no preamble — the answer stays in the
+    // payload where the renderer will find it.
+    expect(outcome.preamble).toEqual({ reasoning: '', text: '' });
+    expect((await outcome.response.json()).choices[0].message.content).toBe(
+      'Yesterday.',
+    );
   });
 
   it('runs the search and asks upstream once more for the answer', async () => {
@@ -402,7 +444,6 @@ describe('server tool turn', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     expect(callUpstream).toHaveBeenCalledTimes(2);
@@ -434,7 +475,6 @@ describe('server tool turn', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     const followUp = sentBodies[1] as { messages: unknown[] };
@@ -446,7 +486,7 @@ describe('server tool turn', () => {
     });
   });
 
-  it('drops the executed tool so the follow-up cannot search again', async () => {
+  it('keeps the server tool callable so the model can refine its query', async () => {
     let calls = 0;
     const sentBodies: Record<string, unknown>[] = [];
     const callUpstream = vi.fn(async (nextBody) => {
@@ -464,10 +504,14 @@ describe('server tool turn', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
-    expect((sentBodies[1] as { tools: unknown[] }).tools).toEqual([]);
+    // Still there: whether to search again is the model's call, not ours.
+    expect((sentBodies[1] as { tools: unknown[] }).tools).toEqual([
+      expect.objectContaining({
+        function: expect.objectContaining({ name: 'web_search' }),
+      }),
+    ]);
   });
 
   it('relaxes a tool_choice that would force another search', async () => {
@@ -488,13 +532,12 @@ describe('server tool turn', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     expect(sentBodies[1].tool_choice).toBe('auto');
   });
 
-  it('turns a forced server tool into no tool at all on the follow-up', async () => {
+  it('loosens a forced server tool to let the model choose', async () => {
     let calls = 0;
     const sentBodies: Record<string, unknown>[] = [];
     const callUpstream = vi.fn(async (nextBody) => {
@@ -515,10 +558,11 @@ describe('server tool turn', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
-    expect(sentBodies[1].tool_choice).toBe('none');
+    // Not `none`: the model may still want a second search, it just must not
+    // be compelled into one forever.
+    expect(sentBodies[1].tool_choice).toBe('auto');
   });
 
   it('hands a failed upstream call back untouched', async () => {
@@ -532,7 +576,6 @@ describe('server tool turn', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     expect(callUpstream).toHaveBeenCalledTimes(1);
@@ -558,7 +601,6 @@ describe('server tool turn', () => {
       onCall: (invocation) => invocations.push(invocation),
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     expect(invocations).toEqual([
@@ -582,7 +624,6 @@ describe('server tool turn', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     // Not ours, so nothing runs and the call goes back exactly as it arrived.
@@ -623,6 +664,7 @@ describe('server tool plumbing', () => {
               name: 'web_fetch',
             },
           },
+          'web_fetch',
           0,
         ),
       ).toEqual({
@@ -634,7 +676,11 @@ describe('server tool plumbing', () => {
 
     it('falls back to a positional id when the model sends none', () => {
       expect(
-        buildServerToolInvocation({ function: { name: 'web_search' } }, 3),
+        buildServerToolInvocation(
+          { function: { name: 'web_search' } },
+          'web_search',
+          3,
+        ),
       ).toEqual({
         id: 'server_tool_3',
         input: { query: '' },
@@ -850,7 +896,6 @@ describe('server tool plumbing', () => {
         fetchProvider: null,
         rewrite: makeRewrite(makeSearchProvider()),
         searchProvider: makeSearchProvider(),
-        stream: false,
       });
 
       return sentBodies[1]?.tool_choice;
@@ -882,7 +927,7 @@ describe('server tool plumbing', () => {
 
 describe('server tool edge cases', () => {
   it('builds a search invocation from a call with no name at all', () => {
-    expect(buildServerToolInvocation({}, 2)).toEqual({
+    expect(buildServerToolInvocation({}, 'web_search', 2)).toEqual({
       id: 'server_tool_2',
       input: { query: '' },
       type: 'web_search',
@@ -891,6 +936,7 @@ describe('server tool edge cases', () => {
 
   it('reports no executions when a turn ran but upstream sent no message', async () => {
     let calls = 0;
+    outcomeCalls = 0;
     const outcome = await runServerToolTurn({
       body,
       callUpstream: async () => {
@@ -903,7 +949,6 @@ describe('server tool edge cases', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     expect(outcome.executions).toEqual([]);
@@ -928,7 +973,6 @@ describe('server tool edge cases', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     expect(outcome.executions).toHaveLength(1);
@@ -955,7 +999,6 @@ describe('server tool edge cases', () => {
       fetchProvider: null,
       rewrite: makeRewrite(makeSearchProvider()),
       searchProvider: makeSearchProvider(),
-      stream: false,
     });
 
     expect(sentBodies[1].tool_choice).toEqual({ type: 'auto' });
@@ -974,5 +1017,437 @@ describe('server tool edge cases', () => {
 
     expect(attachServerToolExecutions(response, [])).toBe(response);
     expect(getServerToolExecutions(response)).toEqual([]);
+  });
+});
+
+describe('budget and call-matching edges', () => {
+  it('falls back to the default budget when there is no tool list', () => {
+    expect(readMaxUses(undefined, 'web_search')).toBe(5);
+    expect(readMaxUses('not-an-array', 'web_fetch')).toBe(5);
+  });
+
+  it('ignores a declared budget that is not a usable number', () => {
+    const tools = [{ type: SEARCH_TYPE, name: 'web_search', max_uses: 'many' }];
+
+    expect(readMaxUses(tools, 'web_search')).toBe(5);
+  });
+
+  it('claims nothing for a call that has no name', () => {
+    const rewrite = makeRewrite(makeSearchProvider());
+
+    expect(rewrite?.classifyCall({})).toBeNull();
+    expect(rewrite?.classifyCall({ function: {} })).toBeNull();
+  });
+});
+
+/**
+ * The searches have already run and been billed by the time the closing hop
+ * fails, so they must not vanish along with it.
+ */
+it('keeps the searches and the usage when the closing hop fails', async () => {
+  closingCalls = 0;
+  const outcome = await runServerToolTurn({
+    body,
+    callUpstream: async () => {
+      const hop =
+        closingCalls++ === 0
+          ? assistantToolCall('web_search', '{"query":"q"}')
+          : { error: { message: 'rate limited' } };
+
+      return makeJsonResponse(hop, closingCalls === 1 ? 200 : 429);
+    },
+    fetchProvider: null,
+    rewrite: rewriteServerTools({
+      declarations: { fetch: false, search: true },
+      fetchProvider: null,
+      searchProvider: makeSearchProvider(),
+      tools: [{ type: SEARCH_TYPE, name: 'web_search', max_uses: 1 }],
+    }),
+    searchProvider: makeSearchProvider(),
+  });
+
+  expect(outcome.executions).toHaveLength(1);
+  // Accrued before the failure, and the only record the client gets.
+  expect(outcome.usage).toEqual({ total_tokens: 10 });
+  expect(getServerToolExecutions(outcome.response)).toHaveLength(1);
+});
+
+/**
+ * A hop that asks for a server tool *and* something the client owns. The
+ * search runs, but the turn cannot continue here — the client has to answer
+ * its own call first — so the findings go back with that call outstanding.
+ */
+it('runs the search but hands a client call back unresolved', async () => {
+  const outcome = await runServerToolTurn({
+    body,
+    callUpstream: async () =>
+      makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'tool_calls',
+            message: {
+              content: 'Let me check that file first.',
+              role: 'assistant',
+              tool_calls: [
+                {
+                  id: 'call_1',
+                  type: 'function',
+                  function: {
+                    arguments: '{"query":"q"}',
+                    name: 'web_search',
+                  },
+                },
+                {
+                  id: 'call_2',
+                  type: 'function',
+                  function: { arguments: '{}', name: 'Read' },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    fetchProvider: null,
+    rewrite: makeRewrite(makeSearchProvider()),
+    searchProvider: makeSearchProvider(),
+  });
+
+  // One search ran, and the client's call survives for it to answer.
+  expect(outcome.executions).toHaveLength(1);
+  expect(outcome.preamble.text).toBe('Let me check that file first.');
+
+  const payload = (await outcome.response.json()) as {
+    choices: Array<{
+      finish_reason: string | null;
+      message: {
+        content: string | null;
+        tool_calls?: Array<{ function?: { name?: string } }>;
+      };
+    }>;
+  };
+
+  expect(
+    payload.choices[0]?.message.tool_calls?.map((c) => c.function?.name),
+  ).toEqual(['Read']);
+  expect(payload.choices[0]?.finish_reason).toBe('tool_calls');
+  // The prose travels as the preamble, not duplicated on the payload.
+  expect(payload.choices[0]?.message.content).toBeNull();
+});
+
+it('copes with a hop that carries no message at all', async () => {
+  const outcome = await runServerToolTurn({
+    body,
+    callUpstream: async () => makeJsonResponse({ choices: [{}] }),
+    fetchProvider: null,
+    rewrite: makeRewrite(makeSearchProvider()),
+    searchProvider: makeSearchProvider(),
+  });
+
+  // No call to answer and no prose to keep: the hop is the turn.
+  expect(outcome.executions).toEqual([]);
+  expect(outcome.preamble).toEqual({ reasoning: '', text: '' });
+});
+
+describe('server tool loop', () => {
+  /** Answers each hop in turn, so a test can script a multi-hop model. */
+  const scripted = (
+    hops: Array<Record<string, unknown>>,
+    maxUses = 5,
+  ): {
+    run: () => Promise<ServerToolTurnOutcome>;
+    sentBodies: () => ChatRequestBody[];
+  } => {
+    const sentBodies: ChatRequestBody[] = [];
+    let calls = 0;
+
+    const run = (): Promise<ServerToolTurnOutcome> =>
+      runServerToolTurn({
+        body,
+        callUpstream: async (nextBody) => {
+          sentBodies.push(nextBody);
+          const hop = hops[Math.min(calls, hops.length - 1)];
+          calls += 1;
+
+          return makeJsonResponse(hop);
+        },
+        fetchProvider: null,
+        rewrite: rewriteServerTools({
+          declarations: { fetch: false, search: true },
+          fetchProvider: null,
+          searchProvider: makeSearchProvider(),
+          tools: [{ type: SEARCH_TYPE, name: 'web_search', max_uses: maxUses }],
+        })!,
+        searchProvider: makeSearchProvider(),
+      });
+
+    return { run, sentBodies: () => sentBodies };
+  };
+
+  const ask = (query: string, id = 'call_1') =>
+    assistantToolCall('web_search', `{"query":"${query}"}`, id);
+
+  /**
+   * The point of a server tool: the model refines its query and searches
+   * again, all inside the one request the client sent.
+   */
+  it('searches again when the model is not satisfied', async () => {
+    const { run, sentBodies } = scripted([
+      ask('quantum computing', 'call_1'),
+      ask('IBM quantum 2026', 'call_2'),
+      {
+        choices: [
+          { finish_reason: 'stop', message: { content: 'Here it is.' } },
+        ],
+      },
+    ]);
+
+    const outcome = await run();
+
+    expect(sentBodies()).toHaveLength(3);
+    expect(outcome.executions).toHaveLength(2);
+    expect(
+      outcome.executions.map((execution) =>
+        execution.type === 'web_search' ? execution.input.query : '',
+      ),
+    ).toEqual(['quantum computing', 'IBM quantum 2026']);
+    // Every search plus the answer is one turn from the client's side.
+    expect((await outcome.response.json()).choices[0].message.content).toBe(
+      'Here it is.',
+    );
+  });
+
+  it('grows the transcript by one tool result per search', async () => {
+    const { run, sentBodies } = scripted([
+      ask('one', 'call_1'),
+      ask('two', 'call_2'),
+      { choices: [{ finish_reason: 'stop', message: { content: 'done' } }] },
+    ]);
+
+    await run();
+
+    // user, assistant+tool, assistant+tool
+    expect(sentBodies()[1].messages).toHaveLength(3);
+    expect(sentBodies()[2].messages).toHaveLength(5);
+    expect(
+      (sentBodies()[2].messages as Array<{ tool_call_id?: string }>).map(
+        (message) => message.tool_call_id,
+      ),
+      // user, assistant(tool_calls), tool(call_1), assistant(tool_calls), tool(call_2)
+    ).toEqual([undefined, undefined, 'call_1', undefined, 'call_2']);
+  });
+
+  /**
+   * `max_uses` bounds the turn, not the hop. Once it is spent the server tools
+   * are withdrawn for one last call so the model answers with what it has
+   * instead of asking for a search it will not get.
+   */
+  it('stops at max_uses and asks once more without the server tool', async () => {
+    const { run, sentBodies } = scripted(
+      [ask('one', 'call_1'), ask('two', 'call_2'), ask('three', 'call_3')],
+      2,
+    );
+
+    const outcome = await run();
+
+    expect(outcome.executions).toHaveLength(2);
+    // The closing call has no server tool left to call.
+    expect((sentBodies()[2] as { tools: unknown[] }).tools).toEqual([]);
+    // Nothing is left to choose from, so no tool_choice is sent at all: naming
+    // a tool that is not on offer is a contradiction some upstreams reject.
+    expect(sentBodies()[2].tool_choice).toBeUndefined();
+  });
+
+  it('reports usage for every hop, not just the last', async () => {
+    const hops = [
+      { ...ask('one', 'call_1'), usage: { total_tokens: 100 } },
+      { ...ask('two', 'call_2'), usage: { total_tokens: 240 } },
+      {
+        choices: [{ finish_reason: 'stop', message: { content: 'done' } }],
+        usage: { total_tokens: 80 },
+      },
+    ];
+
+    const outcome = await scripted(hops).run();
+
+    // Under-reporting the turn by every search that preceded the answer would
+    // bill the client for one hop out of three.
+    expect(outcome.usage).toEqual({ total_tokens: 420 });
+    expect((await outcome.response.json()).usage).toEqual({
+      total_tokens: 420,
+    });
+  });
+
+  it('hands a failed hop back with the usage accrued so far', async () => {
+    const { run } = scripted([
+      { ...ask('one', 'call_1'), usage: { total_tokens: 100 } },
+      { error: { message: 'rate limited' } },
+    ]);
+
+    const outcome = await run();
+
+    expect(outcome.response.status).toBe(200);
+    expect(outcome.usage).toEqual({ total_tokens: 100 });
+  });
+});
+
+/**
+ * These pin the behaviours that were fixed last and had no test at all: a
+ * client-declared `max_uses` per tool kind, nested usage blocks, a client
+ * pinning its *own* tool through `tool_choice`, and the id pairing between an
+ * assistant tool call and its result.
+ */
+let outcomeCalls = 0;
+let closingCalls = 0;
+
+describe('server tool budgets and wire shape', () => {
+  const bothDeclarations = (searchUses: number, fetchUses: number) =>
+    rewriteServerTools({
+      declarations: { fetch: true, search: true },
+      fetchProvider: makeFetchProvider(),
+      searchProvider: makeSearchProvider(),
+      tools: [
+        { type: SEARCH_TYPE, name: 'web_search', max_uses: searchUses },
+        { type: FETCH_TYPE, name: 'web_fetch', max_uses: fetchUses },
+      ],
+    });
+
+  it('reads max_uses per declared tool, not one merged number', () => {
+    const rewrite = bothDeclarations(8, 2);
+
+    // The fetch's budget used to cap the searches too.
+    expect(rewrite?.maxUses).toEqual({ web_fetch: 2, web_search: 8 });
+  });
+
+  it('clamps an absurd declared budget', () => {
+    const rewrite = rewriteServerTools({
+      declarations: { fetch: false, search: true },
+      fetchProvider: null,
+      searchProvider: makeSearchProvider(),
+      tools: [{ type: SEARCH_TYPE, name: 'web_search', max_uses: 5000 }],
+    });
+
+    // Every use is a sequential upstream round trip, so this has to be bounded.
+    expect(rewrite?.maxUses.web_search).toBeLessThanOrEqual(20);
+  });
+
+  it('leaves a tool_choice naming the client’s own WebSearch alone', async () => {
+    const sentBodies: ChatRequestBody[] = [];
+    let calls = 0;
+
+    await runServerToolTurn({
+      body: {
+        ...body,
+        tools: [
+          { type: SEARCH_TYPE, name: 'web_search', max_uses: 8 },
+          { name: 'WebSearch', input_schema: {}, type: 'function' },
+        ],
+        tool_choice: { type: 'function', function: { name: 'WebSearch' } },
+      } as never,
+      callUpstream: async (nextBody) => {
+        sentBodies.push(nextBody);
+        calls += 1;
+
+        return calls === 1
+          ? makeJsonResponse(assistantToolCall('web_search', '{"query":"q"}'))
+          : makeJsonResponse({ choices: [] });
+      },
+      fetchProvider: null,
+      // The same tool set: the client's `WebSearch` is what makes the respelled
+      // spelling unsafe to claim, so it has to be part of the rewrite too.
+      rewrite: rewriteServerTools({
+        declarations: { fetch: false, search: true },
+        fetchProvider: null,
+        searchProvider: makeSearchProvider(),
+        tools: [
+          { type: SEARCH_TYPE, name: 'web_search', max_uses: 8 },
+          { name: 'WebSearch', input_schema: {}, type: 'function' },
+        ],
+      }),
+      searchProvider: makeSearchProvider(),
+    });
+
+    // Loosening this would stop the model calling the tool the client pinned.
+    expect(sentBodies[1]?.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'WebSearch' },
+    });
+  });
+
+  it('pairs each assistant tool call with its result, id included', async () => {
+    let calls = 0;
+    const sent: ChatRequestBody[] = [];
+
+    await runServerToolTurn({
+      body,
+      callUpstream: async (nextBody) => {
+        sent.push(nextBody);
+        calls += 1;
+
+        return calls === 1
+          ? makeJsonResponse({
+              choices: [
+                {
+                  finish_reason: 'tool_calls',
+                  message: {
+                    content: null,
+                    role: 'assistant',
+                    // No id: this is the case the fallback exists for.
+                    tool_calls: [
+                      {
+                        type: 'function',
+                        function: {
+                          arguments: '{"query":"q"}',
+                          name: 'web_search',
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            })
+          : makeJsonResponse({ choices: [] });
+      },
+      fetchProvider: null,
+      rewrite: makeRewrite(makeSearchProvider()),
+      searchProvider: makeSearchProvider(),
+    });
+
+    const assistant = sent[1]?.messages?.find(
+      (message: { role?: string }) => message.role === 'assistant',
+    ) as { tool_calls?: Array<{ id?: string }> } | undefined;
+    const tool = sent[1]?.messages?.find(
+      (message: { role?: string }) => message.role === 'tool',
+    ) as { tool_call_id?: string } | undefined;
+
+    // An assistant call with no id behind it cannot be paired by upstream.
+    expect(assistant?.tool_calls?.[0]?.id).toBeTruthy();
+    expect(tool?.tool_call_id).toBe(assistant?.tool_calls?.[0]?.id);
+  });
+
+  it('sums nested usage blocks across hops', async () => {
+    const nested = (cached: number) => ({
+      prompt_tokens: 10,
+      prompt_tokens_details: { cached_tokens: cached },
+    });
+
+    outcomeCalls = 0;
+    const outcome = await runServerToolTurn({
+      body,
+      callUpstream: async () => {
+        const call = assistantToolCall('web_search', '{"query":"q"}');
+        const hop = outcomeCalls++ === 0 ? call : { choices: [] };
+
+        return makeJsonResponse({ ...hop, usage: nested(5) });
+      },
+      fetchProvider: null,
+      rewrite: makeRewrite(makeSearchProvider()),
+      searchProvider: makeSearchProvider(),
+    });
+
+    // The nested block used to be replaced by the last hop's, halving it.
+    expect(outcome.usage).toEqual({
+      prompt_tokens: 20,
+      prompt_tokens_details: { cached_tokens: 10 },
+    });
   });
 });

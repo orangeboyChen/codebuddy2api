@@ -35,6 +35,54 @@ import type { ChatCompletionToolCall, ServerToolKind } from './types';
  * the server type, and that sub-request is the one that runs here.
  */
 
+/**
+ * How many searches one request may run when the client does not say.
+ *
+ * Anthropic's own default. A client that cares sends `max_uses` on the
+ * declaration; this is only the fallback for one that does not.
+ */
+export const DEFAULT_MAX_SEARCH_USES = 5;
+
+/**
+ * Ceiling on a client-declared `max_uses`.
+ *
+ * Every use is a sequential upstream round trip, so an unbounded value is an
+ * unbounded request: `max_uses: 1000` would hold the connection for a thousand
+ * calls. Generous enough that no real client is constrained.
+ */
+export const MAX_SEARCH_USES_CEILING = 20;
+
+/**
+ * The search budget the client asked for.
+ *
+ * Anthropic declares it as `max_uses` on the server tool, and it bounds the
+ * whole turn rather than each hop: a model that refines its query twice has
+ * used two of the eight, not two of eight per round.
+ */
+/**
+ * The `max_uses` the client declared for one server tool.
+ *
+ * Read per kind, never merged: `max_uses` is declared on the individual tool,
+ * so a fetch's budget must not cap the searches, nor the other way round.
+ */
+export const readMaxUses = (tools: unknown, kind: ServerToolKind): number => {
+  if (!Array.isArray(tools)) {
+    return DEFAULT_MAX_SEARCH_USES;
+  }
+
+  const declared = tools
+    .filter((tool) => classifyServerToolDeclaration(tool) === kind)
+    .map((tool) => asRecord(tool)?.max_uses)
+    .filter((value): value is number => typeof value === 'number')
+    .filter((value) => Number.isFinite(value) && value >= 0);
+
+  if (!declared.length) {
+    return DEFAULT_MAX_SEARCH_USES;
+  }
+
+  return Math.min(MAX_SEARCH_USES_CEILING, Math.floor(Math.min(...declared)));
+};
+
 const SERVER_TOOL_PREFIXES: ReadonlyArray<{
   kind: ServerToolKind;
   prefix: string;
@@ -130,7 +178,12 @@ export const hasAmbiguousServerToolName = (tools: unknown): boolean => {
   const clientNames = new Set<string>();
 
   tools.forEach((tool) => {
-    const name = normalizeToolName(declarationName(tool));
+    // Exact, not normalised. Normalising makes `WebSearch` and `web_search`
+    // the same string, so a client declaring its own `WebSearch` next to the
+    // server tool looked like a collision and had the whole server-tool
+    // feature switched off — the declarations are already told apart by
+    // their declared type, so the names never needed comparing loosely.
+    const name = declarationName(tool);
 
     if (!name) {
       return;
@@ -143,12 +196,17 @@ export const hasAmbiguousServerToolName = (tools: unknown): boolean => {
     }
   });
 
-  return [...serverNames].some((name) =>
-    [...clientNames].some((client) => name === client),
-  );
+  return [...serverNames].some((name) => clientNames.has(name));
 };
 
 export interface RewrittenServerTools {
+  /** How many calls of each kind this turn may make; see {@link readMaxUses}. */
+  maxUses: { web_fetch: number; web_search: number };
+  /**
+   * Which server tool a call names, or `null` when the call is not one the
+   * proxy injected. Matched exactly — see the note in {@link rewriteServerTools}.
+   */
+  classifyCall: (toolCall: ChatCompletionToolCall) => ServerToolKind | null;
   /**
    * Which declared server tools the proxy will execute. A declaration the proxy
    * cannot run — no backend configured — is still rewritten upstream, but is
@@ -157,13 +215,6 @@ export interface RewrittenServerTools {
   executable: ServerToolDeclarations;
   /** Sorts a tool call into one the proxy runs and one the client resolves. */
   isExecutableCall: (toolCall: ChatCompletionToolCall) => boolean;
-  /**
-   * Declarations for the follow-up call, with the executed server tools
-   * removed. They are dropped rather than left callable because the follow-up
-   * exists to write the answer, and a second search there would be a second
-   * turn this proxy does not run.
-   */
-  followUpTools: unknown[];
   tools: unknown[];
 }
 
@@ -192,25 +243,48 @@ export const rewriteServerTools = ({
   // {@link hasAmbiguousServerToolName}.
   const ambiguous = hasAmbiguousServerToolName(tools);
 
+  const maxUses = {
+    web_fetch: readMaxUses(tools, 'web_fetch'),
+    web_search: readMaxUses(tools, 'web_search'),
+  };
+
   const executable: ServerToolDeclarations = {
     fetch: declarations.fetch && Boolean(fetchProvider) && !ambiguous,
     search: declarations.search && Boolean(searchProvider) && !ambiguous,
   };
 
-  const injectedNames = new Set<string>();
+  /**
+   * Which server tool each name the proxy injected belongs to.
+   *
+   * Keyed by the exact name first. `search/tool.ts` records that upstream
+   * echoes these back respelled — `WebSearch`, `Web Fetch` — so the normalised
+   * form is registered too, but only when the client declared no colliding
+   * name of its own; see the note at the registration site.
+   *
+   * A miss is not an error to be recovered from. It means the call is not
+   * ours, and it goes back to the client — which is the safe direction to be
+   * wrong in.
+   */
   const definitions = new Map<string, ServerToolKind>();
-  const followUpTools: unknown[] = [];
 
   /** Whether the proxy runs `kind`, as opposed to leaving it to the client. */
   const runsLocally = (kind: ServerToolKind): boolean =>
     kind === 'web_search' ? executable.search : executable.fetch;
 
-  const rewritten = tools.map((tool) => {
+  const rewritten = tools.flatMap<unknown>((tool) => {
     const kind = classifyServerToolDeclaration(tool);
 
     if (!kind) {
-      followUpTools.push(tool);
-      return tool;
+      return [tool];
+    }
+
+    // Withdrawn rather than offered when nothing here can run it. Offering it
+    // anyway would have the model call it and hand the client a `tool_use` for
+    // a name it declared as a *provider-executed* tool and has no handler for
+    // — no search, and a turn the client cannot complete. Answering from
+    // memory is the honest degradation.
+    if (!runsLocally(kind)) {
+      return [];
     }
 
     const definition =
@@ -218,34 +292,72 @@ export const rewriteServerTools = ({
         ? buildWebSearchToolDefinition()
         : buildWebFetchToolDefinition();
 
-    injectedNames.add(normalizeToolName(definition.name));
-    definitions.set(normalizeToolName(definition.name), kind);
+    definitions.set(definition.name, kind);
 
-    // A declaration the proxy is not running stays callable on the follow-up:
-    // the client is the one that answers it, and dropping it would silently
-    // remove a tool the client asked for.
-    if (!runsLocally(kind)) {
-      followUpTools.push({ type: 'function', function: definition });
-    }
-
-    return { type: 'function', function: definition };
+    // Stays callable on every hop: the model decides when it has enough, and
+    // removing it here would forbid exactly the follow-up search that makes a
+    // server tool worth having.
+    return [{ type: 'function', function: definition }];
   });
 
   /**
-   * Only a name the proxy injected, and only for a tool it has a backend for.
+   * Which server tool `toolCall` names, or `null` when it is not one of ours.
    *
-   * Matched in canonical form because the name comes back from the model, which
-   * is under no obligation to repeat the spelling it was given: upstream echoes
-   * `web_fetch` as `WebFetch` often enough to matter here.
+   * Compared exactly, for the reason above.
    */
+  const classifyCall = (
+    toolCall: ChatCompletionToolCall,
+  ): ServerToolKind | null => {
+    const name = toolCall.function?.name;
+
+    if (typeof name !== 'string') {
+      return null;
+    }
+
+    // Exact first; the normalised spelling is only a fallback, registered
+    // solely when nothing collides, for an upstream that respells the name it
+    // was given. Looking up the raw name alone would make that fallback dead.
+    return (
+      definitions.get(name) ?? definitions.get(normalizeToolName(name)) ?? null
+    );
+  };
+
+  /**
+   * Respelled names are only safe to claim when no client function normalises
+   * onto one of ours.
+   *
+   * A *normalised* test even though `hasAmbiguousServerToolName` is an exact
+   * one, and deliberately so: the fallback matches in normalised space, so
+   * that is where its safety has to be judged. A client declaring its own
+   * `WebSearch` must keep it — otherwise the proxy would answer exactly the
+   * call that client declared the tool to handle itself.
+   */
+  const clientNormalised = new Set(
+    tools
+      .filter((tool) => !classifyServerToolDeclaration(tool))
+      .map((tool) => normalizeToolName(declarationName(tool))),
+  );
+
+  for (const [name, kind] of [...definitions]) {
+    if (!clientNormalised.has(normalizeToolName(name))) {
+      definitions.set(normalizeToolName(name), kind);
+    }
+  }
+
+  /** Whether the proxy runs this call, as opposed to leaving it to the client. */
   const isExecutableCall = (toolCall: ChatCompletionToolCall): boolean => {
-    const name = normalizeToolName(toolCall.function?.name ?? '');
-    const kind = definitions.get(name);
+    const kind = classifyCall(toolCall);
 
     return kind ? runsLocally(kind) : false;
   };
 
-  return { executable, followUpTools, isExecutableCall, tools: rewritten };
+  return {
+    classifyCall,
+    executable,
+    isExecutableCall,
+    maxUses,
+    tools: rewritten,
+  };
 };
 
 /** Whether the proxy will run any server tool at all. */

@@ -36,6 +36,7 @@ import type {
 import type {
   ServerToolExecution,
   ServerToolInvocation,
+  ServerToolPreamble,
 } from '../server-tools';
 
 export const mapChatResponseToResponsesPayload = async (
@@ -48,8 +49,10 @@ export const mapChatResponseToResponsesPayload = async (
   upstreamPayload: Record<string, unknown>,
   serverToolExecutions: ServerToolExecution[],
   imageExecutions: ImageGenerationExecution[] = [],
+  pinnedResponseId?: string,
+  preamble?: ServerToolPreamble,
 ): Promise<Record<string, unknown>> => {
-  const responseId = createResponseId();
+  const responseId = pinnedResponseId ?? createResponseId();
   const choices = Array.isArray(upstreamPayload.choices)
     ? upstreamPayload.choices
     : [];
@@ -61,7 +64,39 @@ export const mapChatResponseToResponsesPayload = async (
     : [];
   const outputText = stringifyContent(firstChoice.message?.content);
   const createdAt = Math.floor(Date.now() / 1000);
+  // What the model said before it reached for a search, ahead of the searches
+  // themselves — the order it was written in. Only the closing hop's prose and
+  // reasoning live in `upstreamPayload`, so without this a Responses client
+  // never sees the first half of the turn.
+  const preambleItems: Array<Record<string, unknown>> = [
+    ...(preamble?.reasoning
+      ? [
+          {
+            id: createResponseReasoningId(),
+            type: 'reasoning',
+            summary: [{ type: 'summary_text', text: preamble.reasoning }],
+            encrypted_content: `${REASONING_PREFIX}${preamble.reasoning}`,
+            status: 'completed',
+          },
+        ]
+      : []),
+    ...(preamble?.text
+      ? [
+          {
+            id: createMessageId(),
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              { type: 'output_text', text: preamble.text, annotations: [] },
+            ],
+          },
+        ]
+      : []),
+  ];
+
   const output: Array<Record<string, unknown>> = [
+    ...preambleItems,
     ...serverToolExecutions.map((execution) =>
       buildResponsesWebSearchCallItem(execution, 'completed'),
     ),
@@ -208,6 +243,9 @@ export const mapChatResponseToResponsesStream = async (
   proxyContext: ProxyContext,
   imageExecutions: ImageGenerationExecution[],
   serverToolExecutions: ServerToolExecution[] = [],
+  pinnedResponseId?: string,
+  preamble?: ServerToolPreamble,
+  emitOpeningEvents = true,
 ): Promise<Response> => {
   const payload = await mapChatResponseToResponsesPayload(
     proxyContext.accessKeyId,
@@ -219,13 +257,22 @@ export const mapChatResponseToResponsesStream = async (
     upstreamPayload,
     serverToolExecutions,
     imageExecutions,
+    pinnedResponseId,
+    preamble,
   );
   // The mapper creates and persists the session id, so the stream has to reuse
   // it: advertising a different one would leave a client unable to continue the
   // turn, because nothing was stored under the id it was given.
   const responseId = String(payload.id);
   const output = payload.output as Array<Record<string, unknown>>;
-  const messageIndex = output.findIndex((item) => item.type === 'message');
+  // The last message, not the first: a preamble is a message too, and
+  // streaming the pre-search prose as the answer would drop the real one.
+  let messageIndex = -1;
+  output.forEach((item, index) => {
+    if (item.type === 'message') {
+      messageIndex = index;
+    }
+  });
   const messageItem =
     messageIndex === -1
       ? null
@@ -288,14 +335,21 @@ export const mapChatResponseToResponsesStream = async (
   };
 
   const frames: Array<Record<string, unknown>> = [
-    {
-      response: { ...payload, output: [], status: 'in_progress' },
-      type: 'response.created',
-    },
-    {
-      response: { id: responseId, status: 'in_progress' },
-      type: 'response.in_progress',
-    },
+    // Skipped when the caller already announced the opening: a streaming
+    // server-tool turn emits it up front so the connection is not idle for
+    // the whole turn, and a second copy would give the client two ids.
+    ...(emitOpeningEvents
+      ? [
+          {
+            response: { ...payload, output: [], status: 'in_progress' },
+            type: 'response.created',
+          },
+          {
+            response: { id: responseId, status: 'in_progress' },
+            type: 'response.in_progress',
+          },
+        ]
+      : []),
     ...otherItems.flatMap(({ item, output_index }) =>
       serverToolFrames({ item, output_index }),
     ),

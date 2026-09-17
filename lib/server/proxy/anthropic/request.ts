@@ -352,8 +352,17 @@ export const mapAnthropicToolsToChat = (
       normalizeToolName(type).startsWith(normalizeToolName(prefix)),
     );
 
+    if (serverDeclared) {
+      // Everything the client declared travels with it — `max_uses`,
+      // `allowed_domains`, `user_location`. Only the *shape* changes: upstream
+      // is a Chat API, so the declaration has to look like a function, while
+      // the declared type is kept on `type` so the proxy can still recognise
+      // it as a server tool downstream.
+      return { ...tool, type, function: { name: tool.name } };
+    }
+
     return {
-      type: serverDeclared ? type : 'function',
+      type: 'function',
       function: {
         name: tool.name,
         description: tool.description,

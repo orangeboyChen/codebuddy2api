@@ -7,15 +7,17 @@
  * executes the call against a configured backend and hands the findings back
  * as if upstream had produced them.
  *
- * What is deliberately absent here is a loop. A server tool is answered in one
- * bounded turn: the model asks for a search, the proxy runs it, and upstream is
- * asked once more — without the server tools available to call again — to write
- * the answer. Iterating until the model stops asking would be a loop, and the
- * corrected flow does not need one: a client that wants several searches issues
- * several requests, which is exactly what Claude Code does when it answers its
- * own `WebSearch` tool.
+ * The loop lives *inside* one request, which is what a server tool means to
+ * the client: the model asks for a search, the proxy runs it, feeds the
+ * findings back, and upstream decides whether to search again or write the
+ * answer. Only the finished turn crosses the wire.
+ *
+ * What is deliberately absent is a loop over the *client's* tools. Claude Code
+ * declares `WebSearch` as an ordinary function and resolves it itself, so a
+ * call to it goes straight back — the proxy never picks it up.
  */
 
+import { asRecord } from '../../shared/content';
 import type {
   WebFetchQuery,
   WebFetchResponse,
@@ -115,6 +117,12 @@ export interface ServerToolTurnOutcome {
   /** What the model wrote before those calls. Empty when it spoke only after. */
   preamble: ServerToolPreamble;
   response: Response;
+  /**
+   * Token usage for the whole turn, summed across every hop. Carried here
+   * rather than read off `response` because a hop only ever reports its own
+   * usage, and the client is billed for all of them.
+   */
+  usage: unknown;
 }
 
 /**
@@ -141,3 +149,52 @@ export const attachServerToolExecutions = (
 export const getServerToolExecutions = (
   response: Response,
 ): ServerToolExecution[] => serverToolExecutions.get(response) ?? [];
+
+/**
+ * Adds two usage blocks together.
+ *
+ * A turn iterates: every hop upstream is a real request, and the client is
+ * billed for all of them. Adding only the last would under-report the turn by
+ * every search that preceded it.
+ *
+ * Fields present on either side are summed when both are numbers and taken
+ * from the right otherwise — a later response supersedes an earlier count for
+ * the same key rather than inventing a total from two partial readings.
+ */
+const asUsageRecord = (value: unknown): Record<string, unknown> | null =>
+  asRecord(value);
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  asRecord(value) !== null;
+
+export const sumUsage = (accumulated: unknown, incoming: unknown): unknown => {
+  const left = asUsageRecord(accumulated);
+  const right = asUsageRecord(incoming);
+
+  if (!left) {
+    return incoming ?? null;
+  }
+
+  if (!right) {
+    return accumulated;
+  }
+
+  const merged: Record<string, unknown> = { ...left };
+
+  for (const [key, value] of Object.entries(right)) {
+    const previous = left[key];
+
+    if (typeof value === 'number' && typeof previous === 'number') {
+      merged[key] = previous + value;
+    } else if (isPlainObject(value) && isPlainObject(previous)) {
+      // Nested blocks such as `prompt_tokens_details` are summed field by
+      // field. Taking the later hop's object instead would report the cache
+      // tokens of the last hop only, under-counting the turn.
+      merged[key] = sumUsage(previous, value);
+    } else if (value !== undefined) {
+      merged[key] = value;
+    }
+  }
+
+  return merged;
+};

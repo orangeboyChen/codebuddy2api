@@ -203,6 +203,7 @@ export const mapChatStreamToResponsesEventStream = (
             created_at: Math.floor(Date.now() / 1000),
             model,
             output: [],
+            status: 'in_progress',
           },
         });
         enqueueEvent({

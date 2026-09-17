@@ -42,6 +42,14 @@ export interface SupportedChatTool {
    */
   serverType?: string;
   serverLabel?: string;
+  /**
+   * The client's declaration, untouched.
+   *
+   * `toSupportedChatTool` synthesises a fresh object, so anything the client
+   * set that the proxy has no field for — `max_uses`, `allowed_domains`,
+   * `user_location` — would otherwise vanish before the turn reads it.
+   */
+  declaration?: Record<string, unknown>;
   tool: Record<string, unknown>;
 }
 

@@ -10,7 +10,11 @@ import type { NextRequest } from 'next/server';
 
 import type { DebugTrace } from '../../domain/debug';
 import { withCodeBuddyToken } from '../../search/token';
-import { createSseResponse, encodeDoneFrame } from '../../shared/sse';
+import {
+  createSseResponse,
+  encodeDoneFrame,
+  isEventStream,
+} from '../../shared/sse';
 import { proxyChatCompletions, type ProxyContext } from '../codebuddy';
 import { executeImageGenerationLoop } from '../image-generation';
 import {
@@ -18,6 +22,7 @@ import {
   mapChatResponseToResponsesStream,
 } from './payload';
 import { createResponseId } from './ids';
+import { getUpstreamErrorMessage } from '../anthropic/errors';
 
 import { mapChatStreamToResponsesEventStream } from './stream';
 import {
@@ -31,6 +36,7 @@ import type {
   ResponseSessionDefaults,
   TranscriptMessage,
 } from './types';
+import type { ServerToolExecution, ServerToolPreamble } from '../server-tools';
 import {
   hasExecutableServerTool,
   prepareServerToolTurn,
@@ -47,6 +53,10 @@ export const createResponsesEventStream = async (
   proxyContext: ProxyContext,
   debugTrace?: DebugTrace,
 ): Promise<Response> => {
+  // The image loop drives upstream through `callUpstream`, so prose written
+  // before a search has to be captured there rather than at one call site.
+  let streamPreamble: ServerToolPreamble | undefined;
+
   const translatedTools = translateResponsesToolsToChat(defaults.tools);
 
   // Classified on the translated tools, which keep a provider-executed
@@ -87,36 +97,47 @@ export const createResponsesEventStream = async (
   const callUpstream = async (
     loopBody: Record<string, unknown>,
     stream: boolean,
-  ): Promise<Response> =>
-    willRunServerTool && rewrite
-      ? (
-          await withCodeBuddyToken(
-            () => Promise.resolve(proxyContext.auth.bearerToken),
-            () =>
-              runServerToolTurn({
-                body: loopBody as never,
-                callUpstream: (turnBody, turnStream) =>
-                  proxyChatCompletions(
-                    request,
-                    { ...turnBody, stream: turnStream } as never,
-                    proxyContext,
-                    debugTrace,
-                    '/v1/responses',
-                  ),
-                fetchProvider: prepared!.providers.fetchProvider,
-                rewrite,
-                searchProvider: prepared!.providers.searchProvider,
-                stream,
-              }),
-          )
-        ).response
-      : proxyChatCompletions(
-          request,
-          { ...loopBody, stream } as never,
-          proxyContext,
-          debugTrace,
-          '/v1/responses',
-        );
+  ): Promise<Response> => {
+    if (!willRunServerTool || !rewrite) {
+      return proxyChatCompletions(
+        request,
+        { ...loopBody, stream } as never,
+        proxyContext,
+        debugTrace,
+        '/v1/responses',
+      );
+    }
+
+    const outcome = await withCodeBuddyToken(
+      () => Promise.resolve(proxyContext.auth.bearerToken),
+      () =>
+        runServerToolTurn({
+          body: loopBody as never,
+          callUpstream: (turnBody, turnStream) =>
+            proxyChatCompletions(
+              request,
+              { ...turnBody, stream: turnStream } as never,
+              proxyContext,
+              debugTrace,
+              '/v1/responses',
+            ),
+          fetchProvider: prepared!.providers.fetchProvider,
+          rewrite,
+          searchProvider: prepared!.providers.searchProvider,
+        }),
+    );
+
+    // First non-empty wins: the image loop calls this repeatedly, and a later
+    // iteration that ran no server tool returns an empty preamble, which
+    // would erase the prose an earlier one captured.
+    const spoken = outcome.preamble.text || outcome.preamble.reasoning;
+
+    if (spoken && !streamPreamble) {
+      streamPreamble = outcome.preamble;
+    }
+
+    return outcome.response;
+  };
 
   // Image generation is executed locally, so a streaming request has to be
   // buffered first to see whether the model asked for an image. Without this
@@ -155,6 +176,8 @@ export const createResponsesEventStream = async (
       proxyContext,
       executions,
       serverToolExecutions,
+      undefined,
+      streamPreamble,
     );
   }
 
@@ -179,12 +202,35 @@ export const createResponsesEventStream = async (
 
   const encoder = new TextEncoder();
   const responseId = createResponseId();
-  const serverToolItems: ResponsesServerToolItem[] = [];
-  const itemsByInvocationId = new Map<string, ResponsesServerToolItem>();
   let nextOutputIndex = 0;
   const allocateOutputIndex = (): number => nextOutputIndex++;
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
+
+  /**
+   * `web_search_call` items for the searches a turn already ran.
+   *
+   * Nothing announces them live — the turn is buffered throughout, since
+   * whether the model wants another search is only knowable once a hop has
+   * finished — so the mapper emits the whole lifecycle in one pass when the
+   * answer is replayed.
+   */
+  const buildSearchItems = (
+    executions: ServerToolExecution[],
+  ): ResponsesServerToolItem[] =>
+    executions.map((execution) => {
+      const id = `ws_${crypto.randomUUID().replaceAll('-', '')}`;
+
+      return {
+        completed: buildResponsesWebSearchCallItem(execution, 'completed', id),
+        inProgress: buildResponsesWebSearchCallItem(
+          execution,
+          'in_progress',
+          id,
+        ),
+        outputIndex: allocateOutputIndex(),
+      };
+    });
 
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
@@ -199,6 +245,10 @@ export const createResponsesEventStream = async (
         );
       };
 
+      // Announced now, under the id the replay will reuse. The turn is
+      // buffered throughout, so without this the client would see nothing
+      // until every search and every hop had finished — long enough that a
+      // client with an idle timeout would drop the connection.
       enqueueEvent({
         type: 'response.created',
         response: {
@@ -207,6 +257,7 @@ export const createResponsesEventStream = async (
           created_at: Math.floor(Date.now() / 1000),
           model,
           output: [],
+          status: 'in_progress',
         },
       });
       enqueueEvent({
@@ -217,10 +268,13 @@ export const createResponsesEventStream = async (
       const run = async (): Promise<void> => {
         const { fetchProvider, searchProvider } = prepared!.providers;
 
-        const { response } = await withCodeBuddyToken(
+        const { executions, preamble, response } = await withCodeBuddyToken(
           () => Promise.resolve(proxyContext.auth.bearerToken),
           () =>
             runServerToolTurn({
+              // No onCall/onResult: the turn is buffered, so the lifecycle is
+              // replayed from `executions` in one consistent pass instead of
+              // being emitted live and then again by the replay.
               body: chatBody as never,
               callUpstream: (body, stream) =>
                 proxyChatCompletions(
@@ -231,69 +285,8 @@ export const createResponsesEventStream = async (
                   '/v1/responses',
                 ),
               fetchProvider,
-              onCall: (invocation) => {
-                const outputIndex = allocateOutputIndex();
-                const id = `ws_${crypto.randomUUID().replaceAll('-', '')}`;
-                const item = {
-                  completed: buildResponsesWebSearchCallItem(
-                    invocation,
-                    'completed',
-                    id,
-                  ),
-                  inProgress: buildResponsesWebSearchCallItem(
-                    invocation,
-                    'in_progress',
-                    id,
-                  ),
-                  outputIndex,
-                };
-                serverToolItems.push(item);
-                itemsByInvocationId.set(invocation.id, item);
-                enqueueEvent({
-                  type: 'response.output_item.added',
-                  item: item.inProgress,
-                  output_index: outputIndex,
-                  response_id: responseId,
-                });
-                enqueueEvent({
-                  type: 'response.web_search_call.in_progress',
-                  item_id: id,
-                  output_index: outputIndex,
-                });
-                enqueueEvent({
-                  type: 'response.web_search_call.searching',
-                  item_id: id,
-                  output_index: outputIndex,
-                });
-              },
-              onResult: (execution) => {
-                const item = itemsByInvocationId.get(execution.id);
-
-                if (!item) {
-                  return;
-                }
-
-                const id = String(item.inProgress.id);
-                item.completed = buildResponsesWebSearchCallItem(
-                  execution,
-                  'completed',
-                  id,
-                );
-                enqueueEvent({
-                  type: 'response.web_search_call.completed',
-                  item_id: id,
-                  output_index: item.outputIndex,
-                });
-                enqueueEvent({
-                  type: 'response.output_item.done',
-                  item: item.completed,
-                  output_index: item.outputIndex,
-                  response_id: responseId,
-                });
-              },
               rewrite: rewrite!,
               searchProvider,
-              stream: true,
             }),
         );
 
@@ -303,29 +296,63 @@ export const createResponsesEventStream = async (
         }
 
         if (!response.ok) {
+          // The upstream's own words: a rate limit has to arrive as one, or a
+          // client that retries on that alone stops retrying.
           enqueueEvent({
             type: 'response.error',
-            error: { message: 'Upstream request failed' },
+            error: {
+              message: await getUpstreamErrorMessage(response).catch(
+                () => 'Upstream request failed',
+              ),
+            },
           });
           controller.enqueue(encodeDoneFrame());
           controller.close();
           return;
         }
 
-        const mappedResponse = mapChatStreamToResponsesEventStream(
-          response,
-          defaults,
-          transcript,
-          model,
-          previousResponseId,
-          proxyContext,
-          responseId,
-          serverToolItems,
-          false,
-          false,
-          allocateOutputIndex,
-          true,
-        );
+        /**
+         * The turn is finished before this point, so `response` is a buffered
+         * payload, not a live stream — every hop had to complete to know
+         * whether the model wanted another search. Handing that to the SSE
+         * mapper would find no `data:` frames and drop the answer entirely, so
+         * a buffered response is replayed through the buffered→Responses
+         * mapper instead.
+         */
+        const mappedResponse = await (isEventStream(response)
+          ? mapChatStreamToResponsesEventStream(
+              response,
+              defaults,
+              transcript,
+              model,
+              previousResponseId,
+              proxyContext,
+              responseId,
+              buildSearchItems(executions),
+              false,
+              true,
+              allocateOutputIndex,
+              true,
+            )
+          : mapChatResponseToResponsesStream(
+              (await response.json()) as Record<string, unknown>,
+              defaults,
+              transcript,
+              model,
+              previousResponseId,
+              proxyContext,
+              [],
+              executions,
+              // The id already announced to the client. The mapper persists
+              // the session under whatever id it emits, so without this the
+              // client is handed an id nothing was stored against, and a
+              // follow-up carrying `previous_response_id` fails.
+              responseId,
+              preamble,
+              // Already announced above: the replay must not emit a
+              // second `response.created` under the same id.
+              false,
+            ));
         const reader = mappedResponse.body!.getReader();
         activeReader = reader;
 

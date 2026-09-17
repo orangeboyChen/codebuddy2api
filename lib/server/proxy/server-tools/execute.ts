@@ -5,23 +5,25 @@ import type {
   ChatCompletionToolCall,
   ServerToolExecution,
   ServerToolInvocation,
+  ServerToolKind,
 } from './types';
 
 /**
  * Turns one tool call into the invocation a backend runs.
  *
- * The name decides which tool, so it is read in canonical form: the model is
- * under no obligation to repeat the spelling it was given, and upstream echoes
- * `web_fetch` back as `WebFetch` often enough to matter.
+ * `kind` comes from the classifier that already recognised the call, rather
+ * than being re-derived from the name here: re-deriving it means re-spelling
+ * it, and respelling tool names is exactly how the client's own `WebSearch`
+ * came to be mistaken for the server tool.
  */
 export const buildServerToolInvocation = (
   toolCall: ChatCompletionToolCall,
+  kind: ServerToolKind,
   index: number,
 ): ServerToolInvocation => {
-  const name = (toolCall.function?.name ?? '').toLowerCase();
   const id = toolCall.id ?? `server_tool_${index}`;
 
-  return name.includes('fetch')
+  return kind === 'web_fetch'
     ? {
         id,
         input: extractFetchQuery(toolCall.function?.arguments),

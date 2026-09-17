@@ -4,6 +4,7 @@ export {
   getForcedToolName,
   hasAmbiguousServerToolName,
   hasExecutableServerTool,
+  readMaxUses,
   rewriteServerTools,
 } from './classify';
 export type { RewrittenServerTools, ServerToolDeclarations } from './classify';

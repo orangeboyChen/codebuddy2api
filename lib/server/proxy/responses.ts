@@ -47,6 +47,7 @@ import {
   hasExecutableServerTool,
   prepareServerToolTurn,
   runServerToolTurn,
+  type ServerToolPreamble,
 } from './server-tools';
 
 export const handleResponsesRequest = async (
@@ -213,39 +214,55 @@ export const handleResponsesRequest = async (
      * executable; otherwise the request goes upstream as it stands, with every
      * tool call coming back to the client.
      */
+    // What the model wrote before its first search. The image loop drives
+    // upstream through `callUpstream`, so the preamble has to be captured
+    // here rather than at a single call site.
+    let turnPreamble: ServerToolPreamble | undefined;
+
     const callUpstream = async (
       loopBody: Record<string, unknown>,
       stream: boolean,
-    ): Promise<Response> =>
-      willRunServerTool && rewrite
-        ? (
-            await withCodeBuddyToken(
-              () => Promise.resolve(proxyContext.auth.bearerToken),
-              () =>
-                runServerToolTurn({
-                  body: loopBody as never,
-                  callUpstream: (turnBody, turnStream) =>
-                    proxyChatCompletions(
-                      request,
-                      { ...turnBody, stream: turnStream } as never,
-                      proxyContext,
-                      debugTrace,
-                      '/v1/responses',
-                    ),
-                  fetchProvider: serverTools!.providers.fetchProvider,
-                  rewrite,
-                  searchProvider: serverTools!.providers.searchProvider,
-                  stream,
-                }),
-            )
-          ).response
-        : proxyChatCompletions(
-            request,
-            { ...loopBody, stream } as never,
-            proxyContext,
-            debugTrace,
-            '/v1/responses',
-          );
+    ): Promise<Response> => {
+      if (!willRunServerTool || !rewrite) {
+        return proxyChatCompletions(
+          request,
+          { ...loopBody, stream } as never,
+          proxyContext,
+          debugTrace,
+          '/v1/responses',
+        );
+      }
+
+      const outcome = await withCodeBuddyToken(
+        () => Promise.resolve(proxyContext.auth.bearerToken),
+        () =>
+          runServerToolTurn({
+            body: loopBody as never,
+            callUpstream: (turnBody, turnStream) =>
+              proxyChatCompletions(
+                request,
+                { ...turnBody, stream: turnStream } as never,
+                proxyContext,
+                debugTrace,
+                '/v1/responses',
+              ),
+            fetchProvider: serverTools!.providers.fetchProvider,
+            rewrite,
+            searchProvider: serverTools!.providers.searchProvider,
+          }),
+      );
+
+      // First non-empty wins. The image loop calls this repeatedly, and a
+      // later iteration that ran no server tool returns an empty preamble —
+      // which would erase the prose an earlier one captured.
+      const spoken = outcome.preamble.text || outcome.preamble.reasoning;
+
+      if (spoken && !turnPreamble) {
+        turnPreamble = outcome.preamble;
+      }
+
+      return outcome.response;
+    };
 
     // Image generation has no chat-protocol equivalent, so the model's call is
     // executed here and replayed with the image folded in. Only meaningful when
@@ -289,6 +306,8 @@ export const handleResponsesRequest = async (
           // nothing is keyed under this response object any more.
           serverToolExecutions,
           executions,
+          undefined,
+          turnPreamble,
         ),
       );
     }
@@ -319,6 +338,9 @@ export const handleResponsesRequest = async (
         prepared.previousResponseId,
         upstreamPayload,
         serverToolExecutions,
+        [],
+        undefined,
+        turnPreamble,
       ),
     );
   } catch (error) {

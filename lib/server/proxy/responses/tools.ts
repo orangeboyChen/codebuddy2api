@@ -145,6 +145,7 @@ export const toSupportedChatTool = (
     return [
       {
         chatName: WEB_SEARCH_TOOL_NAME,
+        declaration: tool as unknown as Record<string, unknown>,
         kind: 'function',
         originalName: WEB_SEARCH_TOOL_NAME,
         serverType: toolType,
@@ -166,6 +167,7 @@ export const toSupportedChatTool = (
     return [
       {
         chatName: WEB_FETCH_TOOL_NAME,
+        declaration: tool as unknown as Record<string, unknown>,
         kind: 'function',
         originalName: WEB_FETCH_TOOL_NAME,
         serverType: toolType,
@@ -390,11 +392,18 @@ export const translateResponsesToolsToChat = (
   }
 
   return supported.map((tool) => {
+    if (!tool.serverType) {
+      // An ordinary function, which upstream understands as it stands.
+      return { type: 'function', function: tool.tool };
+    }
+
+    // A provider-executed declaration keeps its declared type — the only thing
+    // that tells it apart from the client's own function of the same name — and
+    // carries the rest of what the client declared (`max_uses`,
+    // `allowed_domains`, …), which the turn reads before it rewrites the shape.
     return {
-      // A provider-executed declaration keeps its declared type so it is still
-      // recognisable downstream. Everything else is an ordinary function, which
-      // upstream understands.
-      type: tool.serverType ?? 'function',
+      ...(tool.declaration ?? {}),
+      type: tool.serverType,
       function: tool.tool,
     };
   });

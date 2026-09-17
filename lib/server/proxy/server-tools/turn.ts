@@ -6,7 +6,7 @@ import {
 } from '../../domain/config';
 import { resolveFetchProvider, resolveSearchProvider } from '../../search';
 import type { WebFetchProvider, WebSearchProvider } from '../../search/types';
-import { readReasoning } from '../../shared/content';
+import { asRecord, readReasoning } from '../../shared/content';
 import type { ChatRequestBody } from '../codebuddy';
 import {
   buildServerToolInvocation,
@@ -26,24 +26,24 @@ import type {
   JsonRecord,
   ServerToolExecution,
   ServerToolInvocation,
+  ServerToolKind,
   ServerToolPreamble,
   ServerToolTurnOutcome,
 } from './types';
-import { attachServerToolExecutions, EMPTY_PREAMBLE } from './types';
+import { attachServerToolExecutions, EMPTY_PREAMBLE, sumUsage } from './types';
 
 /**
  * One server-tool turn.
  *
- * The model is asked for a search, the search runs here, and upstream is asked
- * once more — without the server tools it could call again — to write the
- * answer. Two calls at most, and the second is unconditional, which is why this
- * is not a loop: there is no "until the model stops asking", because the
- * follow-up cannot ask.
+ * A loop, bounded by the `max_uses` the client declared: ask upstream, run
+ * whatever server tools it reached for, feed the findings back, and ask again
+ * until the model stops asking or the budget is spent — then one closing call
+ * with the server tools withdrawn so it answers with what it has.
  *
- * A client that wants several searches sends several requests. Claude Code is
- * the reference: it resolves its own `WebSearch` tool, and only opens a
- * sub-request carrying the server type once it has a result to fill in. That
- * sub-request asks for exactly one search, and this answers it.
+ * The loop is over the *server* tools only. Claude Code's own `WebSearch` is an
+ * ordinary client function; a call to it is never picked up, because Claude
+ * Code wants to resolve it itself. That is the whole distinction this module
+ * exists to protect.
  */
 
 /**
@@ -169,17 +169,102 @@ const rebuildResponse = (response: Response, body: string): Response => {
   });
 };
 
+/**
+ * Rewrites a payload so only the calls the client still has to answer survive.
+ *
+ * The executed ones have already been answered — their findings travel as
+ * `executions`, which each renderer turns into real protocol blocks. Leaving
+ * them in `tool_calls` too would hand the client a second, unresolved copy.
+ */
+const keepOutstandingCalls = (
+  payload: ChatCompletionPayload,
+  outstanding: ChatCompletionToolCall[],
+): ChatCompletionPayload => {
+  const [first, ...rest] = payload.choices ?? [];
+
+  if (!first) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    choices: [
+      {
+        ...first,
+        // Only `tool_calls` when something really is outstanding: stamping it
+        // onto an answer makes every renderer report `stop_reason: 'tool_use'`
+        // with nothing to satisfy, and the client discards the answer.
+        finish_reason: outstanding.length ? 'tool_calls' : 'stop',
+        message: { ...(first.message ?? {}), tool_calls: outstanding },
+      },
+      ...rest,
+    ],
+  };
+};
+
+/**
+ * Reads a hop's payload, converting a malformed body into an error.
+ *
+ * A body that will not parse on a successful status is an upstream failure,
+ * not a reason to throw out of the turn: everything already searched would be
+ * billed and lost, and the client would get a JSON-parse message instead of
+ * whatever upstream actually said.
+ */
+const readBufferedPayloadSafely = async (
+  response: Response,
+  buffered: string,
+): Promise<ChatCompletionPayload> => {
+  try {
+    return await readBufferedChatCompletionPayload(
+      rebuildResponse(response, buffered),
+      buffered,
+    );
+  } catch {
+    return { error: { message: 'Upstream returned a malformed response' } };
+  }
+};
+
+/**
+ * Drops a hop's prose and reasoning, which have already been captured as the
+ * preamble. Leaving them on the payload too renders them twice — once ahead of
+ * the searches, once after.
+ */
+const withoutContent = (
+  payload: ChatCompletionPayload,
+): ChatCompletionPayload => {
+  const [first, ...rest] = payload.choices ?? [];
+
+  if (!first) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    choices: [
+      {
+        ...first,
+        message: {
+          ...(first.message ?? {}),
+          content: null,
+          reasoning: undefined,
+          reasoning_content: undefined,
+        },
+      },
+      ...rest,
+    ],
+  };
+};
+
 const asMessages = (body: ChatRequestBody): JsonRecord[] =>
   (Array.isArray(body.messages) ? body.messages : []) as JsonRecord[];
 
 /**
- * Runs one server-tool turn.
+ * Runs the server-tool loop; see the module note above.
  *
- * Upstream is asked for a search, the search runs here, and upstream is asked
- * once more — without the server tools, so it cannot ask again — to write the
- * answer. Two calls at most. The response is always the one to render: the
- * first has already been spent reading the tool calls, so a caller that
- * re-issued it would be billed twice for the same turn.
+ * Every hop is buffered rather than streamed, because whether the model wants
+ * another search is only knowable once the hop has finished. A streaming client
+ * gets the finished turn replayed as SSE instead of a live stream — unavoidable
+ * here, since the first search has to complete before there is anything to say.
  */
 export const runServerToolTurn = async ({
   body,
@@ -189,14 +274,9 @@ export const runServerToolTurn = async ({
   onResult,
   rewrite,
   searchProvider,
-  stream,
 }: {
   body: ChatRequestBody;
-  /**
-   * One round trip to upstream. `stream` asks for SSE rather than a buffered
-   * payload; the first call is always buffered, because the tool calls are only
-   * visible once it has finished.
-   */
+  /** One round trip to upstream. Always buffered. */
   callUpstream: (body: ChatRequestBody, stream: boolean) => Promise<Response>;
   fetchProvider: WebFetchProvider | null;
   onCall?: (invocation: ServerToolInvocation) => void;
@@ -204,118 +284,339 @@ export const runServerToolTurn = async ({
   /** Output of {@link rewriteServerTools} for this request. */
   rewrite: NonNullable<ReturnType<typeof rewriteServerTools>>;
   searchProvider: WebSearchProvider | null;
-  stream: boolean;
 }): Promise<ServerToolTurnOutcome> => {
-  const { executable, followUpTools, isExecutableCall, tools } = rewrite;
+  const { classifyCall, executable, isExecutableCall, maxUses, tools } =
+    rewrite;
 
-  const first = await callUpstream({ ...body, tools }, false);
-  const buffered = await first.text();
-  const payload = await readBufferedChatCompletionPayload(
-    rebuildResponse(first, buffered),
-    buffered,
-  );
+  const executions: ServerToolExecution[] = [];
+  let preamble = EMPTY_PREAMBLE;
+  let transcript = asMessages(body);
+  let usage: unknown = null;
+  // Counted separately: the client declares `max_uses` on each server tool, so
+  // a fetch must not spend the search budget — but both need a bound, or a
+  // turn that only fetches would never terminate.
+  let searches = 0;
+  let fetches = 0;
+  let callCounter = 0;
+  let firstHop = true;
 
-  // A failure is handed back untouched: whatever the turn would have done with
-  // the tool calls, the request did not succeed, and the client needs the real
-  // status and detail rather than a summary.
-  if (!first.ok || payload.error) {
-    return {
-      executions: [],
-      preamble: EMPTY_PREAMBLE,
-      response: rebuildResponse(first, buffered),
-    };
+  while (true) {
+    const response = await callUpstream(
+      {
+        ...body,
+        messages: transcript,
+        tools,
+        // Only the first hop honours a forced server tool; after that the
+        // model chooses, or it would never stop searching.
+        tool_choice: firstHop
+          ? body.tool_choice
+          : relaxToolChoice(body.tool_choice, classifyCall),
+      },
+      false,
+    );
+
+    const buffered = await response.text();
+    const payload = await readBufferedPayloadSafely(response, buffered);
+    usage = sumUsage(usage, payload.usage);
+
+    // A failure ends the turn: the request did not succeed, and the client
+    // needs the real status and detail rather than a summary.
+    if (!response.ok || payload.error) {
+      return {
+        executions,
+        preamble,
+        // Attached even on failure: the earlier hops really ran and were
+        // really billed, and the Responses and image paths recover them from
+        // the response rather than from the return value.
+        response: attachServerToolExecutions(
+          rebuildResponse(response, JSON.stringify(withUsage(payload, usage))),
+          executions,
+        ),
+        usage,
+      };
+    }
+
+    const message = payload.choices?.[0]?.message;
+    const toolCalls: ChatCompletionToolCall[] = message?.tool_calls ?? [];
+    // Each call is resolved to its kind once, here, rather than being
+    // re-derived from its name further down.
+    const localCalls = toolCalls.flatMap((toolCall) => {
+      const kind = classifyCall(toolCall);
+
+      return kind && isExecutableCall(toolCall) ? [{ kind, toolCall }] : [];
+    });
+    const remainingCalls = toolCalls.filter(
+      (toolCall) => !isExecutableCall(toolCall),
+    );
+
+    // The model stopped asking. This hop is the answer.
+    if (!localCalls.length) {
+      return {
+        executions,
+        preamble,
+        response: attachServerToolExecutions(
+          rebuildResponse(response, JSON.stringify(withUsage(payload, usage))),
+          executions,
+        ),
+        usage,
+      };
+    }
+
+    // Captured on every hop, up to the first one that actually speaks: the
+    // model may explain itself before each search, and only the closing
+    // answer lives in the payload the renderer sees.
+    // First hop that actually speaks wins. The preamble is rendered ahead of
+    // every search, so a later hop's prose here would appear to precede the
+    // search it was written after.
+    if (!preamble.text && !preamble.reasoning) {
+      preamble = readPreamble(message);
+    }
+
+    // Clamped to the budget before executing: the bound is only testable
+    // between hops, so a hop emitting k parallel searches would otherwise run
+    // them all and overshoot by up to k-1 — billed to the client either way.
+    const affordable = takeWithinBudget(localCalls, {
+      fetches,
+      maxUses,
+      searches,
+    });
+
+    // A turn-scoped counter: indexing within a hop made two hops that omitted
+    // ids both produce `server_tool_0`, so the transcript carried two calls
+    // sharing one id.
+    const invocations = affordable.map(({ kind, toolCall }) =>
+      buildServerToolInvocation(toolCall, kind, callCounter++),
+    );
+
+    const results = await executeServerToolInvocations({
+      fetchProvider,
+      invocations,
+      ...(onCall ? { onCall } : {}),
+      ...(onResult ? { onResult } : {}),
+      searchProvider,
+    });
+
+    executions.push(...results.map((result) => result.execution));
+    searches += results.filter(
+      (result) => result.execution.type === 'web_search',
+    ).length;
+    fetches += results.filter(
+      (result) => result.execution.type === 'web_fetch',
+    ).length;
+
+    // Only the calls that were actually run: an assistant message promising
+    // more calls than there are results for violates the chat protocol, and
+    // upstream rejects the next hop.
+    const runCalls = invocations.map((invocation, index) => ({
+      ...(affordable[index].toolCall as JsonRecord),
+      id: invocation.id,
+    }));
+
+    if (runCalls.length) {
+      transcript = [
+        ...transcript,
+        {
+          ...(message as JsonRecord),
+          content: message?.content ?? null,
+          role: message?.role ?? 'assistant',
+          tool_calls: runCalls,
+        },
+        ...results.map((result) => ({
+          role: 'tool',
+          content: result.content,
+          tool_call_id: result.tool_call_id,
+        })),
+      ];
+    }
+
+    /**
+     * A hop that also asked for something the client owns cannot be continued
+     * here: replaying the transcript would leave the client's own calls in an
+     * assistant message with no result behind them, which upstream rejects.
+     * The findings go back as they are and the outstanding calls stay the
+     * client's to resolve — and every protocol this proxy serves can carry
+     * those findings structurally, so nothing is folded into the text.
+     */
+    if (remainingCalls.length) {
+      return {
+        executions,
+        preamble,
+        response: attachServerToolExecutions(
+          rebuildResponse(
+            response,
+            JSON.stringify(
+              withUsage(
+                keepOutstandingCalls(withoutContent(payload), remainingCalls),
+                usage,
+              ),
+            ),
+          ),
+          executions,
+        ),
+        usage,
+      };
+    }
+
+    firstHop = false;
+
+    // Budget spent. One last call with the server tools withdrawn, so the
+    // model answers with what it has instead of asking for a search it will
+    // not get.
+    // Only kind the turn can actually run counts, and a kind is spent only
+    // when it has run out. OR-ing the two, or counting every declared kind,
+    // would end the turn while one of them still had allowance left — or
+    // never end it at all for a kind that was declared but never used.
+    const spent =
+      (!executable.search || searches >= maxUses.web_search) &&
+      (!executable.fetch || fetches >= maxUses.web_fetch);
+
+    if (spent) {
+      const finalResponse = await callUpstream(
+        {
+          ...body,
+          messages: transcript,
+          ...withoutServerTools(tools, isExecutableCall),
+        },
+        false,
+      );
+
+      const finalBuffered = await finalResponse.text();
+      const finalPayload = await readBufferedChatCompletionPayload(
+        rebuildResponse(finalResponse, finalBuffered),
+        finalBuffered,
+      );
+
+      usage = sumUsage(usage, finalPayload.usage);
+
+      if (!finalResponse.ok || finalPayload.error) {
+        return {
+          executions,
+          preamble,
+          // Attached even on failure: the searches really ran and were really
+          // billed, and the Responses path recovers them from the response.
+          response: attachServerToolExecutions(
+            rebuildResponse(
+              finalResponse,
+              JSON.stringify(withUsage(finalPayload, usage)),
+            ),
+            executions,
+          ),
+          usage,
+        };
+      }
+
+      /**
+       * The model may still ask, even with the tool withdrawn. Those calls are
+       * dropped rather than passed on: the budget is spent, so nothing will
+       * answer them, and the client never declared a `web_search` it could
+       * resolve itself. Anything it *does* own survives.
+       */
+      const finalCalls = (
+        finalPayload.choices?.[0]?.message?.tool_calls ?? []
+      ).filter((toolCall) => !isExecutableCall(toolCall));
+
+      return {
+        executions,
+        preamble,
+        response: attachServerToolExecutions(
+          rebuildResponse(
+            finalResponse,
+            JSON.stringify(
+              withUsage(keepOutstandingCalls(finalPayload, finalCalls), usage),
+            ),
+          ),
+          executions,
+        ),
+        usage,
+      };
+    }
   }
+};
 
-  const message = payload.choices?.[0]?.message;
-  const toolCalls: ChatCompletionToolCall[] = message?.tool_calls ?? [];
-  const localCalls = toolCalls.filter(isExecutableCall);
+/**
+ * Trims a hop's calls to what the budget still allows.
+ *
+ * `searches`/`fetches` are the running totals and `maxUses` the bound for
+ * each kind; a hop may ask for more than is left, and the excess is dropped
+ * rather than executed and billed.
+ */
+const takeWithinBudget = <T extends { kind: ServerToolKind }>(
+  calls: T[],
+  budget: {
+    fetches: number;
+    maxUses: { web_fetch: number; web_search: number };
+    searches: number;
+  },
+): T[] => {
+  const left = {
+    web_fetch: budget.maxUses.web_fetch - budget.fetches,
+    web_search: budget.maxUses.web_search - budget.searches,
+  };
 
-  // The model answered without reaching for a server tool — the ordinary case
-  // for a request that merely *declares* one. Its answer is the whole turn, so
-  // the caller renders this response directly.
-  if (!localCalls.length) {
-    return {
-      executions: [],
-      preamble: readPreamble(message),
-      response: rebuildResponse(first, buffered),
-    };
-  }
+  return calls.filter((call) => (left[call.kind] -= 1) >= 0);
+};
 
-  const invocations = localCalls.map((toolCall, index) =>
-    buildServerToolInvocation(toolCall, index),
-  );
+/** Drops the server tools from a tool list, leaving the client's own. */
+const withoutServerTools = (
+  tools: unknown[],
+  isExecutableCall: (toolCall: ChatCompletionToolCall) => boolean,
+): { tool_choice: unknown; tools: unknown[] } => {
+  const remaining = tools.filter((tool) => {
+    const name = asRecord(asRecord(tool)?.function)?.name;
 
-  const results = await executeServerToolInvocations({
-    fetchProvider,
-    invocations,
-    ...(onCall ? { onCall } : {}),
-    ...(onResult ? { onResult } : {}),
-    searchProvider,
+    return !isExecutableCall({
+      function: { name: typeof name === 'string' ? name : '' },
+    });
   });
 
-  const executions: ServerToolExecution[] = results.map(
-    (result) => result.execution,
-  );
-
-  const messages: JsonRecord[] = [
-    ...asMessages(body),
-    {
-      ...(message as JsonRecord),
-      content: message?.content ?? null,
-      role: message?.role ?? 'assistant',
-    },
-    ...results.map((result) => ({
-      role: 'tool',
-      content: result.content,
-      tool_call_id: result.tool_call_id,
-    })),
-  ];
-
-  const response = await callUpstream(
-    {
-      ...body,
-      messages,
-      tools: followUpTools,
-      tool_choice: relaxToolChoice(body.tool_choice, executable),
-    },
-    stream,
-  );
-
+  // No `tool_choice` once nothing is left to choose: naming a tool that is not
+  // on offer is a contradiction some upstreams reject outright, and every
+  // search already run lives in this hop's transcript.
   return {
-    // Published on the response as well as returned, so a caller that drives
-    // upstream itself — the image-generation loop — can pick up searches that
-    // ran on a hop it did not produce.
-    executions,
-    preamble: readPreamble(message),
-    response: attachServerToolExecutions(response, executions),
+    tool_choice: remaining.length ? 'auto' : undefined,
+    tools: remaining,
   };
 };
 
 /**
- * Keeps the follow-up from being forced back into a search.
+ * Writes the running total back onto a payload.
  *
- * A `tool_choice` naming a server tool the proxy has just run would make the
- * follow-up call it again — and the follow-up has no server tool to call, so
- * upstream would reject it. `required` has the same effect by another route: it
- * obliges the model to call something when the turn needs an answer.
+ * Each hop reports only its own usage, and the client is billed for the whole
+ * turn — every search plus the answer.
+ */
+const withUsage = (
+  payload: ChatCompletionPayload,
+  usage: unknown,
+): ChatCompletionPayload =>
+  usage === null || usage === undefined ? payload : { ...payload, usage };
+
+/**
+ * Stops a forced server tool from compelling another search.
+ *
+ * Claude Code's side request arrives with `tool_choice` pinned to
+ * `web_search`, and that pin has to hold for the first hop — it is what makes
+ * the model produce a query instead of answering from memory. Left in place it
+ * would then force a search on every hop forever, so afterwards it becomes
+ * `auto`: the model may search again, but it does not have to.
+ *
+ * `required` becomes `auto` for the same reason by another route.
  */
 const relaxToolChoice = (
   toolChoice: unknown,
-  executable: { fetch: boolean; search: boolean },
+  classifyCall: (toolCall: ChatCompletionToolCall) => ServerToolKind | null,
 ): unknown => {
   if (!toolChoice) {
     return toolChoice;
   }
 
   const name = getForcedToolName(toolChoice);
-  const canonical = name ? name.toLowerCase().replace(/[_\-\s]+/g, '') : '';
 
-  if (
-    canonical &&
-    ((executable.search && canonical.startsWith('websearch')) ||
-      (executable.fetch && canonical.startsWith('webfetch')))
-  ) {
-    return 'none';
+  // Compared exactly, not by normalised prefix: `tool_choice` carries only a
+  // name, and a client pinning its own `WebSearch` normalises to the same
+  // string as the server tool — loosening that would quietly stop the model
+  // from calling the tool the client pinned.
+  if (name && classifyCall({ function: { name } }) !== null) {
+    return 'auto';
   }
 
   if (toolChoice === 'required') {

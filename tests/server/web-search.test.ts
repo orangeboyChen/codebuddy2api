@@ -499,7 +499,6 @@ describe('server local web search', () => {
           tools: [{ type: 'web_search_preview' }],
         })!,
         searchProvider: resolveSearchProvider('searxng'),
-        stream: false,
       });
 
       if (!fetchMock.mock.calls.length) {
@@ -892,6 +891,482 @@ describe('server tool routing', () => {
     });
   });
 
+  /**
+   * These go through `handleMessagesRequest`, not straight into
+   * `rewriteServerTools`: the spec's phase-2 shape only ever arrives as an
+   * Anthropic request, and translation is where `max_uses` and `tool_choice`
+   * used to be dropped — which no unit test could see.
+   */
+  describe('phase 2: the side request, end to end', () => {
+    /** Answers each hop from `hops`, falling through on the last. */
+    const routed = (
+      hops: Array<Record<string, unknown>>,
+      request: Record<string, unknown>,
+    ) => {
+      const sent: Array<Record<string, unknown>> = [];
+      let calls = 0;
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+        const url = String(_input);
+
+        if (url.includes('searx.test')) {
+          return makeJsonResponse({
+            results: [
+              { content: 'A snippet', title: 'Docs', url: 'https://docs.test' },
+            ],
+          }) as unknown as Response;
+        }
+
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        sent.push(body);
+        const hop = hops[Math.min(calls, hops.length - 1)];
+        calls += 1;
+
+        return makeJsonResponse(hop) as unknown as Response;
+      });
+
+      return {
+        calls: () => calls,
+        run: () =>
+          handleMessagesRequest(
+            makeRequest('http://localhost/v1/messages'),
+            request,
+          ),
+        sent,
+      };
+    };
+
+    const searchCall = (query: string, id: string) => ({
+      choices: [
+        {
+          finish_reason: 'tool_calls',
+          message: {
+            content: null,
+            role: 'assistant',
+            tool_calls: [
+              {
+                id,
+                type: 'function',
+                function: {
+                  arguments: `{"query":"${query}"}`,
+                  name: 'web_search',
+                },
+              },
+            ],
+          },
+        },
+      ],
+      usage: { completion_tokens: 10, prompt_tokens: 100 },
+    });
+
+    const answer = (text: string, reasoning?: string) => ({
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: {
+            content: text,
+            ...(reasoning ? { reasoning_content: reasoning } : {}),
+            role: 'assistant',
+          },
+        },
+      ],
+      usage: { completion_tokens: 20, prompt_tokens: 200 },
+    });
+
+    const sideRequest = (maxUses?: number) => ({
+      max_tokens: 2048,
+      messages: [
+        {
+          role: 'user' as const,
+          content: 'Perform a web search for the query: OpenAI updates 2026',
+        },
+      ],
+      tool_choice: { type: 'tool', name: 'web_search' },
+      tools: [
+        {
+          type: 'web_search_20250305',
+          name: 'web_search',
+          ...(maxUses === undefined ? {} : { max_uses: maxUses }),
+          input_schema: {},
+        },
+      ],
+    });
+
+    it('honours the forced tool_choice, then loosens it so the model may answer', async () => {
+      await enableSearch();
+      const { run, sent } = routed(
+        [searchCall('OpenAI updates 2026', 'call_1'), answer('Here it is.')],
+        sideRequest(8),
+      );
+
+      const response = await run();
+
+      expect(sent[0]?.tool_choice).toEqual({
+        type: 'function',
+        function: { name: 'web_search' },
+      });
+      // Left pinned, the model would be forced to search forever.
+      expect(sent[1]?.tool_choice).toBe('auto');
+      // The server tool stays available: refusals to answer are the model's call.
+      expect((sent[1]?.tools as unknown[]) ?? []).toHaveLength(1);
+
+      const payload = (await response.json()) as {
+        content: Array<{ type: string }>;
+        stop_reason: string;
+      };
+      expect(payload.content.map((block) => block.type)).toEqual([
+        'server_tool_use',
+        'web_search_tool_result',
+        'text',
+      ]);
+      expect(payload.stop_reason).toBe('end_turn');
+    });
+
+    it('streams prose written before the search, ahead of the search blocks', async () => {
+      await enableSearch();
+      const { run } = routed(
+        [
+          {
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: 'Let me look that up.',
+                  reasoning_content: 'The user wants recent news.',
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_1',
+                      type: 'function',
+                      function: {
+                        arguments: '{"query":"OpenAI updates 2026"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { completion_tokens: 10, prompt_tokens: 100 },
+          },
+          answer('Here it is.'),
+        ],
+        { ...sideRequest(8), stream: true },
+      );
+
+      const response = await run();
+      const events = await readEvents(response);
+      const types = events
+        .filter((event) => event.event === 'content_block_start')
+        .map(
+          (event) =>
+            (JSON.parse(event.data) as { content_block: { type: string } })
+              .content_block.type,
+        );
+
+      // What was written before the search, then the search, then the answer.
+      expect(types).toEqual([
+        'thinking',
+        'text',
+        'server_tool_use',
+        'web_search_tool_result',
+        'text',
+      ]);
+      expect(JSON.stringify(events)).toContain('Let me look that up.');
+      expect(JSON.stringify(events)).toContain('Here it is.');
+    });
+
+    it('renders the answer’s own reasoning after the search blocks', async () => {
+      await enableSearch();
+      const { run } = routed(
+        [
+          {
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: null,
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_1',
+                      type: 'function',
+                      function: {
+                        arguments: '{"query":"OpenAI updates 2026"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { completion_tokens: 10, prompt_tokens: 100 },
+          },
+          answer('Here it is.', 'The results answer it.'),
+        ],
+        sideRequest(8),
+      );
+
+      const payload = (await run().then((r) => r.json())) as {
+        content: Array<{ thinking?: string; type: string }>;
+      };
+
+      // The reasoning that produced the answer belongs after the searches it
+      // followed, not alongside the one that asked for them.
+      expect(payload.content.map((block) => block.type)).toEqual([
+        'server_tool_use',
+        'web_search_tool_result',
+        'thinking',
+        'text',
+      ]);
+      expect(payload.content[2].thinking).toBe('The results answer it.');
+    });
+
+    it('renders prose written before the search, ahead of the search blocks', async () => {
+      await enableSearch();
+      const { run } = routed(
+        [
+          {
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: 'Let me look that up.',
+                  reasoning_content: 'The user wants recent news.',
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_1',
+                      type: 'function',
+                      function: {
+                        arguments: '{"query":"OpenAI updates 2026"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { completion_tokens: 10, prompt_tokens: 100 },
+          },
+          answer('Here it is.'),
+        ],
+        sideRequest(8),
+      );
+
+      const payload = (await run().then((r) => r.json())) as {
+        content: Array<{ text?: string; thinking?: string; type: string }>;
+      };
+
+      // What was written before the search, then the search, then the answer.
+      expect(payload.content.map((block) => block.type)).toEqual([
+        'thinking',
+        'text',
+        'server_tool_use',
+        'web_search_tool_result',
+        'text',
+      ]);
+      expect(payload.content[0].thinking).toBe('The user wants recent news.');
+      expect(payload.content[1].text).toBe('Let me look that up.');
+      expect(payload.content[4].text).toBe('Here it is.');
+    });
+
+    it('bills the whole turn, not just the answering hop', async () => {
+      await enableSearch();
+      const { run } = routed(
+        [searchCall('OpenAI updates 2026', 'call_1'), answer('Here it is.')],
+        sideRequest(8),
+      );
+
+      const response = await run();
+      const payload = (await response.json()) as {
+        stop_reason: string;
+        usage: {
+          input_tokens: number;
+          output_tokens: number;
+          server_tool_use: { web_search_requests: number };
+        };
+      };
+
+      // 100+200 prompt and 10+20 completion, both hops.
+      expect(payload.usage.input_tokens).toBe(300);
+      expect(payload.usage.output_tokens).toBe(30);
+      expect(payload.usage.server_tool_use.web_search_requests).toBe(1);
+    });
+
+    it('stops searching at the max_uses the client declared', async () => {
+      await enableSearch();
+      const { run, calls } = routed(
+        [
+          searchCall('one', 'call_1'),
+          searchCall('two', 'call_2'),
+          searchCall('three', 'call_3'),
+        ],
+        sideRequest(2),
+      );
+
+      const response = await run();
+      const payload = (await response.json()) as {
+        content: Array<{ type: string }>;
+        stop_reason: string;
+        usage: { server_tool_use: { web_search_requests: number } };
+      };
+
+      expect(payload.usage.server_tool_use.web_search_requests).toBe(2);
+      // Two searches, then the closing call with the tool withdrawn, then stop.
+      expect(calls()).toBe(3);
+      // Nothing leaks: the client never declared a `web_search` function.
+      expect(payload.content.map((block) => block.type)).not.toContain(
+        'tool_use',
+      );
+      expect(payload.stop_reason).toBe('end_turn');
+    });
+
+    it('searches repeatedly and reports every search', async () => {
+      await enableSearch();
+      const { run, calls } = routed(
+        [
+          searchCall('one', 'call_1'),
+          searchCall('two', 'call_2'),
+          answer('Done.'),
+        ],
+        sideRequest(8),
+      );
+
+      const response = await run();
+      const payload = (await response.json()) as {
+        content: Array<{ type: string }>;
+        usage: { server_tool_use: { web_search_requests: number } };
+      };
+
+      expect(calls()).toBe(3);
+      expect(payload.usage.server_tool_use.web_search_requests).toBe(2);
+      expect(payload.content.map((block) => block.type)).toEqual([
+        'server_tool_use',
+        'web_search_tool_result',
+        'server_tool_use',
+        'web_search_tool_result',
+        'text',
+      ]);
+    });
+
+    it('runs the server tool while leaving the client’s own WebSearch alone', async () => {
+      await enableSearch();
+      const { run } = routed(
+        [searchCall('OpenAI updates 2026', 'call_1'), answer('Here it is.')],
+        {
+          max_tokens: 2048,
+          messages: [{ role: 'user', content: 'lookup' }],
+          tools: [
+            {
+              type: 'web_search_20250305',
+              name: 'web_search',
+              max_uses: 8,
+              input_schema: {},
+            },
+            {
+              name: 'WebSearch',
+              description: 'Search the web',
+              input_schema: { type: 'object' },
+            },
+          ],
+        },
+      );
+
+      const response = await run();
+      const payload = (await response.json()) as {
+        usage: { server_tool_use: { web_search_requests: number } };
+      };
+
+      // The client declaring WebSearch used to look like a name collision and
+      // switch the whole feature off.
+      expect(payload.usage.server_tool_use.web_search_requests).toBe(1);
+    });
+  });
+
+  /**
+   * Phase 3: Claude Code wraps the side-request answer as a `tool_result` for
+   * its own `WebSearch` and carries on. This must not re-enter the server-tool
+   * path — and it is the shape the whole flow exists to serve.
+   */
+  it('serves the main agent continuation without searching again', async () => {
+    await enableSearch();
+    let calls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('searx.test')) {
+        throw new Error('the continuation must not search');
+      }
+
+      calls += 1;
+
+      return makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: 'OpenAI 最近主要有这些更新。' },
+          },
+        ],
+      }) as unknown as Response;
+    });
+
+    const response = await handleMessagesRequest(
+      makeRequest('http://localhost/v1/messages'),
+      {
+        max_tokens: 2048,
+        messages: [
+          { role: 'user', content: '帮我查一下 OpenAI 最近有什么更新' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_search_001',
+                name: 'WebSearch',
+                input: { query: 'OpenAI latest updates 2026' },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_search_001',
+                content: '根据搜索结果，OpenAI 最近……',
+              },
+            ],
+          },
+        ],
+        tools: [
+          {
+            name: 'WebSearch',
+            description: 'Search the web',
+            input_schema: { type: 'object' },
+          },
+          {
+            name: 'Read',
+            description: 'read',
+            input_schema: { type: 'object' },
+          },
+        ],
+      },
+    );
+
+    const payload = (await response.json()) as {
+      content: Array<{ type: string }>;
+      stop_reason: string;
+    };
+
+    expect(calls).toBe(1);
+    expect(payload.content).toEqual([
+      { type: 'text', text: 'OpenAI 最近主要有这些更新。' },
+    ]);
+    expect(payload.stop_reason).toBe('end_turn');
+  });
+
   describe('/v1/responses', () => {
     it('reports the search as a web_search_call item', async () => {
       await enableSearch();
@@ -921,6 +1396,291 @@ describe('server tool routing', () => {
         action: { query: 'latest release', type: 'search' },
         status: 'completed',
       });
+    });
+
+    /**
+     * The preamble is the prose a model writes before it searches. It was
+     * repositioned three times and had no test at all: this pins both halves —
+     * that it is emitted, and that it lands *before* the searches it preceded.
+     */
+    it('puts a Responses preamble ahead of the searches, and streams the answer', async () => {
+      await enableSearch();
+      let calls = 0;
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+
+        if (url.includes('searx.test')) {
+          return makeJsonResponse({
+            results: [
+              { content: 'snippet', title: 'Docs', url: 'https://docs.test' },
+            ],
+          }) as unknown as Response;
+        }
+
+        calls += 1;
+
+        return makeJsonResponse(
+          calls === 1
+            ? {
+                choices: [
+                  {
+                    finish_reason: 'tool_calls',
+                    message: {
+                      // Speaks first, then asks — the case the preamble is for.
+                      content: 'Let me look that up.',
+                      reasoning_content: 'The user wants recent news.',
+                      role: 'assistant',
+                      tool_calls: [
+                        {
+                          id: 'c1',
+                          type: 'function',
+                          function: {
+                            arguments: '{"query":"OpenAI updates"}',
+                            name: 'web_search',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }
+            : {
+                choices: [
+                  {
+                    finish_reason: 'stop',
+                    message: {
+                      content: 'Here is what I found.',
+                      role: 'assistant',
+                    },
+                  },
+                ],
+              },
+        ) as unknown as Response;
+      });
+
+      const response = await handleResponsesRequest(
+        makeRequest('http://localhost/v1/responses'),
+        {
+          input: 'any news on OpenAI?',
+          model: 'glm-5.1',
+          tools: [{ type: 'web_search_preview' }],
+        },
+      );
+
+      const payload = (await response.json()) as {
+        output: Array<{ content?: Array<{ text?: string }>; type: string }>;
+        output_text: string;
+      };
+
+      expect(payload.output.map((item) => item.type)).toEqual([
+        'reasoning',
+        'message',
+        'web_search_call',
+        'message',
+      ]);
+      // The preamble, then the search, then the answer — in the order written.
+      expect(payload.output[1].content?.[0]?.text).toBe('Let me look that up.');
+      expect(payload.output[3].content?.[0]?.text).toBe(
+        'Here is what I found.',
+      );
+      // Not the preamble: a delta-subscribing client must get the answer.
+      expect(payload.output_text).toBe('Here is what I found.');
+    });
+
+    it('streams a Responses preamble ahead of the searches', async () => {
+      await enableSearch();
+      let calls = 0;
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+
+        if (url.includes('searx.test')) {
+          return makeJsonResponse({
+            results: [
+              { content: 'snippet', title: 'Docs', url: 'https://docs.test' },
+            ],
+          }) as unknown as Response;
+        }
+
+        calls += 1;
+
+        return makeJsonResponse(
+          calls === 1
+            ? {
+                choices: [
+                  {
+                    finish_reason: 'tool_calls',
+                    message: {
+                      content: 'Let me look that up.',
+                      reasoning_content: 'The user wants recent news.',
+                      role: 'assistant',
+                      tool_calls: [
+                        {
+                          id: 'c1',
+                          type: 'function',
+                          function: {
+                            arguments: '{"query":"OpenAI updates"}',
+                            name: 'web_search',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }
+            : {
+                choices: [
+                  {
+                    finish_reason: 'stop',
+                    message: {
+                      content: 'Here is what I found.',
+                      role: 'assistant',
+                    },
+                  },
+                ],
+              },
+        ) as unknown as Response;
+      });
+
+      const response = await handleResponsesRequest(
+        makeRequest('http://localhost/v1/responses'),
+        {
+          input: 'any news on OpenAI?',
+          model: 'glm-5.1',
+          stream: true,
+          tools: [{ type: 'web_search_preview' }],
+        },
+      );
+
+      const text = await response.text();
+
+      // One opening, under one id.
+      expect(text.match(/"type":"response\.created"/g)).toHaveLength(1);
+      expect(text).toContain('Let me look that up.');
+      expect(text).toContain('Here is what I found.');
+      // The answer is what streams as text deltas, not the preamble.
+      expect(text).toContain('"delta":"Here is what I found."');
+      expect(text).toContain('"type":"response.completed"');
+    });
+
+    it('reports the upstream’s own message when a streamed turn fails', async () => {
+      await enableSearch();
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+
+        if (url.includes('searx.test')) {
+          return makeJsonResponse({ results: [] }) as unknown as Response;
+        }
+
+        return new Response(
+          JSON.stringify({ error: { message: 'rate limited upstream' } }),
+          { headers: { 'Content-Type': 'application/json' }, status: 429 },
+        ) as unknown as Response;
+      });
+
+      const response = await handleResponsesRequest(
+        makeRequest('http://localhost/v1/responses'),
+        {
+          input: 'any news?',
+          model: 'glm-5.1',
+          stream: true,
+          tools: [{ type: 'web_search_preview' }],
+        },
+      );
+
+      const text = await response.text();
+
+      // A rate limit has to arrive as one, or a client that retries on that
+      // alone stops retrying.
+      expect(text).toContain('rate limited upstream');
+      expect(text).toContain('"type":"response.error"');
+    });
+
+    /**
+     * `web_fetch` end to end. The Responses item for a fetch is still a
+     * `web_search_call` but carries an `open_page` action — the branch that
+     * distinguishes the two had no coverage at all.
+     */
+    it('reports a fetch as a web_search_call with an open_page action', async () => {
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+
+      let calls = 0;
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+
+        if (url.includes('/agenttool/v1/webfetch')) {
+          return makeJsonResponse({
+            content: 'the page says hello',
+            url: 'https://docs.test/page',
+          }) as unknown as Response;
+        }
+
+        calls += 1;
+
+        return makeJsonResponse(
+          calls === 1
+            ? {
+                choices: [
+                  {
+                    finish_reason: 'tool_calls',
+                    message: {
+                      content: null,
+                      role: 'assistant',
+                      tool_calls: [
+                        {
+                          id: 'f1',
+                          type: 'function',
+                          function: {
+                            arguments: '{"url":"https://docs.test/page"}',
+                            name: 'web_fetch',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }
+            : {
+                choices: [
+                  {
+                    finish_reason: 'stop',
+                    message: {
+                      content: 'The page says hello.',
+                      role: 'assistant',
+                    },
+                  },
+                ],
+              },
+        ) as unknown as Response;
+      });
+
+      const response = await handleResponsesRequest(
+        makeRequest('http://localhost/v1/responses'),
+        {
+          input: 'what does that page say?',
+          model: 'glm-5.1',
+          tools: [{ type: 'web_fetch_20250910', name: 'web_fetch' }],
+        },
+      );
+
+      const payload = (await response.json()) as {
+        output: Array<{
+          action?: { type?: string; url?: string };
+          type: string;
+        }>;
+      };
+      const item = payload.output.find(
+        (entry) => entry.type === 'web_search_call',
+      );
+
+      expect(item).toBeDefined();
+      expect(item?.action?.type).toBe('open_page');
+      expect(item?.action?.url).toBe('https://docs.test/page');
     });
 
     it('leaves a client function named web_search to the client', async () => {
