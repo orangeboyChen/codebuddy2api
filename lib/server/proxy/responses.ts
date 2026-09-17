@@ -39,7 +39,6 @@ import {
 } from './web-search-loop';
 import { resolveRequestAccessKey } from './auth';
 import { createErrorResponse } from '../shared/http';
-import { sealReasoning, unsealReasoning } from '../shared/reasoning-seal';
 import {
   createStreamCloser,
   readTimeoutFrame,
@@ -66,7 +65,7 @@ interface ResponsesInputItem {
   tools?: Array<{ type?: string; name?: string } & Record<string, unknown>>;
   /**
    * Present on `reasoning` items a client replays from an earlier response.
-   * Opaque to us — we mint and verify these ourselves, see `reasoning-seal`.
+   * We put the reasoning here verbatim; clients echo it back untouched.
    * A compaction item carries the same field.
    */
   encrypted_content?: string;
@@ -899,19 +898,30 @@ const stringifyContent = (value: unknown): string => {
 };
 
 /**
+ * Marks an `encrypted_content` value we minted, so we can tell it apart from a
+ * blob issued by someone else.
+ *
+ * Not a security measure. Codex never opens this field — it only echoes it — so
+ * plaintext round-trips fine, but a marker is what stops us from reading a
+ * genuinely encrypted blob as if it were reasoning text.
+ */
+const REASONING_PREFIX = 'cbreason1:';
+
+/**
  * Pulls readable reasoning out of a replayed `reasoning` item.
  *
- * The sealed blob is authoritative when we can open it. Otherwise the summary
- * text is a usable stand-in: the Agents SDK sends summaries back as
- * `summary: [{type: 'summary_text', text}]`, so accepting them means a client
- * that never got a signature from us still gets its reasoning carried through
- * rather than dropped.
+ * Only values we minted are used: anything else — an OpenAI-issued blob, say —
+ * is opaque ciphertext, and forwarding it upstream would send gibberish where
+ * reasoning belongs. The summary is the fallback in that case.
+ *
+ * The Agents SDK sends summaries as `summary: [{type: 'summary_text', text}]`,
+ * so a client that never received our blob still gets its reasoning through.
  */
 const extractReasoningFromItem = (item: ResponsesInputItem): string => {
-  const sealed = unsealReasoning(item.encrypted_content);
+  const blob = item.encrypted_content;
 
-  if (sealed) {
-    return sealed;
+  if (typeof blob === 'string' && blob.startsWith(REASONING_PREFIX)) {
+    return blob.slice(REASONING_PREFIX.length);
   }
 
   if (!Array.isArray(item.summary)) {
@@ -1486,19 +1496,23 @@ const mapChatResponseToResponsesPayload = async (
   // Clients replay `output` verbatim on the next turn, so this is what lets a
   // stateless Responses client carry reasoning forward. Without it the only
   // reasoning we ever hand back is a transient `reasoning_text.delta`, which no
-  // client can replay because it has no id and no sealed blob.
+  // client can replay because it has no id and no blob to send back.
+  //
+  // `encrypted_content` holds the reasoning verbatim, not ciphertext. Codex
+  // never opens it — it only echoes it — so plaintext round-trips exactly as
+  // well, and encrypting would obscure a value that carries no secret: the
+  // upstream gave us a summary, and the `summary` field below already shows it.
   const reasoningText =
     firstChoice.message?.reasoning_content ??
     firstChoice.message?.reasoning ??
     '';
-  const sealedReasoning = sealReasoning(reasoningText);
 
   if (reasoningText) {
     output.push({
       id: createResponseReasoningId(),
       type: 'reasoning',
       summary: [{ type: 'summary_text', text: reasoningText }],
-      ...(sealedReasoning ? { encrypted_content: sealedReasoning } : {}),
+      encrypted_content: `${REASONING_PREFIX}${reasoningText}`,
       status: 'completed',
     });
   }
@@ -1543,6 +1557,10 @@ const mapChatResponseToResponsesPayload = async (
         role: 'assistant',
         content: getAssistantTranscriptContent(outputText, transcriptToolCalls),
         ...(transcriptToolCalls ? { tool_calls: transcriptToolCalls } : {}),
+        // A client that continues via `previous_response_id` rather than
+        // replaying `output` never sees the reasoning item, so the session is
+        // the only place the reasoning can survive into the next turn.
+        ...(reasoningText ? { reasoning: reasoningText } : {}),
       },
     ],
     defaults,
@@ -1617,6 +1635,18 @@ const mapChatStreamToResponsesEventStream = (
       };
     });
   let outputText = '';
+  // Reasoning accumulated from stream deltas. The delta events alone are not
+  // replayable — a client needs a reasoning item in the completed output, with
+  // a blob of its own, to send anything back on the next turn.
+  let streamedReasoning = '';
+  // Claimed on the first reasoning delta, which lands before any text, so the
+  // item sorts ahead of the message it produced.
+  let reasoningOutputIndex: number | null = null;
+  let reasoningItemAdded = false;
+  // Fixed when the first reasoning delta arrives, so the `output_item.added`
+  // event and the completed output reference the same id.
+  let reasoningItemId = '';
+
   let nextOutputIndex =
     serverToolItems.reduce(
       (maximum, item) => Math.max(maximum, item.outputIndex),
@@ -1675,6 +1705,31 @@ const mapChatStreamToResponsesEventStream = (
           },
         ],
       });
+
+      // Carries the reasoning verbatim rather than encrypted — same reasoning as
+      // the non-streaming item above.
+      const buildStreamingReasoningItem = (): Record<string, unknown> => ({
+        id: reasoningItemId,
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: streamedReasoning }],
+        encrypted_content: `${REASONING_PREFIX}${streamedReasoning}`,
+        status: 'completed',
+      });
+
+      const ensureReasoningItemAdded = (): void => {
+        if (reasoningItemAdded) {
+          return;
+        }
+
+        reasoningOutputIndex ??= allocateOutputIndex();
+        enqueueEvent({
+          type: 'response.output_item.added',
+          item: buildStreamingReasoningItem(),
+          output_index: reasoningOutputIndex,
+          response_id: responseId,
+        });
+        reasoningItemAdded = true;
+      };
 
       const ensureMessageAdded = (): void => {
         if (messageAddedEmitted) {
@@ -1826,6 +1881,12 @@ const mapChatStreamToResponsesEventStream = (
                     ...(transcriptToolCalls
                       ? { tool_calls: transcriptToolCalls }
                       : {}),
+                    // Same reason as the non-streaming path: a client that
+                    // continues via `previous_response_id` instead of
+                    // replaying `output` would otherwise lose the reasoning.
+                    ...(streamedReasoning
+                      ? { reasoning: streamedReasoning }
+                      : {}),
                   },
                 ],
                 defaults,
@@ -1899,6 +1960,19 @@ const mapChatStreamToResponsesEventStream = (
                     item: completed,
                     outputIndex,
                   })),
+                  // Streamed reasoning needs the same replayable item the
+                  // non-streaming path emits. It sorts ahead of the message by
+                  // taking the next index before the message claims its own —
+                  // the deltas come first on the wire, so the item order has
+                  // to match or a client replaying `output` scrambles it.
+                  ...(streamedReasoning && reasoningOutputIndex !== null
+                    ? [
+                        {
+                          item: buildStreamingReasoningItem(),
+                          outputIndex: reasoningOutputIndex,
+                        },
+                      ]
+                    : []),
                   ...(outputText && messageState.outputIndex !== null
                     ? [
                         {
@@ -2029,6 +2103,9 @@ const mapChatStreamToResponsesEventStream = (
               }
 
               if (delta?.reasoning_content) {
+                reasoningItemId ||= createResponseReasoningId();
+                streamedReasoning += delta.reasoning_content;
+                ensureReasoningItemAdded();
                 enqueueEvent({
                   type: 'response.reasoning_text.delta',
                   delta: delta.reasoning_content,

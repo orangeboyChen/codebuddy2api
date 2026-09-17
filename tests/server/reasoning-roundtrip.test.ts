@@ -6,7 +6,6 @@ import { NextRequest } from 'next/server';
 import { addCredential } from '@/lib/server/domain/credentials';
 import { handleMessagesRequest } from '@/lib/server/proxy/anthropic';
 import { handleResponsesRequest } from '@/lib/server/proxy/responses';
-import { sealReasoning } from '@/lib/server/shared/reasoning-seal';
 
 const repoRoot = process.cwd();
 const tempRootDir = path.join(repoRoot, '.tmp-test-reasoning-roundtrip');
@@ -35,6 +34,44 @@ const chatResponse = (content: string, reasoning?: string): Response =>
     }),
     { headers: { 'Content-Type': 'application/json' } },
   );
+
+const makeSseResponse = (frames: string[]): Response =>
+  new Response(frames.join('\n\n') + '\n\n', {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+  });
+
+interface CompletedOutputItem {
+  type?: string;
+  encrypted_content?: string;
+  summary?: Array<{ text?: string }>;
+}
+
+/** Pulls the `response.completed` payload out of an SSE stream. */
+const extractCompletedResponse = (
+  payload: string,
+): { output?: CompletedOutputItem[] } | undefined => {
+  for (const line of payload.split('\n')) {
+    if (!line.startsWith('data: ')) {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(line.slice(6)) as {
+        type?: string;
+        response?: { output?: CompletedOutputItem[] };
+      };
+
+      if (event.type === 'response.completed') {
+        return event.response;
+      }
+    } catch {
+      // Ignore keepalives and non-JSON frames.
+    }
+  }
+
+  return undefined;
+};
 
 /** Captures the body we send upstream, so tests assert on the real payload. */
 const captureUpstreamBody = async (
@@ -106,7 +143,7 @@ describe('reasoning round trip', () => {
   });
 
   describe('claude code (/v1/messages)', () => {
-    it('emits a signature so the thinking block is replayable', async () => {
+    it('emits the upstream reasoning as a thinking block', async () => {
       const original = globalThis.fetch;
       globalThis.fetch = (async () =>
         chatResponse('the answer', 'the model reasoned about primes')) as never;
@@ -129,8 +166,9 @@ describe('reasoning round trip', () => {
       const thinking = content.find((block) => block.type === 'thinking');
 
       expect(thinking?.thinking).toBe('the model reasoned about primes');
-      expect(typeof thinking?.signature).toBe('string');
-      expect(thinking?.signature).toBeTruthy();
+      // No signature: it would duplicate this text on the wire. See
+      // `buildThinkingBlock` in the proxy.
+      expect(thinking?.signature).toBeUndefined();
     });
 
     it('recovers replayed reasoning and sends it upstream', async () => {
@@ -160,11 +198,11 @@ describe('reasoning round trip', () => {
       expect(assistant?.reasoning).toBe('Claude Code replays this');
     });
 
-    it('prefers the sealed signature but falls back to the summary', async () => {
+    it('does not forward a signature it did not mint', async () => {
       // A client may replay a genuine Anthropic signature from a session it
-      // started against real Claude. We cannot open those, and discarding the
-      // summary over that would lose perfectly good reasoning — so the
-      // signature is preferred when valid, never a gate on the fallback.
+      // started against real Claude. That value is ciphertext we cannot read,
+      // and forwarding it upstream would put gibberish where reasoning
+      // belongs — so it is skipped and the summary carries the reasoning.
       const body = await captureUpstreamBody(() =>
         handleMessagesRequest(makeAnthropicRequest(), {
           max_tokens: 100,
@@ -194,9 +232,10 @@ describe('reasoning round trip', () => {
       expect(assistant?.reasoning).toBe('summary text');
     });
 
-    it('prefers the signature over the summary when it opens', async () => {
-      const sealed = sealReasoning('verbatim reasoning from the signature');
-
+    it('ignores a signature in favour of the thinking text', async () => {
+      // We never mint signatures on this path, so any signature — even one
+      // shaped like ours — is not ours to interpret. The `thinking` field is
+      // what carries the reasoning.
       const body = await captureUpstreamBody(() =>
         handleMessagesRequest(makeAnthropicRequest(), {
           max_tokens: 100,
@@ -205,8 +244,8 @@ describe('reasoning round trip', () => {
             {
               content: [
                 {
-                  signature: sealed,
-                  thinking: 'a shorter summary',
+                  signature: 'cbreason1:not from us',
+                  thinking: 'the real reasoning',
                   type: 'thinking',
                 },
                 { text: 'the answer', type: 'text' },
@@ -223,16 +262,12 @@ describe('reasoning round trip', () => {
         (m) => m.role === 'assistant',
       );
 
-      expect(assistant?.reasoning).toBe(
-        'verbatim reasoning from the signature',
-      );
+      expect(assistant?.reasoning).toBe('the real reasoning');
     });
 
-    it('carries an omitted-display block whose summary is empty', async () => {
-      // Under `display: "omitted"` the thinking field is empty and the
-      // signature is the only payload. Replaying it must still work.
-      const sealed = sealReasoning('reasoning hidden from display');
-
+    it('drops a block that carries no reasoning', async () => {
+      // An omitted-display block has empty `thinking`, so there is nothing to
+      // recover and no reasoning should reach the upstream.
       const body = await captureUpstreamBody(() =>
         handleMessagesRequest(makeAnthropicRequest(), {
           max_tokens: 100,
@@ -240,7 +275,11 @@ describe('reasoning round trip', () => {
             { content: 'hi', role: 'user' },
             {
               content: [
-                { signature: sealed, thinking: '', type: 'thinking' },
+                {
+                  signature: 'cbreason1:reasoning hidden from display',
+                  thinking: '',
+                  type: 'thinking',
+                },
                 { text: 'the answer', type: 'text' },
               ],
               role: 'assistant',
@@ -255,7 +294,7 @@ describe('reasoning round trip', () => {
         (m) => m.role === 'assistant',
       );
 
-      expect(assistant?.reasoning).toBe('reasoning hidden from display');
+      expect(assistant?.reasoning).toBeUndefined();
     });
 
     it('no longer leaks redacted_thinking into the message body', async () => {
@@ -366,6 +405,33 @@ describe('reasoning round trip', () => {
       expect(assistant?.reasoning).toBe('check the weather');
     });
 
+    it('does not forward an encrypted_content it did not mint', async () => {
+      // An OpenAI-issued blob is ciphertext we cannot read. Forwarding it
+      // upstream would send gibberish where reasoning belongs, so the summary
+      // is used instead — the same rule the Anthropic path follows.
+      const body = await captureUpstreamBody(() =>
+        handleResponsesRequest(makeResponsesRequest(), {
+          input: [
+            { role: 'user', content: 'hi' },
+            {
+              id: 'rs_ext',
+              encrypted_content: 'gAAAAABoISQ24OyVRYbkYfukdJoqdzWT...',
+              summary: [{ type: 'summary_text', text: 'from the summary' }],
+              type: 'reasoning',
+            },
+            { role: 'assistant', content: 'the answer' },
+          ],
+          model: 'gpt-5.5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBe('from the summary');
+    });
+
     it('drops a reasoning item that carries nothing recoverable', async () => {
       const body = await captureUpstreamBody(() =>
         handleResponsesRequest(makeResponsesRequest(), {
@@ -382,6 +448,104 @@ describe('reasoning round trip', () => {
 
       expect(messages).toHaveLength(2);
       expect(messages.filter((m) => m.content === '')).toHaveLength(0);
+    });
+
+    it('emits a replayable reasoning item in the streamed completed output', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeSseResponse([
+          'data: {"id":"c1","choices":[{"delta":{"reasoning_content":"thinking hard"}}]}',
+          'data: {"id":"c1","choices":[{"delta":{"content":"the answer"}}]}',
+          'data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}',
+          'data: [DONE]',
+        ]),
+      );
+
+      const response = await handleResponsesRequest(makeResponsesRequest(), {
+        input: 'hi',
+        model: 'gpt-5.5',
+        stream: true,
+      } as never);
+
+      const payload = await response.text();
+      const completed = extractCompletedResponse(payload);
+
+      expect(completed).toBeDefined();
+
+      const reasoning = completed?.output?.find(
+        (item) => item.type === 'reasoning',
+      );
+
+      // Without this the only reasoning a streaming client ever sees is a
+      // transient delta — nothing it can send back on the next turn.
+      expect(reasoning).toBeDefined();
+      expect(typeof reasoning?.encrypted_content).toBe('string');
+      expect(reasoning?.summary?.[0]?.text).toBe('thinking hard');
+    });
+
+    it('orders the streamed reasoning item before the message', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeSseResponse([
+          'data: {"id":"c1","choices":[{"delta":{"reasoning_content":"think first"}}]}',
+          'data: {"id":"c1","choices":[{"delta":{"content":"then answer"}}]}',
+          'data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}',
+          'data: [DONE]',
+        ]),
+      );
+
+      const response = await handleResponsesRequest(makeResponsesRequest(), {
+        input: 'hi',
+        model: 'gpt-5.5',
+        stream: true,
+      } as never);
+
+      const completed = extractCompletedResponse(await response.text());
+      const types = completed?.output?.map((item) => item.type) ?? [];
+
+      // A client replays `output` verbatim, so reasoning has to precede the
+      // message it produced or the replayed turn is scrambled.
+      expect(types.indexOf('reasoning')).toBeLessThan(types.indexOf('message'));
+    });
+
+    it('persists reasoning so a previous_response_id continuation keeps it', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: 'the answer',
+                  reasoning_content: 'reasoning to persist',
+                },
+              },
+            ],
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+      const first = await handleResponsesRequest(makeResponsesRequest(), {
+        input: 'hi',
+        model: 'gpt-5.5',
+      } as never);
+      const firstJson = (await first.json()) as { id?: string };
+
+      const body = await captureUpstreamBody(
+        () =>
+          handleResponsesRequest(makeResponsesRequest(), {
+            input: [{ role: 'user', content: 'and then?' }],
+            model: 'gpt-5.5',
+            previous_response_id: firstJson.id,
+          } as never),
+        chatResponse('follow-up'),
+      );
+
+      // The client never replayed `output`, so the session is the only thing
+      // that can carry the reasoning into this turn.
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBe('reasoning to persist');
     });
   });
 });
