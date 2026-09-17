@@ -5911,6 +5911,170 @@ describe('proxy integration', () => {
     expect(text).toContain('data: [DONE]');
   });
 
+  it('interleaves thinking and text around each fetch in a non-streaming reply', async () => {
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch')) {
+        // Backends report the URL they actually read, which follows redirects
+        // and so can differ from the one the model asked for.
+        return makeJsonResponse({
+          content: 'Fetched body.',
+          url: 'https://page.test/a?redirected=1',
+        });
+      }
+
+      upstreamCalls += 1;
+
+      // The model thinks, speaks, then fetches — twice over. Anthropic lays a
+      // turn out as thinking → text → tool_use → tool_result → thinking →
+      // text, so each hop's reasoning stays attached to the text it justifies.
+      if (upstreamCalls === 1) {
+        return makeJsonResponse({
+          choices: [
+            {
+              finish_reason: 'tool_calls',
+              message: {
+                content: 'Looking it up.',
+                reasoning_content: 'I should check the page.',
+                role: 'assistant',
+                tool_calls: [
+                  {
+                    id: 'call_first',
+                    function: {
+                      arguments: '{"url":"https://page.test/a"}',
+                      name: 'web_fetch',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+
+      return makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: 'Here is what it said.',
+              reasoning_content: 'The page confirms it.',
+            },
+          },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      new NextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Read https://page.test/a' }],
+        tools: [
+          { type: 'web_fetch_20260209', name: 'web_fetch', input_schema: {} },
+        ],
+      },
+    );
+
+    const payload = (await response.json()) as {
+      content: Array<{
+        thinking?: string;
+        text?: string;
+        type: string;
+        content?: { url?: string };
+      }>;
+    };
+    const blocks = payload.content.map((block) =>
+      block.type === 'thinking'
+        ? `thinking:${block.thinking}`
+        : block.type === 'text'
+          ? `text:${block.text}`
+          : block.type,
+    );
+
+    // Each hop keeps its own reasoning ahead of its own text, and the fetch
+    // sits between the two hops rather than ahead of both.
+    expect(blocks).toEqual([
+      'thinking:I should check the page.',
+      'text:Looking it up.',
+      'server_tool_use',
+      'web_fetch_tool_result',
+      'thinking:The page confirms it.',
+      'text:Here is what it said.',
+    ]);
+    // The result carries the URL the backend read, not the one requested.
+    expect(payload.content[3]?.content?.url).toBe(
+      'https://page.test/a?redirected=1',
+    );
+    expect(upstreamCalls).toBe(2);
+  });
+
+  it('keeps the tool blocks first when a hop calls a tool without speaking', async () => {
+    await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/webfetch')) {
+        return makeJsonResponse({ content: 'Fetched body.' });
+      }
+
+      upstreamCalls += 1;
+
+      return upstreamCalls === 1
+        ? makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_fetch',
+                      function: {
+                        arguments: '{"url":"https://page.test/a"}',
+                        name: 'web_fetch',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        : makeJsonResponse({
+            choices: [{ finish_reason: 'stop', message: { content: 'Done.' } }],
+          });
+    });
+
+    const response = await handleMessagesRequest(
+      new NextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Read https://page.test/a' }],
+        tools: [
+          { type: 'web_fetch_20260209', name: 'web_fetch', input_schema: {} },
+        ],
+      },
+    );
+
+    const payload = (await response.json()) as {
+      content: Array<{ text?: string; type: string }>;
+    };
+
+    // The model went straight to the tool, so there is no prose to put first:
+    // the fetch opens the turn and the answer closes it.
+    expect(
+      payload.content.map((block) =>
+        block.type === 'text' ? `text:${block.text}` : block.type,
+      ),
+    ).toEqual(['server_tool_use', 'web_fetch_tool_result', 'text:Done.']);
+  });
+
   it('passes through untouched when no search tool is declared', async () => {
     process.env.SEARXNG_URL = 'https://searx.test';
     resetWebSearchProviders();

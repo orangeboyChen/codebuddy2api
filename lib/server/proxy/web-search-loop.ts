@@ -88,6 +88,15 @@ export interface ChatCompletionPayload {
   id?: string;
   model?: string;
   object?: string;
+  /**
+   * One entry per server-tool hop, in the order the model produced them.
+   *
+   * Carries the grouping `message.content` / `reasoning_content` cannot: a
+   * multi-hop turn joins every hop into one string per kind, which loses where
+   * one hop's reasoning ends and the next begins. Absent when no hop ran, so
+   * callers fall back to the OpenAI-shaped fields.
+   */
+  turns?: ServerToolTurn[];
   usage?: unknown;
 }
 
@@ -576,6 +585,35 @@ const readReasoning = (message: ChatCompletionMessage | undefined): string => {
 };
 
 /**
+ * Pairs each hop's reasoning and text with the calls that hop made.
+ *
+ * The three arrays are index-aligned — entry N is hop N — so zipping them back
+ * together is what restores the grouping a joined string cannot express. `texts`
+ * and `reasonings` are one entry longer than `executions`, because the closing
+ * hop answers instead of calling another tool.
+ */
+const buildIntermediateTurns = ({
+  executions,
+  reasonings,
+  texts,
+}: {
+  executions: ServerToolExecution[][];
+  reasonings: string[];
+  texts: string[];
+}): ServerToolTurn[] =>
+  Array.from(
+    { length: Math.max(reasonings.length, texts.length) },
+    (_, index) => ({
+      // Only `executions` can run short: the closing hop answers without
+      // calling anything, so it has an entry in the prose arrays but none here.
+      // The three arrays stay aligned because every hop appends to all of them.
+      executions: executions[index] ?? [],
+      reasoning: reasonings[index],
+      text: texts[index],
+    }),
+  );
+
+/**
  * Folds the text a multi-hop turn produced before its later server-tool calls
  * into the payload the client receives.
  *
@@ -583,12 +621,17 @@ const readReasoning = (message: ChatCompletionMessage | undefined): string => {
  * more than once spoke before each search, and that text is part of the turn:
  * dropping it hides the model's reasoning from the user and leaves the
  * client's transcript out of step with what the model actually said.
+ *
+ * The same hops are also re-grouped into `turns`, because the folded strings
+ * cannot express where one hop ends and the next begins.
  */
 const withIntermediateTurns = ({
+  executions,
   payload,
   reasonings,
   texts,
 }: {
+  executions: ServerToolExecution[][];
   payload: ChatCompletionPayload;
   reasonings: string[];
   texts: string[];
@@ -597,13 +640,21 @@ const withIntermediateTurns = ({
   const extraReasoning = reasonings.filter(Boolean).join('\n\n');
   const [first, ...rest] = payload.choices ?? [];
 
-  if (!first || (!extraText && !extraReasoning)) {
+  if (!first) {
     return payload;
   }
 
   const message = first.message ?? {};
   const existingText =
     typeof message.content === 'string' ? message.content : '';
+
+  // Nothing from the earlier hops and nothing to fold in — but the hops may
+  // still have run tools, which is exactly the case a caller consuming `turns`
+  // needs: a hop that called a tool without speaking first is still a hop.
+  if (!extraText && !extraReasoning && !executions.length) {
+    return payload;
+  }
+
   const content = [extraText, existingText].filter(Boolean).join('\n\n');
   const reasoning = [extraReasoning, readReasoning(message)]
     .filter(Boolean)
@@ -611,6 +662,16 @@ const withIntermediateTurns = ({
 
   return {
     ...payload,
+    // Per-hop grouping for renderers that can express it. The joined strings
+    // above stay as the OpenAI-shaped view; a client that builds Anthropic
+    // content blocks needs to know where one hop's reasoning ends and the next
+    // begins, which a joined string has already lost. The closing hop is the
+    // model's final answer, so it carries no further calls.
+    turns: buildIntermediateTurns({
+      executions,
+      reasonings: [...reasonings, readReasoning(message)],
+      texts: [...texts, existingText],
+    }),
     choices: [
       {
         ...first,
@@ -657,6 +718,20 @@ export type ServerToolExecution =
   | (Extract<ServerToolInvocation, { type: 'web_fetch' }> & {
       result: WebFetchResponse;
     });
+
+/**
+ * One server-tool hop as the model produced it.
+ *
+ * `reasoning` and `text` are what the model wrote before the calls in
+ * `executions`; both are empty when it called tools without speaking first. The
+ * last hop of a turn usually has no executions, because the model answered
+ * instead of reaching for another tool.
+ */
+export interface ServerToolTurn {
+  executions: ServerToolExecution[];
+  reasoning: string;
+  text: string;
+}
 
 export interface ServerToolCallbacks {
   emitStreamEvents?: boolean;
@@ -1623,6 +1698,10 @@ export const executeWebSearchLoop = async ({
   // turn has to carry its earlier steps forward explicitly.
   const intermediateTexts: string[] = [];
   const intermediateReasonings: string[] = [];
+  // The calls each hop made, parallel to the two arrays above. Block renderers
+  // need the calls grouped with the prose that produced them, not flattened
+  // into one list at the end.
+  const intermediateExecutions: ServerToolExecution[][] = [];
   const initialMode: ServerToolUpstreamMode =
     searchProvider && fetchProvider
       ? 'detect-both'
@@ -1767,6 +1846,7 @@ export const executeWebSearchLoop = async ({
             // current one is folded in by the helper itself.
             message: withIntermediateTurns({
               payload,
+              executions: intermediateExecutions,
               reasonings: intermediateReasonings,
               texts: intermediateTexts,
             }).choices?.[0]?.message,
@@ -1780,15 +1860,16 @@ export const executeWebSearchLoop = async ({
       };
     }
 
-    // This iteration is complete and the loop continues, so its text becomes
-    // part of what the final answer has to carry.
-    if (iterationText) {
-      intermediateTexts.push(iterationText);
-    }
+    // This iteration is complete and the loop continues, so its prose and the
+    // calls it made both become part of the turn the client sees. Keep the three
+    // arrays index-aligned: entry N is hop N, so a renderer can pair that hop's
+    // reasoning, text, and tool calls without guessing. A hop that called tools
+    // without speaking first still gets an entry — its prose sides stay empty.
+    const hop = intermediateTexts.length;
 
-    if (iterationReasoning) {
-      intermediateReasonings.push(iterationReasoning);
-    }
+    intermediateTexts[hop] = iterationText;
+    intermediateReasonings[hop] = iterationReasoning;
+    intermediateExecutions[hop] = results.map((result) => result.execution);
 
     messages.push(message as JsonRecord);
     messages.push(
@@ -1845,6 +1926,7 @@ export const executeWebSearchLoop = async ({
         {
           ...withIntermediateTurns({
             payload,
+            executions: intermediateExecutions,
             reasonings: intermediateReasonings,
             texts: intermediateTexts,
           }),
@@ -1862,6 +1944,7 @@ export const executeWebSearchLoop = async ({
       {
         ...withIntermediateTurns({
           payload,
+          executions: intermediateExecutions,
           reasonings: intermediateReasonings,
           texts: intermediateTexts,
         }),

@@ -12,6 +12,7 @@ import {
   getServerToolStreamEvent,
   getServerToolExecutions,
   type ServerToolExecution,
+  type ServerToolTurn,
 } from './web-search-loop';
 import {
   anthropicStreamErrorChunks,
@@ -137,6 +138,12 @@ interface OpenAIChatResponse {
   id?: string;
   model?: string;
   choices?: OpenAIChatChoice[];
+  /**
+   * Per-hop grouping emitted by the local server-tool loop. Not part of the
+   * OpenAI protocol — it survives only as far as this file, which turns it into
+   * Anthropic content blocks.
+   */
+  turns?: ServerToolTurn[];
   usage?: OpenAIUsage;
 }
 
@@ -791,79 +798,127 @@ const encodeOpaqueServerToolContent = (value: unknown): string => {
 };
 
 const buildAnthropicServerToolBlocks = (
-  executions: ServerToolExecution[],
-): AnthropicContentBlock[] =>
-  executions.flatMap((execution) => {
-    const id = createAnthropicId('srvtoolu');
-    const result =
-      execution.type === 'web_search'
-        ? {
-            type: 'web_search_tool_result',
-            tool_use_id: id,
-            content: execution.result.results.map((item) => ({
-              type: 'web_search_result',
-              url: item.url ?? '',
-              title: item.title ?? '',
-              encrypted_content: encodeOpaqueServerToolContent(item),
-            })),
-          }
-        : {
-            type: 'web_fetch_tool_result',
-            tool_use_id: id,
+  execution: ServerToolExecution,
+): AnthropicContentBlock[] => {
+  const id = createAnthropicId('srvtoolu');
+  const result =
+    execution.type === 'web_search'
+      ? {
+          type: 'web_search_tool_result',
+          tool_use_id: id,
+          content: execution.result.results.map((item) => ({
+            type: 'web_search_result',
+            url: item.url ?? '',
+            title: item.title ?? '',
+            encrypted_content: encodeOpaqueServerToolContent(item),
+          })),
+        }
+      : {
+          type: 'web_fetch_tool_result',
+          tool_use_id: id,
+          content: {
+            type: 'web_fetch_result',
+            url: execution.result.url ?? execution.input.url,
             content: {
-              type: 'web_fetch_result',
-              url: execution.result.url ?? execution.input.url,
-              content: {
-                type: 'document',
-                source: {
-                  type: 'text',
-                  media_type: 'text/plain',
-                  data: execution.result.content,
-                },
+              type: 'document',
+              source: {
+                type: 'text',
+                media_type: 'text/plain',
+                data: execution.result.content,
               },
             },
-          };
+          },
+        };
 
-    return [
-      {
-        type: 'server_tool_use',
-        id,
-        name: execution.type,
-        input: execution.input,
-      },
-      result,
-    ];
+  return [
+    {
+      type: 'server_tool_use',
+      id,
+      name: execution.type,
+      input: execution.input,
+    },
+    result,
+  ];
+};
+
+const buildAllAnthropicServerToolBlocks = (
+  executions: ServerToolExecution[],
+): AnthropicContentBlock[] =>
+  executions.flatMap(buildAnthropicServerToolBlocks);
+
+/**
+ * Lays a server-tool turn out the way Anthropic does: each hop contributes its
+ * own thinking and text, followed by the tool blocks that hop triggered.
+ *
+ * `turns` carries the per-hop grouping the OpenAI-shaped payload cannot. Under
+ * that protocol a multi-hop turn collapses into one `content` string and one
+ * `reasoning_content` string, which loses where one hop's reasoning ends and the
+ * next begins — so the grouping has to be recovered before it is joined, which
+ * is why the loop emits it alongside the strings rather than this file
+ * reconstructing it.
+ *
+ * Anthropic's own server tools run multiple hops inside one assistant message,
+ * and a client replaying that message expects `[thinking] [text] [tool_use]
+ * [tool_result] [thinking] [text]`. Gathering the blocks by kind instead — every
+ * tool ahead of all the prose — puts each search before the reasoning that asked
+ * for it and merges hops that were never contiguous.
+ */
+const buildAnthropicTurnBlocks = (
+  turns: ServerToolTurn[],
+): AnthropicContentBlock[] => {
+  const blocks: AnthropicContentBlock[] = [];
+
+  turns.forEach((turn) => {
+    if (turn.reasoning) {
+      blocks.push({ type: 'thinking', thinking: turn.reasoning });
+    }
+
+    if (turn.text) {
+      blocks.push({ type: 'text', text: turn.text });
+    }
+
+    blocks.push(...buildAllAnthropicServerToolBlocks(turn.executions));
   });
+
+  return blocks;
+};
 
 const mapOpenAIResponseToAnthropic = (
   openaiResponse: OpenAIChatResponse,
   model: string,
   serverToolExecutions: ServerToolExecution[] = [],
+  turns?: ServerToolTurn[],
 ): Record<string, unknown> => {
   const choice = openaiResponse.choices?.[0];
   const message = choice?.message;
-  const contentBlocks: AnthropicContentBlock[] =
-    buildAnthropicServerToolBlocks(serverToolExecutions);
 
   // Thinking / reasoning content
   const reasoningText = message?.reasoning_content ?? message?.reasoning ?? '';
-
-  if (reasoningText) {
-    contentBlocks.push({
-      type: 'thinking',
-      thinking: reasoningText,
-    });
-  }
 
   // Text content
   const textContent =
     typeof message?.content === 'string' ? message.content : '';
 
-  if (textContent) {
-    contentBlocks.push({
-      type: 'text',
-      text: textContent,
-    });
+  // With per-hop grouping the turns already hold every block in order, prose
+  // included. Without it — no server tool ran, or a path that never grouped the
+  // hops — fall back to Anthropic's own order: thinking and text first, then
+  // the server-tool blocks they led to.
+  const contentBlocks: AnthropicContentBlock[] = turns
+    ? buildAnthropicTurnBlocks(turns)
+    : [];
+
+  if (!turns) {
+    if (reasoningText) {
+      contentBlocks.push({ type: 'thinking', thinking: reasoningText });
+    }
+
+    if (textContent) {
+      contentBlocks.push({ type: 'text', text: textContent });
+    }
+
+    contentBlocks.push(
+      ...buildAllAnthropicServerToolBlocks(serverToolExecutions),
+    );
   }
 
   // Tool calls
@@ -1315,9 +1370,9 @@ const mapOpenAIStreamToAnthropicSSE = (
               closeOpenTextBlocks();
               serverToolExecutions.push(serverToolEvent.execution);
               const index = contentBlockCount++;
-              const resultBlock = buildAnthropicServerToolBlocks([
+              const resultBlock = buildAnthropicServerToolBlocks(
                 serverToolEvent.execution,
-              ])[1];
+              )[1];
               enqueueEvent({
                 type: 'content_block_start',
                 index,
@@ -1615,7 +1670,12 @@ export const handleMessagesRequest = async (
     const payload = (await upstreamResponse.json()) as OpenAIChatResponse;
 
     return Response.json(
-      mapOpenAIResponseToAnthropic(payload, model, serverToolExecutions),
+      mapOpenAIResponseToAnthropic(
+        payload,
+        model,
+        serverToolExecutions,
+        payload.turns,
+      ),
     );
   } catch (error) {
     return createAnthropicError(
