@@ -39,6 +39,7 @@ import {
 } from './web-search-loop';
 import { resolveRequestAccessKey } from './auth';
 import { createErrorResponse } from '../shared/http';
+import { sealReasoning, unsealReasoning } from '../shared/reasoning-seal';
 import {
   createStreamCloser,
   readTimeoutFrame,
@@ -63,6 +64,17 @@ interface ResponsesInputItem {
   name?: string;
   call_id?: string;
   tools?: Array<{ type?: string; name?: string } & Record<string, unknown>>;
+  /**
+   * Present on `reasoning` items a client replays from an earlier response.
+   * Opaque to us — we mint and verify these ourselves, see `reasoning-seal`.
+   * A compaction item carries the same field.
+   */
+  encrypted_content?: string;
+  /**
+   * Reasoning summaries. The Agents SDK sends these back as
+   * `summary: [{type: 'summary_text', text}]`.
+   */
+  summary?: unknown;
 }
 
 interface SupportedChatTool {
@@ -128,6 +140,9 @@ interface ChatResponseToolCall {
 interface ChatResponseMessage {
   content?: unknown;
   tool_calls?: ChatResponseToolCall[];
+  /** Reasoning the upstream produced alongside `content`. */
+  reasoning_content?: string;
+  reasoning?: string;
 }
 
 interface ChatImagePart {
@@ -161,6 +176,14 @@ interface TranscriptMessage {
     };
   }>;
   tool_call_id?: string;
+  /**
+   * Prior-turn reasoning recovered from a replayed reasoning item.
+   *
+   * Carried on the assistant message the reasoning belongs to rather than sent
+   * as its own message: the chat upstream has no standalone reasoning entry,
+   * and a reasoning-only message would be an empty turn.
+   */
+  reasoning?: string;
 }
 
 interface StreamingToolCallState {
@@ -875,7 +898,59 @@ const stringifyContent = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
-const mapInputItemToMessage = (item: ResponsesInputItem): TranscriptMessage => {
+/**
+ * Pulls readable reasoning out of a replayed `reasoning` item.
+ *
+ * The sealed blob is authoritative when we can open it. Otherwise the summary
+ * text is a usable stand-in: the Agents SDK sends summaries back as
+ * `summary: [{type: 'summary_text', text}]`, so accepting them means a client
+ * that never got a signature from us still gets its reasoning carried through
+ * rather than dropped.
+ */
+const extractReasoningFromItem = (item: ResponsesInputItem): string => {
+  const sealed = unsealReasoning(item.encrypted_content);
+
+  if (sealed) {
+    return sealed;
+  }
+
+  if (!Array.isArray(item.summary)) {
+    return '';
+  }
+
+  return item.summary
+    .map((entry) => {
+      if (typeof entry === 'string') {
+        return entry;
+      }
+
+      if (entry && typeof entry === 'object' && 'text' in entry) {
+        return String((entry as { text?: unknown }).text ?? '');
+      }
+
+      return '';
+    })
+    .join('');
+};
+
+const mapInputItemToMessage = (
+  item: ResponsesInputItem,
+): TranscriptMessage | null => {
+  if (item.type === 'reasoning' || item.type === 'compaction') {
+    // Reasoning is not a message. Without this branch the item fell through to
+    // the plain-message case at the bottom, where it has neither `role` nor
+    // `content` — becoming an empty `{role:'user', content:''}` entry that the
+    // chat upstream sees as a turn the user never sent, repeated on every
+    // later turn of the conversation.
+    //
+    // Signal the reasoning back to the caller instead, which attaches it to the
+    // assistant message it accompanies. Returning `null` when there is nothing
+    // to recover keeps an empty reasoning item from emitting a message at all.
+    const reasoning = extractReasoningFromItem(item);
+
+    return reasoning ? { role: 'assistant', content: null, reasoning } : null;
+  }
+
   if (item.type === 'function_call' || item.type === 'mcp_call') {
     return {
       role: 'assistant',
@@ -947,6 +1022,10 @@ const createResponseId = (): string => {
 
 const createMessageId = (): string => {
   return `msg_${crypto.randomUUID().replaceAll('-', '')}`;
+};
+
+const createResponseReasoningId = (): string => {
+  return `rs_${crypto.randomUUID().replaceAll('-', '')}`;
 };
 
 const createResponseOutputId = (): string => {
@@ -1183,6 +1262,9 @@ const prepareTranscript = async (
   const transcript = (resolvedPreviousSession?.transcript ?? []).slice(
     -MAX_RESPONSE_TRANSCRIPT_MESSAGES,
   );
+  // Reasoning recovered from replayed reasoning items, awaiting the assistant
+  // message it belongs to. Declared here so it spans the whole input array.
+  let pendingReasoning = '';
   while (transcript[0]?.role === 'tool') {
     transcript.shift();
   }
@@ -1227,7 +1309,31 @@ const prepareTranscript = async (
   } else if (Array.isArray(body.input)) {
     body.input.forEach((item) => {
       if (item.type === 'additional_tools') return;
-      transcript.push(mapInputItemToMessage(item));
+
+      const message = mapInputItemToMessage(item);
+
+      if (!message) {
+        return;
+      }
+
+      // A reasoning item yields a reasoning-only entry. Fold it into the next
+      // assistant message so the upstream sees the reasoning where it belongs
+      // — attached to the turn that produced it — instead of as a bare turn.
+      // Anything left unconsumed at the end is dropped: reasoning with no
+      // following assistant message has nothing to attach to.
+      if (message.reasoning && !message.content && !message.tool_calls) {
+        pendingReasoning += message.reasoning;
+        return;
+      }
+
+      if (pendingReasoning) {
+        message.reasoning = message.reasoning
+          ? `${pendingReasoning}${message.reasoning}`
+          : pendingReasoning;
+        pendingReasoning = '';
+      }
+
+      transcript.push(message);
     });
   }
 
@@ -1374,6 +1480,28 @@ const mapChatResponseToResponsesPayload = async (
     toolCalls,
     defaults.tools,
   );
+
+  // Emit the reasoning as its own item, ahead of the message it produced.
+  //
+  // Clients replay `output` verbatim on the next turn, so this is what lets a
+  // stateless Responses client carry reasoning forward. Without it the only
+  // reasoning we ever hand back is a transient `reasoning_text.delta`, which no
+  // client can replay because it has no id and no sealed blob.
+  const reasoningText =
+    firstChoice.message?.reasoning_content ??
+    firstChoice.message?.reasoning ??
+    '';
+  const sealedReasoning = sealReasoning(reasoningText);
+
+  if (reasoningText) {
+    output.push({
+      id: createResponseReasoningId(),
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: reasoningText }],
+      ...(sealedReasoning ? { encrypted_content: sealedReasoning } : {}),
+      status: 'completed',
+    });
+  }
 
   if (outputText || !toolCalls.length) {
     output.push({

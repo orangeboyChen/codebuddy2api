@@ -20,6 +20,7 @@ import {
   toUpstreamTimeoutMessage,
 } from '../shared/upstream-timeout';
 import { extractErrorMessage } from '../shared/http';
+import { sealReasoning, unsealReasoning } from '../shared/reasoning-seal';
 import {
   markServerTool,
   normalizeToolName,
@@ -50,6 +51,14 @@ interface AnthropicContentBlock {
   name?: string;
   input?: unknown;
   thinking?: string;
+  /**
+   * Opaque, tamper-evident copy of the reasoning, minted by `reasoning-seal`.
+   * Anthropic clients echo the block back verbatim; this is what lets us
+   * recover the reasoning on the next turn instead of only its summary.
+   */
+  signature?: string;
+  /** Present on `redacted_thinking` blocks, which carry no readable text. */
+  data?: string;
   tool_use_id?: string;
   content?: unknown;
   source?: AnthropicImageSource;
@@ -359,6 +368,12 @@ interface ChatMessage {
     };
   }>;
   tool_call_id?: string;
+  /**
+   * Prior-turn reasoning for this assistant message. Not part of the OpenAI
+   * schema; the CodeBuddy chat upstream round-trips it, and a provider that
+   * does not know the field ignores it.
+   */
+  reasoning?: string;
 }
 
 const decodeOpaqueServerToolContent = (value: unknown): unknown => {
@@ -499,11 +514,19 @@ const mapAnthropicContentToChat = (
   }> = [];
   const toolResults: ChatMessage[] = [];
   const messages: ChatMessage[] = [];
+  /**
+   * Reasoning recovered from thinking blocks in this assistant message.
+   *
+   * Attached to the message the blocks belong to rather than sent on its own:
+   * a bare reasoning entry is not a valid chat message, and the upstream needs
+   * the reasoning alongside the text and tool calls it produced.
+   */
+  let pendingReasoning = '';
   const flushAssistantMessage = (): void => {
     const content = mapContentPartsToChat(parts);
     const hasContent = typeof content === 'string' ? content.length > 0 : true;
 
-    if (!toolCalls.length && !hasContent) {
+    if (!toolCalls.length && !hasContent && !pendingReasoning) {
       return;
     }
 
@@ -511,9 +534,14 @@ const mapAnthropicContentToChat = (
       role: 'assistant',
       content: hasContent ? content : null,
       ...(toolCalls.length ? { tool_calls: [...toolCalls] } : {}),
+      // `reasoning` is the field the CodeBuddy chat upstream round-trips. It
+      // is not part of the OpenAI schema, but the upstream accepts it and
+      // ignoring an unknown field costs nothing if it ever stops doing so.
+      ...(pendingReasoning ? { reasoning: pendingReasoning } : {}),
     });
     parts.length = 0;
     toolCalls.length = 0;
+    pendingReasoning = '';
   };
 
   for (const block of content) {
@@ -558,8 +586,35 @@ const mapAnthropicContentToChat = (
       } else {
         toolResults.push(resultMessage);
       }
-    } else if (block.type === 'thinking') {
-      // Skip thinking blocks in conversation history for OpenAI compat.
+    } else if (
+      block.type === 'thinking' ||
+      block.type === 'redacted_thinking'
+    ) {
+      // Replaying prior-turn reasoning is required inside a tool-use turn and
+      // harmless elsewhere, so recover it instead of dropping it.
+      //
+      // The signature is preferred because it holds the reasoning verbatim,
+      // where `thinking` is only a summary (and empty under
+      // `display: "omitted"`). It is not a gate, though: a client may replay a
+      // genuine Anthropic signature from a session it started elsewhere, which
+      // we cannot open and should not treat as a reason to discard good
+      // reasoning. So fall back to the summary, then to the opaque payload.
+      //
+      // `redacted_thinking` carries no readable text at all, only `data`, so it
+      // must be matched here too: without this branch it fell through to
+      // `stringifyContent` and the model received a JSON dump of the opaque
+      // payload as if it were user prose.
+      const reasoning =
+        unsealReasoning(block.signature) ??
+        block.thinking ??
+        unsealReasoning(block.data) ??
+        '';
+
+      if (reasoning) {
+        pendingReasoning = pendingReasoning
+          ? `${pendingReasoning}${reasoning}`
+          : reasoning;
+      }
     } else if (block.type === 'image' && block.source) {
       // Anthropic sends `{ type: 'image', source: { type: 'base64' | 'url',
       // media_type, data | url } }`. Emit a real image block so the upstream
@@ -847,6 +902,25 @@ const buildAllAnthropicServerToolBlocks = (
   executions.flatMap(buildAnthropicServerToolBlocks);
 
 /**
+ * Builds a thinking block.
+ *
+ * The `signature` is what makes the block replayable. Anthropic clients echo the
+ * whole block back on the next turn, and the signature is what lets the server
+ * recover the reasoning behind it. We mint it ourselves (see `reasoning-seal`)
+ * so a client following the Anthropic contract gets a working round trip against
+ * this proxy rather than only a readable summary.
+ *
+ * Omitted when there is nothing to seal, so an empty block never carries one.
+ */
+const buildThinkingBlock = (thinking: string): AnthropicContentBlock => {
+  const signature = sealReasoning(thinking);
+
+  return signature
+    ? { type: 'thinking', thinking, signature }
+    : { type: 'thinking', thinking };
+};
+
+/**
  * Lays a server-tool turn out the way Anthropic does: each hop contributes its
  * own thinking and text, followed by the tool blocks that hop triggered.
  *
@@ -870,7 +944,7 @@ const buildAnthropicTurnBlocks = (
 
   turns.forEach((turn) => {
     if (turn.reasoning) {
-      blocks.push({ type: 'thinking', thinking: turn.reasoning });
+      blocks.push(buildThinkingBlock(turn.reasoning));
     }
 
     if (turn.text) {
@@ -909,7 +983,7 @@ const mapOpenAIResponseToAnthropic = (
 
   if (!turns) {
     if (reasoningText) {
-      contentBlocks.push({ type: 'thinking', thinking: reasoningText });
+      contentBlocks.push(buildThinkingBlock(reasoningText));
     }
 
     if (textContent) {
@@ -1026,6 +1100,7 @@ const mapOpenAIStreamToAnthropicSSE = (
   let started = options?.emitMessageStart === false;
   let thinkingStarted = false;
   let thinkingBlockIndex = -1;
+  let thinkingText = '';
   let textStarted = false;
   let textBlockIndex = -1;
   // Tracks how many content blocks (thinking + text) have been opened
@@ -1050,11 +1125,28 @@ const mapOpenAIStreamToAnthropicSSE = (
   // Anthropic streaming requires each block to be stopped before the next.
   const closeOpenTextBlocks = (): void => {
     if (thinkingStarted) {
+      // Anthropic emits the signature last, just before the block closes, so a
+      // client that reassembles blocks (SDK `finalMessage()`) ends up with a
+      // replayable thinking block rather than bare prose.
+      const signature = sealReasoning(thinkingText);
+
+      if (signature) {
+        enqueueEvent({
+          type: 'content_block_delta',
+          index: thinkingBlockIndex,
+          delta: {
+            type: 'signature_delta',
+            signature,
+          },
+        });
+      }
+
       enqueueEvent({
         type: 'content_block_stop',
         index: thinkingBlockIndex,
       });
       thinkingStarted = false;
+      thinkingText = '';
     }
 
     if (textStarted) {
@@ -1126,6 +1218,7 @@ const mapOpenAIStreamToAnthropicSSE = (
           thinking: reasoningText,
         },
       });
+      thinkingText += reasoningText;
     }
 
     // Text content

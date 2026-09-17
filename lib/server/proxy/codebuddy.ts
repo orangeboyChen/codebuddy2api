@@ -56,6 +56,16 @@ interface OpenAIMessage {
   content?: unknown;
   tool_calls?: unknown[];
   tool_call_id?: string;
+  /**
+   * Prior-turn reasoning for an assistant message.
+   *
+   * Not an OpenAI field. The CodeBuddy chat upstream accepts it on assistant
+   * messages and uses it to carry reasoning across turns — the same slot
+   * CodeBuddy's own client populates when it replays a response. It is named
+   * `reasoning` rather than `reasoning_content` because that one is the
+   * upstream's *response* field; this is the request-side counterpart.
+   */
+  reasoning?: string;
 }
 
 interface CacheableTextBlock {
