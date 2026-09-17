@@ -1262,9 +1262,24 @@ const buildResponsesBodyFromChat = async (
       )
       .map((message) => {
         if (message.role === 'tool') {
+          // A tool may return an image, e.g. a screenshot. The upstream
+          // `function_call_output` carries `output` as structured content, so
+          // an image part is preserved there; stringifying it would hand the
+          // model a base64 dump instead of the image.
+          const toolOutput = Array.isArray(message.content)
+            ? message.content.filter(
+                (part) => part !== null && part !== undefined,
+              )
+            : message.content;
+          const hasImage = Array.isArray(toolOutput)
+            ? toolOutput.some(isImageContentPart)
+            : isImageContentPart(toolOutput);
+
           return {
             call_id: message.tool_call_id,
-            output: stringifyResponsesInputContent(message.content),
+            output: hasImage
+              ? mapChatContentToResponses(toolOutput)
+              : stringifyResponsesInputContent(toolOutput),
             type: 'function_call_output',
           };
         }

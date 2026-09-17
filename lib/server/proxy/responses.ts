@@ -902,17 +902,24 @@ const mapInputItemToMessage = (item: ResponsesInputItem): TranscriptMessage => {
   }
 
   if (item.type === 'function_call_output' || item.type === 'mcp_call_output') {
+    // A tool may return an image, e.g. a screenshot. Keep it structured so the
+    // Responses converter can rebuild it as an image; stringifying would hand
+    // the model the base64 payload as text.
+    const outputContent =
+      mapInputContentToTranscriptContent(item.output) ??
+      stringifyContent(item.output);
+
     if (item.call_id) {
       return {
         role: 'tool',
-        content: stringifyContent(item.output),
+        content: outputContent,
         tool_call_id: item.call_id,
       };
     }
 
     return {
       role: 'user',
-      content: stringifyContent(item.output),
+      content: outputContent,
     };
   }
 

@@ -144,6 +144,46 @@ describe('Responses image support', () => {
         { content: 'hello', role: 'user' },
       ]);
     });
+
+    it('preserves an image returned by a tool', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeChatResponse({ content: 'ok' }),
+      );
+
+      await handleResponsesRequest(makeRequest(secret), {
+        input: [
+          {
+            call_id: 'call_1',
+            output: [
+              { text: 'screenshot taken', type: 'input_text' },
+              {
+                image_url: 'data:image/png;base64,iVBORw0KGgo=',
+                type: 'input_image',
+              },
+            ],
+            type: 'function_call_output',
+          },
+        ],
+        model: 'claude-sonnet-4.6',
+      } as never);
+
+      // The chat path maps the output to a tool message, then the Responses
+      // converter rebuilds it as `function_call_output` with the image intact.
+      const toolMessages = requestBodies()
+        .flatMap(
+          (candidate) =>
+            (candidate.messages ?? []) as Array<Record<string, unknown>>,
+        )
+        .filter((message) => message.role === 'tool');
+      expect(toolMessages[0]?.content).toEqual([
+        'screenshot taken',
+        {
+          image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' },
+          type: 'image_url',
+        },
+      ]);
+    });
   });
 
   describe('image_generation tool', () => {

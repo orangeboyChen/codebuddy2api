@@ -420,9 +420,56 @@ const formatAnthropicServerToolResult = (
     return [url, text].filter(Boolean).join('\n\n');
   }
 
+  // Nested images are emitted as real image parts by
+  // `collectAnthropicNestedImages`, so they are excluded here to keep their
+  // base64 payload out of the text.
+  if (Array.isArray(block.content)) {
+    return stringifyContent(
+      block.content.filter((value) => {
+        return !(
+          value &&
+          typeof value === 'object' &&
+          (value as AnthropicContentBlock).type === 'image'
+        );
+      }),
+    );
+  }
+
   return typeof block.content === 'string'
     ? block.content
     : stringifyContent(block.content);
+};
+
+/**
+ * Images nested inside a `tool_result` content array, e.g. a screenshot a tool
+ * returned. The outer block is handled by the `tool_result` branch, whose
+ * formatter stringifies nested content — so without extracting them here the
+ * model would receive the base64 payload as text.
+ */
+const collectAnthropicNestedImages = (
+  block: AnthropicContentBlock,
+): ChatImageBlock[] => {
+  if (!Array.isArray(block.content)) {
+    return [];
+  }
+
+  return block.content.flatMap((value): ChatImageBlock[] => {
+    if (!value || typeof value !== 'object') {
+      return [];
+    }
+
+    const nested = value as AnthropicContentBlock;
+
+    if (nested.type !== 'image') {
+      return [];
+    }
+
+    const imageUrl = buildChatImageUrl(nested.source);
+
+    return imageUrl
+      ? [{ type: 'image_url', image_url: { url: imageUrl } }]
+      : [];
+  });
 };
 
 const mapAnthropicContentToChat = (
@@ -484,9 +531,16 @@ const mapAnthropicContentToChat = (
       block.type === 'web_search_tool_result' ||
       block.type === 'web_fetch_tool_result'
     ) {
+      const nestedImages = collectAnthropicNestedImages(block);
+
       const resultMessage: ChatMessage = {
         role: 'tool',
-        content: formatAnthropicServerToolResult(block),
+        content: nestedImages.length
+          ? mapContentPartsToChat([
+              formatAnthropicServerToolResult(block),
+              ...nestedImages,
+            ])
+          : formatAnthropicServerToolResult(block),
         tool_call_id: block.tool_use_id ?? '',
       };
 
