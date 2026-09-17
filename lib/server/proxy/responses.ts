@@ -1497,10 +1497,8 @@ const mapChatResponseToResponsesStream = async (
   // The mapper creates and persists the session id, so the stream has to reuse
   // it: advertising a different one would leave a client unable to continue the
   // turn, because nothing was stored under the id it was given.
-  const responseId = String(payload.id ?? createResponseId());
-  const output = Array.isArray(payload.output)
-    ? (payload.output as Array<Record<string, unknown>>)
-    : [];
+  const responseId = String(payload.id);
+  const output = payload.output as Array<Record<string, unknown>>;
 
   const frames = [
     {

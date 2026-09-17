@@ -618,6 +618,21 @@ describe('Responses image support', () => {
       });
     });
 
+    it('returns a failed upstream response from a non-streaming image call', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+        Promise.resolve(new Response('upstream down', { status: 502 })),
+      );
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat',
+        model: 'claude-sonnet-4.6',
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      expect(response.status).toBe(502);
+    });
+
     it('reports a failure as a tool result so the turn continues', async () => {
       const secret = await addCredentialWith();
       let chatCall = 0;

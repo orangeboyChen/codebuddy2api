@@ -470,29 +470,16 @@ export const executeImageGenerationLoop = async ({
     lastResponse = response;
   }
 
-  // Unreachable in practice — every iteration sets both, and the loop body
-  // always executes at least once — but the guard keeps the types honest
-  // without asserting.
-  if (!lastResponse || !lastPayload) {
-    return {
-      executions,
-      response: new Response(null, {
-        headers: { 'Content-Type': 'application/json' },
-        status: 502,
-      }),
-    };
-  }
-
   // The cap was reached with the model still asking for images. Every image
   // generated so far is kept, and the last response is handed back so the
   // caller does not re-issue the request and discard them.
   return {
     executions,
     response: rebuildResponse(
-      lastResponse,
+      lastResponse ?? new Response(null, { status: 502 }),
       withIntermediateTurns({
         executions: [],
-        payload: lastPayload,
+        payload: lastPayload ?? {},
         reasonings: [],
         texts: intermediateTexts,
       }),
