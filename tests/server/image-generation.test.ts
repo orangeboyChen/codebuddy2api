@@ -506,6 +506,67 @@ describe('Responses image support', () => {
       expect(text).toContain('event: response.completed');
     });
 
+    it('marks a URL-only result completed without inline data', async () => {
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ url: 'https://example.com/a.png' }]);
+        }
+        chatCall += 1;
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                content: null,
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"prompt":"a cat"}',
+                      name: 'image_generation',
+                    },
+                    id: 'call_1',
+                    type: 'function',
+                  },
+                ],
+              }
+            : { content: 'Here it is.' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw me a cat',
+        model: 'claude-sonnet-4.6',
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      const payload = (await response.json()) as {
+        output: Array<Record<string, unknown>>;
+      };
+      // The upstream returned a hosted URL rather than inline bytes, so there
+      // is no base64 to hand back, but the call itself succeeded.
+      expect(payload.output[0]).toMatchObject({
+        result: null,
+        status: 'completed',
+        type: 'image_generation_call',
+      });
+    });
+
+    it('returns a failed upstream response from a streaming image call', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+        Promise.resolve(new Response('upstream down', { status: 502 })),
+      );
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      expect(response.status).toBe(502);
+    });
+
     it('reports a failure as a tool result so the turn continues', async () => {
       const secret = await addCredentialWith();
       let chatCall = 0;
