@@ -1285,7 +1285,9 @@ const createAnthropicServerToolEventStream = (
           undefined,
           debugTrace,
           '/v1/messages',
-          { emitStreamEvents: true },
+          // The findings reach the client as `web_search_tool_result` blocks,
+          // so the loop must not also fold them into the assistant text.
+          { emitStreamEvents: true, findingsAsStructuredBlocks: true },
         );
 
         if (cancelled) {
@@ -1404,6 +1406,7 @@ export const handleMessagesRequest = async (
       undefined,
       debugTrace,
       '/v1/messages',
+      { findingsAsStructuredBlocks: true },
     );
 
     if (!upstreamResponse.ok) {

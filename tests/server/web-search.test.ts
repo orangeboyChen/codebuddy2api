@@ -5298,6 +5298,147 @@ describe('chat proxy web search integration', () => {
     expect(upstreamCalls).toBe(2);
   });
 
+  it('does not fold findings into the text when a structured block carries them', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        return makeJsonResponse({
+          results: [
+            { snippet: 'snip', title: 'Result', url: 'https://r.test' },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+      // One turn mixing a local search with a client-owned call, so the loop
+      // cannot continue and has to hand the outstanding call back.
+      return makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'tool_calls',
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call_search',
+                  function: {
+                    arguments: '{"query":"two results"}',
+                    name: 'web_search',
+                  },
+                },
+                {
+                  id: 'call_client',
+                  function: { arguments: '{}', name: 'client_tool' },
+                  type: 'function',
+                },
+              ],
+            },
+          },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Mixed turn' }],
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    const payload = (await response.json()) as {
+      content: Array<{ text?: string; type: string }>;
+    };
+
+    // The result block is how this route reports the findings, so the prose
+    // must not repeat them: a second copy reads as the model reciting its own
+    // search output, and the "Cite the URL" line is an instruction to the
+    // model rather than something the user ever asked to see.
+    expect(upstreamCalls).toBeGreaterThan(0);
+    expect(payload.content.map((block) => block.type)).toContain(
+      'web_search_tool_result',
+    );
+    expect(
+      payload.content
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text ?? '')
+        .join(''),
+    ).not.toContain('https://r.test');
+    expect(JSON.stringify(payload)).not.toContain('Cite the URL');
+  });
+
+  it('keeps folding findings for routes without a structured channel', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+
+    let upstreamCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        return makeJsonResponse({
+          results: [
+            { snippet: 'snip', title: 'Result', url: 'https://r.test' },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+      return makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'tool_calls',
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call_search',
+                  function: {
+                    arguments: '{"query":"two results"}',
+                    name: 'web_search',
+                  },
+                },
+                {
+                  id: 'call_client',
+                  function: { arguments: '{}', name: 'client_tool' },
+                  type: 'function',
+                },
+              ],
+            },
+          },
+        ],
+      });
+    });
+
+    const response = await proxyChatCompletions(
+      makeNextRequest('http://localhost/v1/chat/completions', {
+        method: 'POST',
+      }),
+      {
+        messages: [{ content: 'Mixed turn', role: 'user' }],
+        model: 'glm-5.1',
+        tools: [{ type: 'web_search_preview' }],
+      } as never,
+    );
+    const payload = (await response.json()) as {
+      choices: Array<{ message: { content: string | null } }>;
+    };
+
+    // /v1/chat/completions has no structured channel for the findings, so the
+    // fold has to stay: it is the only way the results reach the caller.
+    expect(upstreamCalls).toBeGreaterThan(0);
+    expect(payload.choices[0]?.message.content).toContain('https://r.test');
+  });
+
   it('maps a completed fetch to a Responses open_page call', async () => {
     await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy' });
     let upstreamCalls = 0;

@@ -496,14 +496,22 @@ const sumUsage = (accumulated: unknown, incoming: unknown): unknown => {
  * outstanding tool calls unchanged, so a turn that mixed search with
  * client-side calls stays a valid transcript. The client sees its own calls
  * come back as if upstream had returned them directly.
+ *
+ * The findings are folded only when the route has no other way to carry them.
+ * A route that renders them structurally passes
+ * `findingsAsStructuredBlocks`, and the text is left alone: the results are
+ * already on the wire as a result block, and a second copy in the prose is
+ * what the user reads as the model reciting its own search output.
  */
 const buildMixedTurnPayload = ({
+  findingsAsStructuredBlocks = false,
   message,
   payload,
   remainingCalls,
   searchResults,
   usage,
 }: {
+  findingsAsStructuredBlocks?: boolean;
   message: ChatCompletionMessage | undefined;
   payload: ChatCompletionPayload;
   remainingCalls: ChatCompletionToolCall[];
@@ -514,7 +522,9 @@ const buildMixedTurnPayload = ({
     typeof message?.content === 'string' && message.content.trim()
       ? message.content.trim()
       : '';
-  const findings = searchResults.filter(Boolean).join('\n\n');
+  const findings = findingsAsStructuredBlocks
+    ? ''
+    : searchResults.filter(Boolean).join('\n\n');
   const content = [existingText, findings].filter(Boolean).join('\n\n');
 
   return {
@@ -634,6 +644,14 @@ export type ServerToolExecution =
 
 export interface ServerToolCallbacks {
   emitStreamEvents?: boolean;
+  /**
+   * Set by routes that render a server tool's findings structurally —
+   * Anthropic's `web_search_tool_result` block — instead of as prose. Those
+   * routes must not also fold the same findings into the assistant text, or
+   * the user sees the results twice: once as a result block and once as if
+   * the model had written them.
+   */
+  findingsAsStructuredBlocks?: boolean;
   onCall?: (invocation: ServerToolInvocation) => void;
   onResult?: (execution: ServerToolExecution) => void;
 }
@@ -1334,6 +1352,7 @@ const createInlineServerToolStream = async ({
 
           if (nextRemainingCalls.length) {
             finalPayload = buildMixedTurnPayload({
+              findingsAsStructuredBlocks: callbacks?.findingsAsStructuredBlocks,
               message,
               payload: {
                 choices: [{ message }],
@@ -1420,6 +1439,8 @@ const createInlineServerToolStream = async ({
               };
 
               finalPayload = buildMixedTurnPayload({
+                findingsAsStructuredBlocks:
+                  callbacks?.findingsAsStructuredBlocks,
                 message: fallbackMessage,
                 payload: {
                   choices: [{ message: fallbackMessage }],
@@ -1665,15 +1686,17 @@ export const executeWebSearchLoop = async ({
     // A turn mixing server tools with client-side calls cannot be continued
     // locally: the client owns those calls, and re-issuing the transcript with
     // only server-tool results would leave them unanswered, which upstream
-    // rejects as an invalid tool-call transcript. Run the server tools, fold the
-    // findings into the message text, and hand the outstanding calls back so the
-    // client resolves them on its next turn.
+    // rejects as an invalid tool-call transcript. Run the server tools and
+    // hand the outstanding calls back so the client resolves them on its next
+    // turn. The findings ride along in the message text only for routes that
+    // cannot render them structurally; see `buildMixedTurnPayload`.
     if (remainingCalls.length) {
       return {
         body: loopBody,
         executions,
         response: Response.json(
           buildMixedTurnPayload({
+            findingsAsStructuredBlocks: callbacks?.findingsAsStructuredBlocks,
             // `buildMixedTurnPayload` reads this iteration's text and reasoning
             // off `message`, so only the earlier iterations go on top; the
             // current one is folded in by the helper itself.
