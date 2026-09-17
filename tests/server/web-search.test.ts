@@ -3798,7 +3798,9 @@ describe('chat proxy web search integration', () => {
     const text = await response.text();
 
     expect(text).toContain('"type":"response.error"');
-    expect(text).toContain('Upstream CodeBuddy request failed');
+    // The upstream said why it failed, so its own words are passed through
+    // rather than the proxy's generic failure message.
+    expect(text).toContain('follow-up failed');
     expect(text).not.toContain('"type":"response.completed"');
   });
 
@@ -3807,7 +3809,10 @@ describe('chat proxy web search integration', () => {
     [
       'message-less object',
       { code: 'upstream_error' },
-      'Upstream request failed',
+      // No message exists anywhere in the payload, so the raw JSON is kept:
+      // it still carries `code`, which the generic fallback would have lost.
+      // The quotes are escaped because the frame is JSON-encoded for SSE.
+      '{\\"error\\":{\\"code\\":\\"upstream_error\\"}}',
     ],
   ])(
     'maps a %s post-tool error payload to a terminal Responses error',

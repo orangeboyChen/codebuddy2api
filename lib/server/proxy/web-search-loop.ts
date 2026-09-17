@@ -10,6 +10,7 @@ import {
   runWebFetchResult,
   runWebSearchResult,
 } from '../search';
+import { extractErrorMessage } from '../shared/http';
 
 import type { ChatRequestBody } from './codebuddy';
 import {
@@ -78,33 +79,107 @@ export interface ChatCompletionPayload {
     message?: ChatCompletionMessage;
   }>;
   created?: number;
-  error?: { message?: string };
+  /**
+   * `status` is the upstream HTTP status, carried so a downstream mapper can
+   * name the real error type instead of guessing it from the message text. It
+   * is absent for a payload that already reported an error of its own.
+   */
+  error?: { message?: string; status?: number };
   id?: string;
   model?: string;
   object?: string;
   usage?: unknown;
 }
 
-const readBufferedChatCompletionPayload = async (
+/**
+ * Rebuilds a failed upstream response so its body can be read again.
+ *
+ * A `Response` body can only be consumed once. The loop reads it to decide
+ * whether the model asked for a server tool, and handing the same object back
+ * used to leave the route layer — which reads it again to build the answer the
+ * client actually sees — with a spent body: the second read threw
+ * "Body already used" and the client got a 500 in place of the real upstream
+ * status. Draining it here and replaying the bytes in a fresh response keeps
+ * both reads working and preserves the body verbatim, so an upstream error
+ * detail that is not valid JSON still reaches the client intact.
+ *
+ * `content-length` and `content-encoding` are dropped: the body is re-emitted
+ * rather than re-encoded, and a stale length would describe bytes the upstream
+ * compressed before this layer ever saw them.
+ */
+const buildServerToolFailureResponse = async (
   response: Response,
-): Promise<ChatCompletionPayload> => {
-  let payload: ChatCompletionPayload;
+): Promise<Response> => {
+  const headers = new Headers(response.headers);
 
+  headers.delete('content-length');
+  headers.delete('content-encoding');
+  headers.set('content-type', 'application/json');
+
+  return new Response(await response.text(), {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+};
+
+/**
+ * Parses a buffered upstream body, tolerating a failure that is not JSON.
+ *
+ * A successful response must be well-formed — anything else is a bug worth
+ * surfacing — but a failure status already tells the caller everything it
+ * needs to know, and its body may legitimately be an HTML error page or a
+ * bare string. Rejecting on those would turn an ordinary outage into an
+ * unhandled rejection.
+ */
+const parseBufferedPayload = (
+  buffered: string,
+  ok: boolean,
+): ChatCompletionPayload => {
   try {
-    payload = (await response.json()) as ChatCompletionPayload;
+    return JSON.parse(buffered) as ChatCompletionPayload;
   } catch (error) {
-    if (response.ok) {
+    if (ok) {
       throw error;
     }
 
-    payload = {};
+    return {};
   }
+};
 
-  if (!response.ok && !payload.error) {
+const readBufferedChatCompletionPayload = async (
+  response: Response,
+): Promise<ChatCompletionPayload> => {
+  // Cloned so the failure path can replay the body verbatim; see
+  // {@link buildServerToolFailureResponse}.
+  const buffered = await response.clone().text();
+  const payload = parseBufferedPayload(buffered, response.ok);
+
+  if (!response.ok || payload.error) {
+    const ownMessage = payload.error?.message;
+    // `extractErrorMessage` digs a nested message out of the payload, so
+    // `{"error":{"message":"x"}}` reaches the client as "x" rather than as a
+    // JSON string. The raw body is the fallback: a payload carrying only a
+    // code has no message to find, and the JSON is still the only record of
+    // what happened. An empty body says nothing, so it falls all the way
+    // through to the generic message instead of winning on being non-null.
+    const detail = buffered.trim();
+
     return {
       ...payload,
       error: {
-        message: `Upstream request failed with status ${response.status}`,
+        // The upstream's own explanation — a rate-limit code, a reset
+        // timestamp — beats the proxy's generic "Upstream CodeBuddy request
+        // failed", which says only that something failed and leaves the client
+        // no way to tell what.
+        //
+        // `status` travels with the frame so a downstream mapper can name the
+        // real error type instead of guessing it from the message text.
+        message:
+          extractErrorMessage(payload) ??
+          ownMessage ??
+          (detail || `Upstream request failed with status ${response.status}`),
+        ...(response.ok ? {} : { status: response.status }),
       },
     };
   }
@@ -1501,10 +1576,18 @@ export const executeWebSearchLoop = async ({
       return { body: loopBody, executions, response };
     }
 
-    payload = (await response.json()) as ChatCompletionPayload;
+    // The payload is only needed to detect a tool call or a failure, so read
+    // the body once and reuse it: the caller reads it again to build the
+    // client's answer, and a spent body would surface as a 500.
+    const buffered = await response.clone().text();
+    payload = parseBufferedPayload(buffered, response.ok);
 
     if (!response.ok || payload.error) {
-      return { body: loopBody, executions, response };
+      return {
+        body: loopBody,
+        executions,
+        response: await buildServerToolFailureResponse(response),
+      };
     }
 
     usage = sumUsage(usage, payload.usage);
@@ -1652,11 +1735,19 @@ export const executeWebSearchLoop = async ({
       },
       'buffer',
     );
-    payload = (await finalResponse.json()) as ChatCompletionPayload;
+    // Cloned before the read so the failure path can replay the body verbatim
+    // rather than hand back a spent response the caller cannot read again.
+    const finalBuffered = await finalResponse.clone().text();
+    payload = parseBufferedPayload(finalBuffered, finalResponse.ok);
+
     usage = sumUsage(usage, payload.usage);
 
     if (!finalResponse.ok || payload.error) {
-      return { body: loopBody, executions, response: finalResponse };
+      return {
+        body: loopBody,
+        executions,
+        response: await buildServerToolFailureResponse(finalResponse),
+      };
     }
 
     return {

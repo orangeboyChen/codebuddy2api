@@ -177,6 +177,35 @@ export const getRequestHeaderMap = (
   }, {});
 };
 
+/**
+ * Digs the human-readable explanation out of an upstream error body.
+ *
+ * Upstream shapes nest the real message at different depths — `detail`,
+ * `error.message`, or a JSON-encoded string standing in for either — so the
+ * search recurses until it finds text. Returns null when nothing readable is
+ * there, letting the caller fall back to the raw body.
+ */
+export const extractErrorMessage = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    try {
+      return extractErrorMessage(JSON.parse(value) as unknown) ?? value;
+    } catch {
+      return value;
+    }
+  }
+  if (!value || typeof value !== 'object') return null;
+
+  const payload = value as {
+    detail?: unknown;
+    error?: unknown;
+    message?: unknown;
+  };
+  const detail = extractErrorMessage(payload.detail);
+  if (detail) return detail;
+  if (typeof payload.message === 'string') return payload.message;
+  return extractErrorMessage(payload.error);
+};
+
 export const createErrorResponse = (
   status: number,
   message: string,
