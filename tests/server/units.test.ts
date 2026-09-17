@@ -5495,11 +5495,31 @@ describe('server units', () => {
 
   it('returns undefined when only unsupported tool types are provided', () => {
     expect(
-      translateResponsesToolsToChat([
-        { type: 'file_search' },
-        { type: 'image_generation' },
-      ]),
+      translateResponsesToolsToChat([{ type: 'file_search' }]),
     ).toBeUndefined();
+  });
+
+  it('rewrites an image_generation tool as a chat function', () => {
+    expect(
+      translateResponsesToolsToChat([
+        { type: 'image_generation', model: 'gpt-image-2' },
+      ]),
+    ).toEqual([
+      {
+        // Marked as server-declared so the proxy knows it executes the call.
+        'x-codebuddy2api-server-tool': true,
+        type: 'function',
+        function: expect.objectContaining({
+          name: 'image_generation',
+          parameters: expect.objectContaining({
+            properties: expect.objectContaining({
+              prompt: expect.any(Object),
+            }),
+            required: ['prompt'],
+          }),
+        }),
+      },
+    ]);
   });
 
   it('maps responses tool_choice object variants to chat-completions shapes', async () => {

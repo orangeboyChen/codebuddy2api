@@ -759,7 +759,7 @@ const getCredentialValue = (
   return null;
 };
 
-const buildUpstreamHeaders = async (
+export const buildUpstreamHeaders = async (
   request: NextRequest,
   auth: ResolvedAuth,
 ): Promise<HeadersInit> => {
@@ -883,6 +883,119 @@ const buildUpstreamBody = async (
     thinking: hyThinking.thinking,
     reasoning_effort: hyThinking.reasoningEffort,
   };
+};
+
+export const isImageContentPart = (part: unknown): boolean => {
+  if (!part || typeof part !== 'object') {
+    return false;
+  }
+
+  const value = part as { image_url?: unknown; type?: unknown };
+
+  if (value.type === 'image_url' || value.type === 'input_image') {
+    return true;
+  }
+
+  // Accept the shapes an OpenAI-compatible client may send even when `type`
+  // is absent or unexpected: any part carrying an image URL is an image.
+  return (
+    typeof value.image_url === 'string' ||
+    Boolean(
+      value.image_url &&
+      typeof value.image_url === 'object' &&
+      typeof (value.image_url as { url?: unknown }).url === 'string',
+    )
+  );
+};
+
+/**
+ * Reads the image URL out of a Responses `input_image` / `image_url` part.
+ * Returns undefined when the part is unusable so callers can drop it rather
+ * than forwarding a block the upstream would reject.
+ */
+export const extractImageUrl = (part: unknown): string | undefined => {
+  if (!part || typeof part !== 'object') {
+    return undefined;
+  }
+
+  const value = part as {
+    image?: unknown;
+    image_url?: unknown;
+    source?: unknown;
+  };
+
+  if (typeof value.image_url === 'string' && value.image_url) {
+    return value.image_url;
+  }
+
+  if (
+    value.image_url &&
+    typeof value.image_url === 'object' &&
+    typeof (value.image_url as { url?: unknown }).url === 'string'
+  ) {
+    const url = (value.image_url as { url: string }).url;
+
+    return url || undefined;
+  }
+
+  if (typeof value.image === 'string' && value.image) {
+    return value.image;
+  }
+
+  // Anthropic-shaped nested source, e.g.
+  // `{ type: 'image', source: { type: 'base64', media_type, data } }`.
+  if (value.source && typeof value.source === 'object') {
+    const source = value.source as {
+      data?: unknown;
+      media_type?: unknown;
+      url?: unknown;
+    };
+
+    if (typeof source.url === 'string' && source.url) {
+      return source.url;
+    }
+
+    if (typeof source.data === 'string' && source.data) {
+      const mediaType =
+        typeof source.media_type === 'string' && source.media_type
+          ? source.media_type
+          : 'image/png';
+
+      return `data:${mediaType};base64,${source.data}`;
+    }
+  }
+
+  return undefined;
+};
+
+/**
+ * True when a Responses `input` array carries an image. The chat path
+ * flattens input into Chat messages, and `mapChatContentToResponses` can only
+ * rebuild an image part from the Chat shape — so an image has to survive that
+ * round trip rather than being stringified into text.
+ */
+export const hasResponsesImageInput = (input: unknown): boolean => {
+  if (typeof input === 'string' || !Array.isArray(input)) {
+    return false;
+  }
+
+  return input.some((item) => {
+    if (!item || typeof item !== 'object') {
+      return false;
+    }
+
+    const value = item as { content?: unknown; type?: unknown };
+
+    if (typeof value.type === 'string' && value.type !== 'message') {
+      return false;
+    }
+
+    const content = value.content;
+
+    return Array.isArray(content)
+      ? content.some(isImageContentPart)
+      : isImageContentPart(content);
+  });
 };
 
 const stringifyResponsesInputContent = (content: unknown): string => {

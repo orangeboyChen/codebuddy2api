@@ -159,6 +159,7 @@ interface ChatTextBlock {
  * `responses` upstream converts it to `input_image`.
  */
 interface ChatImageBlock {
+  cache_control?: { type?: string };
   image_url: { url: string };
   type: 'image_url';
 }
@@ -508,7 +509,17 @@ const mapAnthropicContentToChat = (
 
       parts.push(
         imageUrl
-          ? { type: 'image_url', image_url: { url: imageUrl } }
+          ? {
+              type: 'image_url',
+              image_url: { url: imageUrl },
+              // Preserve an explicit cache breakpoint, matching how text
+              // blocks carry `cache_control` through. Without this the
+              // requested breakpoint is dropped and `applyPromptCacheControl`
+              // falls back to its own automatic placement.
+              ...(block.cache_control
+                ? { cache_control: block.cache_control }
+                : {}),
+            }
           : stringifyContent(block),
       );
     } else {
