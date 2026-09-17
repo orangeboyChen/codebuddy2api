@@ -7,7 +7,6 @@ import {
 
 import type { NextRequest } from 'next/server';
 import {
-  type AuthenticatorTransportFuture,
   type AuthenticationResponseJSON,
   type RegistrationResponseJSON,
   generateAuthenticationOptions,
@@ -64,7 +63,7 @@ interface StoredPasskeyRecord {
   id: string;
   name: string;
   publicKey: string;
-  transports?: AuthenticatorTransportFuture[];
+  transports?: string[];
 }
 
 interface PendingChallengeRecord {
