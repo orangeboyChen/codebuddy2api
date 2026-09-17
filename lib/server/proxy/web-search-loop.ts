@@ -467,11 +467,11 @@ const readReasoning = (message: ChatCompletionMessage | undefined): string => {
     return '';
   }
 
-  return typeof message.reasoning_content === 'string'
-    ? message.reasoning_content
-    : typeof message.reasoning === 'string'
-      ? message.reasoning
-      : '';
+  if (typeof message.reasoning_content === 'string') {
+    return message.reasoning_content;
+  }
+
+  return typeof message.reasoning === 'string' ? message.reasoning : '';
 };
 
 /**
@@ -494,35 +494,33 @@ const withIntermediateTurns = ({
 }): ChatCompletionPayload => {
   const extraText = texts.filter(Boolean).join('\n\n');
   const extraReasoning = reasonings.filter(Boolean).join('\n\n');
+  const [first, ...rest] = payload.choices ?? [];
 
-  if (!extraText && !extraReasoning) {
+  if (!first || (!extraText && !extraReasoning)) {
     return payload;
   }
 
+  const message = first.message ?? {};
+  const existingText =
+    typeof message.content === 'string' ? message.content : '';
+  const content = [extraText, existingText].filter(Boolean).join('\n\n');
+  const reasoning = [extraReasoning, readReasoning(message)]
+    .filter(Boolean)
+    .join('\n\n');
+
   return {
     ...payload,
-    choices: (payload.choices ?? []).map((choice, index) => {
-      if (index !== 0) {
-        return choice;
-      }
-
-      const message = choice.message ?? {};
-      const existingText =
-        typeof message.content === 'string' ? message.content : '';
-      const content = [extraText, existingText].filter(Boolean).join('\n\n');
-      const reasoning = [extraReasoning, readReasoning(message)]
-        .filter(Boolean)
-        .join('\n\n');
-
-      return {
-        ...choice,
+    choices: [
+      {
+        ...first,
         message: {
           ...message,
-          content: content || null,
+          content,
           ...(reasoning ? { reasoning_content: reasoning } : {}),
         },
-      };
-    }),
+      },
+      ...rest,
+    ],
   };
 };
 
@@ -753,6 +751,25 @@ interface ServerToolProbe {
   usage: unknown;
 }
 
+/**
+ * Whether the proxy is the one meant to answer this call.
+ *
+ * A call without an available backend is not a fallback to the client — it
+ * leaves the loop as an unanswered client-owned tool — but it must not be
+ * counted as locally executable either.
+ */
+const isLocalServerToolCall = ({
+  fetchProvider,
+  toolCall,
+  searchProvider,
+}: {
+  fetchProvider: WebFetchProvider | null;
+  toolCall: ChatCompletionToolCall;
+  searchProvider: WebSearchProvider | null;
+}): boolean =>
+  (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
+  (Boolean(fetchProvider) && isWebFetchToolCall(toolCall));
+
 const probeServerToolStream = async ({
   canContinue,
   context,
@@ -875,21 +892,15 @@ const probeServerToolStream = async ({
   reader.releaseLock();
 
   const toolCalls = aggregateStreamingToolCalls(toolCallDeltas);
+  const isLocalCall = (toolCall: ChatCompletionToolCall): boolean =>
+    isLocalServerToolCall({ fetchProvider, searchProvider, toolCall });
 
   return {
     content,
     frames,
-    localCalls: toolCalls.filter(
-      (toolCall) =>
-        (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
-        (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
-    ),
+    localCalls: toolCalls.filter(isLocalCall),
     reasoning,
-    remainingCalls: toolCalls.filter(
-      (toolCall) =>
-        (!searchProvider || !isWebSearchToolCall(toolCall)) &&
-        (!fetchProvider || !isWebFetchToolCall(toolCall)),
-    ),
+    remainingCalls: toolCalls.filter((toolCall) => !isLocalCall(toolCall)),
     role: context.role,
     toolCalls,
     usage: context.usage,
@@ -923,6 +934,12 @@ const createInlineServerToolStream = async ({
   const encoder = new TextEncoder();
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
+
+  // A call is locally executable only when its backend is available; anything
+  // else stays the client's to answer.
+  const isLocalCall = (toolCall: ChatCompletionToolCall): boolean =>
+    isLocalServerToolCall({ fetchProvider, searchProvider, toolCall });
+
   const emitJson = (
     controller: ReadableStreamDefaultController<Uint8Array>,
     payload: Record<string, unknown>,
@@ -1079,14 +1096,14 @@ const createInlineServerToolStream = async ({
           iteration++
         ) {
           const response = await callUpstream(loopBody, 'stream');
-          const contentType = response.headers.get('content-type') ?? '';
+          const isEventStream = (response.headers.get('content-type') ?? '')
+            .toLowerCase()
+            .includes('text/event-stream');
 
           // Upstream answers with JSON rather than SSE when it refuses the
           // request, and also when the caller is not streaming at all. Both
           // shapes are read the same way; only an error ends the turn here.
-          const buffered = !contentType
-            .toLowerCase()
-            .includes('text/event-stream')
+          const buffered = !isEventStream
             ? await readBufferedChatCompletionPayload(response)
             : null;
 
@@ -1108,13 +1125,7 @@ const createInlineServerToolStream = async ({
             // A JSON answer that still asks for a server tool is an
             // intermediate step, not the end of the turn: it has to be
             // executed and fed back, exactly as a streamed one would be.
-            if (
-              !bufferedCalls.some(
-                (toolCall) =>
-                  (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
-                  (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
-              )
-            ) {
+            if (!bufferedCalls.some(isLocalCall)) {
               finalPayload = {
                 ...buffered,
                 ...(usage ? { usage } : {}),
@@ -1128,16 +1139,10 @@ const createInlineServerToolStream = async ({
                   ? bufferedMessage.content
                   : '',
               frames: [],
-              localCalls: bufferedCalls.filter(
-                (toolCall) =>
-                  (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
-                  (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
-              ),
+              localCalls: bufferedCalls.filter(isLocalCall),
               reasoning: readReasoning(bufferedMessage),
               remainingCalls: bufferedCalls.filter(
-                (toolCall) =>
-                  (!searchProvider || !isWebSearchToolCall(toolCall)) &&
-                  (!fetchProvider || !isWebFetchToolCall(toolCall)),
+                (toolCall) => !isLocalCall(toolCall),
               ),
               role: bufferedMessage?.role ?? 'assistant',
               toolCalls: bufferedCalls,
@@ -1275,12 +1280,11 @@ const createInlineServerToolStream = async ({
             },
             'stream',
           );
+          const isEventStream = (response.headers.get('content-type') ?? '')
+            .toLowerCase()
+            .includes('text/event-stream');
 
-          if (
-            !(response.headers.get('content-type') ?? '')
-              .toLowerCase()
-              .includes('text/event-stream')
-          ) {
+          if (!isEventStream) {
             finalPayload = await readBufferedChatCompletionPayload(response);
 
             if (!response.ok || finalPayload.error) {
@@ -1291,10 +1295,7 @@ const createInlineServerToolStream = async ({
             }
 
             usage = sumUsage(usage, finalPayload.usage);
-            finalPayload = {
-              ...finalPayload,
-              ...(usage ? { usage } : {}),
-            };
+            finalPayload = { ...finalPayload, ...(usage ? { usage } : {}) };
           } else {
             const probe = await probeServerToolStream({
               canContinue: () => !cancelled,
@@ -1312,25 +1313,19 @@ const createInlineServerToolStream = async ({
             // With every server tool stripped, a tool call here can only be a
             // client-owned one; hand it back so the client resolves it.
             if (probe.remainingCalls.length) {
+              const fallbackMessage: ChatCompletionMessage = {
+                content: probe.content || null,
+                role: probe.role,
+                tool_calls: probe.toolCalls,
+                ...(probe.reasoning
+                  ? { reasoning_content: probe.reasoning }
+                  : {}),
+              };
+
               finalPayload = buildMixedTurnPayload({
-                message: {
-                  content: probe.content || null,
-                  role: probe.role,
-                  tool_calls: probe.toolCalls,
-                  ...(probe.reasoning
-                    ? { reasoning_content: probe.reasoning }
-                    : {}),
-                },
+                message: fallbackMessage,
                 payload: {
-                  choices: [
-                    {
-                      message: {
-                        content: probe.content || null,
-                        role: probe.role,
-                        tool_calls: probe.toolCalls,
-                      },
-                    },
-                  ],
+                  choices: [{ message: fallbackMessage }],
                   created: context.responseCreated,
                   id: responseId,
                   model: responseModel,
@@ -1500,9 +1495,7 @@ export const executeWebSearchLoop = async ({
         (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
     );
     const remainingCalls = toolCalls.filter(
-      (toolCall) =>
-        (!searchProvider || !isWebSearchToolCall(toolCall)) &&
-        (!fetchProvider || !isWebFetchToolCall(toolCall)),
+      (toolCall) => !localCalls.includes(toolCall),
     );
 
     if (!localCalls.length) {
