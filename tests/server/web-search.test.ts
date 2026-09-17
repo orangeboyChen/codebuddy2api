@@ -3977,6 +3977,226 @@ describe('chat proxy web search integration', () => {
     expect(upstreamCalls).toBe(2);
   });
 
+  it('keeps the text a multi-hop turn wrote between two searches', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        return makeJsonResponse({
+          results: [
+            { snippet: 'snip', title: 'Result', url: 'https://r.test' },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+
+      if (upstreamCalls === 1) {
+        return makeSseResponse({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    id: 'call_first',
+                    index: 0,
+                    function: {
+                      arguments: '{"query":"first hop"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+              index: 0,
+            },
+          ],
+        });
+      }
+
+      // The model speaks and reasons before searching again. That text is part
+      // of the visible turn, so it must not be swallowed by the loop.
+      if (upstreamCalls === 2) {
+        return makeJsonResponse({
+          choices: [
+            {
+              finish_reason: 'tool_calls',
+              message: {
+                content: 'First hop was inconclusive.',
+                reasoning_content: 'Narrowing the query.',
+                tool_calls: [
+                  {
+                    id: 'call_second',
+                    function: {
+                      arguments: '{"query":"second hop"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+
+      return makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: 'Two hops later.' },
+          },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Two hop question' }],
+        stream: true,
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    const text = await response.text();
+
+    expect(text).toContain('First hop was inconclusive.');
+    expect(text).toContain('Narrowing the query.');
+    expect(text).toContain('Two hops later.');
+    expect(text.indexOf('First hop was inconclusive.')).toBeLessThan(
+      text.indexOf('Two hops later.'),
+    );
+    expect((text.match(/"type":"server_tool_use"/g) ?? []).length).toBe(2);
+    expect((text.match(/"type":"web_search_tool_result"/g) ?? []).length).toBe(
+      2,
+    );
+    expect(upstreamCalls).toBe(3);
+  });
+
+  it('streams the final Messages answer as upstream produces it', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+    const encoder = new TextEncoder();
+    let upstreamCalls = 0;
+    let releaseSecondChunk: (() => void) | undefined;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        return makeJsonResponse({
+          results: [
+            { snippet: 'snip', title: 'Result', url: 'https://r.test' },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+
+      if (upstreamCalls === 1) {
+        return makeSseResponse({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    id: 'call_search',
+                    index: 0,
+                    function: {
+                      arguments: '{"query":"streamed answer"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+              index: 0,
+            },
+          ],
+        });
+      }
+
+      // The final answer arrives in two pieces, the second only after the test
+      // releases it — so a buffered replay collapses both into one instant.
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  choices: [{ delta: { content: 'First half.' }, index: 0 }],
+                })}\n\n`,
+              ),
+            );
+            releaseSecondChunk = () => {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    choices: [
+                      { delta: { content: ' Second half.' }, index: 0 },
+                    ],
+                  })}\n\n`,
+                ),
+              );
+              controller.close();
+            };
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      );
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Stream the answer' }],
+        stream: true,
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let before = '';
+
+    while (!before.includes('First half.')) {
+      const chunk = await reader.read();
+      expect(chunk.done).toBe(false);
+      before += decoder.decode(chunk.value);
+    }
+
+    // The first half has to arrive before the second is even produced; a
+    // buffered final iteration would withhold it until the whole answer was in.
+    expect(before).not.toContain('Second half.');
+    expect(releaseSecondChunk).toBeTypeOf('function');
+    releaseSecondChunk!();
+
+    let remainder = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      remainder += decoder.decode(chunk.value);
+    }
+
+    expect(remainder).toContain('Second half.');
+    expect(before).toContain('"type":"web_search_tool_result"');
+  });
+
   it('streams Messages server_tool_use before the backend result', async () => {
     let finishSearch: ((response: Response) => void) | undefined;
     let upstreamCalls = 0;
@@ -4181,6 +4401,111 @@ describe('chat proxy web search integration', () => {
     finishSearch!(makeJsonResponse({ results: [] }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(upstreamCalls).toBe(1);
+  });
+
+  it('folds multi-hop text into a non-streaming Messages answer', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        return makeJsonResponse({
+          results: [
+            { snippet: 'snip', title: 'Result', url: 'https://r.test' },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+
+      if (upstreamCalls === 1) {
+        return makeJsonResponse({
+          choices: [
+            {
+              finish_reason: 'tool_calls',
+              message: {
+                tool_calls: [
+                  {
+                    id: 'call_first',
+                    function: {
+                      arguments: '{"query":"first hop"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+
+      if (upstreamCalls === 2) {
+        return makeJsonResponse({
+          choices: [
+            {
+              finish_reason: 'tool_calls',
+              message: {
+                content: 'First hop was inconclusive.',
+                reasoning_content: 'Narrowing the query.',
+                tool_calls: [
+                  {
+                    id: 'call_second',
+                    function: {
+                      arguments: '{"query":"second hop"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+
+      return makeJsonResponse({
+        choices: [
+          { finish_reason: 'stop', message: { content: 'Two hops later.' } },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Two hop question' }],
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    const payload = (await response.json()) as {
+      content: Array<{ text?: string; thinking?: string; type: string }>;
+    };
+    const text = payload.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text ?? '')
+      .join('');
+    const thinking = payload.content
+      .filter((block) => block.type === 'thinking')
+      .map((block) => block.thinking ?? '')
+      .join('');
+
+    // A non-streaming turn has no place to emit intermediate deltas, so the
+    // text is folded in ahead of the final answer rather than dropped.
+    expect(text).toContain('First hop was inconclusive.');
+    expect(text).toContain('Two hops later.');
+    expect(text.indexOf('First hop was inconclusive.')).toBeLessThan(
+      text.indexOf('Two hops later.'),
+    );
+    expect(thinking).toContain('Narrowing the query.');
+    expect(upstreamCalls).toBe(3);
   });
 
   it('maps a completed fetch to a Responses open_page call', async () => {
