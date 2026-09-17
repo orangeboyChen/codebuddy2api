@@ -567,6 +567,57 @@ describe('Responses image support', () => {
       expect(response.status).toBe(502);
     });
 
+    it('keeps prose the model wrote before calling the tool', async () => {
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        chatCall += 1;
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                // A model commonly explains itself before calling a tool.
+                content: 'Sure, let me draw that for you.',
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"prompt":"a cat"}',
+                      name: 'image_generation',
+                    },
+                    id: 'call_1',
+                    type: 'function',
+                  },
+                ],
+              }
+            : { content: 'Here is your cat.' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw me a cat',
+        model: 'claude-sonnet-4.6',
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      const payload = (await response.json()) as {
+        output_text: string;
+        output: Array<Record<string, unknown>>;
+      };
+
+      // The loop replays the request with the image appended, so only the final
+      // hop's message would survive without folding the earlier prose in.
+      expect(payload.output_text).toBe(
+        'Sure, let me draw that for you.\n\nHere is your cat.',
+      );
+      expect(payload.output[0]).toMatchObject({
+        result: 'QUJD',
+        status: 'completed',
+        type: 'image_generation_call',
+      });
+    });
+
     it('reports a failure as a tool result so the turn continues', async () => {
       const secret = await addCredentialWith();
       let chatCall = 0;

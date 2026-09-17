@@ -1483,7 +1483,6 @@ const mapChatResponseToResponsesStream = async (
   proxyContext: ProxyContext,
   imageExecutions: ImageGenerationExecution[],
 ): Promise<Response> => {
-  const responseId = createResponseId();
   const payload = await mapChatResponseToResponsesPayload(
     proxyContext.accessKeyId,
     proxyContext.credentialFilename,
@@ -1495,6 +1494,10 @@ const mapChatResponseToResponsesStream = async (
     [],
     imageExecutions,
   );
+  // The mapper creates and persists the session id, so the stream has to reuse
+  // it: advertising a different one would leave a client unable to continue the
+  // turn, because nothing was stored under the id it was given.
+  const responseId = String(payload.id ?? createResponseId());
   const output = Array.isArray(payload.output)
     ? (payload.output as Array<Record<string, unknown>>)
     : [];
@@ -2201,7 +2204,7 @@ const createResponsesEventStream = async (
     // the call is forwarded as an ordinary function_call the client is expected
     // to resolve — and nothing would ever generate the image.
     if (hasImageGenerationTool(defaults.tools)) {
-      const imageResult = await executeImageGenerationLoop({
+      const { executions, response } = await executeImageGenerationLoop({
         body: chatBody,
         // Buffered so the tool call can be inspected before any delta reaches
         // the client; the ordinary path below stays live.
@@ -2217,23 +2220,22 @@ const createResponsesEventStream = async (
         request,
       });
 
-      if (imageResult) {
-        const { executions, response } = imageResult;
-
-        if (!response.ok) {
-          return response;
-        }
-
-        return mapChatResponseToResponsesStream(
-          (await response.json()) as Record<string, unknown>,
-          defaults,
-          transcript,
-          model,
-          previousResponseId,
-          proxyContext,
-          executions,
-        );
+      // Always consumed, even when nothing was generated: the loop has already
+      // sent the turn upstream, and re-issuing it would bill twice and could
+      // return a different answer than the one inspected.
+      if (!response.ok) {
+        return response;
       }
+
+      return mapChatResponseToResponsesStream(
+        (await response.json()) as Record<string, unknown>,
+        defaults,
+        transcript,
+        model,
+        previousResponseId,
+        proxyContext,
+        executions,
+      );
     }
 
     const upstreamResponse = await proxyChatCompletions(
@@ -2590,46 +2592,45 @@ export const handleResponsesRequest = async (
     // the tool was actually declared; otherwise the loop returns null and the
     // ordinary upstream call runs.
     if (hasImageGenerationTool(prepared.defaults.tools)) {
-      const imageResult = await executeImageGenerationLoop({
-        body: chatBody,
-        callUpstream: (loopBody) =>
-          proxyChatCompletions(
-            request,
-            loopBody as never,
-            proxyContext,
-            debugTrace,
-            '/v1/responses',
-          ),
-        context: proxyContext,
-        request,
-      });
+      const { executions, response: imageResponse } =
+        await executeImageGenerationLoop({
+          body: chatBody,
+          callUpstream: (loopBody) =>
+            proxyChatCompletions(
+              request,
+              loopBody as never,
+              proxyContext,
+              debugTrace,
+              '/v1/responses',
+            ),
+          context: proxyContext,
+          request,
+        });
 
-      if (imageResult) {
-        const { executions, response: imageResponse } = imageResult;
-
-        if (!imageResponse.ok) {
-          return imageResponse;
-        }
-
-        const imagePayload = (await imageResponse.json()) as Record<
-          string,
-          unknown
-        >;
-
-        return Response.json(
-          await mapChatResponseToResponsesPayload(
-            proxyContext.accessKeyId,
-            proxyContext.credentialFilename,
-            prepared.defaults,
-            prepared.transcript,
-            prepared.model,
-            prepared.previousResponseId,
-            imagePayload,
-            getServerToolExecutions(imageResponse),
-            executions,
-          ),
-        );
+      // Always consumed: the loop has already sent the turn upstream, and
+      // re-issuing it would bill twice and could return a different answer.
+      if (!imageResponse.ok) {
+        return imageResponse;
       }
+
+      const imagePayload = (await imageResponse.json()) as Record<
+        string,
+        unknown
+      >;
+
+      return Response.json(
+        await mapChatResponseToResponsesPayload(
+          proxyContext.accessKeyId,
+          proxyContext.credentialFilename,
+          prepared.defaults,
+          prepared.transcript,
+          prepared.model,
+          prepared.previousResponseId,
+          imagePayload,
+          getServerToolExecutions(imageResponse),
+          executions,
+        ),
+      );
     }
 
     const upstreamResponse = await proxyChatCompletions(

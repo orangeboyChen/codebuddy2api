@@ -22,6 +22,12 @@ import type { NextRequest } from 'next/server';
 import { getCodeBuddyApiEndpoint } from '../domain/config';
 import type { ProxyContext } from './codebuddy';
 import { buildUpstreamHeaders } from './codebuddy';
+import {
+  withIntermediateTurns,
+  type ChatCompletionMessage,
+  type ChatCompletionPayload,
+  type ChatCompletionToolCall,
+} from './web-search-loop';
 
 export const IMAGE_GENERATION_TOOL_TYPE = 'image_generation';
 
@@ -83,7 +89,12 @@ const parseArguments = (raw: string): ImageGenerationArguments => {
 
 /** The prompt the model asked for, used as the `image_generation_call` label. */
 const extractPrompt = (raw: string): string => {
-  return parseArguments(raw).prompt?.trim() ?? '';
+  // Model-generated arguments are untrusted JSON, so a non-string prompt is
+  // possible. `executeImageGeneration` already rejects it, and throwing here
+  // would turn that handled failure into a 500.
+  const { prompt } = parseArguments(raw);
+
+  return typeof prompt === 'string' ? prompt.trim() : '';
 };
 
 /**
@@ -233,20 +244,6 @@ export const executeImageGeneration = async ({
 /** Bounded because each generation is slow and one round of results suffices. */
 const MAX_IMAGE_ITERATIONS = 3;
 
-interface ChatToolCall {
-  id?: string;
-  function?: { arguments?: string; name?: string };
-}
-
-interface ChatCompletionMessage {
-  content?: unknown;
-  tool_calls?: ChatToolCall[];
-}
-
-interface ChatCompletionPayload {
-  choices?: Array<{ message?: ChatCompletionMessage }>;
-}
-
 /**
  * True when a model tool call targets the rewritten image-generation function.
  * Compared loosely because upstream providers may normalize the name.
@@ -256,7 +253,7 @@ export const isImageGenerationToolCall = (toolCall: unknown): boolean => {
     return false;
   }
 
-  const name = (toolCall as ChatToolCall).function?.name;
+  const name = (toolCall as ChatCompletionToolCall).function?.name;
 
   return (
     typeof name === 'string' &&
@@ -281,11 +278,13 @@ const buildImageToolResult = (result: ImageGenerationResult | null): string => {
   return 'Image generation failed: the upstream service returned no image.';
 };
 /**
- * Runs image-generation tool calls a chat-protocol model made and returns the
- * final upstream response with the images folded back into the transcript.
+ * Runs image-generation tool calls a chat-protocol model makes, replaying the
+ * request with each generated image folded back in.
  *
- * Returns `null` when the model made no image call, so the caller keeps its
- * ordinary upstream path.
+ * Always returns the final upstream response, including when the model made no
+ * image call — callers must not re-issue the request themselves, since that
+ * would bill the turn twice and could return a different answer from the one
+ * already inspected. `executions` is empty when no image was generated.
  *
  * The returned response is always freshly constructed: reading an intermediate
  * response to inspect its tool calls consumes the body, and the caller needs to
@@ -308,6 +307,28 @@ export interface ImageGenerationLoopResult {
   executions: ImageGenerationExecution[];
   response: Response;
 }
+
+/**
+ * Rebuilds a response whose body was already read. The loop consumes each
+ * response to inspect its tool calls, so anything handed back has to be
+ * reconstructed from the text that was read.
+ */
+const rebuildResponse = (
+  response: Response,
+  payload: ChatCompletionPayload,
+): Response => {
+  return new Response(JSON.stringify(payload), {
+    headers: response.headers,
+    status: response.status,
+  });
+};
+
+/** Prose a hop wrote, i.e. text the model produced before calling the tool. */
+const readMessageText = (
+  message: ChatCompletionMessage | undefined,
+): string => {
+  return typeof message?.content === 'string' ? message.content.trim() : '';
+};
 
 const buildImageGenerationExecution = ({
   id,
@@ -340,9 +361,14 @@ export const executeImageGenerationLoop = async ({
   callUpstream: (body: Record<string, unknown>) => Promise<Response>;
   context: ProxyContext;
   request: NextRequest;
-}): Promise<ImageGenerationLoopResult | null> => {
+}): Promise<ImageGenerationLoopResult> => {
   let currentBody: Record<string, unknown> = body;
   const executions: ImageGenerationExecution[] = [];
+  const intermediateTexts: string[] = [];
+  // Carried across iterations so the cap can hand back the last response
+  // instead of discarding every image already generated.
+  let lastResponse: Response | null = null;
+  let lastPayload: ChatCompletionPayload | null = null;
 
   for (let iteration = 0; iteration < MAX_IMAGE_ITERATIONS; iteration += 1) {
     const response = await callUpstream(currentBody);
@@ -375,22 +401,33 @@ export const executeImageGenerationLoop = async ({
     }
 
     const message = payload.choices?.[0]?.message;
-    const imageCalls: ChatToolCall[] = (message?.tool_calls ?? []).filter(
-      isImageGenerationToolCall,
-    );
+    const imageCalls: ChatCompletionToolCall[] = (
+      message?.tool_calls ?? []
+    ).filter(isImageGenerationToolCall);
 
     if (!imageCalls.length) {
-      // Nothing to execute. Rebuild the response so the caller can still read
-      // it, since `payloadText` was consumed above.
-      return iteration === 0
-        ? null
-        : {
-            executions,
-            response: new Response(payloadText, {
-              headers: response.headers,
-              status: response.status,
-            }),
-          };
+      // Nothing to execute. Hand the response back rather than returning null:
+      // the caller must not re-issue the request, since that would bill the
+      // turn twice and could yield a different answer. Prose from earlier hops
+      // is folded in first, because it is part of the turn the client sees.
+      return {
+        executions,
+        response: rebuildResponse(
+          response,
+          withIntermediateTurns({
+            executions: [],
+            payload,
+            reasonings: [],
+            texts: intermediateTexts,
+          }),
+        ),
+      };
+    }
+
+    const iterationText = readMessageText(message);
+
+    if (iterationText) {
+      intermediateTexts.push(iterationText);
     }
 
     const results: unknown[] = [];
@@ -429,9 +466,38 @@ export const executeImageGenerationLoop = async ({
     messages.push(...results);
 
     currentBody = { ...currentBody, messages };
+    lastPayload = payload;
+    lastResponse = response;
   }
 
-  return null;
+  // Unreachable in practice — every iteration sets both, and the loop body
+  // always executes at least once — but the guard keeps the types honest
+  // without asserting.
+  if (!lastResponse || !lastPayload) {
+    return {
+      executions,
+      response: new Response(null, {
+        headers: { 'Content-Type': 'application/json' },
+        status: 502,
+      }),
+    };
+  }
+
+  // The cap was reached with the model still asking for images. Every image
+  // generated so far is kept, and the last response is handed back so the
+  // caller does not re-issue the request and discard them.
+  return {
+    executions,
+    response: rebuildResponse(
+      lastResponse,
+      withIntermediateTurns({
+        executions: [],
+        payload: lastPayload,
+        reasonings: [],
+        texts: intermediateTexts,
+      }),
+    ),
+  };
 };
 
 // ---------------------------------------------------------------------------
