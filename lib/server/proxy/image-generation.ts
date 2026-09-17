@@ -81,6 +81,11 @@ const parseArguments = (raw: string): ImageGenerationArguments => {
   }
 };
 
+/** The prompt the model asked for, used as the `image_generation_call` label. */
+const extractPrompt = (raw: string): string => {
+  return parseArguments(raw).prompt?.trim() ?? '';
+};
+
 /**
  * Rewrites an `image_generation` tool declaration as a Chat function so a
  * chat-protocol model can invoke it. The schema is deliberately permissive:
@@ -286,6 +291,45 @@ const buildImageToolResult = (result: ImageGenerationResult | null): string => {
  * response to inspect its tool calls consumes the body, and the caller needs to
  * read the final one again.
  */
+export interface ImageGenerationExecution {
+  id: string;
+  /** The rewritten prompt some providers echo back. Absent when unavailable. */
+  prompt: string;
+  /**
+   * Base64-encoded image, when the upstream returned inline data. This is what
+   * an OpenAI `image_generation_call` carries in its `result` field.
+   */
+  result: string | null;
+  status: 'completed' | 'failed';
+}
+
+export interface ImageGenerationLoopResult {
+  /** One entry per image call the model made, in call order. */
+  executions: ImageGenerationExecution[];
+  response: Response;
+}
+
+const buildImageGenerationExecution = ({
+  id,
+  prompt,
+  result,
+}: {
+  id: string;
+  prompt: string;
+  result: ImageGenerationResult | null;
+}): ImageGenerationExecution => {
+  if (result?.b64Json) {
+    return { id, prompt, result: result.b64Json, status: 'completed' };
+  }
+
+  return {
+    id,
+    prompt,
+    result: null,
+    status: result?.url ? 'completed' : 'failed',
+  };
+};
+
 export const executeImageGenerationLoop = async ({
   body,
   callUpstream,
@@ -296,8 +340,9 @@ export const executeImageGenerationLoop = async ({
   callUpstream: (body: Record<string, unknown>) => Promise<Response>;
   context: ProxyContext;
   request: NextRequest;
-}): Promise<Response | null> => {
+}): Promise<ImageGenerationLoopResult | null> => {
   let currentBody: Record<string, unknown> = body;
+  const executions: ImageGenerationExecution[] = [];
 
   for (let iteration = 0; iteration < MAX_IMAGE_ITERATIONS; iteration += 1) {
     const response = await callUpstream(currentBody);
@@ -310,7 +355,7 @@ export const executeImageGenerationLoop = async ({
         ?.toLowerCase()
         .includes('text/event-stream')
     ) {
-      return response;
+      return { executions, response };
     }
 
     const payloadText = await response.text();
@@ -320,10 +365,13 @@ export const executeImageGenerationLoop = async ({
       payload = JSON.parse(payloadText) as ChatCompletionPayload;
     } catch {
       // Unparseable upstream output cannot be continued; return it verbatim.
-      return new Response(payloadText, {
-        headers: response.headers,
-        status: response.status,
-      });
+      return {
+        executions,
+        response: new Response(payloadText, {
+          headers: response.headers,
+          status: response.status,
+        }),
+      };
     }
 
     const message = payload.choices?.[0]?.message;
@@ -336,20 +384,32 @@ export const executeImageGenerationLoop = async ({
       // it, since `payloadText` was consumed above.
       return iteration === 0
         ? null
-        : new Response(payloadText, {
-            headers: response.headers,
-            status: response.status,
-          });
+        : {
+            executions,
+            response: new Response(payloadText, {
+              headers: response.headers,
+              status: response.status,
+            }),
+          };
     }
 
     const results: unknown[] = [];
 
     for (const toolCall of imageCalls) {
+      const arguments_ = toolCall.function?.arguments ?? '';
       const result = await executeImageGeneration({
-        arguments: toolCall.function?.arguments ?? '',
+        arguments: arguments_,
         context,
         request,
       });
+
+      executions.push(
+        buildImageGenerationExecution({
+          id: toolCall.id ?? '',
+          prompt: extractPrompt(arguments_),
+          result,
+        }),
+      );
 
       results.push({
         role: 'tool',
@@ -372,4 +432,30 @@ export const executeImageGenerationLoop = async ({
   }
 
   return null;
+};
+
+// ---------------------------------------------------------------------------
+// Responses output item
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the `image_generation_call` output item OpenAI's Responses API
+ * defines, so a client driving the chat upstream still sees the standard shape:
+ * the generated image in `result` as base64, and the prompt it came from.
+ *
+ * `result` is null when generation failed. The field is still emitted, with
+ * status `failed`, because dropping it would leave the client with no way to
+ * tell that an image was attempted.
+ */
+export const buildResponsesImageGenerationCallItem = (
+  execution: ImageGenerationExecution,
+  id = `ig_${crypto.randomUUID().replaceAll('-', '')}`,
+): Record<string, unknown> => {
+  return {
+    id,
+    result: execution.result,
+    status: execution.status,
+    type: 'image_generation_call',
+    ...(execution.prompt ? { revised_prompt: execution.prompt } : {}),
+  };
 };

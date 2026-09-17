@@ -336,9 +336,22 @@ describe('Responses image support', () => {
 
       expect(response.status).toBe(200);
       const payload = (await response.json()) as {
-        output: Array<{ content: Array<{ text: string }> }>;
+        output: Array<Record<string, unknown>>;
       };
-      expect(payload.output[0]?.content[0]?.text).toBe('Here is your cat.');
+
+      // The generated image is returned as a standard image_generation_call
+      // output item, ahead of the assistant's text.
+      expect(payload.output[0]).toMatchObject({
+        result: 'QUJD',
+        revised_prompt: 'a cat',
+        status: 'completed',
+        type: 'image_generation_call',
+      });
+
+      const message = payload.output[1] as {
+        content: Array<{ text: string }>;
+      };
+      expect(message.content[0]?.text).toBe('Here is your cat.');
 
       const imageRequest = requestBodies().find((body) => 'prompt' in body);
       expect(imageRequest).toEqual({
@@ -358,6 +371,139 @@ describe('Responses image support', () => {
           tool_call_id: 'call_1',
         },
       ]);
+    });
+
+    it('emits a failed image_generation_call when generation fails', async () => {
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return new Response('upstream exploded', { status: 500 });
+        }
+        chatCall += 1;
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                content: null,
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"prompt":"a cat"}',
+                      name: 'image_generation',
+                    },
+                    id: 'call_1',
+                    type: 'function',
+                  },
+                ],
+              }
+            : { content: 'Sorry, that failed.' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw me a cat',
+        model: 'claude-sonnet-4.6',
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      const payload = (await response.json()) as {
+        output: Array<Record<string, unknown>>;
+      };
+      // The item is still emitted so the client can tell an image was
+      // attempted, but carries no result.
+      expect(payload.output[0]).toMatchObject({
+        result: null,
+        status: 'failed',
+        type: 'image_generation_call',
+      });
+    });
+
+    it('omits revised_prompt when the model sent no prompt', async () => {
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        chatCall += 1;
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                content: null,
+                tool_calls: [
+                  {
+                    function: { arguments: '{}', name: 'image_generation' },
+                    id: 'c1',
+                  },
+                ],
+              }
+            : { content: 'done' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat',
+        model: 'claude-sonnet-4.6',
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      const payload = (await response.json()) as {
+        output: Array<Record<string, unknown>>;
+      };
+      expect(payload.output[0]).toMatchObject({
+        result: null,
+        status: 'failed',
+        type: 'image_generation_call',
+      });
+      expect(payload.output[0]).not.toHaveProperty('revised_prompt');
+    });
+
+    it('streams the image_generation_call as Responses SSE events', async () => {
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        chatCall += 1;
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                content: null,
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"prompt":"a cat"}',
+                      name: 'image_generation',
+                    },
+                    id: 'call_1',
+                    type: 'function',
+                  },
+                ],
+              }
+            : { content: 'Here is your cat.' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw me a cat',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain(
+        'text/event-stream',
+      );
+      const text = await response.text();
+
+      // The client sees the standard item, not a function_call it must resolve.
+      expect(text).toContain('"type":"image_generation_call"');
+      expect(text).toContain('"result":"QUJD"');
+      expect(text).not.toContain('"type":"function_call"');
+      expect(text).toContain('event: response.output_item.added');
+      expect(text).toContain('event: response.completed');
     });
 
     it('reports a failure as a tool result so the turn continues', async () => {
@@ -424,10 +570,15 @@ describe('Responses image support', () => {
 
     it('passes a streamed response through untouched', async () => {
       const secret = await addCredentialWith();
-      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        new Response('data: {}\n\ndata: [DONE]\n\n', {
-          headers: { 'Content-Type': 'text/event-stream' },
-        }),
+      // A fresh Response per call: the loop issues more than one upstream
+      // request, and a reused body cannot be read twice.
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+        Promise.resolve(
+          new Response(
+            'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
+        ),
       );
 
       const response = await handleResponsesRequest(makeRequest(secret), {
@@ -706,11 +857,15 @@ describe('Responses image support', () => {
   describe('streaming image generation', () => {
     it('passes an SSE response through without resuming it', async () => {
       const secret = await addCredentialWith();
-      const upstream = new Response(
-        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
-        { headers: { 'Content-Type': 'text/event-stream' } },
+      // A fresh Response per call: a reused body cannot be read twice.
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+        Promise.resolve(
+          new Response(
+            'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
+        ),
       );
-      vi.spyOn(globalThis, 'fetch').mockResolvedValue(upstream);
 
       const response = await handleResponsesRequest(makeRequest(secret), {
         input: 'draw a cat',
