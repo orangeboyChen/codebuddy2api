@@ -2597,7 +2597,8 @@ describe('server local web search', () => {
       await enableSearxngSearch();
       const encoder = new TextEncoder();
       let call = 0;
-      let closeFallback: (() => void) | undefined;
+      let resolveCancel: (() => void) | undefined;
+      let upstreamCancelled: Promise<boolean> | undefined;
 
       const upstream = vi.fn<LoopCall>(async (body) => {
         call += 1;
@@ -2643,7 +2644,7 @@ describe('server local web search', () => {
           });
         }
 
-        // The fallback answer hangs until released, so only a client-side
+        // The fallback answer never finishes, so only a client-side
         // cancellation can end this turn.
         return new Response(
           new ReadableStream<Uint8Array>({
@@ -2655,7 +2656,12 @@ describe('server local web search', () => {
                   })}\n\n`,
                 ),
               );
-              closeFallback = () => controller.close();
+              upstreamCancelled = new Promise<boolean>((resolve) => {
+                resolveCancel = () => resolve(true);
+              });
+            },
+            cancel: () => {
+              resolveCancel?.();
             },
           }),
           { headers: { 'Content-Type': 'text/event-stream' } },
@@ -2678,9 +2684,10 @@ describe('server local web search', () => {
       }
 
       await reader.cancel();
-      closeFallback?.();
-      await new Promise((resolve) => setTimeout(resolve, 0));
 
+      // The disconnect has to reach the parked upstream read, not just the
+      // downstream stream: a stalled upstream would otherwise stay alive.
+      await expect(upstreamCancelled).resolves.toBe(true);
       expect(upstream).toHaveBeenCalledTimes(6);
     });
 
@@ -4521,6 +4528,149 @@ describe('chat proxy web search integration', () => {
     expect((text.match(/"type":"web_search_tool_result"/g) ?? []).length).toBe(
       2,
     );
+    // A buffered iteration is re-emitted from the payload, so it must appear
+    // exactly once — not once from the payload and once from the fold.
+    expect((text.match(/First hop was inconclusive\./g) ?? []).length).toBe(1);
+    expect((text.match(/Narrowing the query\./g) ?? []).length).toBe(1);
+    expect(upstreamCalls).toBe(3);
+  });
+
+  it('does not repeat text a streamed iteration already forwarded', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+    const encoder = new TextEncoder();
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        return makeJsonResponse({
+          results: [
+            { snippet: 'snip', title: 'Result', url: 'https://r.test' },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+
+      if (upstreamCalls === 1) {
+        return makeSseResponse({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    id: 'call_first',
+                    index: 0,
+                    function: {
+                      arguments: '{"query":"first hop"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+              index: 0,
+            },
+          ],
+        });
+      }
+
+      if (upstreamCalls === 2) {
+        // A streamed iteration: its deltas are forwarded as they arrive, so
+        // re-emitting the accumulated text afterwards would duplicate it.
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    choices: [
+                      { delta: { content: 'Spoken between hops.' }, index: 0 },
+                    ],
+                  })}\n\n`,
+                ),
+              );
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    choices: [
+                      {
+                        delta: { reasoning_content: 'Thinking between hops.' },
+                        index: 0,
+                      },
+                    ],
+                  })}\n\n`,
+                ),
+              );
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    choices: [
+                      {
+                        delta: {
+                          tool_calls: [
+                            {
+                              id: 'call_second',
+                              index: 0,
+                              function: {
+                                arguments: '{"query":"second hop"}',
+                                name: 'web_search',
+                              },
+                            },
+                          ],
+                        },
+                        index: 0,
+                      },
+                    ],
+                  })}\n\n`,
+                ),
+              );
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    choices: [
+                      { delta: {}, finish_reason: 'tool_calls', index: 0 },
+                    ],
+                  })}\n\n`,
+                ),
+              );
+              controller.close();
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        );
+      }
+
+      return makeJsonResponse({
+        choices: [
+          { finish_reason: 'stop', message: { content: 'Two hops later.' } },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Two hop question' }],
+        stream: true,
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    const text = await response.text();
+
+    expect(text).toContain('Spoken between hops.');
+    expect(text).toContain('Thinking between hops.');
+    expect(text).toContain('Two hops later.');
+    expect((text.match(/Spoken between hops\./g) ?? []).length).toBe(1);
+    expect((text.match(/Thinking between hops\./g) ?? []).length).toBe(1);
     expect(upstreamCalls).toBe(3);
   });
 
@@ -4785,7 +4935,8 @@ describe('chat proxy web search integration', () => {
     await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
     const encoder = new TextEncoder();
     let upstreamCalls = 0;
-    let releaseAnswer: (() => void) | undefined;
+    let resolveCancel: (() => void) | undefined;
+    let upstreamCancelled: Promise<boolean> | undefined;
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
@@ -4835,7 +4986,12 @@ describe('chat proxy web search integration', () => {
                 })}\n\n`,
               ),
             );
-            releaseAnswer = () => controller.close();
+            upstreamCancelled = new Promise<boolean>((resolve) => {
+              resolveCancel = () => resolve(true);
+            });
+          },
+          cancel: () => {
+            resolveCancel?.();
           },
         }),
         { headers: { 'Content-Type': 'text/event-stream' } },
@@ -4869,9 +5025,10 @@ describe('chat proxy web search integration', () => {
     }
 
     await reader.cancel();
-    releaseAnswer?.();
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
+    // The disconnect must reach the parked upstream read, not only the
+    // downstream stream, so a stalled upstream does not stay alive.
+    await expect(upstreamCancelled).resolves.toBe(true);
     expect(upstreamCalls).toBe(2);
   });
 
@@ -5042,6 +5199,98 @@ describe('chat proxy web search integration', () => {
     );
     expect(thinking).toContain('Narrowing the query.');
     expect(upstreamCalls).toBe(3);
+  });
+
+  it('does not repeat the current text in a non-streaming mixed turn', async () => {
+    await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+    let upstreamCalls = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes('/agenttool/v1/search')) {
+        return makeJsonResponse({
+          results: [
+            { snippet: 'snip', title: 'Result', url: 'https://r.test' },
+          ],
+        });
+      }
+
+      upstreamCalls++;
+
+      if (upstreamCalls === 1) {
+        return makeJsonResponse({
+          choices: [
+            {
+              finish_reason: 'tool_calls',
+              message: {
+                tool_calls: [
+                  {
+                    id: 'call_first',
+                    function: {
+                      arguments: '{"query":"first hop"}',
+                      name: 'web_search',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+
+      // A turn that carries its own text, asks for another search, and also
+      // calls a client-owned tool: the mixed payload already includes the
+      // current text, so folding it in again would duplicate it.
+      return makeJsonResponse({
+        choices: [
+          {
+            finish_reason: 'tool_calls',
+            message: {
+              content: 'Checking both.',
+              reasoning_content: 'Weighing the results.',
+              tool_calls: [
+                {
+                  id: 'call_second',
+                  function: {
+                    arguments: '{"query":"second hop"}',
+                    name: 'web_search',
+                  },
+                },
+                {
+                  id: 'call_client',
+                  function: { arguments: '{}', name: 'client_tool' },
+                  type: 'function',
+                },
+              ],
+            },
+          },
+        ],
+      });
+    });
+
+    const response = await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'Mixed turn' }],
+        tools: [
+          {
+            type: 'web_search_20260209',
+            name: 'web_search',
+            input_schema: {},
+          },
+        ],
+      },
+    );
+    const payload = (await response.json()) as {
+      content: Array<{ text?: string; thinking?: string; type: string }>;
+    };
+    const serialized = JSON.stringify(payload);
+
+    expect((serialized.match(/Checking both\./g) ?? []).length).toBe(1);
+    expect((serialized.match(/Weighing the results\./g) ?? []).length).toBe(1);
+    expect(upstreamCalls).toBe(2);
   });
 
   it('maps a completed fetch to a Responses open_page call', async () => {

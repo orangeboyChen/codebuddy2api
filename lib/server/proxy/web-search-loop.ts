@@ -775,6 +775,7 @@ const probeServerToolStream = async ({
   context,
   emitRaw,
   fetchProvider,
+  onReader,
   response,
   searchProvider,
 }: {
@@ -789,6 +790,13 @@ const probeServerToolStream = async ({
   };
   emitRaw: (frame: string) => void;
   fetchProvider: WebFetchProvider | null;
+  /**
+   * Hands the active reader to the caller's cancellation path. Without it a
+   * disconnect cannot interrupt a read that is already parked: the loop only
+   * notices the cancellation once upstream produces another chunk, which a
+   * stalled upstream never does.
+   */
+  onReader?: (reader: ReadableStreamDefaultReader<Uint8Array> | null) => void;
   response: Response;
   searchProvider: WebSearchProvider | null;
 }): Promise<ServerToolProbe> => {
@@ -796,6 +804,7 @@ const probeServerToolStream = async ({
   const toolCallDeltas: ChatCompletionToolCall[] = [];
   const decoder = new TextDecoder();
   const reader = response.body!.getReader();
+  onReader?.(reader);
   let buffer = '';
   let content = '';
   let reasoning = '';
@@ -890,6 +899,7 @@ const probeServerToolStream = async ({
 
   if (buffer.trim()) inspectFrame(buffer);
   reader.releaseLock();
+  onReader?.(null);
 
   const toolCalls = aggregateStreamingToolCalls(toolCallDeltas);
   const isLocalCall = (toolCall: ChatCompletionToolCall): boolean =>
@@ -990,6 +1000,9 @@ const createInlineServerToolStream = async ({
           emitRaw: (frame) =>
             controller.enqueue(encoder.encode(`${frame}\n\n`)),
           fetchProvider,
+          onReader: (reader) => {
+            activeReader = reader;
+          },
           response: firstResponse,
           searchProvider,
         });
@@ -1160,6 +1173,9 @@ const createInlineServerToolStream = async ({
               emitRaw: (frame) =>
                 controller.enqueue(encoder.encode(`${frame}\n\n`)),
               fetchProvider,
+              onReader: (reader) => {
+                activeReader = reader;
+              },
               response,
               searchProvider,
             });
@@ -1179,9 +1195,12 @@ const createInlineServerToolStream = async ({
           }
 
           // The model is going to search again, so anything it just said is
-          // part of the visible turn rather than a discarded step.
-          const iterationText = probe.content.trim();
-          const iterationReasoning = probe.reasoning.trim();
+          // part of the visible turn rather than a discarded step. A streamed
+          // iteration already forwarded it through `emitRaw`, so only a
+          // buffered one — whose payload never reached the client — needs it
+          // re-emitted here.
+          const iterationText = buffered ? probe.content.trim() : '';
+          const iterationReasoning = buffered ? probe.reasoning.trim() : '';
 
           if (iterationText) {
             emitJson(controller, {
@@ -1303,6 +1322,9 @@ const createInlineServerToolStream = async ({
               emitRaw: (frame) =>
                 controller.enqueue(encoder.encode(`${frame}\n\n`)),
               fetchProvider,
+              onReader: (reader) => {
+                activeReader = reader;
+              },
               response,
               searchProvider,
             });
@@ -1506,14 +1528,6 @@ export const executeWebSearchLoop = async ({
       typeof message?.content === 'string' ? message.content.trim() : '';
     const iterationReasoning = readReasoning(message).trim();
 
-    if (iterationText) {
-      intermediateTexts.push(iterationText);
-    }
-
-    if (iterationReasoning) {
-      intermediateReasonings.push(iterationReasoning);
-    }
-
     const invocations = localCalls.map(
       (toolCall, index): ServerToolInvocation =>
         isWebFetchToolCall(toolCall)
@@ -1577,6 +1591,9 @@ export const executeWebSearchLoop = async ({
         executions,
         response: Response.json(
           buildMixedTurnPayload({
+            // `buildMixedTurnPayload` reads this iteration's text and reasoning
+            // off `message`, so only the earlier iterations go on top; the
+            // current one is folded in by the helper itself.
             message: withIntermediateTurns({
               payload,
               reasonings: intermediateReasonings,
@@ -1590,6 +1607,16 @@ export const executeWebSearchLoop = async ({
           { status: response.status },
         ),
       };
+    }
+
+    // This iteration is complete and the loop continues, so its text becomes
+    // part of what the final answer has to carry.
+    if (iterationText) {
+      intermediateTexts.push(iterationText);
+    }
+
+    if (iterationReasoning) {
+      intermediateReasonings.push(iterationReasoning);
     }
 
     messages.push(message as JsonRecord);
