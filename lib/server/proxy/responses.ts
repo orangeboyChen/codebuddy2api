@@ -1336,10 +1336,12 @@ const prepareTranscript = async (
         return;
       }
 
+      // Attach any reasoning carried forward from a preceding reasoning item.
+      // `message.reasoning` is only ever set by the mapper below — clients
+      // cannot send it, since `ResponsesInputItem` has no such field — so
+      // there is no pre-existing value to merge with.
       if (pendingReasoning) {
-        message.reasoning = message.reasoning
-          ? `${pendingReasoning}${message.reasoning}`
-          : pendingReasoning;
+        message.reasoning = pendingReasoning;
         pendingReasoning = '';
       }
 

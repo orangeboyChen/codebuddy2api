@@ -198,6 +198,37 @@ describe('reasoning round trip', () => {
       expect(assistant?.reasoning).toBe('Claude Code replays this');
     });
 
+    it('joins reasoning from several thinking blocks in one turn', async () => {
+      // Interleaved thinking puts a thinking block before each tool call, so
+      // one assistant turn can carry more than one. Both must reach the
+      // upstream, in order.
+      const body = await captureUpstreamBody(() =>
+        handleMessagesRequest(makeAnthropicRequest(), {
+          max_tokens: 100,
+          messages: [
+            { content: 'hi', role: 'user' },
+            {
+              content: [
+                { thinking: 'first thought', type: 'thinking' },
+                { text: 'looking', type: 'text' },
+                { thinking: 'second thought', type: 'thinking' },
+                { text: 'the answer', type: 'text' },
+              ],
+              role: 'assistant',
+            },
+            { content: 'and then?', role: 'user' },
+          ],
+          model: 'claude-sonnet-4-5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBe('first thoughtsecond thought');
+    });
+
     it('does not forward a signature it did not mint', async () => {
       // A client may replay a genuine Anthropic signature from a session it
       // started against real Claude. That value is ciphertext we cannot read,
@@ -377,6 +408,112 @@ describe('reasoning round trip', () => {
       expect(typeof reasoning?.encrypted_content).toBe('string');
     });
 
+    it('attaches a carried reasoning to the next assistant message', async () => {
+      // A reasoning item followed by an assistant message: the reasoning rides
+      // along with the turn it came from, rather than standing on its own.
+      const body = await captureUpstreamBody(() =>
+        handleResponsesRequest(makeResponsesRequest(), {
+          input: [
+            { role: 'user', content: 'hi' },
+            {
+              id: 'rs_carry',
+              encrypted_content: 'cbreason1:carried reasoning',
+              type: 'reasoning',
+            },
+            { role: 'assistant', content: 'the answer' },
+          ],
+          model: 'gpt-5.5',
+        } as never),
+      );
+
+      const messages = upstreamMessages(body);
+
+      // The reasoning item must not become a turn of its own.
+      expect(messages).toHaveLength(2);
+
+      const assistant = messages.find((m) => m.role === 'assistant');
+
+      expect(assistant?.reasoning).toBe('carried reasoning');
+      expect(assistant?.content).toBe('the answer');
+    });
+
+    it('reads a string entry in a summary', async () => {
+      // The Agents SDK sends objects, but a summary of bare strings is
+      // accepted too.
+      const body = await captureUpstreamBody(() =>
+        handleResponsesRequest(makeResponsesRequest(), {
+          input: [
+            { role: 'user', content: 'hi' },
+            {
+              id: 'rs_str',
+              summary: ['plain string reasoning'],
+              type: 'reasoning',
+            },
+            { role: 'assistant', content: 'the answer' },
+          ],
+          model: 'gpt-5.5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBe('plain string reasoning');
+    });
+
+    it('ignores summary entries that carry no text', async () => {
+      const body = await captureUpstreamBody(() =>
+        handleResponsesRequest(makeResponsesRequest(), {
+          input: [
+            { role: 'user', content: 'hi' },
+            {
+              id: 'rs_junk',
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              summary: [42, null] as any,
+              type: 'reasoning',
+            },
+            { role: 'assistant', content: 'the answer' },
+          ],
+          model: 'gpt-5.5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      // Nothing recoverable, so the item contributes no reasoning and the turn
+      // still carries the text.
+      expect(assistant?.reasoning).toBeUndefined();
+      expect(assistant?.content).toBe('the answer');
+    });
+
+    it('falls back to the summary when encrypted_content is not a string', async () => {
+      const body = await captureUpstreamBody(() =>
+        handleResponsesRequest(makeResponsesRequest(), {
+          input: [
+            { role: 'user', content: 'hi' },
+            {
+              id: 'rs_num',
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              encrypted_content: 123 as any,
+              summary: [{ type: 'summary_text', text: 'from the summary' }],
+              type: 'reasoning',
+            },
+            { role: 'assistant', content: 'the answer' },
+          ],
+          model: 'gpt-5.5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBe('from the summary');
+    });
+
     it('attaches replayed reasoning to the assistant turn instead of an empty user turn', async () => {
       const body = await captureUpstreamBody(() =>
         handleResponsesRequest(makeResponsesRequest(), {
@@ -480,6 +617,41 @@ describe('reasoning round trip', () => {
       expect(reasoning).toBeDefined();
       expect(typeof reasoning?.encrypted_content).toBe('string');
       expect(reasoning?.summary?.[0]?.text).toBe('thinking hard');
+    });
+
+    it('emits one reasoning item for several reasoning deltas', async () => {
+      // Reasoning arrives as many deltas; the item is announced on the first
+      // and must not be announced again.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeSseResponse([
+          'data: {"id":"c1","choices":[{"delta":{"reasoning_content":"first part"}}]}',
+          'data: {"id":"c1","choices":[{"delta":{"reasoning_content":" and second"}}]}',
+          'data: {"id":"c1","choices":[{"delta":{"content":"the answer"}}]}',
+          'data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}',
+          'data: [DONE]',
+        ]),
+      );
+
+      const response = await handleResponsesRequest(makeResponsesRequest(), {
+        input: 'hi',
+        model: 'gpt-5.5',
+        stream: true,
+      } as never);
+
+      const payload = await response.text();
+      const completed = extractCompletedResponse(payload);
+
+      const reasoningItems =
+        completed?.output?.filter((item) => item.type === 'reasoning') ?? [];
+
+      expect(reasoningItems).toHaveLength(1);
+      expect(reasoningItems[0]?.summary?.[0]?.text).toBe(
+        'first part and second',
+      );
+      // One `output_item.added` for the reasoning item, not one per delta.
+      expect(
+        (payload.match(/"type":"response\.output_item\.added"/g) ?? []).length,
+      ).toBe(2);
     });
 
     it('orders the streamed reasoning item before the message', async () => {
