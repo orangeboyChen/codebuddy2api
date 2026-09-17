@@ -1878,12 +1878,21 @@ describe('anthropic messages api', () => {
     const captureUpstreamBody = async (
       credentialOverrides: Record<string, unknown>,
       content: Array<
-        | { type: 'text'; text: string }
+        | { type: 'text'; text: string; cache_control?: { type: string } }
         | {
             type: 'image';
             source?: Record<string, string>;
             content?: string;
             cache_control?: { type: string };
+          }
+        | {
+            type: 'tool_result';
+            tool_use_id: string;
+            content?: Array<{
+              type: 'text' | 'image';
+              text?: string;
+              source?: Record<string, string>;
+            }>;
           }
       >,
     ): Promise<Record<string, unknown>> => {
@@ -2149,6 +2158,103 @@ describe('anthropic messages api', () => {
         {
           type: 'image_url',
           image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' },
+        },
+      ]);
+    });
+
+    it('drops a nested image whose source is unusable', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_bad',
+            content: [
+              { type: 'text', text: 'took one' },
+              { type: 'image', source: {} },
+            ],
+          },
+        ],
+      );
+
+      const messages = upstreamBody.messages as Array<Record<string, unknown>>;
+      const toolMessage = messages.find((m) => m.role === 'tool');
+      expect(toolMessage?.content).toBe('took one');
+    });
+
+    it('keeps an image in an assistant message alongside tool calls', async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+        );
+
+      await handleMessagesRequest(
+        makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+        {
+          model: 'claude-sonnet-4.6',
+          max_tokens: 1024,
+          messages: [
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: 'image/png',
+                    data: 'AAAA',
+                  },
+                  cache_control: { type: 'ephemeral' },
+                },
+                {
+                  type: 'tool_use',
+                  id: 'toolu_mixed',
+                  name: 'search',
+                  input: { query: 'q' },
+                },
+              ],
+            },
+          ],
+        },
+      );
+
+      const upstreamBody = JSON.parse(
+        String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+      ) as { messages: Array<Record<string, unknown>> };
+      const assistant = upstreamBody.messages.find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.content).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,AAAA' },
+          cache_control: { type: 'ephemeral' },
+        },
+      ]);
+      expect(assistant?.tool_calls).toEqual([
+        expect.objectContaining({ id: 'toolu_mixed' }),
+      ]);
+    });
+
+    it('emits structured text blocks when an image has a cache_control sibling', async () => {
+      const upstreamBody = await captureUpstreamBody(
+        { responses_passthrough: false },
+        [
+          { type: 'text', text: 'look', cache_control: { type: 'ephemeral' } },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+          },
+        ],
+      );
+
+      expect(getLastUserContent(upstreamBody)).toEqual([
+        { type: 'text', text: 'look', cache_control: { type: 'ephemeral' } },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,AAAA' },
         },
       ]);
     });

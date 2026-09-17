@@ -13,6 +13,7 @@ import {
   executeImageGeneration,
   isImageGenerationToolCall,
 } from '@/lib/server/proxy/image-generation';
+import type { ProxyContext } from '@/lib/server/proxy/codebuddy';
 import {
   handleResponsesRequest,
   resetResponseSessions,
@@ -50,6 +51,25 @@ const requestBodies = (): Array<Record<string, unknown>> => {
     .mock.calls.map(([, init]) =>
       JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')),
     ) as Array<Record<string, unknown>>;
+};
+
+const makeContext = (): ProxyContext => {
+  return {
+    accessKeyId: null,
+    accessKeyName: null,
+    auth: {
+      bearerToken: 'image-gen-token',
+      credentialData: {},
+      type: 'bearer',
+      userId: 'image-gen@example.com',
+    },
+    credentialFilename: null,
+    preferences: {
+      firstMessageRoleToSystem: false,
+      firstSystemMessageRoleToUser: false,
+      upstreamProtocol: 'chat',
+    },
+  };
 };
 
 const addCredentialWith = async (
@@ -184,6 +204,98 @@ describe('Responses image support', () => {
         },
       ]);
     });
+
+    it('accepts an image with an object or bare-URL shape', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeChatResponse({ content: 'ok' }),
+      );
+
+      await handleResponsesRequest(makeRequest(secret), {
+        input: [
+          {
+            content: [
+              { image_url: { url: 'data:image/png;base64,AAAA' } },
+              { image_url: 'https://example.com/b.png', type: 'input_image' },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'claude-sonnet-4.6',
+      } as never);
+
+      const bodies = requestBodies().filter((body) =>
+        Array.isArray(body.messages),
+      );
+      expect(bodies.at(-1)?.messages).toEqual([
+        {
+          content: [
+            {
+              image_url: { url: 'data:image/png;base64,AAAA' },
+              type: 'image_url',
+            },
+            {
+              image_url: { url: 'https://example.com/b.png' },
+              type: 'image_url',
+            },
+          ],
+          role: 'user',
+        },
+      ]);
+    });
+
+    it('drops an image part whose url cannot be read', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeChatResponse({ content: 'ok' }),
+      );
+
+      await handleResponsesRequest(makeRequest(secret), {
+        input: [
+          {
+            content: [
+              { image_url: '', type: 'input_image' },
+              { text: 'still here', type: 'input_text' },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'claude-sonnet-4.6',
+      } as never);
+
+      const bodies = requestBodies().filter((body) =>
+        Array.isArray(body.messages),
+      );
+      // The unusable part is dropped, leaving a single text part.
+      expect(bodies.at(-1)?.messages).toEqual([
+        { content: ['still here'], role: 'user' },
+      ]);
+    });
+
+    it('keeps a tool output without images as plain text', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeChatResponse({ content: 'ok' }),
+      );
+
+      await handleResponsesRequest(makeRequest(secret), {
+        input: [
+          {
+            call_id: 'call_1',
+            output: [{ text: 'plain result', type: 'input_text' }],
+            type: 'function_call_output',
+          },
+        ],
+        model: 'claude-sonnet-4.6',
+      } as never);
+
+      const toolMessages = requestBodies()
+        .flatMap(
+          (body) => (body.messages ?? []) as Array<Record<string, unknown>>,
+        )
+        .filter((message) => message.role === 'tool');
+      expect(toolMessages[0]?.content).toBe('plain result');
+    });
   });
 
   describe('image_generation tool', () => {
@@ -310,6 +422,24 @@ describe('Responses image support', () => {
       expect(imageCalls).toHaveLength(0);
     });
 
+    it('passes a streamed response through untouched', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('data: {}\n\ndata: [DONE]\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      );
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      expect(response.status).toBe(200);
+    });
+
     it('forwards the native declaration on the responses passthrough', async () => {
       const secret = await addCredentialWith({
         upstream_protocol: 'responses',
@@ -331,6 +461,88 @@ describe('Responses image support', () => {
       expect(body).toBeDefined();
       expect(body?.tools).toEqual([
         { model: 'gpt-image-2', type: 'image_generation' },
+      ]);
+    });
+
+    it('handles string, unusable and empty parts alongside an image', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeChatResponse({ content: 'ok' }),
+      );
+
+      await handleResponsesRequest(makeRequest(secret), {
+        input: [
+          {
+            content: [
+              'leading text',
+              42,
+              { image_url: 'data:image/png;base64,AAAA', type: 'input_image' },
+              { text: 'trailing text', type: 'input_text' },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'claude-sonnet-4.6',
+      } as never);
+
+      const bodies = requestBodies().filter((body) =>
+        Array.isArray(body.messages),
+      );
+      expect(bodies.at(-1)?.messages).toEqual([
+        {
+          content: [
+            'leading text',
+            {
+              image_url: { url: 'data:image/png;base64,AAAA' },
+              type: 'image_url',
+            },
+            'trailing text',
+          ],
+          role: 'user',
+        },
+      ]);
+    });
+
+    it('preserves a tool-returned image on the responses passthrough', async () => {
+      const secret = await addCredentialWith({
+        upstream_protocol: 'responses',
+      });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({ id: 'resp_1', output: [], output_text: 'ok' }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+      await handleResponsesRequest(makeRequest(secret), {
+        input: [
+          {
+            call_id: 'call_1',
+            output: [
+              { text: 'screenshot', type: 'input_text' },
+              {
+                image_url: 'data:image/png;base64,iVBORw0KGgo=',
+                type: 'input_image',
+              },
+            ],
+            type: 'function_call_output',
+          },
+        ],
+        model: 'claude-sonnet-4.6',
+      } as never);
+
+      expect(requestBodies()[0]?.input).toEqual([
+        {
+          call_id: 'call_1',
+          output: [
+            { text: 'screenshot', type: 'input_text' },
+            {
+              image_url: 'data:image/png;base64,iVBORw0KGgo=',
+              type: 'input_image',
+            },
+          ],
+          type: 'function_call_output',
+        },
       ]);
     });
 
@@ -378,7 +590,7 @@ describe('Responses image support', () => {
     it('returns null without a prompt', async () => {
       const result = await executeImageGeneration({
         arguments: '{}',
-        context: {} as never,
+        context: makeContext(),
         request: makeRequest(),
       });
 
@@ -396,12 +608,183 @@ describe('Responses image support', () => {
 
       const result = await executeImageGeneration({
         arguments: 'not json at all',
-        context: {} as never,
+        context: makeContext(),
         request: makeRequest(),
       });
 
       expect(fetchMock).not.toHaveBeenCalled();
       expect(result).toBeNull();
+    });
+
+    it('returns a hosted url when no inline data is present', async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(
+          makeImageResponse([{ url: 'https://example.com/a.png' }]),
+        );
+
+      const result = await executeImageGeneration({
+        arguments: '{"prompt":"a cat","size":"512x512","quality":"high"}',
+        context: makeContext(),
+        request: makeRequest(),
+      });
+
+      expect(result).toEqual({ url: 'https://example.com/a.png' });
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(body).toMatchObject({
+        prompt: 'a cat',
+        quality: 'high',
+        size: '512x512',
+      });
+    });
+
+    it('returns null for a malformed or empty upstream payload', async () => {
+      for (const data of [undefined, [], [null], [{}], [{}]]) {
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+          makeImageResponse(data),
+        );
+
+        const result = await executeImageGeneration({
+          arguments: '{"prompt":"a cat"}',
+          context: makeContext(),
+          request: makeRequest(),
+        });
+
+        expect(result).toBeNull();
+      }
+    });
+
+    it('forwards model, size and quality when supplied', async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(makeImageResponse([{ b64_json: 'QUJD' }]));
+
+      const result = await executeImageGeneration({
+        arguments:
+          '{"prompt":"a cat","model":"gpt-image-2","size":"1024x1024","quality":"high"}',
+        context: makeContext(),
+        request: makeRequest(),
+      });
+
+      expect(result).toEqual({ b64Json: 'QUJD' });
+      expect(
+        JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)),
+      ).toMatchObject({
+        model: 'gpt-image-2',
+        quality: 'high',
+        size: '1024x1024',
+      });
+    });
+
+    it('ignores blank optional fields and returns null on a network error', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeImageResponse([{ b64_json: 'QUJD' }]),
+      );
+      await executeImageGeneration({
+        arguments: '{"prompt":"a cat","size":"  ","quality":"","model":"  "}',
+        context: makeContext(),
+        request: makeRequest(),
+      });
+      const body = JSON.parse(
+        String(
+          vi.mocked(globalThis.fetch).mock.calls.at(-1)?.[1]?.body as string,
+        ),
+      );
+      expect(body).toEqual({ prompt: 'a cat', response_format: 'b64_json' });
+
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('boom'));
+      await expect(
+        executeImageGeneration({
+          arguments: '{"prompt":"a cat"}',
+          context: makeContext(),
+          request: makeRequest(),
+        }),
+      ).resolves.toBeNull();
+    });
+  });
+
+  describe('streaming image generation', () => {
+    it('passes an SSE response through without resuming it', async () => {
+      const secret = await addCredentialWith();
+      const upstream = new Response(
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      );
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(upstream);
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain(
+        'text/event-stream',
+      );
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles a tool output that is not an array', async () => {
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        makeChatResponse({ content: 'ok' }),
+      );
+
+      await handleResponsesRequest(makeRequest(secret), {
+        input: [
+          {
+            call_id: 'call_1',
+            output: 'plain string result',
+            type: 'function_call_output',
+          },
+        ],
+        model: 'claude-sonnet-4.6',
+      } as never);
+
+      const toolMessages = requestBodies()
+        .flatMap(
+          (body) => (body.messages ?? []) as Array<Record<string, unknown>>,
+        )
+        .filter((message) => message.role === 'tool');
+      expect(toolMessages[0]?.content).toBe('plain string result');
+    });
+
+    it('tolerates a tool call missing its id and arguments', async () => {
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        chatCall += 1;
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                content: null,
+                tool_calls: [{ function: { name: 'image_generation' } }],
+              }
+            : { content: 'done' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat',
+        model: 'claude-sonnet-4.6',
+        tools: [{ type: 'image_generation' }],
+      } as never);
+
+      expect(response.status).toBe(200);
+      // The missing id/arguments fall back to empty values rather than
+      // aborting the turn.
+      const toolMessages = requestBodies()
+        .flatMap(
+          (body) => (body.messages ?? []) as Array<Record<string, unknown>>,
+        )
+        .filter((message) => message.role === 'tool');
+      expect(toolMessages[0]?.tool_call_id).toBe('');
     });
   });
 

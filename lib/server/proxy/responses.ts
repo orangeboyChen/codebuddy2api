@@ -657,20 +657,12 @@ const hasImageGenerationTool = (
   tools: ResponsesRequestBody['tools'],
 ): boolean => {
   return Boolean(
-    tools?.some((tool) => {
-      if (!tool || typeof tool !== 'object') {
-        return false;
-      }
-
-      if (typeof tool.type === 'string') {
-        return (
-          tool.type.toLowerCase().replaceAll('-', '_') ===
-          IMAGE_GENERATION_TOOL_TYPE
-        );
-      }
-
-      return false;
-    }),
+    tools?.some(
+      (tool) =>
+        typeof tool?.type === 'string' &&
+        tool.type.toLowerCase().replaceAll('-', '_') ===
+          IMAGE_GENERATION_TOOL_TYPE,
+    ),
   );
 };
 
@@ -930,10 +922,11 @@ const mapInputItemToMessage = (item: ResponsesInputItem): TranscriptMessage => {
     };
   }
 
-  const imageContent =
-    item.type === undefined || item.type === 'message'
-      ? mapInputContentToTranscriptContent(item.content)
-      : null;
+  // Every other item type returns above, so what is left is a plain message:
+  // either one with a declared `type: 'message'`, or one carrying only
+  // `role`/`content`. Images are kept structured so the chat path can rebuild
+  // them; a message without an image stays flattened.
+  const imageContent = mapInputContentToTranscriptContent(item.content);
 
   if (imageContent !== null) {
     return {
