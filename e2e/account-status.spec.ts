@@ -99,6 +99,20 @@ test.describe('Account Status tab', () => {
       await page.goto('/account-status');
       const modelTag = page.getByText('e2e-copy-model');
       await expect(modelTag).toBeVisible();
+      // The tag is server-rendered, so it is visible before React attaches the
+      // click handler that copies. On a slow runner the click would otherwise
+      // land on inert markup and the clipboard would never fill.
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const tag = document
+              .querySelector('[data-model-id]')
+              ?.closest('.ant-tag');
+            if (!tag) return false;
+            return Object.keys(tag).some((key) => key.startsWith('__react'));
+          }),
+        )
+        .toBe(true);
       await modelTag.click();
       await expect
         .poll(() => page.evaluate(() => navigator.clipboard.readText()))
