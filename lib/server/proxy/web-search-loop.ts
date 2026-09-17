@@ -462,6 +462,68 @@ const buildMixedTurnPayload = ({
   };
 };
 
+const readReasoning = (message: ChatCompletionMessage | undefined): string => {
+  if (!message) {
+    return '';
+  }
+
+  if (typeof message.reasoning_content === 'string') {
+    return message.reasoning_content;
+  }
+
+  return typeof message.reasoning === 'string' ? message.reasoning : '';
+};
+
+/**
+ * Folds the text a multi-hop turn produced before its later server-tool calls
+ * into the payload the client receives.
+ *
+ * Only the last iteration's message is in `payload`, but a turn that searched
+ * more than once spoke before each search, and that text is part of the turn:
+ * dropping it hides the model's reasoning from the user and leaves the
+ * client's transcript out of step with what the model actually said.
+ */
+const withIntermediateTurns = ({
+  payload,
+  reasonings,
+  texts,
+}: {
+  payload: ChatCompletionPayload;
+  reasonings: string[];
+  texts: string[];
+}): ChatCompletionPayload => {
+  const extraText = texts.filter(Boolean).join('\n\n');
+  const extraReasoning = reasonings.filter(Boolean).join('\n\n');
+  const [first, ...rest] = payload.choices ?? [];
+
+  if (!first || (!extraText && !extraReasoning)) {
+    return payload;
+  }
+
+  const message = first.message ?? {};
+  const existingText =
+    typeof message.content === 'string' ? message.content : '';
+  const content = [extraText, existingText].filter(Boolean).join('\n\n');
+  const reasoning = [extraReasoning, readReasoning(message)]
+    .filter(Boolean)
+    .join('\n\n');
+
+  return {
+    ...payload,
+    choices: [
+      {
+        ...first,
+        message: {
+          ...message,
+          content,
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
+        },
+      },
+      ...rest,
+    ],
+  };
+};
+
 /**
  * Result of one server-tool pass.
  *
@@ -670,6 +732,191 @@ const executeServerToolInvocations = async ({
   );
 };
 
+/**
+ * Result of streaming one upstream response while watching for server-tool
+ * calls, so a follow-up iteration can decide what happened.
+ *
+ * `localCalls` and `remainingCalls` partition the aggregated tool calls the
+ * way the execution loop needs them; `frames` are the frames that were held
+ * back because they carried tool-call deltas.
+ */
+interface ServerToolProbe {
+  content: string;
+  frames: string[];
+  localCalls: ChatCompletionToolCall[];
+  reasoning: string;
+  remainingCalls: ChatCompletionToolCall[];
+  role: string;
+  toolCalls: ChatCompletionToolCall[];
+  usage: unknown;
+}
+
+/**
+ * Whether the proxy is the one meant to answer this call.
+ *
+ * A call without an available backend is not a fallback to the client — it
+ * leaves the loop as an unanswered client-owned tool — but it must not be
+ * counted as locally executable either.
+ */
+const isLocalServerToolCall = ({
+  fetchProvider,
+  toolCall,
+  searchProvider,
+}: {
+  fetchProvider: WebFetchProvider | null;
+  toolCall: ChatCompletionToolCall;
+  searchProvider: WebSearchProvider | null;
+}): boolean =>
+  (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
+  (Boolean(fetchProvider) && isWebFetchToolCall(toolCall));
+
+const probeServerToolStream = async ({
+  canContinue,
+  context,
+  emitRaw,
+  fetchProvider,
+  onReader,
+  response,
+  searchProvider,
+}: {
+  canContinue: () => boolean;
+  context: {
+    responseCreated: number;
+    responseId: string;
+    responseModel: string;
+    responseObject: string;
+    role: string;
+    usage: unknown;
+  };
+  emitRaw: (frame: string) => void;
+  fetchProvider: WebFetchProvider | null;
+  /**
+   * Hands the active reader to the caller's cancellation path. Without it a
+   * disconnect cannot interrupt a read that is already parked: the loop only
+   * notices the cancellation once upstream produces another chunk, which a
+   * stalled upstream never does.
+   */
+  onReader?: (reader: ReadableStreamDefaultReader<Uint8Array> | null) => void;
+  response: Response;
+  searchProvider: WebSearchProvider | null;
+}): Promise<ServerToolProbe> => {
+  const frames: string[] = [];
+  const toolCallDeltas: ChatCompletionToolCall[] = [];
+  const decoder = new TextDecoder();
+  const reader = response.body!.getReader();
+  onReader?.(reader);
+  let buffer = '';
+  let content = '';
+  let reasoning = '';
+
+  const inspectFrame = (frame: string): void => {
+    const line = frame
+      .split(/\r?\n/)
+      .find((segment) => segment.startsWith('data:'));
+
+    if (!line) {
+      emitRaw(frame);
+      return;
+    }
+
+    const raw = line.slice(5).trim();
+    if (!raw) return;
+    if (raw === '[DONE]') {
+      frames.push(frame);
+      return;
+    }
+
+    try {
+      const chunk = JSON.parse(raw) as {
+        choices?: Array<{
+          delta?: ChatCompletionMessage & {
+            tool_calls?: ChatCompletionToolCall[];
+          };
+          finish_reason?: string | null;
+        }>;
+        created?: number;
+        id?: string;
+        model?: string;
+        object?: string;
+        usage?: unknown;
+      };
+      context.responseId = chunk.id ?? context.responseId;
+      context.responseModel = chunk.model ?? context.responseModel;
+      context.responseObject =
+        chunk.object?.replace(/\.chunk$/, '') ?? context.responseObject;
+      context.responseCreated = chunk.created ?? context.responseCreated;
+      context.usage = chunk.usage ?? context.usage;
+      const choice = chunk.choices?.[0];
+      const delta = choice?.delta;
+      context.role = delta?.role ?? context.role;
+      content += delta?.content ?? '';
+      reasoning += delta?.reasoning_content ?? delta?.reasoning ?? '';
+
+      // A tool-call frame is held rather than forwarded: if the turn turns out
+      // to invoke a server tool, the call has to be answered locally instead
+      // of being handed to the client as an unresolved call. Anything else the
+      // delta carried — most importantly the text the model wrote before
+      // deciding to search — still belongs to the visible turn, so it is
+      // re-emitted without the tool call.
+      if (delta?.tool_calls?.length) {
+        toolCallDeltas.push(...delta.tool_calls);
+        frames.push(frame);
+
+        const visibleDelta = { ...delta };
+        delete visibleDelta.tool_calls;
+
+        if (Object.keys(visibleDelta).length) {
+          const visible = JSON.stringify({
+            ...chunk,
+            choices: [{ ...choice, delta: visibleDelta, finish_reason: null }],
+          });
+          emitRaw(`data: ${visible}`);
+        }
+        return;
+      }
+
+      if (choice?.finish_reason === 'tool_calls') {
+        frames.push(frame);
+        return;
+      }
+    } catch {
+      emitRaw(frame);
+      return;
+    }
+
+    emitRaw(frame);
+  };
+
+  while (true) {
+    const chunk = await reader.read();
+    if (!canContinue()) break;
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const split = buffer.split(/\r?\n\r?\n/);
+    buffer = split.pop() ?? '';
+    split.forEach(inspectFrame);
+  }
+
+  if (buffer.trim()) inspectFrame(buffer);
+  reader.releaseLock();
+  onReader?.(null);
+
+  const toolCalls = aggregateStreamingToolCalls(toolCallDeltas);
+  const isLocalCall = (toolCall: ChatCompletionToolCall): boolean =>
+    isLocalServerToolCall({ fetchProvider, searchProvider, toolCall });
+
+  return {
+    content,
+    frames,
+    localCalls: toolCalls.filter(isLocalCall),
+    reasoning,
+    remainingCalls: toolCalls.filter((toolCall) => !isLocalCall(toolCall)),
+    role: context.role,
+    toolCalls,
+    usage: context.usage,
+  };
+};
+
 const createInlineServerToolStream = async ({
   body,
   callbacks,
@@ -697,6 +944,12 @@ const createInlineServerToolStream = async ({
   const encoder = new TextEncoder();
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let cancelled = false;
+
+  // A call is locally executable only when its backend is available; anything
+  // else stays the client's to answer.
+  const isLocalCall = (toolCall: ChatCompletionToolCall): boolean =>
+    isLocalServerToolCall({ fetchProvider, searchProvider, toolCall });
+
   const emitJson = (
     controller: ReadableStreamDefaultController<Uint8Array>,
     payload: Record<string, unknown>,
@@ -730,129 +983,52 @@ const createInlineServerToolStream = async ({
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
       const run = async (): Promise<void> => {
-        const reader = firstResponse.body!.getReader();
-        activeReader = reader;
-        const decoder = new TextDecoder();
-        const heldToolFrames: string[] = [];
-        const toolCallDeltas: ChatCompletionToolCall[] = [];
-        let buffer = '';
-        let responseId = '';
-        let responseModel = String(body.model ?? 'unknown');
-        let responseObject = 'chat.completion';
-        let responseCreated = Math.floor(Date.now() / 1000);
-        let role = 'assistant';
-        let content = '';
-        let reasoning = '';
-        let usage: unknown = null;
-
-        const inspectFrame = (frame: string): void => {
-          const line = frame
-            .split(/\r?\n/)
-            .find((segment) => segment.startsWith('data:'));
-
-          if (!line) {
-            controller.enqueue(encoder.encode(`${frame}\n\n`));
-            return;
-          }
-
-          const raw = line.slice(5).trim();
-          if (!raw) return;
-          if (raw === '[DONE]') {
-            heldToolFrames.push(frame);
-            return;
-          }
-
-          try {
-            const chunk = JSON.parse(raw) as {
-              choices?: Array<{
-                delta?: ChatCompletionMessage & {
-                  tool_calls?: ChatCompletionToolCall[];
-                };
-                finish_reason?: string | null;
-              }>;
-              created?: number;
-              id?: string;
-              model?: string;
-              object?: string;
-              usage?: unknown;
-            };
-            responseId = chunk.id ?? responseId;
-            responseModel = chunk.model ?? responseModel;
-            responseObject =
-              chunk.object?.replace(/\.chunk$/, '') ?? responseObject;
-            responseCreated = chunk.created ?? responseCreated;
-            usage = chunk.usage ?? usage;
-            const choice = chunk.choices?.[0];
-            const delta = choice?.delta;
-            role = delta?.role ?? role;
-            content += delta?.content ?? '';
-            reasoning += delta?.reasoning_content ?? delta?.reasoning ?? '';
-
-            if (delta?.tool_calls?.length) {
-              toolCallDeltas.push(...delta.tool_calls);
-              heldToolFrames.push(frame);
-
-              const visibleDelta = { ...delta };
-              delete visibleDelta.tool_calls;
-
-              if (Object.keys(visibleDelta).length) {
-                emitJson(controller, {
-                  ...chunk,
-                  choices: [
-                    { ...choice, delta: visibleDelta, finish_reason: null },
-                  ],
-                });
-              }
-              return;
-            }
-
-            if (choice?.finish_reason === 'tool_calls') {
-              heldToolFrames.push(frame);
-              return;
-            }
-          } catch {
-            controller.enqueue(encoder.encode(`${frame}\n\n`));
-            return;
-          }
-
-          controller.enqueue(encoder.encode(`${frame}\n\n`));
+        activeReader = firstResponse.body!.getReader();
+        activeReader.releaseLock();
+        const context = {
+          responseCreated: Math.floor(Date.now() / 1000),
+          responseId: '',
+          responseModel: String(body.model ?? 'unknown'),
+          responseObject: 'chat.completion',
+          role: 'assistant',
+          usage: null as unknown,
         };
 
-        while (true) {
-          const chunk = await reader.read();
-          if (cancelled) return;
-          if (chunk.done) break;
-          buffer += decoder.decode(chunk.value, { stream: true });
-          const frames = buffer.split(/\r?\n\r?\n/);
-          buffer = frames.pop() ?? '';
-          frames.forEach(inspectFrame);
-        }
-
-        if (buffer.trim()) inspectFrame(buffer);
-        reader.releaseLock();
+        const first = await probeServerToolStream({
+          canContinue: () => !cancelled,
+          context,
+          emitRaw: (frame) =>
+            controller.enqueue(encoder.encode(`${frame}\n\n`)),
+          fetchProvider,
+          onReader: (reader) => {
+            activeReader = reader;
+          },
+          response: firstResponse,
+          searchProvider,
+        });
+        if (cancelled) return;
         activeReader = null;
 
-        const toolCalls = aggregateStreamingToolCalls(toolCallDeltas);
-        const localCalls = toolCalls.filter(
-          (toolCall) =>
-            (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
-            (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
-        );
+        let usage: unknown = context.usage;
+        const content = first.content;
+        const reasoning = first.reasoning;
+        const role = context.role;
 
-        if (!localCalls.length) {
-          heldToolFrames.forEach((frame) =>
+        const responseId = context.responseId;
+        const responseModel = context.responseModel;
+        const responseObject = context.responseObject;
+        const responseCreated = context.responseCreated;
+
+        if (!first.localCalls.length) {
+          first.frames.forEach((frame) =>
             controller.enqueue(encoder.encode(`${frame}\n\n`)),
           );
           controller.close();
           return;
         }
 
-        const remainingCalls = toolCalls.filter(
-          (toolCall) =>
-            (!searchProvider || !isWebSearchToolCall(toolCall)) &&
-            (!fetchProvider || !isWebFetchToolCall(toolCall)),
-        );
-        const invocations = localCalls.map((toolCall, index) =>
+        const remainingCalls = first.remainingCalls;
+        const invocations = first.localCalls.map((toolCall, index) =>
           buildServerToolInvocation(toolCall, 0, index),
         );
 
@@ -908,7 +1084,7 @@ const createInlineServerToolStream = async ({
         const assistantMessage: JsonRecord = {
           role,
           content: content || null,
-          tool_calls: toolCalls,
+          tool_calls: first.toolCalls,
           ...(reasoning ? { reasoning_content: reasoning } : {}),
         };
         messages.push(assistantMessage);
@@ -932,34 +1108,130 @@ const createInlineServerToolStream = async ({
           iteration < MAX_SEARCH_ITERATIONS;
           iteration++
         ) {
-          const response = await callUpstream(loopBody, 'buffer');
-          const payload = await readBufferedChatCompletionPayload(response);
+          const response = await callUpstream(loopBody, 'stream');
+          const isEventStream = (response.headers.get('content-type') ?? '')
+            .toLowerCase()
+            .includes('text/event-stream');
 
-          if (!response.ok || payload.error) {
-            emitJson(controller, payload as JsonRecord);
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
-            return;
+          // Upstream answers with JSON rather than SSE when it refuses the
+          // request, and also when the caller is not streaming at all. Both
+          // shapes are read the same way; only an error ends the turn here.
+          const buffered = !isEventStream
+            ? await readBufferedChatCompletionPayload(response)
+            : null;
+
+          let probe: ServerToolProbe | null = null;
+
+          if (buffered) {
+            usage = sumUsage(usage, buffered.usage);
+
+            if (!response.ok || buffered.error) {
+              emitJson(controller, buffered as JsonRecord);
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+              return;
+            }
+
+            const bufferedMessage = buffered.choices?.[0]?.message;
+            const bufferedCalls = bufferedMessage?.tool_calls ?? [];
+
+            // A JSON answer that still asks for a server tool is an
+            // intermediate step, not the end of the turn: it has to be
+            // executed and fed back, exactly as a streamed one would be.
+            if (!bufferedCalls.some(isLocalCall)) {
+              finalPayload = {
+                ...buffered,
+                ...(usage ? { usage } : {}),
+              };
+              break;
+            }
+
+            probe = {
+              content:
+                typeof bufferedMessage?.content === 'string'
+                  ? bufferedMessage.content
+                  : '',
+              frames: [],
+              localCalls: bufferedCalls.filter(isLocalCall),
+              reasoning: readReasoning(bufferedMessage),
+              remainingCalls: bufferedCalls.filter(
+                (toolCall) => !isLocalCall(toolCall),
+              ),
+              role: bufferedMessage?.role ?? 'assistant',
+              toolCalls: bufferedCalls,
+              usage,
+            };
+          } else {
+            // Streamed rather than buffered: this is the iteration that very
+            // often ends the turn, and buffering it would make the user wait
+            // for the whole answer before seeing any of it. Text is forwarded
+            // as it arrives; only tool-call frames are held, since a server
+            // tool still has to be answered locally.
+            probe = await probeServerToolStream({
+              canContinue: () => !cancelled,
+              context,
+              emitRaw: (frame) =>
+                controller.enqueue(encoder.encode(`${frame}\n\n`)),
+              fetchProvider,
+              onReader: (reader) => {
+                activeReader = reader;
+              },
+              response,
+              searchProvider,
+            });
+            if (cancelled) return;
+            activeReader = null;
+            usage = sumUsage(usage, context.usage);
+
+            // No server tool to answer, so the held frames — withheld only
+            // because they *might* have been one — are forwarded as-is.
+            if (!probe.localCalls.length) {
+              probe.frames.forEach((frame) =>
+                controller.enqueue(encoder.encode(`${frame}\n\n`)),
+              );
+              controller.close();
+              return;
+            }
           }
 
-          usage = sumUsage(usage, payload.usage);
-          const message = payload.choices?.[0]?.message;
-          const calls = message?.tool_calls ?? [];
-          const nextLocalCalls = calls.filter(
-            (toolCall) =>
-              (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
-              (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
-          );
-          const nextRemainingCalls = calls.filter(
-            (toolCall) =>
-              (!searchProvider || !isWebSearchToolCall(toolCall)) &&
-              (!fetchProvider || !isWebFetchToolCall(toolCall)),
-          );
+          // The model is going to search again, so anything it just said is
+          // part of the visible turn rather than a discarded step. A streamed
+          // iteration already forwarded it through `emitRaw`, so only a
+          // buffered one — whose payload never reached the client — needs it
+          // re-emitted here.
+          const iterationText = buffered ? probe.content.trim() : '';
+          const iterationReasoning = buffered ? probe.reasoning.trim() : '';
 
-          if (!nextLocalCalls.length) {
-            finalPayload = { ...payload, ...(usage ? { usage } : {}) };
-            break;
+          if (iterationText) {
+            emitJson(controller, {
+              choices: [{ delta: { content: iterationText }, index: 0 }],
+              created: context.responseCreated,
+              id: responseId,
+              model: responseModel,
+              object: `${responseObject}.chunk`,
+            });
           }
+
+          if (iterationReasoning) {
+            emitJson(controller, {
+              choices: [
+                { delta: { reasoning_content: iterationReasoning }, index: 0 },
+              ],
+              created: context.responseCreated,
+              id: responseId,
+              model: responseModel,
+              object: `${responseObject}.chunk`,
+            });
+          }
+
+          const message: ChatCompletionMessage = {
+            content: probe.content || null,
+            role: probe.role,
+            tool_calls: probe.toolCalls,
+            ...(probe.reasoning ? { reasoning_content: probe.reasoning } : {}),
+          };
+          const nextLocalCalls = probe.localCalls;
+          const nextRemainingCalls = probe.remainingCalls;
 
           const nextInvocations = nextLocalCalls.map((toolCall, index) =>
             buildServerToolInvocation(toolCall, iteration, index),
@@ -988,7 +1260,13 @@ const createInlineServerToolStream = async ({
           if (nextRemainingCalls.length) {
             finalPayload = buildMixedTurnPayload({
               message,
-              payload,
+              payload: {
+                choices: [{ message }],
+                created: context.responseCreated,
+                id: responseId,
+                model: responseModel,
+                object: responseObject,
+              },
               remainingCalls: nextRemainingCalls,
               searchResults: nextResults.map((result) => result.content),
               usage,
@@ -1019,22 +1297,74 @@ const createInlineServerToolStream = async ({
                 (tool) => !isWebSearchTool(tool) && !isWebFetchTool(tool),
               ),
             },
-            'buffer',
+            'stream',
           );
-          finalPayload = await readBufferedChatCompletionPayload(response);
+          const isEventStream = (response.headers.get('content-type') ?? '')
+            .toLowerCase()
+            .includes('text/event-stream');
 
-          if (!response.ok || finalPayload.error) {
-            emitJson(controller, finalPayload as JsonRecord);
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
-            return;
+          if (!isEventStream) {
+            finalPayload = await readBufferedChatCompletionPayload(response);
+
+            if (!response.ok || finalPayload.error) {
+              emitJson(controller, finalPayload as JsonRecord);
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+              return;
+            }
+
+            usage = sumUsage(usage, finalPayload.usage);
+            finalPayload = { ...finalPayload, ...(usage ? { usage } : {}) };
+          } else {
+            const probe = await probeServerToolStream({
+              canContinue: () => !cancelled,
+              context,
+              emitRaw: (frame) =>
+                controller.enqueue(encoder.encode(`${frame}\n\n`)),
+              fetchProvider,
+              onReader: (reader) => {
+                activeReader = reader;
+              },
+              response,
+              searchProvider,
+            });
+            if (cancelled) return;
+            activeReader = null;
+            usage = sumUsage(usage, context.usage);
+
+            // With every server tool stripped, a tool call here can only be a
+            // client-owned one; hand it back so the client resolves it.
+            if (probe.remainingCalls.length) {
+              const fallbackMessage: ChatCompletionMessage = {
+                content: probe.content || null,
+                role: probe.role,
+                tool_calls: probe.toolCalls,
+                ...(probe.reasoning
+                  ? { reasoning_content: probe.reasoning }
+                  : {}),
+              };
+
+              finalPayload = buildMixedTurnPayload({
+                message: fallbackMessage,
+                payload: {
+                  choices: [{ message: fallbackMessage }],
+                  created: context.responseCreated,
+                  id: responseId,
+                  model: responseModel,
+                  object: responseObject,
+                },
+                remainingCalls: probe.remainingCalls,
+                searchResults: [],
+                usage,
+              });
+            } else {
+              probe.frames.forEach((frame) =>
+                controller.enqueue(encoder.encode(`${frame}\n\n`)),
+              );
+              controller.close();
+              return;
+            }
           }
-
-          usage = sumUsage(usage, finalPayload.usage);
-          finalPayload = {
-            ...finalPayload,
-            ...(usage ? { usage } : {}),
-          };
         }
 
         await pipeResponse(
@@ -1134,6 +1464,11 @@ export const executeWebSearchLoop = async ({
   let payload: ChatCompletionPayload | null = null;
   let usage: unknown = null;
   const executions: ServerToolExecution[] = [];
+  // Text and reasoning the model produced before a *later* server-tool call.
+  // Only the last iteration's message survives in `payload`, so a multi-hop
+  // turn has to carry its earlier steps forward explicitly.
+  const intermediateTexts: string[] = [];
+  const intermediateReasonings: string[] = [];
   const initialMode: ServerToolUpstreamMode =
     searchProvider && fetchProvider
       ? 'detect-both'
@@ -1182,14 +1517,16 @@ export const executeWebSearchLoop = async ({
         (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
     );
     const remainingCalls = toolCalls.filter(
-      (toolCall) =>
-        (!searchProvider || !isWebSearchToolCall(toolCall)) &&
-        (!fetchProvider || !isWebFetchToolCall(toolCall)),
+      (toolCall) => !localCalls.includes(toolCall),
     );
 
     if (!localCalls.length) {
       break;
     }
+
+    const iterationText =
+      typeof message?.content === 'string' ? message.content.trim() : '';
+    const iterationReasoning = readReasoning(message).trim();
 
     const invocations = localCalls.map(
       (toolCall, index): ServerToolInvocation =>
@@ -1254,7 +1591,14 @@ export const executeWebSearchLoop = async ({
         executions,
         response: Response.json(
           buildMixedTurnPayload({
-            message,
+            // `buildMixedTurnPayload` reads this iteration's text and reasoning
+            // off `message`, so only the earlier iterations go on top; the
+            // current one is folded in by the helper itself.
+            message: withIntermediateTurns({
+              payload,
+              reasonings: intermediateReasonings,
+              texts: intermediateTexts,
+            }).choices?.[0]?.message,
             payload,
             remainingCalls,
             searchResults: results.map((result) => result.content),
@@ -1263,6 +1607,16 @@ export const executeWebSearchLoop = async ({
           { status: response.status },
         ),
       };
+    }
+
+    // This iteration is complete and the loop continues, so its text becomes
+    // part of what the final answer has to carry.
+    if (iterationText) {
+      intermediateTexts.push(iterationText);
+    }
+
+    if (iterationReasoning) {
+      intermediateReasonings.push(iterationReasoning);
     }
 
     messages.push(message as JsonRecord);
@@ -1309,7 +1663,14 @@ export const executeWebSearchLoop = async ({
       body: loopBody,
       executions,
       response: Response.json(
-        { ...payload, ...(usage ? { usage } : {}) },
+        {
+          ...withIntermediateTurns({
+            payload,
+            reasonings: intermediateReasonings,
+            texts: intermediateTexts,
+          }),
+          ...(usage ? { usage } : {}),
+        },
         { status: finalResponse.status },
       ),
     };
@@ -1319,7 +1680,14 @@ export const executeWebSearchLoop = async ({
     body: loopBody,
     executions,
     response: Response.json(
-      { ...payload, ...(usage ? { usage } : {}) },
+      {
+        ...withIntermediateTurns({
+          payload,
+          reasonings: intermediateReasonings,
+          texts: intermediateTexts,
+        }),
+        ...(usage ? { usage } : {}),
+      },
       { status: response!.status },
     ),
   };
