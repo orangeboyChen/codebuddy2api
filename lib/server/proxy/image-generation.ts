@@ -352,16 +352,24 @@ const readMessageText = (
 };
 
 /**
- * Drops everything the closing hop contributed to a payload whose calls have
+ * Drops what the closing hop contributed to a payload whose image calls have
  * already been executed.
  *
- * Used when the iteration cap ends the loop: that hop's calls became
+ * Used when the iteration cap ends the loop: that hop's image calls became
  * `image_generation_call` items rather than staying callable, and its prose is
  * already carried in the intermediate texts the payload is folded with. Keeping
  * either would report a `function_call` for work already done and repeat the
  * text.
+ *
+ *
+ * Only image calls are removed. A hop can also carry calls this loop never
+ * runs — a client-declared function, say — and those still belong to the
+ * client to resolve, so dropping them would silently abandon the request.
+ *
+ * Exported for its own tests: the interesting cases are hard to reach through
+ * the loop, which only calls this on a payload it has already inspected.
  */
-const clearClosingHop = (
+export const clearClosingHop = (
   payload: ChatCompletionPayload,
 ): ChatCompletionPayload => {
   const [first, ...rest] = payload.choices ?? [];
@@ -370,12 +378,20 @@ const clearClosingHop = (
     return payload;
   }
 
+  const message = first.message ?? {};
+
   return {
     ...payload,
     choices: [
       {
         ...first,
-        message: { ...(first.message ?? {}), content: null, tool_calls: [] },
+        message: {
+          ...message,
+          content: null,
+          tool_calls: (message.tool_calls ?? []).filter(
+            (toolCall) => !isImageGenerationToolCall(toolCall),
+          ),
+        },
       },
       ...rest,
     ],

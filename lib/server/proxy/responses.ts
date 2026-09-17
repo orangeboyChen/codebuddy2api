@@ -1517,6 +1517,55 @@ const mapChatResponseToResponsesStream = async (
     .map((item, output_index) => ({ item, output_index }))
     .filter(({ output_index }) => output_index !== messageIndex);
 
+  // The live path announces a server-tool item as in-progress and narrates its
+  // lifecycle before closing it, and consumers can subscribe to those events.
+  // A buffered replay that jumps straight to `done` hides the search entirely
+  // from a client watching for it.
+  const serverToolFrames = ({
+    item,
+    output_index,
+  }: {
+    item: Record<string, unknown>;
+    output_index: number;
+  }): Array<Record<string, unknown>> => {
+    const itemId = String(item.id ?? '');
+
+    if (item.type !== 'web_search_call') {
+      return [
+        {
+          item,
+          output_index,
+          response_id: responseId,
+          type: 'response.output_item.added',
+        },
+      ];
+    }
+
+    return [
+      {
+        item: { ...item, status: 'in_progress' },
+        output_index,
+        response_id: responseId,
+        type: 'response.output_item.added',
+      },
+      {
+        item_id: itemId,
+        output_index,
+        type: 'response.web_search_call.in_progress',
+      },
+      {
+        item_id: itemId,
+        output_index,
+        type: 'response.web_search_call.searching',
+      },
+      {
+        item_id: itemId,
+        output_index,
+        type: 'response.web_search_call.completed',
+      },
+    ];
+  };
+
   const frames: Array<Record<string, unknown>> = [
     {
       response: { ...payload, output: [], status: 'in_progress' },
@@ -1526,12 +1575,9 @@ const mapChatResponseToResponsesStream = async (
       response: { id: responseId, status: 'in_progress' },
       type: 'response.in_progress',
     },
-    ...otherItems.map(({ item, output_index }) => ({
-      item,
-      output_index,
-      response_id: responseId,
-      type: 'response.output_item.added',
-    })),
+    ...otherItems.flatMap(({ item, output_index }) =>
+      serverToolFrames({ item, output_index }),
+    ),
     ...otherItems.map(({ item, output_index }) => ({
       item,
       output_index,

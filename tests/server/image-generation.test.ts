@@ -5,12 +5,15 @@ import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as config from '@/lib/server/domain/config';
+import { updateSettings } from '@/lib/server/domain/config';
 import { createAccessKey } from '@/lib/server/domain/access-keys';
+import { resetWebSearchProviders } from '@/lib/server/search';
 import {
   addCredential,
   resetCredentialRuntimeState,
 } from '@/lib/server/domain/credentials';
 import {
+  clearClosingHop,
   executeImageGeneration,
   executeImageGenerationLoop,
   isImageGenerationToolCall,
@@ -1336,6 +1339,256 @@ describe('Responses image support', () => {
       };
       // Each hop's prose once — the closing hop used to be appended twice.
       expect(message.content[0].text).toBe('prose 1\n\nprose 2\n\nprose 3');
+    });
+
+    it('keeps a client-owned call on the capped hop', async () => {
+      // A hop can carry calls this loop never runs. The image calls were
+      // executed, but a client-declared function is still the client's to
+      // resolve — clearing the hop wholesale would silently drop it.
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        chatCall += 1;
+        return makeChatResponse({
+          content: `prose ${chatCall}`,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"prompt":"a cat"}',
+                name: 'image_generation',
+              },
+              id: `img_${chatCall}`,
+              type: 'function',
+            },
+            {
+              function: {
+                arguments: '{"city":"Berlin"}',
+                name: 'get_weather',
+              },
+              id: `client_${chatCall}`,
+              type: 'function',
+            },
+          ],
+        });
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat and check the weather',
+        model: 'claude-sonnet-4.6',
+        tools: [
+          { type: 'image_generation' },
+          {
+            name: 'get_weather',
+            parameters: { type: 'object', properties: {} },
+            type: 'function',
+          },
+        ],
+      } as never);
+
+      const payload = (await response.json()) as {
+        output: Array<Record<string, unknown>>;
+      };
+      const functionCalls = payload.output.filter(
+        (item) => item.type === 'function_call',
+      );
+
+      // Only the client's function survives; the executed image call does not.
+      expect(functionCalls).toHaveLength(1);
+      expect(functionCalls[0]?.name).toBe('get_weather');
+      expect(
+        payload.output.filter((item) => item.type === 'image_generation_call'),
+      ).toHaveLength(3);
+    });
+
+    it('emits the web-search lifecycle on a buffered stream', async () => {
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'codebuddy' });
+
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+
+        if (url.includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+
+        // The search backend has to actually answer for an execution to be
+        // recorded, or there is no web_search_call item to replay.
+        if (url.includes('/agenttool/v1/search')) {
+          return makeImageResponse({
+            results: [
+              {
+                content: 'Current result',
+                title: 'News',
+                url: 'https://news.test',
+              },
+            ],
+          });
+        }
+
+        chatCall += 1;
+
+        // The first hop asks the model for a search, which the chat pipeline
+        // executes locally before the image loop ever sees the response.
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                content: null,
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"query":"cats"}',
+                      name: 'web_search',
+                    },
+                    id: 'search_1',
+                    type: 'function',
+                  },
+                  {
+                    function: {
+                      arguments: '{"prompt":"a cat"}',
+                      name: 'image_generation',
+                    },
+                    id: 'call_1',
+                    type: 'function',
+                  },
+                ],
+              }
+            : { content: 'Here it is.' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'search then draw',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }, { type: 'web_search_preview' }],
+      } as never);
+
+      const text = await response.text();
+
+      // A consumer watching for the search lifecycle never sees it if the
+      // replay only emits the generic added/done pair.
+      expect(text).toContain('event: response.web_search_call.in_progress');
+      expect(text).toContain('event: response.web_search_call.searching');
+      expect(text).toContain('event: response.web_search_call.completed');
+    });
+
+    it('replays a buffered stream whose turn produced no message', async () => {
+      // No prose anywhere and a surviving client call on the capped hop means
+      // the mapper emits no message item, so the replay has nothing to
+      // announce and no deltas to send.
+      const secret = await addCredentialWith();
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        return makeChatResponse({
+          content: '',
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"prompt":"a cat"}',
+                name: 'image_generation',
+              },
+              id: 'img_1',
+              type: 'function',
+            },
+            {
+              function: {
+                arguments: '{"city":"Berlin"}',
+                name: 'get_weather',
+              },
+              id: 'client_1',
+              type: 'function',
+            },
+          ],
+        });
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'draw a cat and check the weather',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [
+          { type: 'image_generation' },
+          {
+            name: 'get_weather',
+            parameters: { type: 'object', properties: {} },
+            type: 'function',
+          },
+        ],
+      } as never);
+
+      const text = await response.text();
+      expect(text).toContain('event: response.created');
+      expect(text).toContain('event: response.completed');
+      expect(text).toContain('data: [DONE]');
+      expect(text).not.toContain('response.output_text.delta');
+    });
+  });
+
+  describe('clearClosingHop', () => {
+    const imageCall = {
+      function: { arguments: '{"prompt":"a cat"}', name: 'image_generation' },
+      id: 'img_1',
+      type: 'function',
+    };
+    const clientCall = {
+      function: { arguments: '{"city":"Berlin"}', name: 'get_weather' },
+      id: 'client_1',
+      type: 'function',
+    };
+
+    it('keeps calls the loop never ran', () => {
+      const payload = {
+        choices: [
+          {
+            message: { content: 'prose', tool_calls: [imageCall, clientCall] },
+          },
+        ],
+      };
+      const cleared = clearClosingHop(payload) as {
+        choices: Array<{
+          message: { content: unknown; tool_calls: unknown[] };
+        }>;
+      };
+
+      expect(cleared.choices[0].message.tool_calls).toEqual([clientCall]);
+      expect(cleared.choices[0].message.content).toBeNull();
+    });
+
+    it('returns the payload untouched when it has no choice', () => {
+      const payload = { choices: [] };
+      expect(clearClosingHop(payload)).toBe(payload);
+    });
+
+    it('returns a payload with no choices array untouched', () => {
+      // Nothing to clear, so the payload comes back as-is rather than gaining
+      // an empty `choices` it never had.
+      const payload = {};
+      expect(clearClosingHop(payload)).toBe(payload);
+    });
+
+    it('tolerates a choice with no message', () => {
+      const cleared = clearClosingHop({
+        choices: [{ finish_reason: 'stop' }],
+      }) as {
+        choices: Array<{ message: { tool_calls: unknown[] } }>;
+      };
+      expect(cleared.choices[0].message.tool_calls).toEqual([]);
+    });
+
+    it('tolerates a choice whose message has no calls', () => {
+      const payload = { choices: [{ message: { content: 'prose' } }] };
+      const cleared = clearClosingHop(payload) as {
+        choices: Array<{ message: { tool_calls: unknown[] } }>;
+      };
+      expect(cleared.choices[0].message.tool_calls).toEqual([]);
     });
   });
 
