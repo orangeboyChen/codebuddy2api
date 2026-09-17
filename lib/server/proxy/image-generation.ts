@@ -23,10 +23,12 @@ import { getCodeBuddyApiEndpoint } from '../domain/config';
 import type { ProxyContext } from './codebuddy';
 import { buildUpstreamHeaders } from './codebuddy';
 import {
+  getServerToolExecutions,
   withIntermediateTurns,
   type ChatCompletionMessage,
   type ChatCompletionPayload,
   type ChatCompletionToolCall,
+  type ServerToolExecution,
 } from './web-search-loop';
 
 export const IMAGE_GENERATION_TOOL_TYPE = 'image_generation';
@@ -306,19 +308,38 @@ export interface ImageGenerationLoopResult {
   /** One entry per image call the model made, in call order. */
   executions: ImageGenerationExecution[];
   response: Response;
+  /**
+   * Server-tool executions the upstream reported, carried explicitly.
+   *
+   * They cannot be read back off `response`: the loop rebuilds it, and
+   * `getServerToolExecutions` keys on `Response` identity, so a rebuilt
+   * response looks like a turn that ran no tools at all.
+   */
+  serverToolExecutions: ServerToolExecution[];
 }
 
 /**
  * Rebuilds a response whose body was already read. The loop consumes each
  * response to inspect its tool calls, so anything handed back has to be
  * reconstructed from the text that was read.
+ *
+ * Upstream framing headers are dropped rather than copied: they describe the
+ * original body, which has since been decoded and re-serialized to a different
+ * length. Keeping `content-length` truncates the new body and keeping
+ * `content-encoding: gzip` makes a client try to decompress plaintext.
  */
 const rebuildResponse = (
   response: Response,
   payload: ChatCompletionPayload,
 ): Response => {
+  const headers = new Headers(response.headers);
+
+  headers.delete('content-encoding');
+  headers.delete('content-length');
+  headers.delete('transfer-encoding');
+
   return new Response(JSON.stringify(payload), {
-    headers: response.headers,
+    headers,
     status: response.status,
   });
 };
@@ -328,6 +349,53 @@ const readMessageText = (
   message: ChatCompletionMessage | undefined,
 ): string => {
   return typeof message?.content === 'string' ? message.content.trim() : '';
+};
+
+/**
+ * Drops what the closing hop contributed to a payload whose image calls have
+ * already been executed.
+ *
+ * Used when the iteration cap ends the loop: that hop's image calls became
+ * `image_generation_call` items rather than staying callable, and its prose is
+ * already carried in the intermediate texts the payload is folded with. Keeping
+ * either would report a `function_call` for work already done and repeat the
+ * text.
+ *
+ *
+ * Only image calls are removed. A hop can also carry calls this loop never
+ * runs — a client-declared function, say — and those still belong to the
+ * client to resolve, so dropping them would silently abandon the request.
+ *
+ * Exported for its own tests: the interesting cases are hard to reach through
+ * the loop, which only calls this on a payload it has already inspected.
+ */
+export const clearClosingHop = (
+  payload: ChatCompletionPayload,
+): ChatCompletionPayload => {
+  const [first, ...rest] = payload.choices ?? [];
+
+  if (!first) {
+    return payload;
+  }
+
+  const message = first.message ?? {};
+
+  return {
+    ...payload,
+    choices: [
+      {
+        ...first,
+        message: {
+          ...message,
+          content: null,
+          tool_calls: (message.tool_calls ?? []).filter(
+            (toolCall) => !isImageGenerationToolCall(toolCall),
+          ),
+        },
+      },
+      ...rest,
+    ],
+  };
 };
 
 const buildImageGenerationExecution = ({
@@ -365,6 +433,7 @@ export const executeImageGenerationLoop = async ({
   let currentBody: Record<string, unknown> = body;
   const executions: ImageGenerationExecution[] = [];
   const intermediateTexts: string[] = [];
+  const serverToolExecutions: ServerToolExecution[] = [];
   // Carried across iterations so the cap can hand back the last response
   // instead of discarding every image already generated.
   let lastResponse: Response | null = null;
@@ -372,6 +441,11 @@ export const executeImageGenerationLoop = async ({
 
   for (let iteration = 0; iteration < MAX_IMAGE_ITERATIONS; iteration += 1) {
     const response = await callUpstream(currentBody);
+
+    // Executions have to be read here, off the response the upstream produced:
+    // they are keyed on `Response` identity, and every path below hands back a
+    // rebuilt response the caller can no longer look them up on.
+    serverToolExecutions.push(...getServerToolExecutions(response));
 
     // A stream has already begun emitting to the client, so it cannot be
     // resumed with a tool result; hand it back untouched.
@@ -381,7 +455,7 @@ export const executeImageGenerationLoop = async ({
         ?.toLowerCase()
         .includes('text/event-stream')
     ) {
-      return { executions, response };
+      return { executions, response, serverToolExecutions };
     }
 
     const payloadText = await response.text();
@@ -397,6 +471,7 @@ export const executeImageGenerationLoop = async ({
           headers: response.headers,
           status: response.status,
         }),
+        serverToolExecutions,
       };
     }
 
@@ -421,6 +496,7 @@ export const executeImageGenerationLoop = async ({
             texts: intermediateTexts,
           }).payload,
         ),
+        serverToolExecutions,
       };
     }
 
@@ -473,17 +549,24 @@ export const executeImageGenerationLoop = async ({
   // The cap was reached with the model still asking for images. Every image
   // generated so far is kept, and the last response is handed back so the
   // caller does not re-issue the request and discard them.
+  //
+  // The closing hop is folded through `clearClosingHop` first: its prose is
+  // already in `intermediateTexts`, and its calls were executed above and are
+  // already reported as `image_generation_call` items. Leaving either in the
+  // payload would repeat the prose and hand the client a `function_call` for a
+  // call that has already run.
   return {
     executions,
     response: rebuildResponse(
       lastResponse ?? new Response(null, { status: 502 }),
       withIntermediateTurns({
         executions: [],
-        payload: lastPayload ?? {},
+        payload: clearClosingHop(lastPayload ?? {}),
         reasonings: [],
         texts: intermediateTexts,
       }).payload,
     ),
+    serverToolExecutions,
   };
 };
 

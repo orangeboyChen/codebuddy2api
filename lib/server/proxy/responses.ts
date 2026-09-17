@@ -1621,6 +1621,10 @@ const buildResponsesWebSearchCallItem = (
  * executed locally, so the call cannot be forwarded before it is seen. The
  * client still asked for `stream: true`, so the buffered result is replayed as
  * the same event sequence a live stream would have produced.
+ *
+ * The text is replayed as delta events rather than arriving whole in
+ * `response.completed`: a client that renders as it reads subscribes to deltas
+ * and would otherwise show nothing until the turn ends.
  */
 const mapChatResponseToResponsesStream = async (
   upstreamPayload: Record<string, unknown>,
@@ -1630,6 +1634,7 @@ const mapChatResponseToResponsesStream = async (
   previousResponseId: string | null,
   proxyContext: ProxyContext,
   imageExecutions: ImageGenerationExecution[],
+  serverToolExecutions: ServerToolExecution[] = [],
 ): Promise<Response> => {
   const payload = await mapChatResponseToResponsesPayload(
     proxyContext.accessKeyId,
@@ -1639,7 +1644,7 @@ const mapChatResponseToResponsesStream = async (
     model,
     previousResponseId,
     upstreamPayload,
-    [],
+    serverToolExecutions,
     imageExecutions,
   );
   // The mapper creates and persists the session id, so the stream has to reuse
@@ -1647,8 +1652,69 @@ const mapChatResponseToResponsesStream = async (
   // turn, because nothing was stored under the id it was given.
   const responseId = String(payload.id);
   const output = payload.output as Array<Record<string, unknown>>;
+  const messageIndex = output.findIndex((item) => item.type === 'message');
+  const messageItem =
+    messageIndex === -1
+      ? null
+      : (output[messageIndex] as {
+          content?: Array<{ text?: string }>;
+          id?: string;
+        });
+  const messageText = messageItem?.content?.[0]?.text ?? '';
+  const otherItems = output
+    .map((item, output_index) => ({ item, output_index }))
+    .filter(({ output_index }) => output_index !== messageIndex);
 
-  const frames = [
+  // The live path announces a server-tool item as in-progress and narrates its
+  // lifecycle before closing it, and consumers can subscribe to those events.
+  // A buffered replay that jumps straight to `done` hides the search entirely
+  // from a client watching for it.
+  const serverToolFrames = ({
+    item,
+    output_index,
+  }: {
+    item: Record<string, unknown>;
+    output_index: number;
+  }): Array<Record<string, unknown>> => {
+    const itemId = String(item.id ?? '');
+
+    if (item.type !== 'web_search_call') {
+      return [
+        {
+          item,
+          output_index,
+          response_id: responseId,
+          type: 'response.output_item.added',
+        },
+      ];
+    }
+
+    return [
+      {
+        item: { ...item, status: 'in_progress' },
+        output_index,
+        response_id: responseId,
+        type: 'response.output_item.added',
+      },
+      {
+        item_id: itemId,
+        output_index,
+        type: 'response.web_search_call.in_progress',
+      },
+      {
+        item_id: itemId,
+        output_index,
+        type: 'response.web_search_call.searching',
+      },
+      {
+        item_id: itemId,
+        output_index,
+        type: 'response.web_search_call.completed',
+      },
+    ];
+  };
+
+  const frames: Array<Record<string, unknown>> = [
     {
       response: { ...payload, output: [], status: 'in_progress' },
       type: 'response.created',
@@ -1657,20 +1723,56 @@ const mapChatResponseToResponsesStream = async (
       response: { id: responseId, status: 'in_progress' },
       type: 'response.in_progress',
     },
-    ...output.map((item, output_index) => ({
-      item,
-      output_index,
-      response_id: responseId,
-      type: 'response.output_item.added',
-    })),
-    ...output.map((item, output_index) => ({
+    ...otherItems.flatMap(({ item, output_index }) =>
+      serverToolFrames({ item, output_index }),
+    ),
+    ...otherItems.map(({ item, output_index }) => ({
       item,
       output_index,
       response_id: responseId,
       type: 'response.output_item.done',
     })),
-    { response: { ...payload, id: responseId }, type: 'response.completed' },
   ];
+
+  // Mirrors the live path: the message item is announced, filled by deltas,
+  // then closed. No `content_part` events — the live path does not emit them.
+  if (messageItem && messageIndex !== -1) {
+    frames.push({
+      item: { ...messageItem, status: 'in_progress' },
+      output_index: messageIndex,
+      response_id: responseId,
+      type: 'response.output_item.added',
+    });
+
+    if (messageText) {
+      frames.push({
+        delta: messageText,
+        item_id: messageItem.id,
+        output_index: messageIndex,
+        response_id: responseId,
+        type: 'response.output_text.delta',
+      });
+      frames.push({
+        item: messageItem,
+        output_index: messageIndex,
+        response_id: responseId,
+        text: messageText,
+        type: 'response.output_text.done',
+      });
+    }
+
+    frames.push({
+      item: messageItem,
+      output_index: messageIndex,
+      response_id: responseId,
+      type: 'response.output_item.done',
+    });
+  }
+
+  frames.push({
+    response: { ...payload, id: responseId },
+    type: 'response.completed',
+  });
 
   const body = [
     ...frames.map(
@@ -2412,21 +2514,22 @@ const createResponsesEventStream = async (
   // gating on search/fetch would silently skip generation whenever those were
   // enabled.
   if (hasImageGenerationTool(defaults.tools)) {
-    const { executions, response } = await executeImageGenerationLoop({
-      body: chatBody,
-      // Buffered so the tool call can be inspected before any delta reaches
-      // the client; the ordinary path below stays live.
-      callUpstream: (loopBody) =>
-        proxyChatCompletions(
-          request,
-          { ...loopBody, stream: false } as never,
-          proxyContext,
-          debugTrace,
-          '/v1/responses',
-        ),
-      context: proxyContext,
-      request,
-    });
+    const { executions, response, serverToolExecutions } =
+      await executeImageGenerationLoop({
+        body: chatBody,
+        // Buffered so the tool call can be inspected before any delta reaches
+        // the client; the ordinary path below stays live.
+        callUpstream: (loopBody) =>
+          proxyChatCompletions(
+            request,
+            { ...loopBody, stream: false } as never,
+            proxyContext,
+            debugTrace,
+            '/v1/responses',
+          ),
+        context: proxyContext,
+        request,
+      });
 
     // Always consumed, even when nothing was generated: the loop has already
     // sent the turn upstream, and re-issuing it would bill twice and could
@@ -2443,6 +2546,7 @@ const createResponsesEventStream = async (
       previousResponseId,
       proxyContext,
       executions,
+      serverToolExecutions,
     );
   }
 
@@ -2761,8 +2865,6 @@ export const handleResponsesRequest = async (
       return compatibilityError;
     }
 
-    prepared.defaults.tools = prepared.defaults.tools;
-
     if (body.stream) {
       return await createResponsesEventStream(
         request,
@@ -2801,20 +2903,23 @@ export const handleResponsesRequest = async (
     // the tool was actually declared; otherwise the loop returns null and the
     // ordinary upstream call runs.
     if (hasImageGenerationTool(prepared.defaults.tools)) {
-      const { executions, response: imageResponse } =
-        await executeImageGenerationLoop({
-          body: chatBody,
-          callUpstream: (loopBody) =>
-            proxyChatCompletions(
-              request,
-              loopBody as never,
-              proxyContext,
-              debugTrace,
-              '/v1/responses',
-            ),
-          context: proxyContext,
-          request,
-        });
+      const {
+        executions,
+        response: imageResponse,
+        serverToolExecutions,
+      } = await executeImageGenerationLoop({
+        body: chatBody,
+        callUpstream: (loopBody) =>
+          proxyChatCompletions(
+            request,
+            loopBody as never,
+            proxyContext,
+            debugTrace,
+            '/v1/responses',
+          ),
+        context: proxyContext,
+        request,
+      });
 
       // Always consumed: the loop has already sent the turn upstream, and
       // re-issuing it would bill twice and could return a different answer.
@@ -2836,7 +2941,9 @@ export const handleResponsesRequest = async (
           prepared.model,
           prepared.previousResponseId,
           imagePayload,
-          getServerToolExecutions(imageResponse),
+          // Read off the loop, not the response: the loop rebuilds it, so
+          // nothing is keyed under this response object any more.
+          serverToolExecutions,
           executions,
         ),
       );
