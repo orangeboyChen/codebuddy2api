@@ -85,6 +85,38 @@ export interface ChatCompletionPayload {
   usage?: unknown;
 }
 
+/**
+ * Rebuilds a failed upstream response so its body can be read again.
+ *
+ * A `Response` body can only be consumed once. The loop reads it to decide
+ * whether the model asked for a server tool, and handing the same object back
+ * used to leave the route layer — which reads it again to build the answer the
+ * client actually sees — with a spent body: the second read threw
+ * "Body already used" and the client got a 500 in place of the real upstream
+ * status. Draining it here and replaying the bytes in a fresh response keeps
+ * both reads working and preserves the body verbatim, so an upstream error
+ * detail that is not valid JSON still reaches the client intact.
+ *
+ * `content-length` and `content-encoding` are dropped: the body is re-emitted
+ * rather than re-encoded, and a stale length would describe bytes the upstream
+ * compressed before this layer ever saw them.
+ */
+const buildServerToolFailureResponse = async (
+  response: Response,
+): Promise<Response> => {
+  const headers = new Headers(response.headers);
+
+  headers.delete('content-length');
+  headers.delete('content-encoding');
+  headers.set('content-type', 'application/json');
+
+  return new Response(await response.text(), {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+};
+
 const readBufferedChatCompletionPayload = async (
   response: Response,
 ): Promise<ChatCompletionPayload> => {
@@ -1501,10 +1533,27 @@ export const executeWebSearchLoop = async ({
       return { body: loopBody, executions, response };
     }
 
-    payload = (await response.json()) as ChatCompletionPayload;
+    // The payload is only needed to detect a tool call or a failure, so read
+    // the body once and reuse it: the caller reads it again to build the
+    // client's answer, and a spent body would surface as a 500.
+    const buffered = await response.clone().text();
+
+    try {
+      payload = JSON.parse(buffered) as ChatCompletionPayload;
+    } catch (error) {
+      if (response.ok) {
+        throw error;
+      }
+
+      payload = {};
+    }
 
     if (!response.ok || payload.error) {
-      return { body: loopBody, executions, response };
+      return {
+        body: loopBody,
+        executions,
+        response: await buildServerToolFailureResponse(response),
+      };
     }
 
     usage = sumUsage(usage, payload.usage);
@@ -1652,11 +1701,31 @@ export const executeWebSearchLoop = async ({
       },
       'buffer',
     );
-    payload = (await finalResponse.json()) as ChatCompletionPayload;
+    // Cloned before the read so the failure path can replay the body verbatim
+    // rather than hand back a spent response the caller cannot read again.
+    const finalBuffered = await finalResponse.clone().text();
+
+    try {
+      payload = JSON.parse(finalBuffered) as ChatCompletionPayload;
+    } catch (error) {
+      // A malformed success payload is a real bug worth surfacing; a failure
+      // status already tells the caller everything, so its body is whatever
+      // the upstream sent, JSON or not.
+      if (finalResponse.ok) {
+        throw error;
+      }
+
+      payload = {};
+    }
+
     usage = sumUsage(usage, payload.usage);
 
     if (!finalResponse.ok || payload.error) {
-      return { body: loopBody, executions, response: finalResponse };
+      return {
+        body: loopBody,
+        executions,
+        response: await buildServerToolFailureResponse(finalResponse),
+      };
     }
 
     return {
