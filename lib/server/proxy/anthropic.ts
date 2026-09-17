@@ -18,6 +18,7 @@ import {
   createStreamCloser,
   toUpstreamTimeoutMessage,
 } from '../shared/upstream-timeout';
+import { extractErrorMessage } from '../shared/http';
 import {
   markServerTool,
   normalizeToolName,
@@ -108,7 +109,7 @@ interface OpenAIChatChoice {
 }
 
 interface OpenAIStreamError {
-  error?: { message?: string };
+  error?: { message?: string; status?: number };
 }
 
 interface OpenAIUsage {
@@ -1044,18 +1045,25 @@ const mapOpenAIStreamToAnthropicSSE = (
       let buffer = '';
       const rejectStream = (
         message = 'Upstream SSE frame exceeds the maximum size',
+        status?: number,
       ): void => {
         streamRejected = true;
         enqueueEvent({
           type: 'error',
           error: {
-            // An oversized frame is a malformed stream, but an upstream
-            // deadline is the server failing — and `api_error` is the type
-            // clients treat as retryable. Reporting a timeout as
-            // invalid_request_error would tell them never to retry.
-            type: message.includes('did not produce output')
-              ? 'api_error'
-              : 'invalid_request_error',
+            // An upstream status names the failure precisely, so it decides
+            // the type: 429 has to arrive as `rate_limit_error` or a client
+            // that retries on that type alone stops retrying an exhausted
+            // quota. Without one, fall back to the message: an oversized frame
+            // is a malformed stream (`invalid_request_error`), while an
+            // upstream deadline is the server failing (`api_error`, the type
+            // clients treat as retryable).
+            type:
+              typeof status === 'number'
+                ? anthropicErrorType(status)
+                : message.includes('did not produce output')
+                  ? 'api_error'
+                  : 'invalid_request_error',
             message,
           },
         });
@@ -1137,7 +1145,10 @@ const mapOpenAIStreamToAnthropicSSE = (
 
             const upstreamError = chunk as OpenAIStreamError;
             if (upstreamError.error?.message) {
-              rejectStream(upstreamError.error.message);
+              rejectStream(
+                upstreamError.error.message,
+                upstreamError.error.status,
+              );
               return;
             }
             processChunk(chunk);
@@ -1349,27 +1360,6 @@ const createAnthropicServerToolEventStream = (
       'Content-Type': 'text/event-stream; charset=utf-8',
     },
   });
-};
-
-const extractErrorMessage = (value: unknown): string | null => {
-  if (typeof value === 'string') {
-    try {
-      return extractErrorMessage(JSON.parse(value) as unknown) ?? value;
-    } catch {
-      return value;
-    }
-  }
-  if (!value || typeof value !== 'object') return null;
-
-  const payload = value as {
-    detail?: unknown;
-    error?: unknown;
-    message?: unknown;
-  };
-  const detail = extractErrorMessage(payload.detail);
-  if (detail) return detail;
-  if (typeof payload.message === 'string') return payload.message;
-  return extractErrorMessage(payload.error);
 };
 
 const getUpstreamErrorMessage = async (response: Response): Promise<string> => {
