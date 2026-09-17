@@ -2179,63 +2179,67 @@ const createResponsesEventStream = async (
       : false,
   ]);
 
-  if (!searchEnabled && !fetchEnabled) {
-    const chatBody = {
-      model,
-      messages: [
-        ...(defaults.instructions
-          ? [{ role: 'system', content: defaults.instructions }]
-          : []),
-        ...normalizeTranscriptMessageToolNames(transcript, defaults.tools),
-      ],
-      max_tokens: maxOutputTokens,
-      stream: true,
-      tools: translatedTools,
-      tool_choice: translateResponsesToolChoiceToChatWithTools(
-        defaults.tools,
-        defaults.tool_choice,
-      ),
-    };
+  const chatBody = {
+    model,
+    messages: [
+      ...(defaults.instructions
+        ? [{ role: 'system', content: defaults.instructions }]
+        : []),
+      ...normalizeTranscriptMessageToolNames(transcript, defaults.tools),
+    ],
+    max_tokens: maxOutputTokens,
+    stream: true,
+    tools: translatedTools,
+    tool_choice: translateResponsesToolChoiceToChatWithTools(
+      defaults.tools,
+      defaults.tool_choice,
+    ),
+  };
 
-    // Image generation is executed locally, so a streaming request has to be
-    // buffered first to see whether the model asked for an image. Without this
-    // the call is forwarded as an ordinary function_call the client is expected
-    // to resolve — and nothing would ever generate the image.
-    if (hasImageGenerationTool(defaults.tools)) {
-      const { executions, response } = await executeImageGenerationLoop({
-        body: chatBody,
-        // Buffered so the tool call can be inspected before any delta reaches
-        // the client; the ordinary path below stays live.
-        callUpstream: (loopBody) =>
-          proxyChatCompletions(
-            request,
-            { ...loopBody, stream: false } as never,
-            proxyContext,
-            debugTrace,
-            '/v1/responses',
-          ),
-        context: proxyContext,
-        request,
-      });
+  // Image generation is executed locally, so a streaming request has to be
+  // buffered first to see whether the model asked for an image. Without this
+  // the call is forwarded as an ordinary function_call the client is expected
+  // to resolve — and nothing would ever generate the image.
+  //
+  // Handled before the server-tool branch below: a turn may declare both, and
+  // gating on search/fetch would silently skip generation whenever those were
+  // enabled.
+  if (hasImageGenerationTool(defaults.tools)) {
+    const { executions, response } = await executeImageGenerationLoop({
+      body: chatBody,
+      // Buffered so the tool call can be inspected before any delta reaches
+      // the client; the ordinary path below stays live.
+      callUpstream: (loopBody) =>
+        proxyChatCompletions(
+          request,
+          { ...loopBody, stream: false } as never,
+          proxyContext,
+          debugTrace,
+          '/v1/responses',
+        ),
+      context: proxyContext,
+      request,
+    });
 
-      // Always consumed, even when nothing was generated: the loop has already
-      // sent the turn upstream, and re-issuing it would bill twice and could
-      // return a different answer than the one inspected.
-      if (!response.ok) {
-        return response;
-      }
-
-      return mapChatResponseToResponsesStream(
-        (await response.json()) as Record<string, unknown>,
-        defaults,
-        transcript,
-        model,
-        previousResponseId,
-        proxyContext,
-        executions,
-      );
+    // Always consumed, even when nothing was generated: the loop has already
+    // sent the turn upstream, and re-issuing it would bill twice and could
+    // return a different answer than the one inspected.
+    if (!response.ok) {
+      return response;
     }
 
+    return mapChatResponseToResponsesStream(
+      (await response.json()) as Record<string, unknown>,
+      defaults,
+      transcript,
+      model,
+      previousResponseId,
+      proxyContext,
+      executions,
+    );
+  }
+
+  if (!searchEnabled && !fetchEnabled) {
     const upstreamResponse = await proxyChatCompletions(
       request,
       chatBody as never,

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as config from '@/lib/server/domain/config';
 import { createAccessKey } from '@/lib/server/domain/access-keys';
 import {
   addCredential,
@@ -456,6 +457,57 @@ describe('Responses image support', () => {
         type: 'image_generation_call',
       });
       expect(payload.output[0]).not.toHaveProperty('revised_prompt');
+    });
+
+    it('executes image calls when a server search tool is also enabled', async () => {
+      // Regression: the streaming image path used to sit inside the
+      // "no server search tools" branch, so a turn declaring both silently
+      // skipped generation and forwarded the call as an ordinary
+      // function_call for the client to resolve.
+      const spy = vi.spyOn(config, 'isWebSearchEnabled');
+      spy.mockResolvedValue(true);
+
+      const secret = await addCredentialWith();
+      let chatCall = 0;
+      let imageCalls = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/v2/images/generations')) {
+          imageCalls += 1;
+          return makeImageResponse([{ b64_json: 'QUJD' }]);
+        }
+        chatCall += 1;
+        return makeChatResponse(
+          chatCall === 1
+            ? {
+                content: null,
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: '{"prompt":"a cat"}',
+                      name: 'image_generation',
+                    },
+                    id: 'call_1',
+                    type: 'function',
+                  },
+                ],
+              }
+            : { content: 'done' },
+        );
+      });
+
+      const response = await handleResponsesRequest(makeRequest(secret), {
+        input: 'search then draw',
+        model: 'claude-sonnet-4.6',
+        stream: true,
+        tools: [{ type: 'image_generation' }, { type: 'web_search_preview' }],
+      } as never);
+
+      expect(imageCalls).toBe(1);
+      const text = await response.text();
+      expect(text).toContain('image_generation_call');
+      expect(text).not.toContain('"type":"function_call"');
+
+      spy.mockRestore();
     });
 
     it('streams the image_generation_call as Responses SSE events', async () => {
