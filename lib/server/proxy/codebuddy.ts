@@ -2616,6 +2616,7 @@ export const getModelsForCredential = async ({
   const headers = new Headers({
     Accept: 'application/json',
     Authorization: `Bearer ${bearerToken}`,
+    'X-Product': 'SaaS',
   });
   const domain = getCredentialValue(credentialData, ['domain']);
   const apiEndpoint = String(domain ?? '')
@@ -2655,7 +2656,12 @@ export const getModelsForCredential = async ({
   let response = await fetchModels('/v3/config');
 
   if ([400, 404, 405].includes(response.status)) {
-    response = await fetchModels('/console/enterprises/personal/models');
+    // Upstream splits this route by account scope: enterprise accounts must hit
+    // their own segment, otherwise they are served the personal model catalog.
+    const enterpriseScope = String(enterpriseId ?? '').trim() || 'personal';
+    response = await fetchModels(
+      `/console/enterprises/${encodeURIComponent(enterpriseScope)}/models`,
+    );
   }
 
   if (!response.ok) {

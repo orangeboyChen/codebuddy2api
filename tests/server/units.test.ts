@@ -4636,6 +4636,7 @@ describe('server units', () => {
     expect(headers.get('x-domain')).toBe('example.com');
     expect(headers.get('x-enterprise-id')).toBe('enterprise-a');
     expect(headers.get('x-tenant-id')).toBe('tenant-a');
+    expect(headers.get('x-product')).toBe('SaaS');
 
     await expect(
       getModelsForCredential({ bearerToken: 'token-b', credentialData: {} }),
@@ -4672,6 +4673,68 @@ describe('server units', () => {
       'failing.json': { error: 'Upstream unavailable', models: [] },
       'saved.json': { error: null, models: [] },
     });
+  });
+
+  it('falls back to the enterprise model route when /v3/config is unavailable', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              agents: [{ models: ['enterprise-model'], name: 'cli' }],
+              models: [{ id: 'enterprise-model', name: 'Enterprise' }],
+            },
+          }),
+        ),
+      );
+
+    await expect(
+      getModelsForCredential({
+        bearerToken: 'enterprise-token',
+        credentialData: { enterprise_id: 'enterprise-42' },
+      }),
+    ).resolves.toEqual([{ displayName: 'Enterprise', id: 'enterprise-model' }]);
+
+    expect(fetchMock.mock.calls[1]?.[0]).toEqual(
+      new URL(
+        '/console/enterprises/enterprise-42/models',
+        'https://copilot.tencent.com',
+      ),
+    );
+  });
+
+  it('falls back to the personal model route without an enterprise id', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 400 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              agents: [{ models: ['personal-model'], name: 'cli' }],
+              models: [{ id: 'personal-model', name: 'Personal' }],
+            },
+          }),
+        ),
+      );
+
+    await expect(
+      getModelsForCredential({
+        bearerToken: 'personal-token',
+        credentialData: {},
+      }),
+    ).resolves.toEqual([{ displayName: 'Personal', id: 'personal-model' }]);
+
+    expect(fetchMock.mock.calls[1]?.[0]).toEqual(
+      new URL(
+        '/console/enterprises/personal/models',
+        'https://copilot.tencent.com',
+      ),
+    );
   });
 
   it('returns models in both OpenAI-compatible and admin-friendly shapes', async () => {
