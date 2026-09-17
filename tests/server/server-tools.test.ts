@@ -1992,6 +1992,94 @@ describe('server tool backends', () => {
       resetWebSearchProviders();
     });
 
+    it('runs server search while still handing a client web_fetch back', async () => {
+      // The case the declaration-level guard alone does not cover: a
+      // server-declared search makes the loop run, so the proxy's fetch
+      // backend is active and the model calls both tools in one turn. Call
+      // classification has to consult ownership, not just the name —
+      // otherwise the client's `web_fetch` is executed here even though its
+      // declaration was left untouched.
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+
+      let upstreamCalls = 0;
+
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [
+            ...(translateResponsesToolsToChat([
+              { type: 'web_search_preview' },
+            ]) ?? []),
+            {
+              type: 'function',
+              function: { name: 'web_fetch', parameters: { type: 'object' } },
+            },
+          ],
+        } as ChatRequestBody,
+        callUpstream: async () => {
+          upstreamCalls += 1;
+
+          return upstreamCalls === 1
+            ? makeJsonResponse({
+                choices: [
+                  {
+                    finish_reason: 'tool_calls',
+                    message: {
+                      role: 'assistant',
+                      tool_calls: [
+                        {
+                          id: 'c1',
+                          function: {
+                            arguments: '{"url":"https://a.test/page"}',
+                            name: 'web_fetch',
+                          },
+                        },
+                        {
+                          id: 'c2',
+                          function: {
+                            arguments: '{"query":"q"}',
+                            name: 'web_search',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              })
+            : makeJsonResponse({
+                choices: [
+                  { finish_reason: 'stop', message: { content: 'ANSWER' } },
+                ],
+              });
+        },
+      });
+
+      // The loop stopped after one turn: the search ran, and the fetch was
+      // returned to the client rather than answered by another round.
+      expect(upstreamCalls).toBe(1);
+      // Only the client's fetch is still outstanding — the search was executed
+      // locally, so it is gone from the call list.
+      const payload = await readPayload(result);
+      const toolCalls = (
+        payload.choices as Array<{
+          message?: {
+            tool_calls?: Array<{ function?: { name?: string } }>;
+          };
+        }>
+      )?.[0]?.message?.tool_calls;
+      expect(toolCalls?.map((call) => call.function?.name)).toEqual([
+        'web_fetch',
+      ]);
+
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
+    });
+
     it('hands a client-declared web_fetch call back even with a backend set', async () => {
       // End-to-end companion to the declaration-level guard: the backend is
       // executable, so the only thing keeping this the client's call is the
@@ -2055,6 +2143,82 @@ describe('server tool backends', () => {
       expect(pageFetches).toBe(0);
       expect(upstreamCalls).toBe(1);
       expect(payload.choices[0]?.message.tool_calls).toHaveLength(1);
+    });
+
+    it('keeps a client fetch out of the loop when a server search runs', async () => {
+      // The declaration-level guard alone is not enough: a server-declared
+      // search starts the loop, and once it is running the call classifier
+      // used to match on name alone — so the client's `web_fetch` was executed
+      // alongside the search it had nothing to do with.
+      await updateSettings({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+
+      let upstreamCalls = 0;
+      const result = await executeWebSearchLoop({
+        body: {
+          messages: [{ content: 'hi', role: 'user' }],
+          tools: [
+            // A server tool the proxy owns...
+            {
+              type: 'web_search_20260209',
+              name: 'web_search',
+              input_schema: {},
+            },
+            // ...and a client-owned tool the proxy must not touch.
+            {
+              type: 'function',
+              function: { name: 'web_fetch', parameters: { type: 'object' } },
+            },
+          ],
+        } as ChatRequestBody,
+        callUpstream: async () => {
+          upstreamCalls += 1;
+
+          return upstreamCalls === 1
+            ? makeJsonResponse({
+                choices: [
+                  {
+                    finish_reason: 'tool_calls',
+                    message: {
+                      tool_calls: [
+                        {
+                          id: 'c1',
+                          function: {
+                            arguments: '{"url":"https://a.test/page"}',
+                            name: 'web_fetch',
+                          },
+                        },
+                        {
+                          id: 'c2',
+                          function: {
+                            arguments: '{"query":"q"}',
+                            name: 'web_search',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              })
+            : makeJsonResponse({
+                choices: [
+                  { finish_reason: 'stop', message: { content: 'Done.' } },
+                ],
+              });
+        },
+      });
+
+      // Only the search ran. The client's fetch is left for the client.
+      expect(result?.executions.map((execution) => execution.type)).toEqual([
+        'web_search',
+      ]);
+
+      delete process.env.SEARXNG_URL;
+      resetWebSearchProviders();
     });
 
     it('leaves a client-declared web_fetch function alone when disabled', async () => {

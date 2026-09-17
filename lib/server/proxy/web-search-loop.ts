@@ -312,19 +312,29 @@ const replaceServerTools = ({
   searchPassthrough: boolean;
   searchProvider: WebSearchProvider | null;
   tools: unknown;
-}): { executes: boolean; tools: unknown[] } | null => {
+}): {
+  executes: boolean;
+  /** Canonical names the proxy took over, so call classification can tell its own calls from a client's. */
+  ownedNames: Set<string>;
+  tools: unknown[];
+} | null => {
   if (!Array.isArray(tools) || !tools.length) {
     return null;
   }
 
   let matched = false;
   let executes = false;
+  // Names the proxy is executing itself. A client may declare its own tool
+  // under the same name, and the loop must not answer those calls: matching
+  // the name is not enough to own it.
+  const ownedNames = new Set<string>();
 
   const rewritten = tools.flatMap((tool): unknown[] => {
     if (isWebSearchTool(tool)) {
       if (searchEnabled && searchProvider) {
         matched = true;
         executes = true;
+        ownedNames.add(normalizeToolName(WEB_SEARCH_TOOL_NAME));
 
         return [{ type: 'function', function: buildWebSearchToolDefinition() }];
       }
@@ -350,6 +360,7 @@ const replaceServerTools = ({
       if (fetchEnabled && fetchProvider) {
         matched = true;
         executes = true;
+        ownedNames.add(normalizeToolName(WEB_FETCH_TOOL_NAME));
 
         return [{ type: 'function', function: buildWebFetchToolDefinition() }];
       }
@@ -362,7 +373,7 @@ const replaceServerTools = ({
     return [stripServerToolMarker(tool)];
   });
 
-  return matched ? { executes, tools: rewritten } : null;
+  return matched ? { executes, ownedNames, tools: rewritten } : null;
 };
 
 /**
@@ -840,15 +851,36 @@ interface ServerToolProbe {
  */
 const isLocalServerToolCall = ({
   fetchProvider,
+  ownedNames,
   toolCall,
   searchProvider,
 }: {
   fetchProvider: WebFetchProvider | null;
+  /**
+   * Canonical names the proxy took over. Without it a client's own tool that
+   * happens to share a name — `web_fetch`, which is not a server tool in the
+   * Responses API — gets executed by the loop instead of handed back.
+   */
+  ownedNames?: Set<string>;
   toolCall: ChatCompletionToolCall;
   searchProvider: WebSearchProvider | null;
 }): boolean =>
-  (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
-  (Boolean(fetchProvider) && isWebFetchToolCall(toolCall));
+  (Boolean(searchProvider) &&
+    isWebSearchToolCall(toolCall) &&
+    isOwned(ownedNames, WEB_SEARCH_TOOL_NAME)) ||
+  (Boolean(fetchProvider) &&
+    isWebFetchToolCall(toolCall) &&
+    isOwned(ownedNames, WEB_FETCH_TOOL_NAME));
+
+/**
+ * Whether the proxy owns calls to `name`.
+ *
+ * `undefined` means the caller predates ownership tracking; those callers only
+ * ever run the proxy's own declarations, so they are unaffected by client tools
+ * of the same name.
+ */
+const isOwned = (ownedNames: Set<string> | undefined, name: string): boolean =>
+  !ownedNames || ownedNames.has(normalizeToolName(name));
 
 const probeServerToolStream = async ({
   canContinue,
@@ -856,6 +888,7 @@ const probeServerToolStream = async ({
   emitRaw,
   fetchProvider,
   onReader,
+  ownedNames,
   response,
   searchProvider,
 }: {
@@ -870,6 +903,7 @@ const probeServerToolStream = async ({
   };
   emitRaw: (frame: string) => void;
   fetchProvider: WebFetchProvider | null;
+  ownedNames?: Set<string>;
   /**
    * Hands the active reader to the caller's cancellation path. Without it a
    * disconnect cannot interrupt a read that is already parked: the loop only
@@ -983,7 +1017,12 @@ const probeServerToolStream = async ({
 
   const toolCalls = aggregateStreamingToolCalls(toolCallDeltas);
   const isLocalCall = (toolCall: ChatCompletionToolCall): boolean =>
-    isLocalServerToolCall({ fetchProvider, searchProvider, toolCall });
+    isLocalServerToolCall({
+      fetchProvider,
+      ownedNames,
+      searchProvider,
+      toolCall,
+    });
 
   return {
     content,
@@ -1002,6 +1041,7 @@ const createInlineServerToolStream = async ({
   callbacks,
   callUpstream,
   fetchProvider,
+  ownedNames,
   searchProvider,
 }: {
   body: ChatRequestBody;
@@ -1011,6 +1051,7 @@ const createInlineServerToolStream = async ({
     mode: ServerToolUpstreamMode,
   ) => Promise<Response>;
   fetchProvider: WebFetchProvider | null;
+  ownedNames?: Set<string>;
   searchProvider: WebSearchProvider | null;
 }): Promise<ServerToolLoopResult> => {
   const firstResponse = await callUpstream(body, 'stream');
@@ -1028,7 +1069,12 @@ const createInlineServerToolStream = async ({
   // A call is locally executable only when its backend is available; anything
   // else stays the client's to answer.
   const isLocalCall = (toolCall: ChatCompletionToolCall): boolean =>
-    isLocalServerToolCall({ fetchProvider, searchProvider, toolCall });
+    isLocalServerToolCall({
+      fetchProvider,
+      ownedNames,
+      searchProvider,
+      toolCall,
+    });
 
   const emitJson = (
     controller: ReadableStreamDefaultController<Uint8Array>,
@@ -1083,6 +1129,7 @@ const createInlineServerToolStream = async ({
           onReader: (reader) => {
             activeReader = reader;
           },
+          ownedNames,
           response: firstResponse,
           searchProvider,
         });
@@ -1256,6 +1303,7 @@ const createInlineServerToolStream = async ({
               onReader: (reader) => {
                 activeReader = reader;
               },
+              ownedNames,
               response,
               searchProvider,
             });
@@ -1405,6 +1453,7 @@ const createInlineServerToolStream = async ({
               onReader: (reader) => {
                 activeReader = reader;
               },
+              ownedNames,
               response,
               searchProvider,
             });
@@ -1529,7 +1578,7 @@ export const executeWebSearchLoop = async ({
     return null;
   }
 
-  const { executes, tools } = replacement;
+  const { executes, ownedNames, tools } = replacement;
 
   // Nothing can be executed, so there is nothing to loop for. The rewritten
   // `tools` still have to reach the caller: it forwards them upstream, and the
@@ -1562,6 +1611,7 @@ export const executeWebSearchLoop = async ({
       callbacks,
       callUpstream,
       fetchProvider,
+      ownedNames,
       searchProvider,
     });
   }
@@ -1599,13 +1649,19 @@ export const executeWebSearchLoop = async ({
 
     const message = payload.choices?.[0]?.message;
     const toolCalls = message?.tool_calls ?? [];
-    const localCalls = toolCalls.filter(
-      (toolCall) =>
-        (Boolean(searchProvider) && isWebSearchToolCall(toolCall)) ||
-        (Boolean(fetchProvider) && isWebFetchToolCall(toolCall)),
-    );
+    // The same ownership test the streaming paths use. Matching the name alone
+    // would execute a client's own `web_fetch` whenever a backend is
+    // configured, instead of handing the call back.
+    const isLocalCall = (toolCall: ChatCompletionToolCall): boolean =>
+      isLocalServerToolCall({
+        fetchProvider,
+        ownedNames,
+        searchProvider,
+        toolCall,
+      });
+    const localCalls = toolCalls.filter(isLocalCall);
     const remainingCalls = toolCalls.filter(
-      (toolCall) => !localCalls.includes(toolCall),
+      (toolCall) => !isLocalCall(toolCall),
     );
 
     if (!localCalls.length) {
