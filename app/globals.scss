@@ -505,6 +505,18 @@ textarea {
   font-size: 14px;
 }
 
+.usage-token-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.usage-token-breakdown-cache {
+  color: var(--color-secondary);
+  font-size: 12px;
+}
+
 .usage-chart-svg {
   display: block;
   max-width: none;

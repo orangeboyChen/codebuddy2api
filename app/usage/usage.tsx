@@ -39,7 +39,9 @@ export interface UsageChartSeries {
 export interface UsageTableRow {
   callCount: number;
   cacheHitTokens: number;
+  inputTokens: number;
   model: string;
+  outputTokens: number;
   totalTokens: number;
 }
 
@@ -50,7 +52,7 @@ export interface CredentialUsageRow {
   totalTokens: number;
 }
 
-type UsageTableSortKey = 'cacheHitTokens' | 'callCount' | 'totalTokens';
+type UsageTableSortKey = 'callCount' | 'totalTokens';
 
 type UsageTableSort = {
   direction: 'asc' | 'desc';
@@ -559,10 +561,23 @@ const Usage = () => {
       title: translations('tableCalls'),
     },
     {
-      align: 'right',
       dataIndex: 'totalTokens',
       key: 'totalTokens',
-      render: (value: number) => formatNumber(locale, value),
+      render: (_value: number, row: UsageTableRow) => (
+        <div className="usage-token-breakdown">
+          <span>
+            {formatNumber(locale, row.inputTokens)} /{' '}
+            {formatNumber(locale, row.outputTokens)}
+          </span>
+          {row.cacheHitTokens > 0 ? (
+            <span className="usage-token-breakdown-cache">
+              {translations('cacheHitValue', {
+                value: formatNumber(locale, row.cacheHitTokens),
+              })}
+            </span>
+          ) : null}
+        </div>
+      ),
       sortDirections: ['ascend', 'descend', null],
       sortOrder:
         tableSort?.key === 'totalTokens'
@@ -571,22 +586,7 @@ const Usage = () => {
             : 'descend'
           : null,
       sorter: true,
-      title: translations('tableTokens'),
-    },
-    {
-      align: 'right',
-      dataIndex: 'cacheHitTokens',
-      key: 'cacheHitTokens',
-      render: (value: number) => formatNumber(locale, value),
-      sortDirections: ['ascend', 'descend', null],
-      sortOrder:
-        tableSort?.key === 'cacheHitTokens'
-          ? tableSort.direction === 'asc'
-            ? 'ascend'
-            : 'descend'
-          : null,
-      sorter: true,
-      title: translations('tableCacheHit'),
+      title: translations('tableInputOutput'),
     },
   ];
   const credentialColumns: TableColumnsType<CredentialUsageRow> = [
@@ -648,8 +648,7 @@ const Usage = () => {
   ) => {
     const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter;
     const key = nextSorter.columnKey;
-    const isSortableKey =
-      key === 'callCount' || key === 'totalTokens' || key === 'cacheHitTokens';
+    const isSortableKey = key === 'callCount' || key === 'totalTokens';
 
     if (!isSortableKey || !nextSorter.order) {
       setTableSort(null);

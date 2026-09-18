@@ -63,7 +63,24 @@ const renderUsage = () => {
                 totalTokens: 200,
               },
               request: { accessKey: [], credential: [], range: '24h' },
-              tableRows: [],
+              tableRows: [
+                {
+                  cacheHitTokens: 60_032,
+                  callCount: 3,
+                  inputTokens: 38_232,
+                  model: 'glm-5.1',
+                  outputTokens: 192,
+                  totalTokens: 98_456,
+                },
+                {
+                  cacheHitTokens: 0,
+                  callCount: 1,
+                  inputTokens: 10,
+                  model: 'glm-4.7',
+                  outputTokens: 20,
+                  totalTokens: 30,
+                },
+              ],
               tokenSeries: [],
             },
           }}
@@ -86,5 +103,15 @@ describe('usage view', () => {
     expect(container.textContent).toMatch(
       /Time range[\s\S]*Calls[\s\S]*Credential usage/,
     );
+  }, 60_000);
+
+  it('splits model tokens into input, output, and cache lines', () => {
+    const { container } = renderUsage();
+
+    expect(container.textContent).toContain('Input / output');
+    expect(screen.getByText('38,232 / 192')).toBeVisible();
+    expect(screen.getByText('Cache ↓ 60,032')).toBeVisible();
+    expect(screen.getByText('10 / 20')).toBeVisible();
+    expect(screen.queryByText('Cache ↓ 0')).not.toBeInTheDocument();
   }, 60_000);
 });
