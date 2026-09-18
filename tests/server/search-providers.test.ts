@@ -1632,6 +1632,12 @@ describe('CodeBuddy fetch provider', () => {
       stubFetch(async () => {
         throw 'endpoint fell over';
       });
+      // The endpoint is not awaited alone: on failure the local attempt is
+      // awaited too, so without a stubbed transport this resolves a real
+      // hostname and hangs until the test times out.
+      installTransport(({ request }) => {
+        request.emitError('endpoint fell over');
+      });
 
       await expect(
         provider({ resolveHost: publicResolver }).fetch({
@@ -1651,6 +1657,9 @@ describe('CodeBuddy fetch provider', () => {
             );
           }),
       );
+      installTransport(({ request }) => {
+        request.emitError('connection reset');
+      });
 
       await expect(
         provider({ timeoutMs: 1_000 }).fetch({ url: 'https://a.test/' }),

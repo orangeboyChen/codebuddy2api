@@ -105,6 +105,22 @@ export interface ServerToolPreamble {
 export const EMPTY_PREAMBLE: ServerToolPreamble = { reasoning: '', text: '' };
 
 /**
+ * One hop of a server-tool turn: what the model said, then what it asked for.
+ *
+ * A turn is a list of these. Anthropic interleaves prose and server-tool
+ * blocks rather than gathering them by kind, so the grouping has to survive
+ * to the renderer — a single "preamble" loses everything written between two
+ * searches.
+ */
+export interface ServerToolSegment {
+  /** Prose and reasoning the model produced before these calls. */
+  reasoning: string;
+  text: string;
+  /** The calls this hop ran, in call order. */
+  executions: ServerToolExecution[];
+}
+
+/**
  * Result of one server-tool turn.
  *
  * `response` is the upstream response to render as the assistant's answer, and
@@ -114,8 +130,11 @@ export const EMPTY_PREAMBLE: ServerToolPreamble = { reasoning: '', text: '' };
 export interface ServerToolTurnOutcome {
   /** Calls executed locally, in the order the model made them. */
   executions: ServerToolExecution[];
-  /** What the model wrote before those calls. Empty when it spoke only after. */
-  preamble: ServerToolPreamble;
+  /**
+   * The hops, each with the prose that preceded it. The closing answer is not
+   * here — it is in `response`.
+   */
+  segments: ServerToolSegment[];
   response: Response;
   /**
    * Token usage for the whole turn, summed across every hop. Carried here

@@ -46,8 +46,9 @@ import {
   getServerToolExecutions,
   hasExecutableServerTool,
   prepareServerToolTurn,
+  reconcileToolChoice,
   runServerToolTurn,
-  type ServerToolPreamble,
+  type ServerToolSegment,
 } from './server-tools';
 
 export const handleResponsesRequest = async (
@@ -201,9 +202,14 @@ export const handleResponsesRequest = async (
       // Rewritten even when nothing will be executed: upstream has no server
       // tools, so a declared type would be a shape it rejects.
       tools: rewrite ? rewrite.tools : translatedTools,
-      tool_choice: translateResponsesToolChoiceToChatWithTools(
-        prepared.defaults.tools,
-        prepared.defaults.tool_choice,
+      // A server tool nothing here can run is withdrawn from `tools`, so a
+      // choice forcing it has to go too.
+      tool_choice: reconcileToolChoice(
+        translateResponsesToolChoiceToChatWithTools(
+          prepared.defaults.tools,
+          prepared.defaults.tool_choice,
+        ),
+        rewrite ? rewrite.tools : translatedTools,
       ),
     };
 
@@ -217,7 +223,7 @@ export const handleResponsesRequest = async (
     // What the model wrote before its first search. The image loop drives
     // upstream through `callUpstream`, so the preamble has to be captured
     // here rather than at a single call site.
-    let turnPreamble: ServerToolPreamble | undefined;
+    let turnSegments: ServerToolSegment[] | undefined;
 
     const callUpstream = async (
       loopBody: Record<string, unknown>,
@@ -253,12 +259,10 @@ export const handleResponsesRequest = async (
       );
 
       // First non-empty wins. The image loop calls this repeatedly, and a
-      // later iteration that ran no server tool returns an empty preamble —
-      // which would erase the prose an earlier one captured.
-      const spoken = outcome.preamble.text || outcome.preamble.reasoning;
-
-      if (spoken && !turnPreamble) {
-        turnPreamble = outcome.preamble;
+      // later iteration that ran no server tool has no segments — which would
+      // erase the prose an earlier one captured.
+      if (outcome.segments.length && !turnSegments) {
+        turnSegments = outcome.segments;
       }
 
       return outcome.response;
@@ -307,7 +311,7 @@ export const handleResponsesRequest = async (
           serverToolExecutions,
           executions,
           undefined,
-          turnPreamble,
+          turnSegments,
         ),
       );
     }
@@ -340,7 +344,7 @@ export const handleResponsesRequest = async (
         serverToolExecutions,
         [],
         undefined,
-        turnPreamble,
+        turnSegments,
       ),
     );
   } catch (error) {

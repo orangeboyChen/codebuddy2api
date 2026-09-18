@@ -360,6 +360,30 @@ export const rewriteServerTools = ({
   };
 };
 
+/**
+ * Drops a `tool_choice` that names a tool no longer on offer.
+ *
+ * Withdrawing a server tool nothing here can run leaves a forced choice
+ * pointing at it otherwise, and an upstream that validates the two together
+ * rejects the request instead of letting the model answer from memory.
+ */
+export const reconcileToolChoice = (
+  toolChoice: unknown,
+  tools: unknown,
+): unknown => {
+  const name = getForcedToolName(toolChoice);
+
+  if (!name || !Array.isArray(tools)) {
+    return toolChoice;
+  }
+
+  const offered = tools.some(
+    (tool) => asRecord(asRecord(tool)?.function)?.name === name,
+  );
+
+  return offered ? toolChoice : undefined;
+};
+
 /** Whether the proxy will run any server tool at all. */
 export const hasExecutableServerTool = (
   executable: ServerToolDeclarations,

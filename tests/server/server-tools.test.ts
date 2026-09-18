@@ -418,7 +418,7 @@ describe('server tool turn', () => {
     expect(outcome.executions).toEqual([]);
     // It answered outright, so there is no preamble — the answer stays in the
     // payload where the renderer will find it.
-    expect(outcome.preamble).toEqual({ reasoning: '', text: '' });
+    expect(outcome.segments).toEqual([]);
     expect((await outcome.response.json()).choices[0].message.content).toBe(
       'Yesterday.',
     );
@@ -952,7 +952,7 @@ describe('server tool edge cases', () => {
     });
 
     expect(outcome.executions).toEqual([]);
-    expect(outcome.preamble).toEqual({ reasoning: '', text: '' });
+    expect(outcome.segments).toEqual([]);
   });
 
   it('runs a turn whose body carries no messages', async () => {
@@ -1114,7 +1114,14 @@ it('runs the search but hands a client call back unresolved', async () => {
 
   // One search ran, and the client's call survives for it to answer.
   expect(outcome.executions).toHaveLength(1);
-  expect(outcome.preamble.text).toBe('Let me check that file first.');
+  // The prose that led to the search stays with it, as its own segment.
+  expect(outcome.segments).toEqual([
+    {
+      executions: outcome.executions,
+      reasoning: '',
+      text: 'Let me check that file first.',
+    },
+  ]);
 
   const payload = (await outcome.response.json()) as {
     choices: Array<{
@@ -1145,7 +1152,7 @@ it('copes with a hop that carries no message at all', async () => {
 
   // No call to answer and no prose to keep: the hop is the turn.
   expect(outcome.executions).toEqual([]);
-  expect(outcome.preamble).toEqual({ reasoning: '', text: '' });
+  expect(outcome.segments).toEqual([]);
 });
 
 describe('server tool loop', () => {

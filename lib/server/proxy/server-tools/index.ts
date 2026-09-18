@@ -5,6 +5,7 @@ export {
   hasAmbiguousServerToolName,
   hasExecutableServerTool,
   readMaxUses,
+  reconcileToolChoice,
   rewriteServerTools,
 } from './classify';
 export type { RewrittenServerTools, ServerToolDeclarations } from './classify';
@@ -32,6 +33,7 @@ export {
 } from './types';
 export type {
   ChatCompletionMessage,
+  ServerToolSegment,
   ChatCompletionPayload,
   ChatCompletionToolCall,
   JsonRecord,

@@ -495,6 +495,36 @@ export const createAnthropicServerToolEventStream = ({
         );
       };
 
+      /**
+       * Emits a text-like block the way Anthropic streams one: an empty
+       * `content_block_start`, then the content as a delta, then the stop.
+       * Returns nothing; the caller advances the index when it emitted one.
+       */
+      const emitText = (
+        blockIndex: number,
+        type: string,
+        content: string,
+        deltaType: string,
+      ): void => {
+        if (!content) {
+          return;
+        }
+
+        const field = type === 'thinking' ? 'thinking' : 'text';
+
+        enqueueEvent({
+          type: 'content_block_start',
+          index: blockIndex,
+          content_block: { type, [field]: '' },
+        });
+        enqueueEvent({
+          type: 'content_block_delta',
+          index: blockIndex,
+          delta: { type: deltaType, [field]: content },
+        });
+        enqueueEvent({ type: 'content_block_stop', index: blockIndex });
+      };
+
       const emitBlock = (
         index: number,
         contentBlock: Record<string, unknown>,
@@ -527,7 +557,7 @@ export const createAnthropicServerToolEventStream = ({
       });
 
       const run = async (): Promise<void> => {
-        const { executions, preamble, response } = await runTurn();
+        const { executions, response, segments } = await runTurn();
 
         if (cancelled) {
           await response.body?.cancel();
@@ -539,38 +569,39 @@ export const createAnthropicServerToolEventStream = ({
         // What the model wrote before it reached for the tool. Anthropic puts
         // this ahead of the `server_tool_use` block, and a client replaying the
         // turn expects it there.
-        if (preamble.reasoning) {
-          emitBlock(index++, {
-            type: 'thinking',
-            thinking: preamble.reasoning,
-          });
-        }
+        // Interleaved, exactly as the non-streaming renderer lays it out: each
+        // hop's prose first, then the blocks it asked for.
+        for (const segment of segments) {
+          emitText(index, 'thinking', segment.reasoning, 'thinking_delta');
+          index += segment.reasoning ? 1 : 0;
+          emitText(index, 'text', segment.text, 'text_delta');
+          index += segment.text ? 1 : 0;
 
-        if (preamble.text) {
-          emitBlock(index++, { type: 'text', text: preamble.text });
-        }
+          for (const execution of segment.executions) {
+            const toolUseId = createAnthropicId('srvtoolu');
+            const [toolUse, result] = buildAnthropicServerToolBlocks(execution);
 
-        for (const execution of executions) {
-          const toolUseId = createAnthropicId('srvtoolu');
-          const [toolUse, result] = buildAnthropicServerToolBlocks(execution);
+            enqueueEvent({
+              type: 'content_block_start',
+              index,
+              // Anthropic builds a streamed tool input from deltas alone, so the
+              // block opens empty. Carrying the input here too would hand strict
+              // consumers the arguments twice.
+              content_block: { ...toolUse, id: toolUseId, input: {} },
+            });
+            enqueueEvent({
+              type: 'content_block_delta',
+              index,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify(execution.input),
+              },
+            });
+            enqueueEvent({ type: 'content_block_stop', index });
+            index++;
 
-          enqueueEvent({
-            type: 'content_block_start',
-            index,
-            content_block: { ...toolUse, id: toolUseId },
-          });
-          enqueueEvent({
-            type: 'content_block_delta',
-            index,
-            delta: {
-              type: 'input_json_delta',
-              partial_json: JSON.stringify(execution.input),
-            },
-          });
-          enqueueEvent({ type: 'content_block_stop', index });
-          index++;
-
-          emitBlock(index++, { ...result, tool_use_id: toolUseId });
+            emitBlock(index++, { ...result, tool_use_id: toolUseId });
+          }
         }
 
         // Emitted after the blocks rather than instead of them: a search

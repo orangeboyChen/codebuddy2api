@@ -36,10 +36,11 @@ import type {
   ResponseSessionDefaults,
   TranscriptMessage,
 } from './types';
-import type { ServerToolExecution, ServerToolPreamble } from '../server-tools';
+import type { ServerToolExecution, ServerToolSegment } from '../server-tools';
 import {
   hasExecutableServerTool,
   prepareServerToolTurn,
+  reconcileToolChoice,
   runServerToolTurn,
 } from '../server-tools';
 
@@ -55,7 +56,7 @@ export const createResponsesEventStream = async (
 ): Promise<Response> => {
   // The image loop drives upstream through `callUpstream`, so prose written
   // before a search has to be captured there rather than at one call site.
-  let streamPreamble: ServerToolPreamble | undefined;
+  let streamSegments: ServerToolSegment[] | undefined;
 
   const translatedTools = translateResponsesToolsToChat(defaults.tools);
 
@@ -81,9 +82,14 @@ export const createResponsesEventStream = async (
     // Rewritten even when nothing will be executed: upstream has no server
     // tools, so a declared type would be a shape it rejects.
     tools: rewrite ? rewrite.tools : translatedTools,
-    tool_choice: translateResponsesToolChoiceToChatWithTools(
-      defaults.tools,
-      defaults.tool_choice,
+    // A server tool nothing here can run is withdrawn from `tools`, so a
+    // choice forcing it has to go too.
+    tool_choice: reconcileToolChoice(
+      translateResponsesToolChoiceToChatWithTools(
+        defaults.tools,
+        defaults.tool_choice,
+      ),
+      rewrite ? rewrite.tools : translatedTools,
     ),
   };
 
@@ -130,10 +136,8 @@ export const createResponsesEventStream = async (
     // First non-empty wins: the image loop calls this repeatedly, and a later
     // iteration that ran no server tool returns an empty preamble, which
     // would erase the prose an earlier one captured.
-    const spoken = outcome.preamble.text || outcome.preamble.reasoning;
-
-    if (spoken && !streamPreamble) {
-      streamPreamble = outcome.preamble;
+    if (outcome.segments.length && !streamSegments) {
+      streamSegments = outcome.segments;
     }
 
     return outcome.response;
@@ -177,7 +181,7 @@ export const createResponsesEventStream = async (
       executions,
       serverToolExecutions,
       undefined,
-      streamPreamble,
+      streamSegments,
     );
   }
 
@@ -268,7 +272,7 @@ export const createResponsesEventStream = async (
       const run = async (): Promise<void> => {
         const { fetchProvider, searchProvider } = prepared!.providers;
 
-        const { executions, preamble, response } = await withCodeBuddyToken(
+        const { executions, response, segments } = await withCodeBuddyToken(
           () => Promise.resolve(proxyContext.auth.bearerToken),
           () =>
             runServerToolTurn({
@@ -348,7 +352,7 @@ export const createResponsesEventStream = async (
               // client is handed an id nothing was stored against, and a
               // follow-up carrying `previous_response_id` fails.
               responseId,
-              preamble,
+              segments,
               // Already announced above: the replay must not emit a
               // second `response.created` under the same id.
               false,

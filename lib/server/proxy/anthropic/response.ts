@@ -4,7 +4,7 @@ import type {
   OpenAIChatResponse,
   OpenAIUsage,
 } from './types';
-import type { ServerToolExecution, ServerToolPreamble } from '../server-tools';
+import type { ServerToolExecution, ServerToolSegment } from '../server-tools';
 
 // ---------------------------------------------------------------------------
 // Response translation: OpenAI → Anthropic (non-streaming)
@@ -131,29 +131,22 @@ export const buildThinkingBlock = (
  * asked for it, and put the conclusion before its evidence.
  */
 export const buildAnthropicServerToolTurnBlocks = (
-  preamble: ServerToolPreamble,
-  executions: ServerToolExecution[],
-): AnthropicContentBlock[] => {
-  const blocks: AnthropicContentBlock[] = [];
-
-  if (preamble.reasoning) {
-    blocks.push(buildThinkingBlock(preamble.reasoning));
-  }
-
-  if (preamble.text) {
-    blocks.push({ type: 'text', text: preamble.text });
-  }
-
-  blocks.push(...buildAllAnthropicServerToolBlocks(executions));
-
-  return blocks;
-};
+  segments: ServerToolSegment[],
+): AnthropicContentBlock[] =>
+  // Interleaved, not gathered by kind: each hop's prose belongs immediately
+  // before the blocks it asked for. Collecting all the prose first would show
+  // the user a conclusion ahead of the search that produced it.
+  segments.flatMap((segment) => [
+    ...(segment.reasoning ? [buildThinkingBlock(segment.reasoning)] : []),
+    ...(segment.text ? [{ text: segment.text, type: 'text' as const }] : []),
+    ...buildAllAnthropicServerToolBlocks(segment.executions),
+  ]);
 
 export const mapOpenAIResponseToAnthropic = (
   openaiResponse: OpenAIChatResponse,
   model: string,
   serverToolExecutions: ServerToolExecution[] = [],
-  preamble?: ServerToolPreamble,
+  segments?: ServerToolSegment[],
 ): Record<string, unknown> => {
   const choice = openaiResponse.choices?.[0];
   const message = choice?.message;
@@ -165,11 +158,11 @@ export const mapOpenAIResponseToAnthropic = (
   const textContent =
     typeof message?.content === 'string' ? message.content : '';
 
-  const contentBlocks: AnthropicContentBlock[] = preamble
-    ? buildAnthropicServerToolTurnBlocks(preamble, serverToolExecutions)
+  const contentBlocks: AnthropicContentBlock[] = segments
+    ? buildAnthropicServerToolTurnBlocks(segments)
     : [];
 
-  if (!preamble) {
+  if (!segments) {
     if (reasoningText) {
       contentBlocks.push(buildThinkingBlock(reasoningText));
     }
@@ -183,7 +176,7 @@ export const mapOpenAIResponseToAnthropic = (
     );
   } else {
     // The closing half of the turn: the answer written once the results were
-    // in. It follows the tool blocks above rather than preceding them.
+    // in. It follows every block above rather than preceding them.
     if (reasoningText) {
       contentBlocks.push(buildThinkingBlock(reasoningText));
     }

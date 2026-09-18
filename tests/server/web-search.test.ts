@@ -1171,6 +1171,115 @@ describe('server tool routing', () => {
       expect(payload.content[4].text).toBe('Here it is.');
     });
 
+    /**
+     * Prose written *between* two searches. It used to be dropped: a single
+     * preamble can only hold the first hop's, so a turn like
+     * text → search → text → search → answer lost the second passage.
+     */
+    it('keeps the prose written between two searches, in place', async () => {
+      await enableSearch();
+      let hop = 0;
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+
+        if (url.includes('searx.test')) {
+          return makeJsonResponse({
+            results: [
+              { content: 'snippet', title: 'Docs', url: 'https://docs.test' },
+            ],
+          }) as unknown as Response;
+        }
+
+        hop += 1;
+
+        if (hop === 1) {
+          return makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: 'First, the broad picture.',
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'c1',
+                      type: 'function',
+                      function: {
+                        arguments: '{"query":"quantum computing"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { completion_tokens: 10, prompt_tokens: 100 },
+          }) as unknown as Response;
+        }
+
+        if (hop === 2) {
+          return makeJsonResponse({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: 'Now the 2026 announcements.',
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'c2',
+                      type: 'function',
+                      function: {
+                        arguments: '{"query":"IBM quantum 2026"}',
+                        name: 'web_search',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { completion_tokens: 10, prompt_tokens: 100 },
+          }) as unknown as Response;
+        }
+
+        return makeJsonResponse(answer('Both are covered now.'));
+      });
+
+      const payload = (await handleMessagesRequest(
+        makeRequest('http://localhost/v1/messages'),
+        {
+          max_tokens: 2048,
+          messages: [{ role: 'user', content: 'summarise quantum progress' }],
+          tools: [
+            {
+              type: 'web_search_20250305',
+              name: 'web_search',
+              input_schema: {},
+            },
+          ],
+        },
+      ).then((r) => r.json())) as {
+        content: Array<{ text?: string; type: string }>;
+        usage: { server_tool_use: { web_search_requests: number } };
+      };
+
+      // Each passage sits immediately before the search it motivated.
+      expect(payload.content.map((block) => block.type)).toEqual([
+        'text',
+        'server_tool_use',
+        'web_search_tool_result',
+        'text',
+        'server_tool_use',
+        'web_search_tool_result',
+        'text',
+      ]);
+      expect(payload.content[0].text).toBe('First, the broad picture.');
+      expect(payload.content[3].text).toBe('Now the 2026 announcements.');
+      expect(payload.content[6].text).toBe('Both are covered now.');
+      expect(payload.usage.server_tool_use.web_search_requests).toBe(2);
+    });
+
     it('bills the whole turn, not just the answering hop', async () => {
       await enableSearch();
       const { run } = routed(

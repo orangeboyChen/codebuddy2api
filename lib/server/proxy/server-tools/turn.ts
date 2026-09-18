@@ -28,6 +28,7 @@ import type {
   ServerToolInvocation,
   ServerToolKind,
   ServerToolPreamble,
+  ServerToolSegment,
   ServerToolTurnOutcome,
 } from './types';
 import { attachServerToolExecutions, EMPTY_PREAMBLE, sumUsage } from './types';
@@ -289,7 +290,10 @@ export const runServerToolTurn = async ({
     rewrite;
 
   const executions: ServerToolExecution[] = [];
-  let preamble = EMPTY_PREAMBLE;
+  // One entry per hop that ran something: the prose that preceded it, plus the
+  // calls it made. Kept as a list because prose written between two searches
+  // belongs between the two search blocks, and flattening it loses that.
+  const segments: ServerToolSegment[] = [];
   let transcript = asMessages(body);
   let usage: unknown = null;
   // Counted separately: the client declares `max_uses` on each server tool, so
@@ -324,7 +328,7 @@ export const runServerToolTurn = async ({
     if (!response.ok || payload.error) {
       return {
         executions,
-        preamble,
+        segments,
         // Attached even on failure: the earlier hops really ran and were
         // really billed, and the Responses and image paths recover them from
         // the response rather than from the return value.
@@ -353,7 +357,7 @@ export const runServerToolTurn = async ({
     if (!localCalls.length) {
       return {
         executions,
-        preamble,
+        segments,
         response: attachServerToolExecutions(
           rebuildResponse(response, JSON.stringify(withUsage(payload, usage))),
           executions,
@@ -365,12 +369,6 @@ export const runServerToolTurn = async ({
     // Captured on every hop, up to the first one that actually speaks: the
     // model may explain itself before each search, and only the closing
     // answer lives in the payload the renderer sees.
-    // First hop that actually speaks wins. The preamble is rendered ahead of
-    // every search, so a later hop's prose here would appear to precede the
-    // search it was written after.
-    if (!preamble.text && !preamble.reasoning) {
-      preamble = readPreamble(message);
-    }
 
     // Clamped to the budget before executing: the bound is only testable
     // between hops, so a hop emitting k parallel searches would otherwise run
@@ -397,6 +395,10 @@ export const runServerToolTurn = async ({
     });
 
     executions.push(...results.map((result) => result.execution));
+    segments.push({
+      ...readPreamble(message),
+      executions: results.map((result) => result.execution),
+    });
     searches += results.filter(
       (result) => result.execution.type === 'web_search',
     ).length;
@@ -440,7 +442,7 @@ export const runServerToolTurn = async ({
     if (remainingCalls.length) {
       return {
         executions,
-        preamble,
+        segments,
         response: attachServerToolExecutions(
           rebuildResponse(
             response,
@@ -491,7 +493,7 @@ export const runServerToolTurn = async ({
       if (!finalResponse.ok || finalPayload.error) {
         return {
           executions,
-          preamble,
+          segments,
           // Attached even on failure: the searches really ran and were really
           // billed, and the Responses path recovers them from the response.
           response: attachServerToolExecutions(
@@ -517,7 +519,7 @@ export const runServerToolTurn = async ({
 
       return {
         executions,
-        preamble,
+        segments,
         response: attachServerToolExecutions(
           rebuildResponse(
             finalResponse,

@@ -36,7 +36,7 @@ import type {
 import type {
   ServerToolExecution,
   ServerToolInvocation,
-  ServerToolPreamble,
+  ServerToolSegment,
 } from '../server-tools';
 
 export const mapChatResponseToResponsesPayload = async (
@@ -50,7 +50,7 @@ export const mapChatResponseToResponsesPayload = async (
   serverToolExecutions: ServerToolExecution[],
   imageExecutions: ImageGenerationExecution[] = [],
   pinnedResponseId?: string,
-  preamble?: ServerToolPreamble,
+  segments?: ServerToolSegment[],
 ): Promise<Record<string, unknown>> => {
   const responseId = pinnedResponseId ?? createResponseId();
   const choices = Array.isArray(upstreamPayload.choices)
@@ -68,38 +68,48 @@ export const mapChatResponseToResponsesPayload = async (
   // themselves — the order it was written in. Only the closing hop's prose and
   // reasoning live in `upstreamPayload`, so without this a Responses client
   // never sees the first half of the turn.
-  const preambleItems: Array<Record<string, unknown>> = [
-    ...(preamble?.reasoning
-      ? [
-          {
-            id: createResponseReasoningId(),
-            type: 'reasoning',
-            summary: [{ type: 'summary_text', text: preamble.reasoning }],
-            encrypted_content: `${REASONING_PREFIX}${preamble.reasoning}`,
-            status: 'completed',
-          },
-        ]
-      : []),
-    ...(preamble?.text
-      ? [
-          {
-            id: createMessageId(),
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            content: [
-              { type: 'output_text', text: preamble.text, annotations: [] },
-            ],
-          },
-        ]
-      : []),
-  ];
+  // Interleaved, matching the Anthropic renderer: each hop's prose, then the
+  // calls it asked for. A single leading preamble would put prose written
+  // between two searches before both of them.
+  const segmentItems: Array<Record<string, unknown>> = segments
+    ? segments.flatMap((segment) => [
+        ...(segment.reasoning
+          ? [
+              {
+                id: createResponseReasoningId(),
+                type: 'reasoning',
+                summary: [{ type: 'summary_text', text: segment.reasoning }],
+                encrypted_content: `${REASONING_PREFIX}${segment.reasoning}`,
+                status: 'completed',
+              },
+            ]
+          : []),
+        ...(segment.text
+          ? [
+              {
+                id: createMessageId(),
+                type: 'message',
+                role: 'assistant',
+                status: 'completed',
+                content: [
+                  { type: 'output_text', text: segment.text, annotations: [] },
+                ],
+              },
+            ]
+          : []),
+        ...segment.executions.map((execution) =>
+          buildResponsesWebSearchCallItem(execution, 'completed'),
+        ),
+      ])
+    : [];
 
   const output: Array<Record<string, unknown>> = [
-    ...preambleItems,
-    ...serverToolExecutions.map((execution) =>
-      buildResponsesWebSearchCallItem(execution, 'completed'),
-    ),
+    ...segmentItems,
+    ...(segments
+      ? []
+      : serverToolExecutions.map((execution) =>
+          buildResponsesWebSearchCallItem(execution, 'completed'),
+        )),
     // Image generation is executed locally, so the standard
     // `image_generation_call` item has to be synthesized here — the chat
     // upstream has no notion of it.
@@ -244,7 +254,7 @@ export const mapChatResponseToResponsesStream = async (
   imageExecutions: ImageGenerationExecution[],
   serverToolExecutions: ServerToolExecution[] = [],
   pinnedResponseId?: string,
-  preamble?: ServerToolPreamble,
+  segments?: ServerToolSegment[],
   emitOpeningEvents = true,
 ): Promise<Response> => {
   const payload = await mapChatResponseToResponsesPayload(
@@ -258,14 +268,14 @@ export const mapChatResponseToResponsesStream = async (
     serverToolExecutions,
     imageExecutions,
     pinnedResponseId,
-    preamble,
+    segments,
   );
   // The mapper creates and persists the session id, so the stream has to reuse
   // it: advertising a different one would leave a client unable to continue the
   // turn, because nothing was stored under the id it was given.
   const responseId = String(payload.id);
   const output = payload.output as Array<Record<string, unknown>>;
-  // The last message, not the first: a preamble is a message too, and
+  // The last message, not the first: a segment's prose is a message too, and
   // streaming the pre-search prose as the answer would drop the real one.
   let messageIndex = -1;
   output.forEach((item, index) => {

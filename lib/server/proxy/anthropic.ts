@@ -26,6 +26,7 @@ import {
 import {
   hasExecutableServerTool,
   prepareServerToolTurn,
+  reconcileToolChoice,
   runServerToolTurn,
 } from './server-tools';
 
@@ -108,7 +109,7 @@ export const handleMessagesRequest = async (
         return createAnthropicServerToolEventStream({ model, runTurn });
       }
 
-      const { executions, preamble, response } = await runTurn();
+      const { executions, response, segments } = await runTurn();
 
       if (!response.ok) {
         return createAnthropicError(
@@ -120,7 +121,7 @@ export const handleMessagesRequest = async (
       const payload = (await response.json()) as OpenAIChatResponse;
 
       return Response.json(
-        mapOpenAIResponseToAnthropic(payload, model, executions, preamble),
+        mapOpenAIResponseToAnthropic(payload, model, executions, segments),
       );
     }
 
@@ -129,7 +130,13 @@ export const handleMessagesRequest = async (
       // tool is declared but nothing on this deployment can execute it, the
       // declaration still has to be rewritten, or upstream is sent a
       // `web_search_20250305` type it has never heard of.
-      { ...chatBody, tools: upstreamTools } as ChatRequestBody,
+      {
+        ...chatBody,
+        tools: upstreamTools,
+        // A server tool nothing here can run is withdrawn from `tools`, so a
+        // choice forcing it has to go too.
+        tool_choice: reconcileToolChoice(chatBody.tool_choice, upstreamTools),
+      } as ChatRequestBody,
       Boolean(body.stream),
     );
 
