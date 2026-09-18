@@ -160,16 +160,23 @@ const declarationName = (tool: unknown): string => {
 };
 
 /**
- * Whether any client-owned function collides with a server tool the proxy is
- * about to inject.
+ * Whether any client-owned function collides with the name this proxy is about
+ * to register for `kind`.
  *
  * Both would arrive upstream under the same name, and a model calling it gets
  * no way to say which it meant — so the call is left to the client rather than
  * guessed at. This is the same normalization collision this file exists to
  * avoid, reached from the other side: two declarations this time, one by type
  * and one by name, that upstream cannot tell apart.
+ *
+ * Answered for one kind at a time, never once for the whole request: a
+ * collision on the fetch name is not a reason to withhold a search the client
+ * also declared, and a single request-wide verdict would do exactly that.
  */
-export const hasAmbiguousServerToolName = (tools: unknown): boolean => {
+export const hasAmbiguousServerToolName = (
+  tools: unknown,
+  kind: ServerToolKind,
+): boolean => {
   if (!Array.isArray(tools)) {
     return false;
   }
@@ -189,7 +196,7 @@ export const hasAmbiguousServerToolName = (tools: unknown): boolean => {
       return;
     }
 
-    if (classifyServerToolDeclaration(tool)) {
+    if (classifyServerToolDeclaration(tool) === kind) {
       serverNames.add(name);
     } else {
       clientNames.add(name);
@@ -240,8 +247,12 @@ export const rewriteServerTools = ({
   tools: unknown[];
 }): RewrittenServerTools => {
   // Ambiguity is resolved in the client's favour; see
-  // {@link hasAmbiguousServerToolName}.
-  const ambiguous = hasAmbiguousServerToolName(tools);
+  // {@link hasAmbiguousServerToolName}. Read per kind, so that a clash on one
+  // server tool's name does not withhold the other.
+  const ambiguous = {
+    web_fetch: hasAmbiguousServerToolName(tools, 'web_fetch'),
+    web_search: hasAmbiguousServerToolName(tools, 'web_search'),
+  };
 
   const maxUses = {
     web_fetch: readMaxUses(tools, 'web_fetch'),
@@ -249,8 +260,9 @@ export const rewriteServerTools = ({
   };
 
   const executable: ServerToolDeclarations = {
-    fetch: declarations.fetch && Boolean(fetchProvider) && !ambiguous,
-    search: declarations.search && Boolean(searchProvider) && !ambiguous,
+    fetch: declarations.fetch && Boolean(fetchProvider) && !ambiguous.web_fetch,
+    search:
+      declarations.search && Boolean(searchProvider) && !ambiguous.web_search,
   };
 
   /**

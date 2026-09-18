@@ -258,11 +258,14 @@ export const handleResponsesRequest = async (
           }),
       );
 
-      // First non-empty wins. The image loop calls this repeatedly, and a
-      // later iteration that ran no server tool has no segments — which would
-      // erase the prose an earlier one captured.
-      if (outcome.segments.length && !turnSegments) {
-        turnSegments = outcome.segments;
+      // Accumulated across iterations: the image loop calls this once per
+      // iteration and each outcome carries only that iteration's segments, so
+      // first-wins would drop every search after the first. An iteration that
+      // ran no server tool contributes an empty array and erases nothing, and
+      // `undefined` still means none ran at all — the mapper falls back to
+      // `serverToolExecutions` on that distinction.
+      if (outcome.segments.length) {
+        turnSegments = [...(turnSegments ?? []), ...outcome.segments];
       }
 
       return outcome.response;

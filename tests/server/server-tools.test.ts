@@ -93,6 +93,43 @@ const assistantToolCall = (
   usage: { total_tokens: 10 },
 });
 
+/** An upstream that died behind a gateway: an HTML page on a success status. */
+const makeHtmlResponse = (): Response =>
+  new Response('<html><body>502 Bad Gateway</body></html>', {
+    headers: { 'Content-Type': 'text/html' },
+    status: 200,
+  });
+
+/**
+ * The tool calls a response still asks the client to answer, and the
+ * `finish_reason` that introduces them.
+ *
+ * Both halves of the same question: a `tool_use` left in the payload is a call
+ * the client has to resolve, and a `tool_calls` finish reason is what makes it
+ * wait for one.
+ */
+const outstandingCalls = async (
+  response: Response,
+): Promise<{
+  finishReason: string | null | undefined;
+  names: Array<string | undefined>;
+}> => {
+  const payload = (await response.json()) as {
+    choices?: Array<{
+      finish_reason?: string | null;
+      message?: { tool_calls?: Array<{ function?: { name?: string } }> };
+    }>;
+  };
+  const choice = payload.choices?.[0];
+
+  return {
+    finishReason: choice?.finish_reason,
+    names: (choice?.message?.tool_calls ?? []).map(
+      (call) => call.function?.name,
+    ),
+  };
+};
+
 describe('server tool classification', () => {
   describe('declarations', () => {
     it('recognises an Anthropic dated server tool type', () => {
@@ -191,34 +228,40 @@ describe('server tool classification', () => {
       // calling it ambiguous disabled the server tool outright — the client
       // then received a `web_search` tool_use it had no handler for.
       expect(
-        hasAmbiguousServerToolName([
-          { type: SEARCH_TYPE, name: 'web_search' },
-          claudeCodeWebSearch,
-        ]),
+        hasAmbiguousServerToolName(
+          [{ type: SEARCH_TYPE, name: 'web_search' }, claudeCodeWebSearch],
+          'web_search',
+        ),
       ).toBe(false);
     });
 
     it('flags a genuine name clash: the same name, two kinds', () => {
       // Here the model really could not say which it meant, so neither runs.
       expect(
-        hasAmbiguousServerToolName([
-          { type: SEARCH_TYPE, name: 'web_search' },
-          { name: 'web_search', input_schema: {} },
-        ]),
+        hasAmbiguousServerToolName(
+          [
+            { type: SEARCH_TYPE, name: 'web_search' },
+            { name: 'web_search', input_schema: {} },
+          ],
+          'web_search',
+        ),
       ).toBe(true);
     });
 
     it('is not confused by a client function of another name', () => {
       expect(
-        hasAmbiguousServerToolName([
-          { type: SEARCH_TYPE, name: 'web_search' },
-          { name: 'Read', input_schema: {} },
-        ]),
+        hasAmbiguousServerToolName(
+          [
+            { type: SEARCH_TYPE, name: 'web_search' },
+            { name: 'Read', input_schema: {} },
+          ],
+          'web_search',
+        ),
       ).toBe(false);
     });
 
     it('ignores a non-array tool list', () => {
-      expect(hasAmbiguousServerToolName(undefined)).toBe(false);
+      expect(hasAmbiguousServerToolName(undefined, 'web_search')).toBe(false);
     });
 
     /**
@@ -261,6 +304,60 @@ describe('server tool classification', () => {
 
       expect(rewrite?.executable).toEqual({ fetch: false, search: false });
       expect(hasExecutableServerTool(rewrite!.executable)).toBe(false);
+    });
+
+    /**
+     * Ambiguity belongs to one name, so it is answered for one kind at a time.
+     * A single request-wide verdict withheld the search over a clash on the
+     * fetch's name, and the client got no server tool at all for a collision
+     * it had nothing to do with.
+     */
+    it('withholds only the server tool whose name collides', () => {
+      const rewrite = rewriteServerTools({
+        declarations: { fetch: true, search: true },
+        fetchProvider: makeFetchProvider(),
+        searchProvider: makeSearchProvider(),
+        tools: [
+          { type: SEARCH_TYPE, name: 'web_search' },
+          { type: FETCH_TYPE, name: 'web_fetch' },
+          // The client's own function, spelled exactly like the fetch tool:
+          // upstream cannot tell the two apart, so that one is left to it.
+          { name: 'web_fetch', input_schema: {} },
+        ],
+      });
+
+      expect(rewrite?.executable).toEqual({ fetch: false, search: true });
+      expect(hasExecutableServerTool(rewrite!.executable)).toBe(true);
+      // The search is still ours to run, and the fetch call goes back to the
+      // client — the one that declared a function of that name.
+      expect(
+        rewrite?.isExecutableCall({ function: { name: 'web_search' } }),
+      ).toBe(true);
+      expect(
+        rewrite?.isExecutableCall({ function: { name: 'web_fetch' } }),
+      ).toBe(false);
+    });
+
+    it('leaves the fetch runnable when the search name is what collides', () => {
+      const rewrite = rewriteServerTools({
+        declarations: { fetch: true, search: true },
+        fetchProvider: makeFetchProvider(),
+        searchProvider: makeSearchProvider(),
+        tools: [
+          { type: SEARCH_TYPE, name: 'web_search' },
+          { type: FETCH_TYPE, name: 'web_fetch' },
+          { name: 'web_search', input_schema: {} },
+        ],
+      });
+
+      expect(rewrite?.executable).toEqual({ fetch: true, search: false });
+      expect(hasExecutableServerTool(rewrite!.executable)).toBe(true);
+      expect(
+        rewrite?.isExecutableCall({ function: { name: 'web_fetch' } }),
+      ).toBe(true);
+      expect(
+        rewrite?.isExecutableCall({ function: { name: 'web_search' } }),
+      ).toBe(false);
     });
   });
 
@@ -1194,6 +1291,76 @@ describe('server tool loop', () => {
     assistantToolCall('web_search', `{"query":"${query}"}`, id);
 
   /**
+   * Both kinds runnable, which is the only shape in which a hop can afford
+   * nothing while the turn still has allowance left: with one kind alone, the
+   * hop that asks for it either runs or ends the turn.
+   *
+   * The last hop repeats forever, so a model that never stops asking is
+   * scripted by giving it a single hop.
+   */
+  const scriptedBoth = (
+    hops: Array<Record<string, unknown>>,
+    budgets: { fetch: number; search: number } = { fetch: 5, search: 5 },
+  ): {
+    run: () => Promise<ServerToolTurnOutcome>;
+    upstreamCalls: () => number;
+  } => {
+    let calls = 0;
+
+    const run = (): Promise<ServerToolTurnOutcome> =>
+      runServerToolTurn({
+        body,
+        callUpstream: async () => {
+          calls += 1;
+
+          // A ceiling rather than an endless script. A turn that stops
+          // terminating has to fail this test, not hang the suite with it.
+          if (calls > 25) {
+            throw new Error(
+              `the turn did not terminate: ${calls} upstream calls`,
+            );
+          }
+
+          return makeJsonResponse(hops[Math.min(calls - 1, hops.length - 1)]);
+        },
+        fetchProvider: makeFetchProvider(),
+        rewrite: rewriteServerTools({
+          declarations: { fetch: true, search: true },
+          fetchProvider: makeFetchProvider(),
+          searchProvider: makeSearchProvider(),
+          tools: [
+            { type: SEARCH_TYPE, name: 'web_search', max_uses: budgets.search },
+            { type: FETCH_TYPE, name: 'web_fetch', max_uses: budgets.fetch },
+          ],
+        }),
+        searchProvider: makeSearchProvider(),
+      });
+
+    return { run, upstreamCalls: () => calls };
+  };
+
+  /**
+   * The model never stops asking, but only ever asks for the kind whose budget
+   * is gone. Such a hop executes nothing and appends nothing, so the transcript
+   * never advances and the loop re-issues an identical request — each one a
+   * real billed round trip. Affordability is per hop, so that is a reason to
+   * stop even though the other kind still has allowance left.
+   */
+  it('terminates when the model only ever asks for the spent kind', async () => {
+    const { run, upstreamCalls } = scriptedBoth(
+      [assistantToolCall('web_fetch', '{"url":"https://a.test"}', 'call_1')],
+      { fetch: 1, search: 8 },
+    );
+
+    const outcome = await run();
+
+    // The first fetch ran; the second ask could afford nothing.
+    expect(outcome.executions).toHaveLength(1);
+    // One hop that ran, one that could not, and one closing call.
+    expect(upstreamCalls()).toBe(3);
+  });
+
+  /**
    * The point of a server tool: the model refines its query and searches
    * again, all inside the one request the client sent.
    */
@@ -1456,5 +1623,116 @@ describe('server tool budgets and wire shape', () => {
       prompt_tokens: 20,
       prompt_tokens_details: { cached_tokens: 10 },
     });
+  });
+});
+
+/**
+ * What has to survive a hop that goes wrong. The searches have already run and
+ * been billed by then, and the proxy's own server-tool function must never
+ * reach the client: the client declared a *provider-executed* tool, so it has
+ * no handler for the name at all.
+ */
+describe('a hop that goes wrong', () => {
+  const searchOnly = (maxUses: number) =>
+    rewriteServerTools({
+      declarations: { fetch: false, search: true },
+      fetchProvider: null,
+      searchProvider: makeSearchProvider(),
+      tools: [{ type: SEARCH_TYPE, name: 'web_search', max_uses: maxUses }],
+    });
+
+  /**
+   * A failure carrying both an `error` and a call that will never be answered.
+   * Handing the payload through as it arrived gave the client a `tool_use` for
+   * the proxy's internal `web_search` — a tool it never declared — and a finish
+   * reason that made it wait for a result that was never coming.
+   */
+  it('hands a failed hop back with none of the proxy’s own calls', async () => {
+    const outcome = await runServerToolTurn({
+      body,
+      callUpstream: async () =>
+        makeJsonResponse({
+          ...assistantToolCall('web_search', '{"query":"q"}'),
+          error: { message: 'upstream exploded' },
+        }),
+      fetchProvider: null,
+      rewrite: makeRewrite(makeSearchProvider()),
+      searchProvider: makeSearchProvider(),
+    });
+
+    await expect(outstandingCalls(outcome.response)).resolves.toEqual({
+      finishReason: 'stop',
+      names: [],
+    });
+  });
+
+  it('does so on a failed closing call too, keeping the search that ran', async () => {
+    let calls = 0;
+    const outcome = await runServerToolTurn({
+      body,
+      callUpstream: async () => {
+        calls += 1;
+
+        return calls === 1
+          ? makeJsonResponse(assistantToolCall('web_search', '{"query":"q"}'))
+          : makeJsonResponse({
+              ...assistantToolCall('web_search', '{"query":"q"}', 'call_2'),
+              error: { message: 'rate limited' },
+            });
+      },
+      fetchProvider: null,
+      // One use, so the closing call comes straight after the first search.
+      rewrite: searchOnly(1),
+      searchProvider: makeSearchProvider(),
+    });
+
+    // Billed before the failure, and not lost with it.
+    expect(outcome.executions).toHaveLength(1);
+    await expect(outstandingCalls(outcome.response)).resolves.toEqual({
+      finishReason: 'stop',
+      names: [],
+    });
+  });
+
+  /**
+   * Every other hop reads its body through a guard that turns an unparseable
+   * body into an error; the closing call used to read it directly and threw,
+   * discarding every search the turn had already run and paid for.
+   */
+  it('keeps the searches when the closing call answers with a body that will not parse', async () => {
+    let calls = 0;
+    const outcome = await runServerToolTurn({
+      body,
+      callUpstream: async () => {
+        calls += 1;
+
+        return calls < 3
+          ? makeJsonResponse(
+              assistantToolCall(
+                'web_search',
+                `{"query":"q${calls}"}`,
+                `call_${calls}`,
+              ),
+            )
+          : makeHtmlResponse();
+      },
+      fetchProvider: null,
+      rewrite: searchOnly(2),
+      searchProvider: makeSearchProvider(),
+    });
+
+    // Two searches and the closing call that failed to speak JSON: resolving at
+    // all is the point, and the turn must not have asked again.
+    expect(calls).toBe(3);
+    expect(outcome.executions).toHaveLength(2);
+    // Still recoverable from the response, which is where the Responses path
+    // reads them from.
+    expect(getServerToolExecutions(outcome.response)).toHaveLength(2);
+    const payload = (await outcome.response.json()) as {
+      error?: { message?: string };
+    };
+
+    // Surfaced as a failure rather than swallowed.
+    expect(payload.error?.message).toBeTruthy();
   });
 });

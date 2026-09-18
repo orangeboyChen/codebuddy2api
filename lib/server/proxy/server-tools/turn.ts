@@ -15,6 +15,7 @@ import {
 import {
   findServerToolDeclarations,
   getForcedToolName,
+  reconcileToolChoice,
   type RewrittenServerTools,
   rewriteServerTools,
 } from './classify';
@@ -204,6 +205,26 @@ const keepOutstandingCalls = (
 };
 
 /**
+ * Strips the proxy's own server-tool calls from a payload, whatever else it
+ * carries.
+ *
+ * Used on the paths that return a payload the client will see without having
+ * inspected it first — the failures above all. A `tool_use` for a `web_search`
+ * the client never declared is a call it has no handler for, and the internal
+ * function is not to be seen outside this turn; see the note in `classify.ts`.
+ */
+const keepClientCalls = (
+  payload: ChatCompletionPayload,
+  isExecutableCall: (toolCall: ChatCompletionToolCall) => boolean,
+): ChatCompletionPayload =>
+  keepOutstandingCalls(
+    payload,
+    (payload.choices?.[0]?.message?.tool_calls ?? []).filter(
+      (toolCall) => !isExecutableCall(toolCall),
+    ),
+  );
+
+/**
  * Reads a hop's payload, converting a malformed body into an error.
  *
  * A body that will not parse on a successful status is an upstream failure,
@@ -312,8 +333,13 @@ export const runServerToolTurn = async ({
         tools,
         // Only the first hop honours a forced server tool; after that the
         // model chooses, or it would never stop searching.
+        //
+        // Reconciled as well as relaxed: a declaration nothing here can run is
+        // withdrawn from `tools`, so a choice still naming it would point at a
+        // tool the request no longer offers — which some upstreams reject
+        // outright. A pin naming one of the client's own tools is untouched.
         tool_choice: firstHop
-          ? body.tool_choice
+          ? reconcileToolChoice(body.tool_choice, tools)
           : relaxToolChoice(body.tool_choice, classifyCall),
       },
       false,
@@ -333,7 +359,12 @@ export const runServerToolTurn = async ({
         // really billed, and the Responses and image paths recover them from
         // the response rather than from the return value.
         response: attachServerToolExecutions(
-          rebuildResponse(response, JSON.stringify(withUsage(payload, usage))),
+          rebuildResponse(
+            response,
+            JSON.stringify(
+              keepClientCalls(withUsage(payload, usage), isExecutableCall),
+            ),
+          ),
           executions,
         ),
         usage,
@@ -468,23 +499,34 @@ export const runServerToolTurn = async ({
     // when it has run out. OR-ing the two, or counting every declared kind,
     // would end the turn while one of them still had allowance left — or
     // never end it at all for a kind that was declared but never used.
+    //
+    // A hop that could afford nothing ends the turn for the same reason, and
+    // it is not covered by the test above: when two kinds are runnable and the
+    // model keeps asking only for the one that is exhausted, that test stays
+    // false while the hop executes nothing — so the transcript never advances
+    // and the loop would re-issue an identical request forever, each one a real
+    // billed round trip.
     const spent =
-      (!executable.search || searches >= maxUses.web_search) &&
-      (!executable.fetch || fetches >= maxUses.web_fetch);
+      !affordable.length ||
+      ((!executable.search || searches >= maxUses.web_search) &&
+        (!executable.fetch || fetches >= maxUses.web_fetch));
 
     if (spent) {
       const finalResponse = await callUpstream(
         {
           ...body,
           messages: transcript,
-          ...withoutServerTools(tools, isExecutableCall),
+          ...withoutServerTools(tools, isExecutableCall, body.tool_choice),
         },
         false,
       );
 
       const finalBuffered = await finalResponse.text();
-      const finalPayload = await readBufferedChatCompletionPayload(
-        rebuildResponse(finalResponse, finalBuffered),
+      // Read safely, like every other hop: a closing call that answers with a
+      // body that will not parse would otherwise throw out of the turn, and
+      // every search already run would be billed and lost.
+      const finalPayload = await readBufferedPayloadSafely(
+        finalResponse,
         finalBuffered,
       );
 
@@ -499,7 +541,12 @@ export const runServerToolTurn = async ({
           response: attachServerToolExecutions(
             rebuildResponse(
               finalResponse,
-              JSON.stringify(withUsage(finalPayload, usage)),
+              JSON.stringify(
+                keepClientCalls(
+                  withUsage(finalPayload, usage),
+                  isExecutableCall,
+                ),
+              ),
             ),
             executions,
           ),
@@ -513,10 +560,6 @@ export const runServerToolTurn = async ({
        * answer them, and the client never declared a `web_search` it could
        * resolve itself. Anything it *does* own survives.
        */
-      const finalCalls = (
-        finalPayload.choices?.[0]?.message?.tool_calls ?? []
-      ).filter((toolCall) => !isExecutableCall(toolCall));
-
       return {
         executions,
         segments,
@@ -524,7 +567,7 @@ export const runServerToolTurn = async ({
           rebuildResponse(
             finalResponse,
             JSON.stringify(
-              withUsage(keepOutstandingCalls(finalPayload, finalCalls), usage),
+              keepClientCalls(withUsage(finalPayload, usage), isExecutableCall),
             ),
           ),
           executions,
@@ -562,6 +605,7 @@ const takeWithinBudget = <T extends { kind: ServerToolKind }>(
 const withoutServerTools = (
   tools: unknown[],
   isExecutableCall: (toolCall: ChatCompletionToolCall) => boolean,
+  toolChoice: unknown,
 ): { tool_choice: unknown; tools: unknown[] } => {
   const remaining = tools.filter((tool) => {
     const name = asRecord(asRecord(tool)?.function)?.name;
@@ -574,8 +618,14 @@ const withoutServerTools = (
   // No `tool_choice` once nothing is left to choose: naming a tool that is not
   // on offer is a contradiction some upstreams reject outright, and every
   // search already run lives in this hop's transcript.
+  //
+  // Reconciled rather than reset to `auto`, so a pin the client set on one of
+  // its own tools survives the withdrawal — only one naming a withdrawn server
+  // tool goes, and a client tool left unpinned still gets `auto`.
   return {
-    tool_choice: remaining.length ? 'auto' : undefined,
+    tool_choice: remaining.length
+      ? (reconcileToolChoice(toolChoice, remaining) ?? 'auto')
+      : undefined,
     tools: remaining,
   };
 };

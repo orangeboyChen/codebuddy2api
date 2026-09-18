@@ -28,6 +28,7 @@ import {
 import { translateResponsesToolsToChat } from '@/lib/server/proxy/responses';
 import { handleResponsesRequest } from '@/lib/server/proxy/responses';
 import { handleMessagesRequest } from '@/lib/server/proxy/anthropic';
+import { mapAnthropicToolsToChat } from '@/lib/server/proxy/anthropic/request';
 
 const SEARXNG_ENV_NAMES = [
   'SEARXNG_URL',
@@ -581,6 +582,50 @@ describe('responses tool translation', () => {
   });
 });
 
+/**
+ * §9. The declared type is the only thing that carries the server-tool /
+ * client-tool distinction through translation — `normalizeToolName` makes
+ * `WebSearch` and `web_search` the same string, so the name cannot. The
+ * Responses translator is covered above; this is the Anthropic one, whose
+ * declaration is the shape Claude Code's side request actually sends.
+ */
+describe('anthropic tool translation', () => {
+  it('keeps a declared server tool’s type and its max_uses', () => {
+    // `max_uses` is on the declaration Claude Code sends but not on
+    // `AnthropicTool`, so it enters through a spread — the same way the side
+    // request builds its own declaration. The translator spreads every field
+    // the client declared through, so it belongs in what is asserted here.
+    const translated = mapAnthropicToolsToChat([
+      {
+        input_schema: {},
+        name: 'web_search',
+        type: 'web_search_20250305',
+        ...{ max_uses: 8 },
+      },
+    ]) as Array<Record<string, unknown>>;
+
+    expect(translated).toHaveLength(1);
+    // Downstream classification reads the type, so it has to survive — and the
+    // budget rides on the declaration the client sent, not on a default.
+    expect(translated[0]).toMatchObject({
+      max_uses: 8,
+      type: 'web_search_20250305',
+    });
+    // Reshaped into a function upstream can call, but still the same tool.
+    expect(translated[0]).toMatchObject({ function: { name: 'web_search' } });
+  });
+
+  it('translates Claude Code’s bare WebSearch as an ordinary function', () => {
+    const translated = mapAnthropicToolsToChat([
+      { name: 'WebSearch', input_schema: {} },
+    ]) as Array<{ type: string; function: { name: string } }>;
+
+    // No `type` on the way in means the client resolves the call itself.
+    expect(translated[0].type).toBe('function');
+    expect(translated[0].function.name).toBe('WebSearch');
+  });
+});
+
 describe('server tool routing', () => {
   const tempRootDir = path.join(process.cwd(), '.tmp-servertool-route-root');
   const tempDataDir = path.join(tempRootDir, '.codebuddy_data');
@@ -935,6 +980,21 @@ describe('server tool routing', () => {
         sent,
       };
     };
+
+    /**
+     * The queries the turn actually put to the search provider, one per call.
+     *
+     * Read off the fetch spy rather than a counter on the hop mock: `routed`
+     * answers the provider before it counts the call, so a search is invisible
+     * to `calls()` — which is the point, but it means only this can prove what
+     * was searched for.
+     */
+    const providerQueries = (): Array<string | null> =>
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.map(([input]) => String(input))
+        .filter((url) => url.includes('searx.test'))
+        .map((url) => new URL(url).searchParams.get('q'));
 
     const searchCall = (query: string, id: string) => ({
       choices: [
@@ -1390,6 +1450,138 @@ describe('server tool routing', () => {
       // The client declaring WebSearch used to look like a name collision and
       // switch the whole feature off.
       expect(payload.usage.server_tool_use.web_search_requests).toBe(1);
+    });
+
+    /**
+     * Both declarations in one request, and the model calls both on the first
+     * hop — the one request where §23-A and §23-B conflict.
+     *
+     * `WebSearch` and `web_search` are the same string once case and separators
+     * are stripped, so only the declared type can tell them apart. Get it wrong
+     * in either direction and Claude Code loses: run the client's `WebSearch`
+     * here and it never receives the `tool_use` it needs (§26), or withhold the
+     * server tool and the side request it is waiting on never searches.
+     */
+    it('runs the server tool and still hands the client’s own WebSearch back', async () => {
+      await enableSearch();
+      const { calls, run } = routed(
+        [
+          {
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: null,
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_server',
+                      type: 'function',
+                      function: {
+                        arguments: '{"query":"OpenAI updates 2026"}',
+                        name: 'web_search',
+                      },
+                    },
+                    {
+                      id: 'call_client',
+                      type: 'function',
+                      function: {
+                        arguments: '{"query":"OpenAI updates 2026"}',
+                        name: 'WebSearch',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { completion_tokens: 10, prompt_tokens: 100 },
+          },
+          answer('Here it is.'),
+        ],
+        {
+          max_tokens: 2048,
+          messages: [
+            {
+              role: 'user',
+              content:
+                'Perform a web search for the query: OpenAI updates 2026',
+            },
+          ],
+          tools: [
+            {
+              type: 'web_search_20250305',
+              name: 'web_search',
+              max_uses: 8,
+              input_schema: {},
+            },
+            {
+              name: 'WebSearch',
+              description: 'Search the web',
+              input_schema: { type: 'object' },
+            },
+          ],
+        },
+      );
+
+      const payload = (await run().then((r) => r.json())) as {
+        content: Array<{ name?: string; type: string }>;
+        stop_reason: string;
+        usage: { server_tool_use: { web_search_requests: number } };
+      };
+
+      // The declared server tool really ran, against the provider.
+      expect(providerQueries()).toHaveLength(1);
+      expect(payload.usage.server_tool_use.web_search_requests).toBe(1);
+
+      // ...and it is reported structurally, never as a `tool_use` — a client
+      // that declared a provider-executed tool has no handler for one.
+      expect(payload.content.map((block) => block.type)).toEqual([
+        'server_tool_use',
+        'web_search_tool_result',
+        'tool_use',
+      ]);
+      expect(payload.content[0].name).toBe('web_search');
+
+      // The client's own call survived, and it is the only `tool_use` here.
+      expect(
+        payload.content.filter((block) => block.type === 'tool_use'),
+      ).toEqual([expect.objectContaining({ name: 'WebSearch' })]);
+      expect(payload.stop_reason).toBe('tool_use');
+
+      // The turn stops at this hop: continuing would replay an assistant
+      // message whose client call has no result behind it.
+      expect(calls()).toBe(1);
+    });
+
+    /**
+     * §11 and §26: the query that reaches the provider has to be the one the
+     * model emitted as its `web_search` argument, never one extracted from the
+     * prompt. Every other phase-2 test uses the same string in both places, so
+     * a regression that regex-scraped the prompt would pass them all.
+     */
+    it('searches for the query the model emitted, not the one in the prompt', async () => {
+      await enableSearch();
+      const { run } = routed(
+        [searchCall('IBM quantum 2026', 'call_1'), answer('Here it is.')],
+        sideRequest(8),
+      );
+
+      const response = await run();
+      const payload = (await response.json()) as {
+        content: Array<{ input?: { query?: string }; type: string }>;
+        usage: { server_tool_use: { web_search_requests: number } };
+      };
+
+      const searchedQueries = providerQueries();
+
+      // The prompt asked about OpenAI; the model chose IBM. Only the model's
+      // argument may reach the provider.
+      expect(searchedQueries).toEqual(['IBM quantum 2026']);
+      expect(payload.usage.server_tool_use.web_search_requests).toBe(1);
+      expect(payload.content[0]).toMatchObject({
+        input: { query: 'IBM quantum 2026' },
+        type: 'server_tool_use',
+      });
     });
   });
 

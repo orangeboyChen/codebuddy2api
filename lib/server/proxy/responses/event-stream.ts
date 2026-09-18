@@ -133,11 +133,14 @@ export const createResponsesEventStream = async (
         }),
     );
 
-    // First non-empty wins: the image loop calls this repeatedly, and a later
-    // iteration that ran no server tool returns an empty preamble, which
-    // would erase the prose an earlier one captured.
-    if (outcome.segments.length && !streamSegments) {
-      streamSegments = outcome.segments;
+    // Accumulated across iterations: the image loop calls this once per
+    // iteration and each outcome carries only that iteration's segments, so
+    // first-wins would drop every search after the first. An iteration that ran
+    // no server tool contributes an empty array and erases nothing, and
+    // `undefined` still means none ran at all — the mapper falls back to
+    // `serverToolExecutions` on that distinction.
+    if (outcome.segments.length) {
+      streamSegments = [...(streamSegments ?? []), ...outcome.segments];
     }
 
     return outcome.response;
