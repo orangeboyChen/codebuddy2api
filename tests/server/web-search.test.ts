@@ -2118,6 +2118,80 @@ describe('server tool routing', () => {
       // Answering from memory is the honest degradation, not a 400.
       expect(payload.output_text).toBe('It shipped in March, as I recall.');
     });
+
+    const pinnedImage = {
+      input: 'draw a cat',
+      model: 'glm-5.1',
+      tool_choice: { type: 'image_generation' },
+      tools: [{ type: 'image_generation' }],
+    };
+
+    /**
+     * Image generation is executed here, by its own loop rather than the
+     * server-tool turn, so a pin on it is a request this adapter can serve —
+     * and it used to be rejected outright with a 400.
+     */
+    it('serves a request pinning the image tool by its hosted type', async () => {
+      const { run, sent } = routed(
+        [answerHop('Here is the cat.')],
+        pinnedImage,
+      );
+
+      const response = await run();
+
+      expect(response.status).toBe(200);
+      // Upstream has never heard of `image_generation` as a tool type; the pin
+      // has to name the function the declaration was rewritten into.
+      expect(sent[0]?.tool_choice).toEqual({
+        type: 'function',
+        function: { name: 'image_generation' },
+      });
+    });
+
+    /**
+     * `file_search` has no implementation here, so its declaration is
+     * withdrawn from what goes upstream. Pinning it is therefore not a client
+     * error but a request to serve without the tool — the same degradation a
+     * server tool with no backend already gets.
+     */
+    it('drops a pin on a hosted tool this adapter does not implement', async () => {
+      const { run, sent } = routed([answerHop('From memory.')], {
+        input: 'search the docs',
+        model: 'glm-5.1',
+        tool_choice: { type: 'file_search' },
+        tools: [{ type: 'file_search' }],
+      });
+
+      const response = await run();
+
+      expect(response.status).toBe(200);
+      expect(sent[0]?.tool_choice).toBeUndefined();
+
+      const payload = (await response.json()) as { output_text: string };
+
+      // The request is still served — just without the tool it pinned.
+      expect(payload.output_text).toBe('From memory.');
+    });
+
+    /**
+     * The relaxation above is scoped to a declaration the request actually
+     * made. A pin naming a tool that was never on offer is a client error, and
+     * it has to stay one.
+     */
+    it('rejects a pin on a hosted tool the request never declared', async () => {
+      const { run, sent } = routed([answerHop('From memory.')], {
+        input: 'search the docs',
+        model: 'glm-5.1',
+        tool_choice: { type: 'file_search' },
+        tools: [{ type: 'function', name: 'lookup', parameters: {} }],
+      });
+
+      const response = await run();
+
+      expect(response.status).toBe(400);
+      // Rejected before anything is sent upstream.
+      expect(sent).toHaveLength(0);
+    });
   });
 
   describe('/v1/chat/completions', () => {

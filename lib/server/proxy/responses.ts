@@ -255,6 +255,7 @@ export const handleResponsesRequest = async (
             fetchProvider: serverTools!.providers.fetchProvider,
             rewrite,
             searchProvider: serverTools!.providers.searchProvider,
+            signal: request.signal,
           }),
       );
 

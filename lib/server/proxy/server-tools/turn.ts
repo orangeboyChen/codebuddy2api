@@ -163,6 +163,10 @@ const rebuildResponse = (response: Response, body: string): Response => {
   headers.delete('content-encoding');
   headers.delete('content-length');
   headers.delete('transfer-encoding');
+  // Every caller hands this a `JSON.stringify(...)` result, so an inherited
+  // label is a lie as soon as upstream answers a `stream: false` hop with SSE
+  // — and a client that trusts it tries to read an event stream out of JSON.
+  headers.set('content-type', 'application/json; charset=utf-8');
 
   return new Response(body, {
     headers,
@@ -222,6 +226,21 @@ const keepClientCalls = (
     (payload.choices?.[0]?.message?.tool_calls ?? []).filter(
       (toolCall) => !isExecutableCall(toolCall),
     ),
+  );
+
+/**
+ * The response for a turn whose client hung up mid-way.
+ *
+ * 499 is nginx's "client closed request". No standard status covers a request
+ * the caller abandoned, and all the callers do with a non-ok response is stop
+ * rendering — which is what is wanted, since nobody is listening.
+ */
+const abortedResponse = (): Response =>
+  new Response(
+    JSON.stringify({
+      error: { message: 'Client closed the request', status: 499 },
+    }),
+    { headers: { 'content-type': 'application/json' }, status: 499 },
   );
 
 /**
@@ -296,6 +315,7 @@ export const runServerToolTurn = async ({
   onResult,
   rewrite,
   searchProvider,
+  signal,
 }: {
   body: ChatRequestBody;
   /** One round trip to upstream. Always buffered. */
@@ -306,6 +326,11 @@ export const runServerToolTurn = async ({
   /** Output of {@link rewriteServerTools} for this request. */
   rewrite: NonNullable<ReturnType<typeof rewriteServerTools>>;
   searchProvider: WebSearchProvider | null;
+  /**
+   * Aborted when the client hangs up. The turn stops spending at the next
+   * checkpoint rather than finishing the budget for a caller that has gone.
+   */
+  signal?: AbortSignal;
 }): Promise<ServerToolTurnOutcome> => {
   const { classifyCall, executable, isExecutableCall, maxUses, tools } =
     rewrite;
@@ -326,6 +351,39 @@ export const runServerToolTurn = async ({
    */
   const appended: JsonRecord[] = [];
   let transcript = asMessages(body);
+
+  /**
+   * The turn as it stands, for a client that is no longer listening.
+   *
+   * The searches already run are attached exactly as on the failure paths:
+   * they really happened and really were billed, and a renderer that recovers
+   * them from the response is the only record of them.
+   */
+  const aborted = (): ServerToolTurnOutcome => ({
+    executions,
+    followUpMessages: appended,
+    segments,
+    response: attachServerToolExecutions(
+      abortedResponse(),
+      executions,
+      appended,
+    ),
+    usage,
+  });
+
+  /**
+   * Whether to stop spending on this turn.
+   *
+   * Checked between hops, and again before executing and before the closing
+   * call: a hop is a real upstream round trip and a search is a real backend
+   * call, and a client that hung up would otherwise be charged for the rest of
+   * the budget it declared — every remaining search, and the closing answer to
+   * go with them.
+   *
+   * Not checked mid-hop: an upstream call already in flight cannot be recalled
+   * any cheaper than letting it finish.
+   */
+  const hangUp = (): boolean => signal?.aborted === true;
   let usage: unknown = null;
   // Counted separately: the client declares `max_uses` on each server tool, so
   // a fetch must not spend the search budget — but both need a bound, or a
@@ -336,6 +394,10 @@ export const runServerToolTurn = async ({
   let firstHop = true;
 
   while (true) {
+    if (hangUp()) {
+      return aborted();
+    }
+
     const response = await callUpstream(
       {
         ...body,
@@ -430,6 +492,12 @@ export const runServerToolTurn = async ({
     const invocations = affordable.map(({ kind, toolCall }) =>
       buildServerToolInvocation(toolCall, kind, callCounter++),
     );
+
+    // Before executing rather than after: a search is real work at a real
+    // backend, and a client that has already hung up gets nothing from it.
+    if (hangUp()) {
+      return aborted();
+    }
 
     const results = await executeServerToolInvocations({
       fetchProvider,
@@ -530,6 +598,10 @@ export const runServerToolTurn = async ({
         (!executable.fetch || fetches >= maxUses.web_fetch));
 
     if (spent) {
+      if (hangUp()) {
+        return aborted();
+      }
+
       const finalResponse = await callUpstream(
         {
           ...body,

@@ -1736,3 +1736,203 @@ describe('a hop that goes wrong', () => {
     expect(payload.error?.message).toBeTruthy();
   });
 });
+
+/**
+ * Every hop is an upstream round trip and every search a backend call, so a
+ * client that hangs up mid-turn should not be charged for the rest of the
+ * budget it declared.
+ */
+describe('a client that hangs up', () => {
+  const answerHop = (text = 'done'): Record<string, unknown> => ({
+    choices: [
+      { finish_reason: 'stop', message: { content: text, role: 'assistant' } },
+    ],
+  });
+
+  const rewriteWithBudget = (
+    searchProvider: WebSearchProvider,
+    maxUses: number,
+  ) =>
+    rewriteServerTools({
+      declarations: { fetch: false, search: true },
+      fetchProvider: null,
+      searchProvider,
+      tools: [{ type: SEARCH_TYPE, name: 'web_search', max_uses: maxUses }],
+    })!;
+
+  /**
+   * Aborts once `abortAfter` upstream calls have answered, so the hop that
+   * produced the last one completes in full and the next checkpoint is where
+   * the turn stops spending.
+   */
+  const hangingUpTurn = ({
+    abortAfter,
+    hops,
+    maxUses = 5,
+  }: {
+    abortAfter: number;
+    hops: Array<Record<string, unknown>>;
+    maxUses?: number;
+  }) => {
+    const controller = new AbortController();
+    let calls = 0;
+    let searches = 0;
+
+    const searchProvider: WebSearchProvider = {
+      id: 'hangup-search',
+      search: async () => {
+        searches += 1;
+
+        return { content: 'findings', results: [] };
+      },
+    };
+
+    const run = (): Promise<ServerToolTurnOutcome> =>
+      runServerToolTurn({
+        body,
+        callUpstream: async () => {
+          calls += 1;
+
+          if (calls > 25) {
+            throw new Error(
+              `the turn did not terminate: ${calls} upstream calls`,
+            );
+          }
+
+          const response = makeJsonResponse(
+            hops[Math.min(calls - 1, hops.length - 1)],
+          );
+
+          if (calls === abortAfter) {
+            controller.abort();
+          }
+
+          return response;
+        },
+        fetchProvider: null,
+        rewrite: rewriteWithBudget(searchProvider, maxUses),
+        searchProvider,
+        signal: controller.signal,
+      });
+
+    return { calls: () => calls, run, searches: () => searches };
+  };
+
+  it('spends nothing when the caller is already gone', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let calls = 0;
+
+    const outcome = await runServerToolTurn({
+      body,
+      callUpstream: async () => {
+        calls += 1;
+
+        return makeJsonResponse(answerHop());
+      },
+      fetchProvider: null,
+      rewrite: makeRewrite(makeSearchProvider()),
+      searchProvider: makeSearchProvider(),
+      signal: controller.signal,
+    });
+
+    expect(calls).toBe(0);
+    expect(outcome.executions).toHaveLength(0);
+    // Non-ok, so every caller stops rendering rather than emitting an answer
+    // nobody is listening for.
+    expect(outcome.response.ok).toBe(false);
+  });
+
+  it('stops asking upstream after the caller leaves', async () => {
+    const { calls, run, searches } = hangingUpTurn({
+      abortAfter: 1,
+      hops: [assistantToolCall('web_search', '{"query":"q"}'), answerHop()],
+    });
+
+    await run();
+
+    // The hop was already in flight when the caller left, so it cannot be
+    // recalled any cheaper than letting it finish — but it runs nothing, and
+    // nothing follows it.
+    expect(calls()).toBe(1);
+    expect(searches()).toBe(0);
+  });
+
+  it('does not spend the closing call once the caller leaves', async () => {
+    // One search is the whole budget, so hop 1 leaves the turn ready to make
+    // its closing call. That call is the next thing to skip.
+    const { calls, run } = hangingUpTurn({
+      abortAfter: 1,
+      hops: [assistantToolCall('web_search', '{"query":"q"}'), answerHop()],
+      maxUses: 1,
+    });
+
+    await run();
+
+    expect(calls()).toBe(1);
+  });
+
+  it('keeps the searches it already ran', async () => {
+    const { run, searches } = hangingUpTurn({
+      abortAfter: 2,
+      hops: [
+        assistantToolCall('web_search', '{"query":"q"}'),
+        assistantToolCall('web_search', '{"query":"q2"}'),
+        answerHop(),
+      ],
+    });
+
+    const outcome = await run();
+
+    // Hop 1's search ran before the caller left. Hop 2's was still owed when
+    // they went, so it is not executed and billed on their behalf.
+    expect(searches()).toBe(1);
+    expect(outcome.executions).toHaveLength(1);
+    // Still recoverable from the response, which is where the Responses path
+    // reads them from: it really ran and was really billed.
+    expect(getServerToolExecutions(outcome.response)).toHaveLength(1);
+  });
+
+  /**
+   * Consistent with every other way out of the turn: the internal function is
+   * never handed to the client, not even when the turn is cut short. A
+   * `tool_use` for a `web_search` the client never declared is a call it has
+   * no handler for.
+   */
+  it('hands back no server-tool call the client would have to resolve', async () => {
+    const { run } = hangingUpTurn({
+      abortAfter: 1,
+      hops: [assistantToolCall('web_search', '{"query":"q"}'), answerHop()],
+    });
+
+    const outcome = await run();
+    const payload = (await outcome.response.json()) as {
+      choices?: Array<{ message?: { tool_calls?: unknown[] } }>;
+    };
+
+    expect(payload.choices?.[0]?.message?.tool_calls ?? []).toEqual([]);
+  });
+
+  it('runs to completion when no signal is given', async () => {
+    let calls = 0;
+
+    const outcome = await runServerToolTurn({
+      body,
+      callUpstream: async () => {
+        calls += 1;
+
+        return makeJsonResponse(
+          calls === 1
+            ? assistantToolCall('web_search', '{"query":"q"}')
+            : answerHop('It shipped yesterday.'),
+        );
+      },
+      fetchProvider: null,
+      rewrite: makeRewrite(makeSearchProvider()),
+      searchProvider: makeSearchProvider(),
+    });
+
+    expect(calls).toBe(2);
+    expect(outcome.response.ok).toBe(true);
+  });
+});

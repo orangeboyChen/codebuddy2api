@@ -9,6 +9,7 @@ import {
   eventFrameText,
 } from '../../shared/sse';
 import type { ProxyContext } from '../codebuddy';
+import type { WebSearchResult } from '../../search/types';
 import {
   buildResponsesImageGenerationCallItem,
   type ImageGenerationExecution,
@@ -38,6 +39,80 @@ import type {
   ServerToolInvocation,
   ServerToolSegment,
 } from '../server-tools';
+
+/** A span of `output_text` that points at one search result. */
+interface UrlCitationSpan {
+  end: number;
+  start: number;
+  title: string;
+  url: string;
+}
+
+/**
+ * The `url_citation` annotations for one `output_text`.
+ *
+ * Only URLs the model actually wrote into the text are annotated, because no
+ * index here can be derived: a search response carries titles and URLs but no
+ * offsets into an answer that does not exist yet, and the upstream chat
+ * protocol hands the answer back as a single opaque string — so choosing a
+ * span for a result would mean inventing one. A model that cites a source
+ * normally quotes its URL, and that occurrence is a span measured rather than
+ * guessed. A result whose URL never appears in the text gets no annotation.
+ */
+const buildUrlCitationAnnotations = (
+  text: string,
+  results: WebSearchResult[],
+): Array<Record<string, unknown>> => {
+  const claimed = new Set<string>();
+
+  const spans = results.flatMap((result): UrlCitationSpan[] => {
+    const url = result.url ?? '';
+
+    // Two results can share a URL; a second span over identical offsets would
+    // overlap the first by definition.
+    if (!url || claimed.has(url)) {
+      return [];
+    }
+
+    claimed.add(url);
+    const title = result.title || url;
+    const found: UrlCitationSpan[] = [];
+
+    for (
+      let start = text.indexOf(url);
+      start !== -1;
+      start = text.indexOf(url, start + url.length)
+    ) {
+      found.push({ end: start + url.length, start, title, url });
+    }
+
+    return found;
+  });
+
+  // Longest first at one offset: a result URL that prefixes another would
+  // otherwise take the shorter span and leave the longer one overlapping.
+  spans.sort((left, right) => left.start - right.start || right.end - left.end);
+
+  const annotations: Array<Record<string, unknown>> = [];
+  let coveredUntil = 0;
+
+  spans.forEach(({ end, start, title, url }) => {
+    if (start < coveredUntil) {
+      return;
+    }
+
+    coveredUntil = end;
+    annotations.push({
+      type: 'url_citation',
+      start_index: start,
+      end_index: end,
+      title,
+      url,
+    });
+  });
+
+  return annotations;
+};
 
 export const mapChatResponseToResponsesPayload = async (
   accessKeyId: string | null,
@@ -148,6 +223,17 @@ export const mapChatResponseToResponsesPayload = async (
     });
   }
 
+  // Exactly the searches this response reports. Only those may be cited: a
+  // result the client saw no `web_search_call` for is not a source it can
+  // trace the citation back to.
+  const reportedExecutions = segments
+    ? segments.flatMap((segment) => segment.executions)
+    : serverToolExecutions;
+
+  const citedResults = reportedExecutions.flatMap((execution) =>
+    execution.type === 'web_search' ? (execution.result?.results ?? []) : [],
+  );
+
   if (outputText || !toolCalls.length) {
     output.push({
       id: createMessageId(),
@@ -158,7 +244,7 @@ export const mapChatResponseToResponsesPayload = async (
         {
           type: 'output_text',
           text: outputText,
-          annotations: [],
+          annotations: buildUrlCitationAnnotations(outputText, citedResults),
         },
       ],
     });

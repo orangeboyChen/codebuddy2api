@@ -102,6 +102,7 @@ export const handleMessagesRequest = async (
               fetchProvider,
               rewrite,
               searchProvider,
+              signal: request.signal,
             }),
         );
 

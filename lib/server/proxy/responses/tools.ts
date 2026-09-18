@@ -427,6 +427,55 @@ const SERVER_TOOL_CHOICE_NAMES: Record<ServerToolKind, string> = {
   web_search: WEB_SEARCH_TOOL_NAME,
 };
 
+/**
+ * Image generation is executed by its own loop, never by the server-tool turn,
+ * so it is deliberately outside the classifier's vocabulary — widening that
+ * would have the turn claim a call it cannot run. It is still a tool this
+ * adapter serves, so it gets a branch of its own everywhere one is needed.
+ */
+const isImageGenerationToolChoice = (
+  choice: Record<string, unknown>,
+): boolean => choice.type === IMAGE_GENERATION_TOOL_TYPE;
+
+/**
+ * A pin on a hosted type the request declared but this adapter withdraws.
+ *
+ * `getSupportedChatTools` drops a hosted declaration with no implementation
+ * here, so the tool never reaches upstream — and a pin naming it would be a
+ * choice with nothing behind it, which an upstream that validates the two
+ * together rejects. Serving the request without the tool is the honest
+ * degradation: the model answers from memory, which is what
+ * `reconcileToolChoice` already arranges for a server tool with no backend.
+ */
+const isWithdrawnToolChoice = (
+  tools: ResponsesRequestBody['tools'],
+  toolChoice: unknown,
+): boolean => {
+  if (typeof toolChoice !== 'object' || toolChoice === null) {
+    return false;
+  }
+
+  const choice = toolChoice as Record<string, unknown>;
+  const type = typeof choice.type === 'string' ? choice.type : '';
+
+  // Every other shape has a branch of its own, and none of them is a
+  // withdrawal: a function is pinned by name, and a hosted tool this adapter
+  // serves is translated rather than dropped.
+  if (
+    !type ||
+    type === 'function' ||
+    typeof choice.name === 'string' ||
+    isImageGenerationToolChoice(choice) ||
+    classifyServerToolDeclaration(choice) !== null
+  ) {
+    return false;
+  }
+
+  return Boolean(
+    tools?.some((tool) => typeof tool?.type === 'string' && tool.type === type),
+  );
+};
+
 export const translateResponsesToolChoiceToChat = (
   toolChoice: unknown,
 ): unknown => {
@@ -466,6 +515,16 @@ export const translateResponsesToolChoiceToChat = (
     };
   }
 
+  // The image tool is rewritten into a function on its way out too, so its pin
+  // has to name that function for the same reason a search pin does: upstream
+  // has never heard of `image_generation` as a tool type.
+  if (isImageGenerationToolChoice(choice)) {
+    return {
+      type: 'function',
+      function: { name: IMAGE_GENERATION_CHAT_TOOL_NAME },
+    };
+  }
+
   // Responses API selects a function by name:
   // {type: 'function', name: 'fn'} -> chat schema {type: 'function', function: {name: 'fn'}}
   if (typeof choice.name === 'string') {
@@ -482,6 +541,12 @@ export const translateResponsesToolChoiceToChatWithTools = (
   tools: ResponsesRequestBody['tools'],
   toolChoice: unknown,
 ): unknown => {
+  // A withdrawn declaration is not on offer upstream, so its pin goes rather
+  // than being sent as a type upstream has never heard of.
+  if (isWithdrawnToolChoice(tools, toolChoice)) {
+    return undefined;
+  }
+
   const translated = translateResponsesToolChoiceToChat(toolChoice);
 
   if (typeof translated !== 'object' || translated === null) {
@@ -560,7 +625,14 @@ export const getResponsesCompatibilityError = (
     // A hosted tool is pinned by its declared type — the same vocabulary the
     // tools array uses, so the classifier recognises it. Rejecting it here
     // 400s a request this adapter can serve; the choice is rewritten below.
-    const isHostedToolChoice = classifyServerToolDeclaration(choice) !== null;
+    // Three cases, and none of them is a client error: search and fetch name
+    // the injected function, image generation names its own, and a type no
+    // implementation here serves is dropped rather than pinned to a tool
+    // upstream is never offered.
+    const isHostedToolChoice =
+      classifyServerToolDeclaration(choice) !== null ||
+      isImageGenerationToolChoice(choice) ||
+      isWithdrawnToolChoice(tools, choice);
 
     if (
       !isPretranslatedFunctionChoice &&

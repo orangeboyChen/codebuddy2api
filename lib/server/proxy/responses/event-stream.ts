@@ -130,6 +130,7 @@ export const createResponsesEventStream = async (
           fetchProvider: prepared!.providers.fetchProvider,
           rewrite,
           searchProvider: prepared!.providers.searchProvider,
+          signal: request.signal,
         }),
     );
 
@@ -294,6 +295,7 @@ export const createResponsesEventStream = async (
               fetchProvider,
               rewrite: rewrite!,
               searchProvider,
+              signal: request.signal,
             }),
         );
 
