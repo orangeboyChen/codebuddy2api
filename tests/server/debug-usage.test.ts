@@ -759,13 +759,17 @@ describe('debug and usage persistence', () => {
       {
         cacheHitTokens: 3,
         callCount: 1,
+        inputTokens: 11,
         model: 'gpt-5.5',
+        outputTokens: 7,
         totalTokens: 23,
       },
       {
         cacheHitTokens: 0,
         callCount: 1,
+        inputTokens: 0,
         model: 'unknown',
+        outputTokens: 4,
         totalTokens: 20,
       },
     ]);

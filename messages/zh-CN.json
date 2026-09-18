@@ -315,6 +315,7 @@
         "300": "300 秒"
       },
       "cacheHitToday": "今日缓存 Token",
+      "cacheHitValue": "缓存↓ {value}",
       "callTrend": "调用次数趋势",
       "callsToday": "今日调用次数",
       "clearHistory": "清空历史",
@@ -347,6 +348,7 @@
       "tableCacheHit": "缓存 Token",
       "tableCalls": "调用次数",
       "tableCredential": "凭证",
+      "tableInputOutput": "输入 / 输出",
       "tableTokens": "总 Tokens",
       "summaryCacheHit": "缓存 Token",
       "summaryCalls": "调用次数",

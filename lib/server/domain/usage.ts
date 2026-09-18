@@ -65,6 +65,11 @@ interface UsageBucketTotals {
   totalTokens: number;
 }
 
+interface UsageRowTotals extends UsageBucketTotals {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 interface UsageBucket {
   label: string;
   start: string;
@@ -76,7 +81,7 @@ export interface UsageChartSeries {
   points: Array<UsageBucketTotals & UsageBucket>;
 }
 
-export interface UsageTableRow extends UsageBucketTotals {
+export interface UsageTableRow extends UsageRowTotals {
   model: string;
 }
 
@@ -523,6 +528,12 @@ const createEmptyTotals = (): UsageBucketTotals => ({
   totalTokens: 0,
 });
 
+const createEmptyRowTotals = (): UsageRowTotals => ({
+  ...createEmptyTotals(),
+  inputTokens: 0,
+  outputTokens: 0,
+});
+
 const createModelColors = (models: string[]): Record<string, string> => {
   return Object.fromEntries(
     models.map((model, index) => [
@@ -543,6 +554,15 @@ const addEventToTotals = (
   callCount: totals.callCount + event.callCount,
   cacheHitTokens: totals.cacheHitTokens + event.cacheReadTokens,
   totalTokens: totals.totalTokens + event.totalTokens,
+});
+
+const addEventToRowTotals = (
+  totals: UsageRowTotals,
+  event: UsageEventRecord,
+): UsageRowTotals => ({
+  ...addEventToTotals(totals, event),
+  inputTokens: totals.inputTokens + event.inputTokens,
+  outputTokens: totals.outputTokens + event.outputTokens,
 });
 
 const mergeFilterOptions = (
@@ -637,7 +657,7 @@ export const getUsageAnalytics = async ({
     const buckets = buildBuckets(range, now);
     const tokenSeriesByModel = new Map<string, UsageBucketTotals[]>();
     const callSeriesByModel = new Map<string, UsageBucketTotals[]>();
-    const tableRowsByModel = new Map<string, UsageBucketTotals>();
+    const tableRowsByModel = new Map<string, UsageRowTotals>();
     const credentialRowsByFilename = new Map<string, UsageBucketTotals>();
     const credentialCallCounts: Record<string, number> = {};
     const rangeSummary = createEmptyTotals();
@@ -677,7 +697,7 @@ export const getUsageAnalytics = async ({
         callSeriesByModel.get(event.model) ??
         createEmptyBucketTotals(buckets.length);
       const tableTotals =
-        tableRowsByModel.get(event.model) ?? createEmptyTotals();
+        tableRowsByModel.get(event.model) ?? createEmptyRowTotals();
 
       const nextRangeSummary = addEventToTotals(rangeSummary, event);
       rangeSummary.callCount = nextRangeSummary.callCount;
@@ -703,7 +723,10 @@ export const getUsageAnalytics = async ({
         totalTokens: callBuckets[bucketIndex].totalTokens,
         cacheHitTokens: callBuckets[bucketIndex].cacheHitTokens,
       };
-      tableRowsByModel.set(event.model, addEventToTotals(tableTotals, event));
+      tableRowsByModel.set(
+        event.model,
+        addEventToRowTotals(tableTotals, event),
+      );
       tokenSeriesByModel.set(event.model, tokenBuckets);
       callSeriesByModel.set(event.model, callBuckets);
     });

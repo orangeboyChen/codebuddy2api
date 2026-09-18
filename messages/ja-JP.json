@@ -319,6 +319,7 @@
         "300": "300 秒"
       },
       "cacheHitToday": "本日の Cache ヒット Tokens",
+      "cacheHitValue": "キャッシュ↓ {value}",
       "callTrend": "呼び出し推移",
       "callsToday": "本日の呼び出し回数",
       "clearHistory": "履歴をクリア",
@@ -351,6 +352,7 @@
       "tableCacheHit": "Cache ヒット",
       "tableCalls": "呼び出し回数",
       "tableCredential": "認証情報",
+      "tableInputOutput": "入力 / 出力",
       "tableTokens": "総 Tokens",
       "summaryCacheHit": "Cache ヒット Tokens",
       "summaryCalls": "呼び出し回数",

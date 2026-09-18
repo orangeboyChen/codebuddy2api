@@ -319,6 +319,7 @@
         "300": "300 sec"
       },
       "cacheHitToday": "Cache-hit tokens today",
+      "cacheHitValue": "Cache ↓ {value}",
       "callTrend": "Call trend",
       "callsToday": "Calls today",
       "clearHistory": "Clear history",
@@ -351,6 +352,7 @@
       "tableCacheHit": "Cache hits",
       "tableCalls": "Calls",
       "tableCredential": "Credential",
+      "tableInputOutput": "Input / output",
       "tableTokens": "Total tokens",
       "summaryCacheHit": "Cache-hit tokens",
       "summaryCalls": "Calls",
