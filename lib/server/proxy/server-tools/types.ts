@@ -131,6 +131,17 @@ export interface ServerToolTurnOutcome {
   /** Calls executed locally, in the order the model made them. */
   executions: ServerToolExecution[];
   /**
+   * The messages the turn appended to the transcript it was handed: the
+   * assistant messages carrying its calls, and the tool results behind them.
+   *
+   * The turn builds its continuation internally, so a caller that drives
+   * upstream across several rounds — the image-generation loop — has to splice
+   * these into its own copy of the messages. Without them the next round asks
+   * the model to continue a turn whose findings are nowhere in its input: the
+   * search ran, was billed, and was then thrown away.
+   */
+  followUpMessages: JsonRecord[];
+  /**
    * The hops, each with the prose that preceded it. The closing answer is not
    * here — it is in `response`.
    */
@@ -154,12 +165,25 @@ export interface ServerToolTurnOutcome {
  */
 const serverToolExecutions = new WeakMap<Response, ServerToolExecution[]>();
 
+const serverToolFollowUpMessages = new WeakMap<Response, JsonRecord[]>();
+
+/**
+ * Hangs both out-of-band channels on the response a turn hands back.
+ *
+ * `followUpMessages` ride along for the same reason `executions` do — see the
+ * note above — and only ever matter to a caller that drives upstream itself.
+ */
 export const attachServerToolExecutions = (
   response: Response,
   executions: ServerToolExecution[],
+  followUpMessages: JsonRecord[] = [],
 ): Response => {
   if (executions.length) {
     serverToolExecutions.set(response, executions);
+  }
+
+  if (followUpMessages.length) {
+    serverToolFollowUpMessages.set(response, followUpMessages);
   }
 
   return response;
@@ -168,6 +192,14 @@ export const attachServerToolExecutions = (
 export const getServerToolExecutions = (
   response: Response,
 ): ServerToolExecution[] => serverToolExecutions.get(response) ?? [];
+
+/**
+ * The messages a turn appended to the transcript it was handed, read off a
+ * response it produced. Empty when no server tool ran.
+ */
+export const getServerToolFollowUpMessages = (
+  response: Response,
+): JsonRecord[] => serverToolFollowUpMessages.get(response) ?? [];
 
 /**
  * Adds two usage blocks together.

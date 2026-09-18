@@ -29,6 +29,7 @@ export {
   attachServerToolExecutions,
   EMPTY_PREAMBLE,
   getServerToolExecutions,
+  getServerToolFollowUpMessages,
   STREAM_TEXT_CHUNK_LENGTH,
 } from './types';
 export type {

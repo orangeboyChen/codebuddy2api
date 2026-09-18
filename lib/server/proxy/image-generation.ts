@@ -25,6 +25,7 @@ import { buildUpstreamHeaders } from './codebuddy';
 import {
   foldIntermediateTexts,
   getServerToolExecutions,
+  getServerToolFollowUpMessages,
   type ChatCompletionMessage,
   type ChatCompletionPayload,
   type ChatCompletionToolCall,
@@ -447,6 +448,12 @@ export const executeImageGenerationLoop = async ({
     // rebuilt response the caller can no longer look them up on.
     serverToolExecutions.push(...getServerToolExecutions(response));
 
+    // Likewise the messages the server-tool turn appended to its own
+    // transcript. It ran its searches against a transcript it built internally
+    // and never handed back, so a loop that replays the request would ask the
+    // model to continue from input in which those searches do not exist.
+    const followUpMessages = getServerToolFollowUpMessages(response);
+
     // A stream has already begun emitting to the client, so it cannot be
     // resumed with a tool result; hand it back untouched.
     if (
@@ -529,6 +536,10 @@ export const executeImageGenerationLoop = async ({
     const messages: unknown[] = Array.isArray(currentBody.messages)
       ? [...currentBody.messages]
       : [];
+
+    // Ahead of this round's own message: the turn's hops are what came before
+    // it, and dropping them loses the searches that produced this round.
+    messages.push(...followUpMessages);
 
     if (message) {
       messages.push(message);

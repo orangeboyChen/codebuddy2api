@@ -315,6 +315,16 @@ export const runServerToolTurn = async ({
   // calls it made. Kept as a list because prose written between two searches
   // belongs between the two search blocks, and flattening it loses that.
   const segments: ServerToolSegment[] = [];
+  /**
+   * Only the messages this turn appended to the transcript it was handed.
+   *
+   * The turn builds its continuation internally, but a caller that drives
+   * upstream across several rounds — the image-generation loop — replays the
+   * request from its own copy of the messages. It has to be given these, or the
+   * next round's model is asked to continue a turn whose searches it cannot
+   * see: the findings were fed to the model once and then discarded.
+   */
+  const appended: JsonRecord[] = [];
   let transcript = asMessages(body);
   let usage: unknown = null;
   // Counted separately: the client declares `max_uses` on each server tool, so
@@ -354,6 +364,7 @@ export const runServerToolTurn = async ({
     if (!response.ok || payload.error) {
       return {
         executions,
+        followUpMessages: appended,
         segments,
         // Attached even on failure: the earlier hops really ran and were
         // really billed, and the Responses and image paths recover them from
@@ -366,6 +377,7 @@ export const runServerToolTurn = async ({
             ),
           ),
           executions,
+          appended,
         ),
         usage,
       };
@@ -388,10 +400,12 @@ export const runServerToolTurn = async ({
     if (!localCalls.length) {
       return {
         executions,
+        followUpMessages: appended,
         segments,
         response: attachServerToolExecutions(
           rebuildResponse(response, JSON.stringify(withUsage(payload, usage))),
           executions,
+          appended,
         ),
         usage,
       };
@@ -446,8 +460,7 @@ export const runServerToolTurn = async ({
     }));
 
     if (runCalls.length) {
-      transcript = [
-        ...transcript,
+      const hopMessages: JsonRecord[] = [
         {
           ...(message as JsonRecord),
           content: message?.content ?? null,
@@ -460,6 +473,9 @@ export const runServerToolTurn = async ({
           tool_call_id: result.tool_call_id,
         })),
       ];
+
+      appended.push(...hopMessages);
+      transcript = [...transcript, ...hopMessages];
     }
 
     /**
@@ -473,6 +489,7 @@ export const runServerToolTurn = async ({
     if (remainingCalls.length) {
       return {
         executions,
+        followUpMessages: appended,
         segments,
         response: attachServerToolExecutions(
           rebuildResponse(
@@ -485,6 +502,7 @@ export const runServerToolTurn = async ({
             ),
           ),
           executions,
+          appended,
         ),
         usage,
       };
@@ -535,6 +553,7 @@ export const runServerToolTurn = async ({
       if (!finalResponse.ok || finalPayload.error) {
         return {
           executions,
+          followUpMessages: appended,
           segments,
           // Attached even on failure: the searches really ran and were really
           // billed, and the Responses path recovers them from the response.
@@ -549,6 +568,7 @@ export const runServerToolTurn = async ({
               ),
             ),
             executions,
+            appended,
           ),
           usage,
         };
@@ -562,6 +582,7 @@ export const runServerToolTurn = async ({
        */
       return {
         executions,
+        followUpMessages: appended,
         segments,
         response: attachServerToolExecutions(
           rebuildResponse(
@@ -571,6 +592,7 @@ export const runServerToolTurn = async ({
             ),
           ),
           executions,
+          appended,
         ),
         usage,
       };

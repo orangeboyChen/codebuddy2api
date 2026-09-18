@@ -17,6 +17,10 @@ import {
   IMAGE_GENERATION_CHAT_TOOL_NAME,
   IMAGE_GENERATION_TOOL_TYPE,
 } from '../image-generation';
+import {
+  classifyServerToolDeclaration,
+  type ServerToolKind,
+} from '../server-tools';
 import type {
   ResponsesRequestBody,
   SupportedChatTool,
@@ -409,6 +413,20 @@ export const translateResponsesToolsToChat = (
   });
 };
 
+/**
+ * The function a hosted-tool `tool_choice` has to name.
+ *
+ * The choice repeats the declared type — `web_search_preview` — and that is a
+ * shape upstream has never seen: the declaration was rewritten into an ordinary
+ * function on its way out. Naming the injected function is what lets the pin do
+ * its job, which is to make the model emit a query instead of answering from
+ * memory.
+ */
+const SERVER_TOOL_CHOICE_NAMES: Record<ServerToolKind, string> = {
+  web_fetch: WEB_FETCH_TOOL_NAME,
+  web_search: WEB_SEARCH_TOOL_NAME,
+};
+
 export const translateResponsesToolChoiceToChat = (
   toolChoice: unknown,
 ): unknown => {
@@ -433,6 +451,19 @@ export const translateResponsesToolChoiceToChat = (
     typeof choice.type === 'string'
   ) {
     return choice.type;
+  }
+
+  // A hosted-tool choice names the same declaration the tools array carries
+  // under its own type, so classification recognises it. Upstream only ever
+  // sees the function the proxy injected, and a pin left as
+  // `web_search_preview` is a shape it has never heard of.
+  const serverToolKind = classifyServerToolDeclaration(choice);
+
+  if (serverToolKind) {
+    return {
+      type: 'function',
+      function: { name: SERVER_TOOL_CHOICE_NAMES[serverToolKind] },
+    };
   }
 
   // Responses API selects a function by name:
@@ -526,11 +557,16 @@ export const getResponsesCompatibilityError = (
       choice.type === 'none' ||
       choice.type === 'required';
     const isNamedFunctionLikeChoice = typeof choice.name === 'string';
+    // A hosted tool is pinned by its declared type — the same vocabulary the
+    // tools array uses, so the classifier recognises it. Rejecting it here
+    // 400s a request this adapter can serve; the choice is rewritten below.
+    const isHostedToolChoice = classifyServerToolDeclaration(choice) !== null;
 
     if (
       !isPretranslatedFunctionChoice &&
       !isSimpleChoiceType &&
-      !isNamedFunctionLikeChoice
+      !isNamedFunctionLikeChoice &&
+      !isHostedToolChoice
     ) {
       return createErrorResponse(
         400,

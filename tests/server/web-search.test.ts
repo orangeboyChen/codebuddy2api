@@ -1945,6 +1945,179 @@ describe('server tool routing', () => {
       expect(types).toContain('response.web_search_call.completed');
       expect(types).toContain('response.output_item.done');
     });
+
+    /**
+     * Answers each hop from `hops`, falling through on the last, and keeps
+     * every request body that reached upstream.
+     *
+     * The Responses path is non-streaming hop to hop regardless of `stream`:
+     * whether the model wants another search is only knowable once a hop has
+     * finished, so the turn buffers every one.
+     */
+    const routed = (
+      hops: Array<Record<string, unknown>>,
+      request: Record<string, unknown>,
+    ) => {
+      const sent: Array<Record<string, unknown>> = [];
+      let calls = 0;
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+        const url = String(_input);
+
+        if (url.includes('searx.test')) {
+          return makeJsonResponse({
+            results: [
+              { content: 'A snippet', title: 'Docs', url: 'https://docs.test' },
+            ],
+          }) as unknown as Response;
+        }
+
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        sent.push(body);
+        const hop = hops[Math.min(calls, hops.length - 1)];
+        calls += 1;
+
+        return makeJsonResponse(hop) as unknown as Response;
+      });
+
+      return {
+        calls: () => calls,
+        run: () =>
+          handleResponsesRequest(
+            makeRequest('http://localhost/v1/responses'),
+            request,
+          ),
+        sent,
+      };
+    };
+
+    const searchHop = (query: string) => ({
+      choices: [
+        {
+          finish_reason: 'tool_calls',
+          message: {
+            content: null,
+            role: 'assistant',
+            tool_calls: [
+              {
+                id: 'call_1',
+                type: 'function',
+                function: {
+                  arguments: `{"query":"${query}"}`,
+                  name: 'web_search',
+                },
+              },
+            ],
+          },
+        },
+      ],
+      usage: { completion_tokens: 10, prompt_tokens: 100 },
+    });
+
+    const answerHop = (text: string) => ({
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { content: text, role: 'assistant' },
+        },
+      ],
+      usage: { completion_tokens: 20, prompt_tokens: 200 },
+    });
+
+    /** A search declared and pinned by its hosted-tool type. */
+    const pinned = {
+      input: 'any news?',
+      model: 'glm-5.1',
+      tool_choice: { type: 'web_search_preview' },
+      tools: [{ type: 'web_search_preview' }],
+    };
+
+    /**
+     * The Responses API pins a hosted tool by its declared type, and the pin is
+     * load-bearing: it is what makes the model emit a query instead of
+     * answering from memory. It used to be rejected outright — 400, no search.
+     */
+    it('runs the search when tool_choice pins the hosted tool', async () => {
+      await enableSearch();
+      mockUpstream();
+
+      const response = await handleResponsesRequest(
+        makeRequest('http://localhost/v1/responses'),
+        pinned,
+      );
+
+      expect(response.status).toBe(200);
+
+      const payload = (await response.json()) as {
+        output: Array<Record<string, unknown>>;
+      };
+      const types = payload.output.map((item) => item.type);
+
+      expect(types).toContain('web_search_call');
+      expect(types).toContain('message');
+      // The pin held, so the search ran before the answer that used it.
+      expect(types.indexOf('web_search_call')).toBeLessThan(
+        types.indexOf('message'),
+      );
+    });
+
+    it('sends the pin upstream as the function the proxy injected', async () => {
+      await enableSearch();
+      const { run, sent } = routed(
+        [searchHop('OpenAI updates'), answerHop('Here it is.')],
+        pinned,
+      );
+
+      await run();
+
+      // Upstream has never heard of `web_search_preview`; the pin has to name
+      // the function the declaration was rewritten into.
+      expect(sent[0]?.tool_choice).toEqual({
+        type: 'function',
+        function: { name: 'web_search' },
+      });
+    });
+
+    it('stops pinning the hosted tool after the first hop', async () => {
+      await enableSearch();
+      const { run, sent } = routed(
+        [searchHop('OpenAI updates'), answerHop('Here it is.')],
+        pinned,
+      );
+
+      await run();
+
+      // Left pinned, the model would be forced to search forever instead of
+      // answering with what it found.
+      expect(sent[1]?.tool_choice).toBe('auto');
+    });
+
+    it('drops the pin instead of failing when no backend is configured', async () => {
+      // No `enableSearch()`: `beforeEach` clears SEARXNG_URL, so nothing here
+      // can run the declared tool and it is withdrawn from the request.
+      const { run, sent } = routed(
+        [answerHop('It shipped in March, as I recall.')],
+        pinned,
+      );
+
+      const response = await run();
+
+      expect(response.status).toBe(200);
+      // A choice naming a tool the request no longer offers is a contradiction
+      // upstream rejects, so it goes rather than being sent as it is.
+      expect(sent[0]?.tool_choice).toBeUndefined();
+
+      const payload = (await response.json()) as {
+        output: Array<Record<string, unknown>>;
+        output_text: string;
+      };
+
+      expect(payload.output.map((item) => item.type)).not.toContain(
+        'web_search_call',
+      );
+      // Answering from memory is the honest degradation, not a 400.
+      expect(payload.output_text).toBe('It shipped in March, as I recall.');
+    });
   });
 
   describe('/v1/chat/completions', () => {
