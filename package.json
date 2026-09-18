@@ -18,7 +18,7 @@
     "test": "vitest run",
     "commitlint": "commitlint",
     "lint-staged": "lint-staged",
-    "test:ci": "vitest run --coverage --reporter=junit --outputFile=test-report.junit.xml",
+    "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile=test-report.junit.xml",
     "test:coverage": "vitest run --coverage",
     "test:patch-branches": "bun scripts/check-patch-branches.ts"
   },
