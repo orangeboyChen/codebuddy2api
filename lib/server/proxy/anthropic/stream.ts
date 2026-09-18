@@ -1,13 +1,14 @@
-import type { NextRequest } from 'next/server';
-
-import type { DebugTrace } from '../../domain/debug';
-import { createSseResponse } from '../../shared/sse';
+import { createSseResponse, isEventStream } from '../../shared/sse';
 import {
   anthropicStreamErrorChunks,
   createStreamCloser,
   toUpstreamTimeoutMessage,
 } from '../../shared/upstream-timeout';
-import { proxyChatCompletions, type ChatRequestBody } from '../codebuddy';
+import {
+  type ChatCompletionPayload,
+  type ServerToolTurnOutcome,
+  synthesizeChatCompletionStream,
+} from '../server-tools';
 import { createAnthropicId } from './content';
 import { anthropicErrorType, getUpstreamErrorMessage } from './errors';
 import {
@@ -22,11 +23,8 @@ import type {
   OpenAIUsage,
   StreamingToolUseState,
 } from './types';
-import {
-  getServerToolExecutions,
-  getServerToolStreamEvent,
-  type ServerToolExecution,
-} from '../web-search-loop';
+import type { ServerToolExecution } from '../server-tools';
+import { getServerToolExecutions } from '../server-tools';
 
 // ---------------------------------------------------------------------------
 // Response translation: OpenAI SSE → Anthropic SSE (streaming)
@@ -52,7 +50,6 @@ export const mapOpenAIStreamToAnthropicSSE = (
   const messageId = options?.messageId ?? createAnthropicId('msg');
   const serverToolExecutions =
     options?.serverToolExecutions ?? getServerToolExecutions(upstreamResponse);
-  const serverToolUseIds = new Map<string, string>();
   const toolUseStates = new Map<string, StreamingToolUseState>();
   let nextToolIndex = 0;
   let started = options?.emitMessageStart === false;
@@ -372,59 +369,8 @@ export const mapOpenAIStreamToAnthropicSSE = (
 
           try {
             const chunk = JSON.parse(raw) as OpenAIStreamChunk;
-            const serverToolEvent = getServerToolStreamEvent(chunk);
-
-            if (serverToolEvent?.phase === 'call') {
-              closeOpenTextBlocks();
-              const index = contentBlockCount++;
-              const toolUseId = createAnthropicId('srvtoolu');
-              serverToolUseIds.set(serverToolEvent.invocation.id, toolUseId);
-              enqueueEvent({
-                type: 'content_block_start',
-                index,
-                content_block: {
-                  type: 'server_tool_use',
-                  id: toolUseId,
-                  name: serverToolEvent.invocation.type,
-                  input: {},
-                },
-              });
-              enqueueEvent({
-                type: 'content_block_delta',
-                index,
-                delta: {
-                  type: 'input_json_delta',
-                  partial_json: JSON.stringify(
-                    serverToolEvent.invocation.input,
-                  ),
-                },
-              });
-              enqueueEvent({ type: 'content_block_stop', index });
-              continue;
-            }
-
-            if (serverToolEvent?.phase === 'result') {
-              closeOpenTextBlocks();
-              serverToolExecutions.push(serverToolEvent.execution);
-              const index = contentBlockCount++;
-              const resultBlock = buildAnthropicServerToolBlocks(
-                serverToolEvent.execution,
-              )[1];
-              enqueueEvent({
-                type: 'content_block_start',
-                index,
-                content_block: {
-                  ...resultBlock,
-                  tool_use_id: serverToolUseIds.get(
-                    serverToolEvent.execution.id,
-                  ),
-                },
-              });
-              enqueueEvent({ type: 'content_block_stop', index });
-              continue;
-            }
-
             const upstreamError = chunk as OpenAIStreamError;
+
             if (upstreamError.error?.message) {
               rejectStream(
                 upstreamError.error.message,
@@ -511,12 +457,28 @@ export const mapOpenAIStreamToAnthropicSSE = (
   return createSseResponse(stream, { status: 200 });
 };
 
-export const createAnthropicServerToolEventStream = (
-  request: NextRequest,
-  chatBody: Record<string, unknown>,
-  model: string,
-  debugTrace?: DebugTrace,
-): Response => {
+/**
+ * Streams a turn in which a server tool runs.
+ *
+ * `message_start` goes out before the first upstream call, so the client gets
+ * headers and a message id immediately rather than after the search completes.
+ * The blocks that follow are the ones Anthropic's own server tools produce, in
+ * the order they produce them: whatever the model said before searching, the
+ * `server_tool_use` and `web_search_tool_result` pairs, then the answer the
+ * results produced — which arrives from upstream as an ordinary stream and is
+ * mapped by the normal path.
+ */
+export const createAnthropicServerToolEventStream = ({
+  model,
+  runTurn,
+}: {
+  model: string;
+  /**
+   * Runs the server-tool turn. Provided by the caller because only it knows
+   * which backends are configured and how to reach upstream for this request.
+   */
+  runTurn: () => Promise<ServerToolTurnOutcome>;
+}): Response => {
   const encoder = new TextEncoder();
   const messageId = createAnthropicId('msg');
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -531,6 +493,48 @@ export const createAnthropicServerToolEventStream = (
             `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
           ),
         );
+      };
+
+      /**
+       * Emits a text-like block the way Anthropic streams one: an empty
+       * `content_block_start`, then the content as a delta, then the stop.
+       * Returns nothing; the caller advances the index when it emitted one.
+       */
+      const emitText = (
+        blockIndex: number,
+        type: string,
+        content: string,
+        deltaType: string,
+      ): void => {
+        if (!content) {
+          return;
+        }
+
+        const field = type === 'thinking' ? 'thinking' : 'text';
+
+        enqueueEvent({
+          type: 'content_block_start',
+          index: blockIndex,
+          content_block: { type, [field]: '' },
+        });
+        enqueueEvent({
+          type: 'content_block_delta',
+          index: blockIndex,
+          delta: { type: deltaType, [field]: content },
+        });
+        enqueueEvent({ type: 'content_block_stop', index: blockIndex });
+      };
+
+      const emitBlock = (
+        index: number,
+        contentBlock: Record<string, unknown>,
+      ): void => {
+        enqueueEvent({
+          content_block: contentBlock,
+          index,
+          type: 'content_block_start',
+        });
+        enqueueEvent({ type: 'content_block_stop', index });
       };
 
       enqueueEvent({
@@ -553,55 +557,94 @@ export const createAnthropicServerToolEventStream = (
       });
 
       const run = async (): Promise<void> => {
-        const upstreamResponse = await proxyChatCompletions(
-          request,
-          chatBody as ChatRequestBody,
-          undefined,
-          debugTrace,
-          '/v1/messages',
-          // The findings reach the client as `web_search_tool_result` blocks,
-          // so the loop must not also fold them into the assistant text.
-          { emitStreamEvents: true, findingsAsStructuredBlocks: true },
-        );
+        const { executions, response, segments } = await runTurn();
 
         if (cancelled) {
-          await upstreamResponse.body?.cancel();
+          await response.body?.cancel();
           return;
         }
 
-        if (!upstreamResponse.ok || !upstreamResponse.body) {
+        let index = 0;
+
+        // What the model wrote before it reached for the tool. Anthropic puts
+        // this ahead of the `server_tool_use` block, and a client replaying the
+        // turn expects it there.
+        // Interleaved, exactly as the non-streaming renderer lays it out: each
+        // hop's prose first, then the blocks it asked for.
+        for (const segment of segments) {
+          emitText(index, 'thinking', segment.reasoning, 'thinking_delta');
+          index += segment.reasoning ? 1 : 0;
+          emitText(index, 'text', segment.text, 'text_delta');
+          index += segment.text ? 1 : 0;
+
+          for (const execution of segment.executions) {
+            const toolUseId = createAnthropicId('srvtoolu');
+            const [toolUse, result] = buildAnthropicServerToolBlocks(execution);
+
+            enqueueEvent({
+              type: 'content_block_start',
+              index,
+              // Anthropic builds a streamed tool input from deltas alone, so the
+              // block opens empty. Carrying the input here too would hand strict
+              // consumers the arguments twice.
+              content_block: { ...toolUse, id: toolUseId, input: {} },
+            });
+            enqueueEvent({
+              type: 'content_block_delta',
+              index,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify(execution.input),
+              },
+            });
+            enqueueEvent({ type: 'content_block_stop', index });
+            index++;
+
+            emitBlock(index++, { ...result, tool_use_id: toolUseId });
+          }
+        }
+
+        // Emitted after the blocks rather than instead of them: a search
+        // that already ran is work the client has paid for, and it is the
+        // only record of what happened when the answer never arrives.
+        if (!response.ok) {
           // A rate limit has to arrive as `rate_limit_error`, or a client that
           // retries on that type alone will treat an exhausted quota as a
           // generic failure and stop retrying — so the upstream status drives
           // the event type even though the envelope is already streaming and
           // the HTTP status cannot be changed.
-          const message = upstreamResponse.ok
-            ? 'Upstream request failed'
-            : await getUpstreamErrorMessage(upstreamResponse).catch(
-                () => 'Upstream request failed',
-              );
+          const message = await getUpstreamErrorMessage(response).catch(
+            () => 'Upstream request failed',
+          );
 
           enqueueEvent({
             type: 'error',
-            error: {
-              type: anthropicErrorType(upstreamResponse.status),
-              message,
-            },
+            error: { type: anthropicErrorType(response.status), message },
           });
           controller.close();
           return;
         }
 
-        const mappedResponse = mapOpenAIStreamToAnthropicSSE(
-          upstreamResponse,
-          model,
-          {
-            emitMessageStart: false,
-            initialContentBlockCount: 0,
-            messageId,
-            serverToolExecutions: [],
-          },
-        );
+        // A buffered answer has to be replayed as SSE: the client asked to
+        // stream, and the turn spent the response reading the tool calls.
+        const upstream = isEventStream(response)
+          ? response
+          : synthesizeChatCompletionStream(
+              (await response.json()) as ChatCompletionPayload,
+              model,
+            );
+
+        if (cancelled) {
+          await upstream.body?.cancel();
+          return;
+        }
+
+        const mappedResponse = mapOpenAIStreamToAnthropicSSE(upstream, model, {
+          emitMessageStart: false,
+          initialContentBlockCount: index,
+          messageId,
+          serverToolExecutions: executions,
+        });
         const reader = mappedResponse.body!.getReader();
         activeReader = reader;
 

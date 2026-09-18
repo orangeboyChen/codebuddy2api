@@ -228,6 +228,18 @@ export const mapInputItemToMessage = (
     };
   }
 
+  // Call items the proxy itself mints and a stateless client replays verbatim
+  // from the previous response's `output`. They carry no text, so the
+  // plain-message case below would turn each one into an empty
+  // `{role:'user', content:''}` entry — one phantom user turn per search the
+  // previous turn ran, repeated on every later turn.
+  if (
+    item.type === 'web_search_call' ||
+    item.type === 'image_generation_call'
+  ) {
+    return null;
+  }
+
   // Every other item type returns above, so what is left is a plain message:
   // either one with a declared `type: 'message'`, or one carrying only
   // `role`/`content`. Images are kept structured so the chat path can rebuild

@@ -23,13 +23,14 @@ import { getCodeBuddyApiEndpoint } from '../domain/config';
 import type { ProxyContext } from './codebuddy';
 import { buildUpstreamHeaders } from './codebuddy';
 import {
+  foldIntermediateTexts,
   getServerToolExecutions,
-  withIntermediateTurns,
+  getServerToolFollowUpMessages,
   type ChatCompletionMessage,
   type ChatCompletionPayload,
   type ChatCompletionToolCall,
   type ServerToolExecution,
-} from './web-search-loop';
+} from './server-tools';
 
 export const IMAGE_GENERATION_TOOL_TYPE = 'image_generation';
 
@@ -447,6 +448,12 @@ export const executeImageGenerationLoop = async ({
     // rebuilt response the caller can no longer look them up on.
     serverToolExecutions.push(...getServerToolExecutions(response));
 
+    // Likewise the messages the server-tool turn appended to its own
+    // transcript. It ran its searches against a transcript it built internally
+    // and never handed back, so a loop that replays the request would ask the
+    // model to continue from input in which those searches do not exist.
+    const followUpMessages = getServerToolFollowUpMessages(response);
+
     // A stream has already begun emitting to the client, so it cannot be
     // resumed with a tool result; hand it back untouched.
     if (
@@ -489,12 +496,7 @@ export const executeImageGenerationLoop = async ({
         executions,
         response: rebuildResponse(
           response,
-          withIntermediateTurns({
-            executions: [],
-            payload,
-            reasonings: [],
-            texts: intermediateTexts,
-          }).payload,
+          foldIntermediateTexts(payload, intermediateTexts),
         ),
         serverToolExecutions,
       };
@@ -535,6 +537,10 @@ export const executeImageGenerationLoop = async ({
       ? [...currentBody.messages]
       : [];
 
+    // Ahead of this round's own message: the turn's hops are what came before
+    // it, and dropping them loses the searches that produced this round.
+    messages.push(...followUpMessages);
+
     if (message) {
       messages.push(message);
     }
@@ -559,12 +565,10 @@ export const executeImageGenerationLoop = async ({
     executions,
     response: rebuildResponse(
       lastResponse ?? new Response(null, { status: 502 }),
-      withIntermediateTurns({
-        executions: [],
-        payload: clearClosingHop(lastPayload ?? {}),
-        reasonings: [],
-        texts: intermediateTexts,
-      }).payload,
+      foldIntermediateTexts(
+        clearClosingHop(lastPayload ?? {}),
+        intermediateTexts,
+      ),
     ),
     serverToolExecutions,
   };

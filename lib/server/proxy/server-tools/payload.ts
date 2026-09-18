@@ -2,38 +2,6 @@ import { extractErrorMessage } from '../../shared/http';
 import type { ChatCompletionPayload } from './types';
 
 /**
- * Rebuilds a failed upstream response so its body can be read again.
- *
- * A `Response` body can only be consumed once. The loop reads it to decide
- * whether the model asked for a server tool, and handing the same object back
- * used to leave the route layer — which reads it again to build the answer the
- * client actually sees — with a spent body: the second read threw
- * "Body already used" and the client got a 500 in place of the real upstream
- * status. Draining it here and replaying the bytes in a fresh response keeps
- * both reads working and preserves the body verbatim, so an upstream error
- * detail that is not valid JSON still reaches the client intact.
- *
- * `content-length` and `content-encoding` are dropped: the body is re-emitted
- * rather than re-encoded, and a stale length would describe bytes the upstream
- * compressed before this layer ever saw them.
- */
-export const buildServerToolFailureResponse = async (
-  response: Response,
-): Promise<Response> => {
-  const headers = new Headers(response.headers);
-
-  headers.delete('content-length');
-  headers.delete('content-encoding');
-  headers.set('content-type', 'application/json');
-
-  return new Response(await response.text(), {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
-};
-
-/**
  * Parses a buffered upstream body, tolerating a failure that is not JSON.
  *
  * A successful response must be well-formed — anything else is a bug worth
@@ -57,13 +25,20 @@ export const parseBufferedPayload = (
   }
 };
 
+/**
+ * Reads and parses a buffered upstream body.
+ *
+ * `buffered` is passed in rather than read here because the caller has already
+ * consumed the response to get at it: a `Response` body can be read once, and
+ * reading it again throws "Body already used". The response is still needed for
+ * its status and headers.
+ */
 export const readBufferedChatCompletionPayload = async (
   response: Response,
+  buffered?: string,
 ): Promise<ChatCompletionPayload> => {
-  // Cloned so the failure path can replay the body verbatim; see
-  // {@link buildServerToolFailureResponse}.
-  const buffered = await response.clone().text();
-  const payload = parseBufferedPayload(buffered, response.ok);
+  const text = buffered ?? (await response.clone().text());
+  const payload = parseBufferedPayload(text, response.ok);
 
   if (!response.ok || payload.error) {
     const ownMessage = payload.error?.message;
@@ -73,7 +48,7 @@ export const readBufferedChatCompletionPayload = async (
     // code has no message to find, and the JSON is still the only record of
     // what happened. An empty body says nothing, so it falls all the way
     // through to the generic message instead of winning on being non-null.
-    const detail = buffered.trim();
+    const detail = text.trim();
 
     return {
       ...payload,

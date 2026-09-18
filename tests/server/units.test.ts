@@ -5334,8 +5334,11 @@ describe('server units', () => {
     ]);
 
     expect(result).toHaveLength(7);
+    // A provider-executed declaration keeps its declared type: it is the only
+    // thing that tells it apart from the client's own function of the same
+    // name, and upstream never sees it because the turn rewrites it first.
     expect(result?.[0]).toMatchObject({
-      type: 'function',
+      type: 'web_search_preview',
       function: {
         name: 'web_search',
       },
@@ -5358,7 +5361,7 @@ describe('server units', () => {
       },
     });
     expect(result?.[3]).toMatchObject({
-      type: 'function',
+      type: 'web_search_preview',
       function: {
         name: 'web_search',
       },
@@ -5506,8 +5509,6 @@ describe('server units', () => {
       ]),
     ).toEqual([
       {
-        // Marked as server-declared so the proxy knows it executes the call.
-        'x-codebuddy2api-server-tool': true,
         type: 'function',
         function: expect.objectContaining({
           name: 'image_generation',

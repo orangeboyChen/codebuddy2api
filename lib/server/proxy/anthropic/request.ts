@@ -1,15 +1,8 @@
-import {
-  getDefaultModel,
-  isWebFetchEnabled,
-  isWebSearchEnabled,
-} from '../../domain/config';
+import { getDefaultModel } from '../../domain/config';
 import { stringifyContent } from '../../shared/content';
 import {
-  markServerTool,
   normalizeToolName,
-  WEB_FETCH_TOOL_NAME,
   WEB_FETCH_TOOL_TYPE_PREFIX,
-  WEB_SEARCH_TOOL_NAME,
   WEB_SEARCH_TOOL_TYPE_PREFIX,
 } from '../../search/tool';
 import {
@@ -330,6 +323,19 @@ export const mapAnthropicMessagesToChat = (
   return result;
 };
 
+/**
+ * Translates Anthropic tool declarations into the chat shape upstream takes.
+ *
+ * A provider-executed declaration — `web_search_20250305`,
+ * `web_fetch_20250910` — keeps its declared type rather than being flattened to
+ * `function`. That type is the only thing distinguishing a server tool from the
+ * client's own function, and Claude Code relies on the difference: it declares
+ * `WebSearch` as an ordinary function and resolves it itself, so a translation
+ * that collapsed the two would hand a client-owned tool to the proxy.
+ *
+ * Nothing sends the preserved type upstream: a request carrying one is always
+ * rewritten before it leaves, because upstream has no server tools.
+ */
 export const mapAnthropicToolsToChat = (
   tools: AnthropicTool[] | undefined,
 ): unknown[] | undefined => {
@@ -338,7 +344,24 @@ export const mapAnthropicToolsToChat = (
   }
 
   return tools.map((tool) => {
-    const mapped = {
+    const type = typeof tool.type === 'string' ? tool.type.trim() : '';
+    const serverDeclared = [
+      WEB_SEARCH_TOOL_TYPE_PREFIX,
+      WEB_FETCH_TOOL_TYPE_PREFIX,
+    ].some((prefix) =>
+      normalizeToolName(type).startsWith(normalizeToolName(prefix)),
+    );
+
+    if (serverDeclared) {
+      // Everything the client declared travels with it — `max_uses`,
+      // `allowed_domains`, `user_location`. Only the *shape* changes: upstream
+      // is a Chat API, so the declaration has to look like a function, while
+      // the declared type is kept on `type` so the proxy can still recognise
+      // it as a server tool downstream.
+      return { ...tool, type, function: { name: tool.name } };
+    }
+
+    return {
       type: 'function',
       function: {
         name: tool.name,
@@ -346,32 +369,7 @@ export const mapAnthropicToolsToChat = (
         parameters: tool.input_schema,
       },
     };
-    const normalizedType = normalizeToolName(tool.type ?? '');
-    const serverDeclared = [
-      WEB_SEARCH_TOOL_TYPE_PREFIX,
-      WEB_FETCH_TOOL_TYPE_PREFIX,
-    ].some((prefix) => normalizedType.startsWith(normalizeToolName(prefix)));
-
-    return serverDeclared ? markServerTool(mapped) : mapped;
   });
-};
-
-export const shouldBridgeAnthropicServerTools = async (
-  tools: AnthropicTool[] | undefined,
-): Promise<boolean> => {
-  const names = new Set(
-    (tools ?? []).map((tool) => normalizeToolName(tool.name)),
-  );
-  const [searchEnabled, fetchEnabled] = await Promise.all([
-    names.has(normalizeToolName(WEB_SEARCH_TOOL_NAME))
-      ? isWebSearchEnabled()
-      : false,
-    names.has(normalizeToolName(WEB_FETCH_TOOL_NAME))
-      ? isWebFetchEnabled()
-      : false,
-  ]);
-
-  return searchEnabled || fetchEnabled;
 };
 
 export const mapAnthropicToolChoiceToChat = (toolChoice: unknown): unknown => {

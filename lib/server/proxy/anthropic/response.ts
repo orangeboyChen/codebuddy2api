@@ -4,7 +4,7 @@ import type {
   OpenAIChatResponse,
   OpenAIUsage,
 } from './types';
-import type { ServerToolExecution, ServerToolTurn } from '../web-search-loop';
+import type { ServerToolExecution, ServerToolSegment } from '../server-tools';
 
 // ---------------------------------------------------------------------------
 // Response translation: OpenAI → Anthropic (non-streaming)
@@ -121,47 +121,32 @@ export const buildThinkingBlock = (
 });
 
 /**
- * Lays a server-tool turn out the way Anthropic does: each hop contributes its
- * own thinking and text, followed by the tool blocks that hop triggered.
+ * Lays a server-tool turn out the way Anthropic does: what the model wrote
+ * before the search, the search itself, then the answer the results produced.
  *
- * `turns` carries the per-hop grouping the OpenAI-shaped payload cannot. Under
- * that protocol a multi-hop turn collapses into one `content` string and one
- * `reasoning_content` string, which loses where one hop's reasoning ends and the
- * next begins — so the grouping has to be recovered before it is joined, which
- * is why the loop emits it alongside the strings rather than this file
- * reconstructing it.
- *
- * Anthropic's own server tools run multiple hops inside one assistant message,
- * and a client replaying that message expects `[thinking] [text] [tool_use]
- * [tool_result] [thinking] [text]`. Gathering the blocks by kind instead — every
- * tool ahead of all the prose — puts each search before the reasoning that asked
- * for it and merges hops that were never contiguous.
+ * The order is the whole point. A client replays this content array as the
+ * assistant turn, and Anthropic's own server tools interleave — `[thinking]
+ * [text] [server_tool_use] [web_search_tool_result] [text]` — so gathering the
+ * blocks by kind instead would show every search ahead of the reasoning that
+ * asked for it, and put the conclusion before its evidence.
  */
-export const buildAnthropicTurnBlocks = (
-  turns: ServerToolTurn[],
-): AnthropicContentBlock[] => {
-  const blocks: AnthropicContentBlock[] = [];
-
-  turns.forEach((turn) => {
-    if (turn.reasoning) {
-      blocks.push(buildThinkingBlock(turn.reasoning));
-    }
-
-    if (turn.text) {
-      blocks.push({ type: 'text', text: turn.text });
-    }
-
-    blocks.push(...buildAllAnthropicServerToolBlocks(turn.executions));
-  });
-
-  return blocks;
-};
+export const buildAnthropicServerToolTurnBlocks = (
+  segments: ServerToolSegment[],
+): AnthropicContentBlock[] =>
+  // Interleaved, not gathered by kind: each hop's prose belongs immediately
+  // before the blocks it asked for. Collecting all the prose first would show
+  // the user a conclusion ahead of the search that produced it.
+  segments.flatMap((segment) => [
+    ...(segment.reasoning ? [buildThinkingBlock(segment.reasoning)] : []),
+    ...(segment.text ? [{ text: segment.text, type: 'text' as const }] : []),
+    ...buildAllAnthropicServerToolBlocks(segment.executions),
+  ]);
 
 export const mapOpenAIResponseToAnthropic = (
   openaiResponse: OpenAIChatResponse,
   model: string,
   serverToolExecutions: ServerToolExecution[] = [],
-  turns?: ServerToolTurn[],
+  segments?: ServerToolSegment[],
 ): Record<string, unknown> => {
   const choice = openaiResponse.choices?.[0];
   const message = choice?.message;
@@ -173,15 +158,11 @@ export const mapOpenAIResponseToAnthropic = (
   const textContent =
     typeof message?.content === 'string' ? message.content : '';
 
-  // With per-hop grouping the turns already hold every block in order, prose
-  // included. Without it — no server tool ran, or a path that never grouped the
-  // hops — fall back to Anthropic's own order: thinking and text first, then
-  // the server-tool blocks they led to.
-  const contentBlocks: AnthropicContentBlock[] = turns
-    ? buildAnthropicTurnBlocks(turns)
+  const contentBlocks: AnthropicContentBlock[] = segments
+    ? buildAnthropicServerToolTurnBlocks(segments)
     : [];
 
-  if (!turns) {
+  if (!segments) {
     if (reasoningText) {
       contentBlocks.push(buildThinkingBlock(reasoningText));
     }
@@ -193,6 +174,16 @@ export const mapOpenAIResponseToAnthropic = (
     contentBlocks.push(
       ...buildAllAnthropicServerToolBlocks(serverToolExecutions),
     );
+  } else {
+    // The closing half of the turn: the answer written once the results were
+    // in. It follows every block above rather than preceding them.
+    if (reasoningText) {
+      contentBlocks.push(buildThinkingBlock(reasoningText));
+    }
+
+    if (textContent) {
+      contentBlocks.push({ type: 'text', text: textContent });
+    }
   }
 
   // Tool calls

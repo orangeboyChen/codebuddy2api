@@ -6,7 +6,6 @@ import { createErrorResponse } from '../../shared/http';
 import {
   buildWebFetchToolDefinition,
   buildWebSearchToolDefinition,
-  markServerTool,
   normalizeToolName,
   WEB_FETCH_TOOL_NAME,
   WEB_FETCH_TOOL_TYPE_PREFIX,
@@ -18,6 +17,10 @@ import {
   IMAGE_GENERATION_CHAT_TOOL_NAME,
   IMAGE_GENERATION_TOOL_TYPE,
 } from '../image-generation';
+import {
+  classifyServerToolDeclaration,
+  type ServerToolKind,
+} from '../server-tools';
 import type {
   ResponsesRequestBody,
   SupportedChatTool,
@@ -129,9 +132,13 @@ export const toSupportedChatTool = (
   const toolType = typeof tool.type === 'string' ? tool.type : 'function';
 
   // Server-side search and fetch carry no function schema, so the generic
-  // branch below drops them. Emit them as functions unconditionally and let
-  // the proxy loop resolve the configured backend asynchronously. SearXNG
-  // needs local configuration, while CodeBuddy search does not.
+  // branch below drops them. Emit them as functions unconditionally and let the
+  // route resolve the configured backend asynchronously. SearXNG needs local
+  // configuration, while CodeBuddy search does not.
+  //
+  // The declared type is kept, not flattened: it is the only thing that
+  // distinguishes a provider-executed tool from the client's own function, and
+  // a client's own `web_search` must stay the client's to resolve.
   if (
     normalizeToolName(toolType).startsWith(
       normalizeToolName(WEB_SEARCH_TOOL_TYPE_PREFIX),
@@ -142,9 +149,10 @@ export const toSupportedChatTool = (
     return [
       {
         chatName: WEB_SEARCH_TOOL_NAME,
+        declaration: tool as unknown as Record<string, unknown>,
         kind: 'function',
         originalName: WEB_SEARCH_TOOL_NAME,
-        serverDeclared: true,
+        serverType: toolType,
         tool: definition,
       },
     ];
@@ -163,9 +171,10 @@ export const toSupportedChatTool = (
     return [
       {
         chatName: WEB_FETCH_TOOL_NAME,
+        declaration: tool as unknown as Record<string, unknown>,
         kind: 'function',
         originalName: WEB_FETCH_TOOL_NAME,
-        serverDeclared: true,
+        serverType: toolType,
         tool: definition,
       },
     ];
@@ -181,7 +190,6 @@ export const toSupportedChatTool = (
         chatName: IMAGE_GENERATION_CHAT_TOOL_NAME,
         kind: 'function' as const,
         originalName: IMAGE_GENERATION_TOOL_TYPE,
-        serverDeclared: true,
         tool: buildImageGenerationChatTool(),
       },
     ];
@@ -388,12 +396,84 @@ export const translateResponsesToolsToChat = (
   }
 
   return supported.map((tool) => {
+    if (!tool.serverType) {
+      // An ordinary function, which upstream understands as it stands.
+      return { type: 'function', function: tool.tool };
+    }
+
+    // A provider-executed declaration keeps its declared type — the only thing
+    // that tells it apart from the client's own function of the same name — and
+    // carries the rest of what the client declared (`max_uses`,
+    // `allowed_domains`, …), which the turn reads before it rewrites the shape.
     return {
-      type: 'function',
+      ...(tool.declaration ?? {}),
+      type: tool.serverType,
       function: tool.tool,
-      ...(tool.serverDeclared ? markServerTool({}) : {}),
     };
   });
+};
+
+/**
+ * The function a hosted-tool `tool_choice` has to name.
+ *
+ * The choice repeats the declared type — `web_search_preview` — and that is a
+ * shape upstream has never seen: the declaration was rewritten into an ordinary
+ * function on its way out. Naming the injected function is what lets the pin do
+ * its job, which is to make the model emit a query instead of answering from
+ * memory.
+ */
+const SERVER_TOOL_CHOICE_NAMES: Record<ServerToolKind, string> = {
+  web_fetch: WEB_FETCH_TOOL_NAME,
+  web_search: WEB_SEARCH_TOOL_NAME,
+};
+
+/**
+ * Image generation is executed by its own loop, never by the server-tool turn,
+ * so it is deliberately outside the classifier's vocabulary — widening that
+ * would have the turn claim a call it cannot run. It is still a tool this
+ * adapter serves, so it gets a branch of its own everywhere one is needed.
+ */
+const isImageGenerationToolChoice = (
+  choice: Record<string, unknown>,
+): boolean => choice.type === IMAGE_GENERATION_TOOL_TYPE;
+
+/**
+ * A pin on a hosted type the request declared but this adapter withdraws.
+ *
+ * `getSupportedChatTools` drops a hosted declaration with no implementation
+ * here, so the tool never reaches upstream — and a pin naming it would be a
+ * choice with nothing behind it, which an upstream that validates the two
+ * together rejects. Serving the request without the tool is the honest
+ * degradation: the model answers from memory, which is what
+ * `reconcileToolChoice` already arranges for a server tool with no backend.
+ */
+const isWithdrawnToolChoice = (
+  tools: ResponsesRequestBody['tools'],
+  toolChoice: unknown,
+): boolean => {
+  if (typeof toolChoice !== 'object' || toolChoice === null) {
+    return false;
+  }
+
+  const choice = toolChoice as Record<string, unknown>;
+  const type = typeof choice.type === 'string' ? choice.type : '';
+
+  // Every other shape has a branch of its own, and none of them is a
+  // withdrawal: a function is pinned by name, and a hosted tool this adapter
+  // serves is translated rather than dropped.
+  if (
+    !type ||
+    type === 'function' ||
+    typeof choice.name === 'string' ||
+    isImageGenerationToolChoice(choice) ||
+    classifyServerToolDeclaration(choice) !== null
+  ) {
+    return false;
+  }
+
+  return Boolean(
+    tools?.some((tool) => typeof tool?.type === 'string' && tool.type === type),
+  );
 };
 
 export const translateResponsesToolChoiceToChat = (
@@ -422,6 +502,29 @@ export const translateResponsesToolChoiceToChat = (
     return choice.type;
   }
 
+  // A hosted-tool choice names the same declaration the tools array carries
+  // under its own type, so classification recognises it. Upstream only ever
+  // sees the function the proxy injected, and a pin left as
+  // `web_search_preview` is a shape it has never heard of.
+  const serverToolKind = classifyServerToolDeclaration(choice);
+
+  if (serverToolKind) {
+    return {
+      type: 'function',
+      function: { name: SERVER_TOOL_CHOICE_NAMES[serverToolKind] },
+    };
+  }
+
+  // The image tool is rewritten into a function on its way out too, so its pin
+  // has to name that function for the same reason a search pin does: upstream
+  // has never heard of `image_generation` as a tool type.
+  if (isImageGenerationToolChoice(choice)) {
+    return {
+      type: 'function',
+      function: { name: IMAGE_GENERATION_CHAT_TOOL_NAME },
+    };
+  }
+
   // Responses API selects a function by name:
   // {type: 'function', name: 'fn'} -> chat schema {type: 'function', function: {name: 'fn'}}
   if (typeof choice.name === 'string') {
@@ -438,6 +541,12 @@ export const translateResponsesToolChoiceToChatWithTools = (
   tools: ResponsesRequestBody['tools'],
   toolChoice: unknown,
 ): unknown => {
+  // A withdrawn declaration is not on offer upstream, so its pin goes rather
+  // than being sent as a type upstream has never heard of.
+  if (isWithdrawnToolChoice(tools, toolChoice)) {
+    return undefined;
+  }
+
   const translated = translateResponsesToolChoiceToChat(toolChoice);
 
   if (typeof translated !== 'object' || translated === null) {
@@ -513,11 +622,23 @@ export const getResponsesCompatibilityError = (
       choice.type === 'none' ||
       choice.type === 'required';
     const isNamedFunctionLikeChoice = typeof choice.name === 'string';
+    // A hosted tool is pinned by its declared type — the same vocabulary the
+    // tools array uses, so the classifier recognises it. Rejecting it here
+    // 400s a request this adapter can serve; the choice is rewritten below.
+    // Three cases, and none of them is a client error: search and fetch name
+    // the injected function, image generation names its own, and a type no
+    // implementation here serves is dropped rather than pinned to a tool
+    // upstream is never offered.
+    const isHostedToolChoice =
+      classifyServerToolDeclaration(choice) !== null ||
+      isImageGenerationToolChoice(choice) ||
+      isWithdrawnToolChoice(tools, choice);
 
     if (
       !isPretranslatedFunctionChoice &&
       !isSimpleChoiceType &&
-      !isNamedFunctionLikeChoice
+      !isNamedFunctionLikeChoice &&
+      !isHostedToolChoice
     ) {
       return createErrorResponse(
         400,

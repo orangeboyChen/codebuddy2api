@@ -9,6 +9,7 @@ import {
   eventFrameText,
 } from '../../shared/sse';
 import type { ProxyContext } from '../codebuddy';
+import type { WebSearchResult } from '../../search/types';
 import {
   buildResponsesImageGenerationCallItem,
   type ImageGenerationExecution,
@@ -36,7 +37,82 @@ import type {
 import type {
   ServerToolExecution,
   ServerToolInvocation,
-} from '../web-search-loop';
+  ServerToolSegment,
+} from '../server-tools';
+
+/** A span of `output_text` that points at one search result. */
+interface UrlCitationSpan {
+  end: number;
+  start: number;
+  title: string;
+  url: string;
+}
+
+/**
+ * The `url_citation` annotations for one `output_text`.
+ *
+ * Only URLs the model actually wrote into the text are annotated, because no
+ * index here can be derived: a search response carries titles and URLs but no
+ * offsets into an answer that does not exist yet, and the upstream chat
+ * protocol hands the answer back as a single opaque string — so choosing a
+ * span for a result would mean inventing one. A model that cites a source
+ * normally quotes its URL, and that occurrence is a span measured rather than
+ * guessed. A result whose URL never appears in the text gets no annotation.
+ */
+const buildUrlCitationAnnotations = (
+  text: string,
+  results: WebSearchResult[],
+): Array<Record<string, unknown>> => {
+  const claimed = new Set<string>();
+
+  const spans = results.flatMap((result): UrlCitationSpan[] => {
+    const url = result.url ?? '';
+
+    // Two results can share a URL; a second span over identical offsets would
+    // overlap the first by definition.
+    if (!url || claimed.has(url)) {
+      return [];
+    }
+
+    claimed.add(url);
+    const title = result.title || url;
+    const found: UrlCitationSpan[] = [];
+
+    for (
+      let start = text.indexOf(url);
+      start !== -1;
+      start = text.indexOf(url, start + url.length)
+    ) {
+      found.push({ end: start + url.length, start, title, url });
+    }
+
+    return found;
+  });
+
+  // Longest first at one offset: a result URL that prefixes another would
+  // otherwise take the shorter span and leave the longer one overlapping.
+  spans.sort((left, right) => left.start - right.start || right.end - left.end);
+
+  const annotations: Array<Record<string, unknown>> = [];
+  let coveredUntil = 0;
+
+  spans.forEach(({ end, start, title, url }) => {
+    if (start < coveredUntil) {
+      return;
+    }
+
+    coveredUntil = end;
+    annotations.push({
+      type: 'url_citation',
+      start_index: start,
+      end_index: end,
+      title,
+      url,
+    });
+  });
+
+  return annotations;
+};
 
 export const mapChatResponseToResponsesPayload = async (
   accessKeyId: string | null,
@@ -48,8 +124,10 @@ export const mapChatResponseToResponsesPayload = async (
   upstreamPayload: Record<string, unknown>,
   serverToolExecutions: ServerToolExecution[],
   imageExecutions: ImageGenerationExecution[] = [],
+  pinnedResponseId?: string,
+  segments?: ServerToolSegment[],
 ): Promise<Record<string, unknown>> => {
-  const responseId = createResponseId();
+  const responseId = pinnedResponseId ?? createResponseId();
   const choices = Array.isArray(upstreamPayload.choices)
     ? upstreamPayload.choices
     : [];
@@ -61,10 +139,52 @@ export const mapChatResponseToResponsesPayload = async (
     : [];
   const outputText = stringifyContent(firstChoice.message?.content);
   const createdAt = Math.floor(Date.now() / 1000);
+  // What the model said before it reached for a search, ahead of the searches
+  // themselves — the order it was written in. Only the closing hop's prose and
+  // reasoning live in `upstreamPayload`, so without this a Responses client
+  // never sees the first half of the turn.
+  // Interleaved, matching the Anthropic renderer: each hop's prose, then the
+  // calls it asked for. A single leading preamble would put prose written
+  // between two searches before both of them.
+  const segmentItems: Array<Record<string, unknown>> = segments
+    ? segments.flatMap((segment) => [
+        ...(segment.reasoning
+          ? [
+              {
+                id: createResponseReasoningId(),
+                type: 'reasoning',
+                summary: [{ type: 'summary_text', text: segment.reasoning }],
+                encrypted_content: `${REASONING_PREFIX}${segment.reasoning}`,
+                status: 'completed',
+              },
+            ]
+          : []),
+        ...(segment.text
+          ? [
+              {
+                id: createMessageId(),
+                type: 'message',
+                role: 'assistant',
+                status: 'completed',
+                content: [
+                  { type: 'output_text', text: segment.text, annotations: [] },
+                ],
+              },
+            ]
+          : []),
+        ...segment.executions.map((execution) =>
+          buildResponsesWebSearchCallItem(execution, 'completed'),
+        ),
+      ])
+    : [];
+
   const output: Array<Record<string, unknown>> = [
-    ...serverToolExecutions.map((execution) =>
-      buildResponsesWebSearchCallItem(execution, 'completed'),
-    ),
+    ...segmentItems,
+    ...(segments
+      ? []
+      : serverToolExecutions.map((execution) =>
+          buildResponsesWebSearchCallItem(execution, 'completed'),
+        )),
     // Image generation is executed locally, so the standard
     // `image_generation_call` item has to be synthesized here — the chat
     // upstream has no notion of it.
@@ -103,6 +223,17 @@ export const mapChatResponseToResponsesPayload = async (
     });
   }
 
+  // Exactly the searches this response reports. Only those may be cited: a
+  // result the client saw no `web_search_call` for is not a source it can
+  // trace the citation back to.
+  const reportedExecutions = segments
+    ? segments.flatMap((segment) => segment.executions)
+    : serverToolExecutions;
+
+  const citedResults = reportedExecutions.flatMap((execution) =>
+    execution.type === 'web_search' ? (execution.result?.results ?? []) : [],
+  );
+
   if (outputText || !toolCalls.length) {
     output.push({
       id: createMessageId(),
@@ -113,7 +244,7 @@ export const mapChatResponseToResponsesPayload = async (
         {
           type: 'output_text',
           text: outputText,
-          annotations: [],
+          annotations: buildUrlCitationAnnotations(outputText, citedResults),
         },
       ],
     });
@@ -208,6 +339,9 @@ export const mapChatResponseToResponsesStream = async (
   proxyContext: ProxyContext,
   imageExecutions: ImageGenerationExecution[],
   serverToolExecutions: ServerToolExecution[] = [],
+  pinnedResponseId?: string,
+  segments?: ServerToolSegment[],
+  emitOpeningEvents = true,
 ): Promise<Response> => {
   const payload = await mapChatResponseToResponsesPayload(
     proxyContext.accessKeyId,
@@ -219,13 +353,22 @@ export const mapChatResponseToResponsesStream = async (
     upstreamPayload,
     serverToolExecutions,
     imageExecutions,
+    pinnedResponseId,
+    segments,
   );
   // The mapper creates and persists the session id, so the stream has to reuse
   // it: advertising a different one would leave a client unable to continue the
   // turn, because nothing was stored under the id it was given.
   const responseId = String(payload.id);
   const output = payload.output as Array<Record<string, unknown>>;
-  const messageIndex = output.findIndex((item) => item.type === 'message');
+  // The last message, not the first: a segment's prose is a message too, and
+  // streaming the pre-search prose as the answer would drop the real one.
+  let messageIndex = -1;
+  output.forEach((item, index) => {
+    if (item.type === 'message') {
+      messageIndex = index;
+    }
+  });
   const messageItem =
     messageIndex === -1
       ? null
@@ -288,14 +431,21 @@ export const mapChatResponseToResponsesStream = async (
   };
 
   const frames: Array<Record<string, unknown>> = [
-    {
-      response: { ...payload, output: [], status: 'in_progress' },
-      type: 'response.created',
-    },
-    {
-      response: { id: responseId, status: 'in_progress' },
-      type: 'response.in_progress',
-    },
+    // Skipped when the caller already announced the opening: a streaming
+    // server-tool turn emits it up front so the connection is not idle for
+    // the whole turn, and a second copy would give the client two ids.
+    ...(emitOpeningEvents
+      ? [
+          {
+            response: { ...payload, output: [], status: 'in_progress' },
+            type: 'response.created',
+          },
+          {
+            response: { id: responseId, status: 'in_progress' },
+            type: 'response.in_progress',
+          },
+        ]
+      : []),
     ...otherItems.flatMap(({ item, output_index }) =>
       serverToolFrames({ item, output_index }),
     ),
