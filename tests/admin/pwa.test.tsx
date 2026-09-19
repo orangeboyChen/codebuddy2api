@@ -24,6 +24,18 @@ const withProductionEnv = () => {
   vi.stubEnv('NODE_ENV', 'production');
 };
 
+/** Reads the width and height straight out of the PNG header (IHDR). */
+const readPngSize = (filePath: string) => {
+  const buffer = fs.readFileSync(filePath);
+
+  expect(buffer.subarray(1, 4).toString('ascii')).toBe('PNG');
+
+  return {
+    height: buffer.readUInt32BE(20),
+    width: buffer.readUInt32BE(16),
+  };
+};
+
 describe('registerServiceWorker', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -42,6 +54,7 @@ describe('registerServiceWorker', () => {
   });
 
   it('stays out of the way outside a production build', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
     const container = makeContainer();
     setServiceWorker(container);
 
@@ -103,13 +116,28 @@ describe('web app manifest', () => {
     expect(icons.filter((icon) => icon.purpose === 'maskable')).toHaveLength(1);
   });
 
-  it('ships a file for every declared icon', () => {
-    for (const icon of manifest().icons ?? []) {
-      expect(fs.existsSync(path.join('public', icon.src))).toBe(true);
+  it('ships an icon file at every declared size', () => {
+    const icons = manifest().icons ?? [];
+
+    // Guard the loop: without this the test would pass on an empty list.
+    expect(icons.length).toBeGreaterThan(0);
+
+    for (const icon of icons) {
+      const [width, height] = (icon.sizes ?? '')
+        .split('x')
+        .map((value) => Number.parseInt(value, 10));
+
+      expect(readPngSize(path.join('public', icon.src))).toEqual({
+        height,
+        width,
+      });
     }
   });
 
-  it('ships an iOS home screen icon', () => {
-    expect(fs.existsSync('app/apple-icon.png')).toBe(true);
+  it('ships a full-bleed iOS home screen icon', () => {
+    expect(readPngSize('app/apple-icon.png')).toEqual({
+      height: 180,
+      width: 180,
+    });
   });
 });

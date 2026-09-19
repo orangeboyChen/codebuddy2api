@@ -22,3 +22,4 @@ The console is a PWA, so browsers offer to install it; the installed icon opens 
 - Desktop Chrome or Edge: the install icon at the right of the address bar, or "Install CodeBuddy2API" in the menu.
 - iOS Safari: Share → Add to Home Screen.
 - Browsers only offer installation over HTTPS, or on localhost.
+- Installing it only adds a shortcut: the app still needs the gateway running, and shows the browser's offline page when it is down.

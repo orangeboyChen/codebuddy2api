@@ -29,9 +29,11 @@ export const metadata: Metadata = {
   applicationName: 'CodeBuddy2API',
   appleWebApp: {
     capable: true,
-    statusBarStyle: 'black-translucent',
     title: 'CodeBuddy2API',
   },
+  // Next emits `mobile-web-app-capable` for `appleWebApp.capable`; the Apple
+  // spelling is what an iOS that cannot read the manifest falls back to.
+  other: { 'apple-mobile-web-app-capable': 'yes' },
 };
 
 /**
