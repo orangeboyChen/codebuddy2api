@@ -4,17 +4,17 @@ Settings controls service parameters, credential models, usage data, and console
 
 ## Service settings
 
-| Field                                     | Purpose                                                                                     |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
-| CodeBuddy API endpoint                    | Upstream URL; default `https://copilot.tencent.com`                                         |
-| Admin passkey RP ID / domain              | WebAuthn hostname only; do not include scheme or port                                       |
-| Authentication mode (auto/token)          | Upstream authentication method                                                              |
-| Network environment (internal/ioa/public) | Upstream network environment                                                                |
-| Log level                                 | Choose `DEBUG`, `INFO`, `WARNING`, or `ERROR`                                               |
-| API timeout, first token (minutes)        | Abort a request that produces no first delta in time; default `5`                           |
-| Web search backend                        | Who runs `web_search`: `codebuddy`, `searxng`, or `passthrough`. Default `searxng`          |
-| Web fetch backend                         | Who runs `web_fetch`: `codebuddy`, `codebuddy2api`, or `passthrough`. Default `passthrough` |
-| Translate thought depth for Hy models     | Convert downstream thinking parameters into the upstream `reasoning_effort`; default `off`  |
+| Field                                     | Purpose                                                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------ |
+| CodeBuddy API endpoint                    | Upstream URL; default `https://copilot.tencent.com`                                        |
+| Admin passkey RP ID / domain              | WebAuthn hostname only; do not include scheme or port                                      |
+| Authentication mode (auto/token)          | Upstream authentication method                                                             |
+| Network environment (internal/ioa/public) | Upstream network environment                                                               |
+| Log level                                 | Choose `DEBUG`, `INFO`, `WARNING`, or `ERROR`                                              |
+| API timeout, first token (minutes)        | Abort a request that produces no first delta in time; default `5`                          |
+| Web search backend                        | Which engine runs `web_search`; one choice. See below.                                     |
+| Web fetch backend                         | Which backends fetch a page; several choices, tried in order. See below.                   |
+| Translate thought depth for Hy models     | Convert downstream thinking parameters into the upstream `reasoning_effort`; default `off` |
 
 Click **Save** after changing a field.
 
@@ -56,31 +56,59 @@ the proxy swaps it for a plain function tool, runs it itself, and appends the
 result as a tool message. The model answers normally and the client never learns
 the work happened locally.
 
-Each tool has its own backend, chosen independently:
+### Web search backend
 
-| Tool         | Backend         | What it does                                                            |
-| ------------ | --------------- | ----------------------------------------------------------------------- |
-| `web_search` | `codebuddy`     | Calls CodeBuddy's own `/agenttool/v1/search` with a saved credential.   |
-| `web_search` | `searxng`       | Queries a SearXNG instance. Default. Requires `SEARXNG_URL`.            |
-| `web_fetch`  | `codebuddy`     | Calls CodeBuddy's own `/agenttool/v1/webfetch`. Returns extracted text. |
-| `web_fetch`  | `codebuddy2api` | This server fetches the page directly and converts HTML to text.        |
-| either       | `none`          | Never run the tool; drop it from the request.                           |
+One engine runs every `web_search`. Every engine is offered whether or not it is
+configured, and selecting one reveals the fields it needs:
+
+| Backend      | Configuration                         | Notes                                                             |
+| ------------ | ------------------------------------- | ----------------------------------------------------------------- |
+| `codebuddy`  | none                                  | CodeBuddy's own `/agenttool/v1/search`; needs a saved credential. |
+| `searxng`    | instance address (with port), API key | Your own instance. Default. Key is optional.                      |
+| `duckduckgo` | region                                | No credential at all; returns curated instant answers.            |
+| `brave`      | API key                               | Brave Search, an independent index.                               |
+| `tavily`     | API key                               | Returns page text, not just snippets.                             |
+| `serper`     | API key                               | Google results through Serper.                                    |
+| `bing`       | API key                               | Bing Web Search.                                                  |
+| `exa`        | API key                               | Semantic search; matches meaning rather than keywords.            |
+
+An engine that cannot run — a key that was never filled in, or SearXNG with no
+address — resolves to no backend, and the tool is then dropped from the request
+rather than advertised and left to fail. That is why the default is `searxng`:
+a fresh deployment has no address, so nothing is promised until one is entered.
+
+### Web fetch backend
+
+Any number of backends may be selected, and they are tried in the order they
+were selected — the first one that answers wins. This is worth doing because the
+backends fail in different ways: a direct fetch is refused by some pages, while
+a browser agent is far slower than a direct fetch.
+
+| Backend         | Configuration    | Notes                                                                     |
+| --------------- | ---------------- | ------------------------------------------------------------------------- |
+| `codebuddy`     | none             | CodeBuddy's own `/agenttool/v1/webfetch`; returns extracted text.         |
+| `codebuddy2api` | none             | This server fetches the page directly and converts HTML to text. Default. |
+| `browserable`   | address, API key | Drives a real browser through a Browserable deployment. Key is optional.  |
+| `jina`          | API key          | Jina Reader returns the page as markdown. Key is optional.                |
+
+Selecting none is how the tool is turned off.
 
 `codebuddy` is the reason to reach for this setting: it is the same endpoint the
 CodeBuddy CLI calls, so it needs no extra deployment and authenticates with the
-credential already saved in the gateway. `searxng` stays the default so existing
-deployments are unaffected, and the console hides the search setting entirely
-when `SEARXNG_URL` is unset — a deployment cannot advertise a tool it cannot
-execute.
+credential already saved in the gateway.
 
 The `codebuddy2api` fetch backend treats the URL as untrusted input, since it comes from
 the model: private and loopback addresses are refused before connecting, and
 redirects are re-checked at every hop so a public URL cannot redirect onto the
 deployment's own network.
 
-There is no separate enable switch: `passthrough` hands the tool to the client,
-so the backend choice cannot contradict itself. Both default to `none`. Seed them before opening the
-console with `CODEBUDDY_WEB_SEARCH_BACKEND` and `CODEBUDDY_WEB_FETCH_BACKEND`.
+Both selections can be seeded before the console is opened with
+`CODEBUDDY_WEB_SEARCH_BACKEND` and `CODEBUDDY_WEB_FETCH_BACKEND` (the latter
+accepts a comma-separated list), and every backend's own configuration has an
+equivalent environment variable — `CODEBUDDY_SEARXNG_URL`,
+`CODEBUDDY_BRAVE_API_KEY`, `CODEBUDDY_BROWSERABLE_URL`, and so on. SearXNG also
+still honours `SEARXNG_URL` and `SEARXNG_API_KEY` when the console fields are
+empty.
 
 ## Models and usage
 

@@ -941,10 +941,13 @@ describe('server tool plumbing', () => {
       resetWebSearchProviders();
     });
 
-    it('resolves nothing when both backends are passthrough', async () => {
+    it('resolves nothing when the selected backends cannot run', async () => {
+      // SearXNG with no instance, and Browserable with no address: both are
+      // selected but neither can be built, so neither tool is advertised.
       await updateSettings({
-        CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
-        CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough',
+        CODEBUDDY_SEARXNG_URL: '',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'browserable',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
       });
 
       await expect(resolveServerToolBackends()).resolves.toEqual({

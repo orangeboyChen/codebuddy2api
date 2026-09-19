@@ -5,15 +5,13 @@ import { NextRequest } from 'next/server';
 
 import { updateSettings } from '@/lib/server/domain/config';
 import {
-  getWebSearchProvider,
-  isLocalWebSearchConfigured,
   resetWebSearchProviders,
   resolveSearchProvider,
   runWebSearch,
 } from '@/lib/server/search';
 import {
   createSearxngProvider,
-  createSearxngProviderFromEnv,
+  createSearxngProviderFromSettings,
 } from '@/lib/server/search/providers/searxng';
 import { buildWebSearchToolDefinition } from '@/lib/server/search/tool';
 import {
@@ -88,30 +86,42 @@ describe('server local web search', () => {
   });
 
   describe('provider registry', () => {
-    it('reports no backend when SEARXNG_URL is unset', () => {
-      expect(isLocalWebSearchConfigured()).toBe(false);
-      expect(getWebSearchProvider()).toBeNull();
+    it('resolves no SearXNG provider when nothing is configured', () => {
+      expect(resolveSearchProvider('searxng')).toBeNull();
     });
 
-    it('ignores a non-absolute SEARXNG_URL', () => {
+    it('ignores a non-absolute SearXNG address', () => {
+      expect(
+        resolveSearchProvider('searxng', {
+          search: { searxngUrl: 'searx.example.com/search' },
+        }),
+      ).toBeNull();
       process.env.SEARXNG_URL = 'searx.example.com/search';
       resetWebSearchProviders();
 
-      expect(isLocalWebSearchConfigured()).toBe(false);
+      expect(resolveSearchProvider('searxng')).toBeNull();
     });
 
-    it('resolves a SearXNG provider from the environment', () => {
-      process.env.SEARXNG_URL = 'https://searx.example.com/';
+    it('resolves a SearXNG provider from the console setting', () => {
       process.env.SEARXNG_MAX_RESULTS = '3';
+
+      expect(
+        resolveSearchProvider('searxng', {
+          search: { searxngUrl: 'https://searx.example.com/' },
+        })?.id,
+      ).toBe('searxng');
+    });
+
+    it('resolves a SearXNG provider from the environment as a fallback', () => {
+      process.env.SEARXNG_URL = 'https://searx.example.com/';
       resetWebSearchProviders();
 
-      expect(isLocalWebSearchConfigured()).toBe(true);
-      expect(getWebSearchProvider()?.id).toBe('searxng');
+      expect(resolveSearchProvider('searxng')?.id).toBe('searxng');
     });
 
     it('reports an unconfigured backend when a query is attempted', async () => {
       await expect(runWebSearch({ query: 'hello' })).resolves.toContain(
-        'no local search backend is configured',
+        'no search backend is configured',
       );
     });
 
@@ -159,18 +169,20 @@ describe('server local web search', () => {
       ).resolves.toContain('unknown error');
     });
 
-    it('caches the resolved provider until it is reset', () => {
-      process.env.SEARXNG_URL = 'https://searx.example.com';
+    it('prefers the console address over the environment', async () => {
+      process.env.SEARXNG_URL = 'https://env.example.com';
       resetWebSearchProviders();
-      const first = getWebSearchProvider();
+      const fetchMock = vi.fn(
+        async () => makeJsonResponse({ results: [] }) as unknown as Response,
+      );
+      vi.stubGlobal('fetch', fetchMock);
 
-      expect(getWebSearchProvider()).toBe(first);
+      await resolveSearchProvider('searxng', {
+        search: { searxngUrl: 'https://console.example.com' },
+      })?.search('q');
 
-      delete process.env.SEARXNG_URL;
-      expect(getWebSearchProvider()).toBe(first);
-
-      resetWebSearchProviders();
-      expect(getWebSearchProvider()).toBeNull();
+      const [url] = fetchMock.mock.calls[0] as unknown as [string];
+      expect(url).toContain('https://console.example.com/search?');
     });
   });
 
@@ -347,8 +359,9 @@ describe('server local web search', () => {
       );
     });
 
-    it('returns null from the env factory when the URL is missing', () => {
-      expect(createSearxngProviderFromEnv()).toBeNull();
+    it('returns null from the settings factory when no address is configured', () => {
+      expect(createSearxngProviderFromSettings()).toBeNull();
+      expect(createSearxngProviderFromSettings({ url: '  ' })).toBeNull();
     });
 
     it('treats a whitespace-only query as an empty search', async () => {
@@ -402,7 +415,7 @@ describe('server local web search', () => {
       process.env.SEARXNG_TIMEOUT_MS = 'also-not-a-number';
       resetWebSearchProviders();
 
-      expect(isLocalWebSearchConfigured()).toBe(true);
+      expect(resolveSearchProvider('searxng')?.id).toBe('searxng');
     });
 
     it('clamps out-of-range environment overrides', () => {
@@ -411,7 +424,7 @@ describe('server local web search', () => {
       process.env.SEARXNG_TIMEOUT_MS = '1';
       resetWebSearchProviders();
 
-      expect(isLocalWebSearchConfigured()).toBe(true);
+      expect(resolveSearchProvider('searxng')?.id).toBe('searxng');
     });
 
     it('reads optional settings from the environment', async () => {
@@ -877,8 +890,9 @@ describe('server tool routing', () => {
     });
 
     it('leaves a server tool with no backend for the client to resolve', async () => {
-      // Backend is passthrough, so nothing runs here.
-      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'passthrough' });
+      // SearXNG selected with no instance: nothing here can run the tool.
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
+      clearSearxngEnv();
       const { upstreamCalls } = mockUpstream();
 
       const response = await handleMessagesRequest(

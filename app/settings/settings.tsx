@@ -16,6 +16,17 @@ import {
 import { useTranslations } from 'next-intl';
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
+import {
+  BACKEND_CONFIG_KEYS,
+  FETCH_BACKEND_CONFIG_KEYS,
+  FETCH_BACKENDS,
+  normalizeFetchBackends,
+  normalizeSearchBackend,
+  SEARCH_BACKENDS,
+  SEARCH_BACKEND_CONFIG_KEYS,
+  serializeFetchBackends,
+} from '@/lib/server/search/backends';
+
 import Security from './security';
 
 export type SettingsValue = string | number | boolean | null;
@@ -86,20 +97,61 @@ const settingsSelectOptions: Record<
     { label: 'WARNING', value: 'WARNING' },
     { label: 'ERROR', value: 'ERROR' },
   ],
-  CODEBUDDY_WEB_SEARCH_BACKEND: [
-    { label: 'codebuddy', value: 'codebuddy' },
-    { label: 'searxng', value: 'searxng' },
-    { label: 'passthrough', value: 'passthrough' },
-  ],
-  CODEBUDDY_WEB_FETCH_BACKEND: [
-    { label: 'codebuddy', value: 'codebuddy' },
-    { label: 'codebuddy2api', value: 'codebuddy2api' },
-    { label: 'passthrough', value: 'passthrough' },
-  ],
+};
+
+/**
+ * Display names for the server-tool backends.
+ *
+ * Product names, not prose: they stay the same in every locale the way the
+ * log-level values above do, which is why they are here rather than in
+ * `messages/`.
+ */
+const SEARCH_BACKEND_LABELS: Record<string, string> = {
+  bing: 'Bing',
+  brave: 'Brave Search',
+  codebuddy: 'CodeBuddy',
+  duckduckgo: 'DuckDuckGo',
+  exa: 'Exa',
+  searxng: 'SearXNG',
+  serper: 'Serper (Google)',
+  tavily: 'Tavily',
+};
+
+const FETCH_BACKEND_LABELS: Record<string, string> = {
+  browserable: 'Browserable',
+  codebuddy: 'CodeBuddy',
+  codebuddy2api: 'codebuddy2api (local fetch)',
+  jina: 'Jina Reader',
+};
+
+/** Regions DuckDuckGo accepts, offered as `kl` values. */
+const DUCKDUCKGO_REGIONS: Array<{ labelKey: string; value: string }> = [
+  { labelKey: 'worldwide', value: 'wt-wt' },
+  { labelKey: 'china', value: 'cn-zh' },
+  { labelKey: 'unitedStates', value: 'us-en' },
+  { labelKey: 'japan', value: 'jp-jp' },
+  { labelKey: 'unitedKingdom', value: 'uk-en' },
+  { labelKey: 'germany', value: 'de-de' },
+];
+
+const selectOptionsFor = (
+  settingKey: string,
+  translations: (key: string) => string,
+): Array<{ label: string; value: string }> | undefined => {
+  if (settingKey === 'CODEBUDDY_DUCKDUCKGO_REGION') {
+    return DUCKDUCKGO_REGIONS.map(({ labelKey, value }) => ({
+      label: translations(`settingsPanel.duckduckgoRegions.${labelKey}`),
+      value,
+    }));
+  }
+
+  return settingsSelectOptions[settingKey];
 };
 
 const settingsPlaceholders: Record<string, string> = {
   CODEBUDDY_API_TIMEOUT_MINUTES: '5',
+  CODEBUDDY_SEARXNG_URL: 'http://127.0.0.1:8080',
+  CODEBUDDY_BROWSERABLE_URL: 'http://127.0.0.1:8000',
 };
 
 /**
@@ -125,6 +177,9 @@ const settingHint = (
     CODEBUDDY_WEB_SEARCH_BACKEND: 'webSearchBackendHint',
     CODEBUDDY_WEB_FETCH_BACKEND: 'webFetchBackendHint',
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'hyThoughtDepthHint',
+    CODEBUDDY_SEARXNG_URL: 'searxngUrlHint',
+    CODEBUDDY_BROWSERABLE_URL: 'browserableUrlHint',
+    CODEBUDDY_JINA_API_KEY: 'jinaKeyHint',
   };
   const key = hints[settingKey];
 
@@ -139,6 +194,7 @@ const SettingField = ({
   hint,
   label,
   onChange,
+  options,
   placeholder,
   settingKey,
   value,
@@ -146,12 +202,11 @@ const SettingField = ({
   hint?: string;
   label: string;
   onChange: (value: string) => void;
+  options?: Array<{ label: string; value: string }>;
   placeholder?: string;
   settingKey: string;
   value: SettingsValue;
 }) => {
-  const selectOptions = settingsSelectOptions[settingKey];
-
   if (BOOLEAN_SETTING_KEYS.has(settingKey)) {
     return (
       <div className="mb-4 flex items-center justify-between gap-4">
@@ -181,12 +236,12 @@ const SettingField = ({
       >
         {label}
       </label>
-      {selectOptions ? (
+      {options ? (
         <Select
           className="w-full"
           id={settingKey}
           onChange={onChange}
-          options={selectOptions}
+          options={options}
           value={value}
         />
       ) : (
@@ -199,6 +254,159 @@ const SettingField = ({
         />
       )}
       {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
+    </div>
+  );
+};
+
+/**
+ * The settings one backend needs, rendered under the picker that selected it.
+ *
+ * Nested rather than listed alongside the other settings because a backend's
+ * fields only mean something next to its own name — an API key on its own is
+ * not identifiable — and because showing every backend's fields at once would
+ * put a dozen empty inputs on the page for engines nobody picked.
+ */
+const BackendConfigFields = ({
+  configKeys,
+  onChange,
+  settings,
+  translations,
+}: {
+  configKeys: readonly string[];
+  onChange: (key: string, value: string) => void;
+  settings: SettingsState;
+  translations: (key: string) => string;
+}) => {
+  if (!configKeys.length) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 ml-2 border-l pl-4">
+      {configKeys.map((configKey) => (
+        <SettingField
+          hint={settingHint(configKey, translations)}
+          key={configKey}
+          label={settings.labels[configKey] ?? configKey}
+          onChange={(value) => onChange(configKey, value)}
+          options={selectOptionsFor(configKey, translations)}
+          placeholder={settingsPlaceholders[configKey]}
+          settingKey={configKey}
+          value={settings.values[configKey] ?? ''}
+        />
+      ))}
+    </div>
+  );
+};
+
+/**
+ * The `web_search` picker: one engine, then whatever that engine needs.
+ *
+ * Every engine is offered whether or not it is configured. A backend that
+ * cannot run yet is a choice to make, not a choice to hide — the alternative
+ * (listing only what the environment already provides) is what made an engine
+ * reachable only by editing environment variables.
+ */
+const WebSearchBackendField = ({
+  hint,
+  label,
+  onChange,
+  settings,
+  translations,
+}: {
+  hint?: string;
+  label: string;
+  onChange: (key: string, value: string) => void;
+  settings: SettingsState;
+  translations: (key: string) => string;
+}) => {
+  const settingKey = 'CODEBUDDY_WEB_SEARCH_BACKEND';
+  const selected = normalizeSearchBackend(settings.values[settingKey]);
+
+  return (
+    <div className="mb-4">
+      <label
+        className="mb-2 block whitespace-normal break-words font-medium text-text-light dark:text-text-dark"
+        htmlFor={settingKey}
+      >
+        {label}
+      </label>
+      <Select
+        className="w-full"
+        id={settingKey}
+        onChange={(value) => onChange(settingKey, value)}
+        options={SEARCH_BACKENDS.map((backend) => ({
+          label: SEARCH_BACKEND_LABELS[backend] ?? backend,
+          value: backend,
+        }))}
+        value={selected}
+      />
+      {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
+      <BackendConfigFields
+        configKeys={SEARCH_BACKEND_CONFIG_KEYS[selected] ?? []}
+        onChange={onChange}
+        settings={settings}
+        translations={translations}
+      />
+    </div>
+  );
+};
+
+/**
+ * The `web_fetch` picker: any number of backends, each with its own settings.
+ *
+ * Several can be selected because the backends fail in different ways — a
+ * direct fetch is refused by some pages and a browser agent is too slow for
+ * others — so the selection is tried in order and the first answer wins. The
+ * order is the order of selection, which is why it is shown rather than sorted.
+ */
+const WebFetchBackendField = ({
+  hint,
+  label,
+  onChange,
+  settings,
+  translations,
+}: {
+  hint?: string;
+  label: string;
+  onChange: (key: string, value: string) => void;
+  settings: SettingsState;
+  translations: (key: string) => string;
+}) => {
+  const settingKey = 'CODEBUDDY_WEB_FETCH_BACKEND';
+  const selected = normalizeFetchBackends(settings.values[settingKey]);
+
+  return (
+    <div className="mb-4">
+      <label
+        className="mb-2 block whitespace-normal break-words font-medium text-text-light dark:text-text-dark"
+        htmlFor={settingKey}
+      >
+        {label}
+      </label>
+      <Select
+        className="w-full"
+        id={settingKey}
+        mode="multiple"
+        onChange={(values) =>
+          onChange(settingKey, serializeFetchBackends(values))
+        }
+        options={FETCH_BACKENDS.map((backend) => ({
+          label: FETCH_BACKEND_LABELS[backend] ?? backend,
+          value: backend,
+        }))}
+        value={selected}
+      />
+      {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
+      {selected.map((backend) => (
+        <BackendConfigFields
+          configKeys={FETCH_BACKEND_CONFIG_KEYS[backend] ?? []}
+          key={backend}
+          onChange={onChange}
+          settings={settings}
+          translations={translations}
+        />
+      ))}
     </div>
   );
 };
@@ -456,21 +664,46 @@ const Settings = () => {
               <div>{translations('settingsPanel.loading')}</div>
             </div>
           ) : (
-            Object.entries(settings.labels).map(([settingKey, label]) => (
-              <SettingField
-                hint={settingHint(settingKey, translations)}
-                key={settingKey}
-                label={label}
-                onChange={(value) => onChange(settingKey, value)}
-                placeholder={
-                  settingKey === 'CODEBUDDY_ADMIN_PASSKEY_RP_ID'
-                    ? translations('settingsPanel.passkeyRpIdPlaceholder')
-                    : settingsPlaceholders[settingKey]
-                }
-                settingKey={settingKey}
-                value={settings.values[settingKey] ?? ''}
-              />
-            ))
+            Object.entries(settings.labels)
+              // A backend's own settings are rendered by its picker, which
+              // knows which backend they belong to.
+              .filter(([settingKey]) => !BACKEND_CONFIG_KEYS.has(settingKey))
+              .map(([settingKey, label]) =>
+                settingKey === 'CODEBUDDY_WEB_SEARCH_BACKEND' ? (
+                  <WebSearchBackendField
+                    hint={settingHint(settingKey, translations)}
+                    key={settingKey}
+                    label={label}
+                    onChange={onChange}
+                    settings={settings}
+                    translations={translations}
+                  />
+                ) : settingKey === 'CODEBUDDY_WEB_FETCH_BACKEND' ? (
+                  <WebFetchBackendField
+                    hint={settingHint(settingKey, translations)}
+                    key={settingKey}
+                    label={label}
+                    onChange={onChange}
+                    settings={settings}
+                    translations={translations}
+                  />
+                ) : (
+                  <SettingField
+                    hint={settingHint(settingKey, translations)}
+                    key={settingKey}
+                    label={label}
+                    onChange={(value) => onChange(settingKey, value)}
+                    options={selectOptionsFor(settingKey, translations)}
+                    placeholder={
+                      settingKey === 'CODEBUDDY_ADMIN_PASSKEY_RP_ID'
+                        ? translations('settingsPanel.passkeyRpIdPlaceholder')
+                        : settingsPlaceholders[settingKey]
+                    }
+                    settingKey={settingKey}
+                    value={settings.values[settingKey] ?? ''}
+                  />
+                ),
+              )
           )}
         </div>
         <Flexbox horizontal>
