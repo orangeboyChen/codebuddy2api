@@ -34,7 +34,10 @@ interface FetchCall {
  * later call.
  */
 const stubFetchQueue = (
-  responses: Array<Response | ((url: string) => Response)>,
+  responses: Array<
+    | Response
+    | ((url: string, init: RequestInit) => Response | Promise<Response>)
+  >,
 ): { calls: FetchCall[] } => {
   const calls: FetchCall[] = [];
   const snapshots = new Map<
@@ -55,7 +58,7 @@ const stubFetchQueue = (
       const entry = responses[slot];
 
       if (typeof entry === 'function') {
-        return entry(url);
+        return entry(url, requestInit);
       }
 
       let snapshot = snapshots.get(slot);
@@ -536,6 +539,42 @@ describe('Browserable', () => {
       message: expect.stringContaining('not JSON'),
     });
     expect(calls).toHaveLength(2);
+  });
+
+  it('names the timeout when a poll aborts at the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      // The task is created; only the polls hang, so this exercises the poll
+      // path rather than the create one.
+      stubFetchQueue([
+        makeJsonResponse({ id: 'task-9' }),
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(
+                Object.assign(new Error('aborted'), { name: 'AbortError' }),
+              );
+            });
+          }),
+      ]);
+
+      const outcome = createBrowserableProvider({
+        timeoutMs: 5_000,
+        url: 'http://browser.test',
+      })
+        .fetch({ url: 'https://example.com' })
+        .catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      // An abort is how the deadline stops a request; what reaches the model
+      // has to name the task and the budget.
+      await expect(outcome).resolves.toMatchObject({
+        message: expect.stringContaining('task-9 did not finish within 5000ms'),
+      });
+      await expect(outcome).resolves.not.toMatchObject({ name: 'AbortError' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to the task itself when there is no result path', async () => {
