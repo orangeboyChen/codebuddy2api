@@ -73,10 +73,11 @@ const writeCache = async (request, response) => {
   }
 };
 
-self.addEventListener('install', () => {
+self.addEventListener('install', (event) => {
   // Take over as soon as the worker is active so a rebuilt console does not
-  // keep serving through the previous worker until every tab is closed.
-  self.skipWaiting();
+  // keep serving through the previous worker until every tab is closed. Waited
+  // on, or the install could settle — and the worker with it — first.
+  event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', (event) => {

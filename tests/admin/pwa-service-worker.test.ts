@@ -88,7 +88,7 @@ const loadWorker = (options: {
     },
     clients,
     location: { origin: 'https://console.test' },
-    skipWaiting: vi.fn(),
+    skipWaiting: vi.fn().mockResolvedValue(undefined),
   };
   const fetch = vi
     .fn()
@@ -304,11 +304,16 @@ describe('service worker', () => {
     expect(worker.clients.claim).toHaveBeenCalledTimes(1);
   });
 
-  it('takes over as soon as it installs', () => {
+  it('takes over as soon as it installs', async () => {
     const worker = loadWorker({});
+    const event = { waitUntil: vi.fn() };
 
-    worker.dispatch('install', {});
+    worker.dispatch('install', event);
 
     expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
+    // Waited on, so the install cannot settle and discard the worker before
+    // skipWaiting has taken effect.
+    expect(event.waitUntil).toHaveBeenCalledTimes(1);
+    await expect(event.waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
   });
 });

@@ -17,9 +17,9 @@ Open Dashboard after signing in to confirm that the proxy and credential pool ar
 
 ## Install it as an app
 
-The console is a PWA, so browsers offer to install it; the installed icon opens Dashboard directly.
+The console is a PWA, so browsers offer to install it; the installed icon opens the console, or the sign-in page when you are signed out.
 
 - Desktop Chrome or Edge: the install icon at the right of the address bar, or "Install CodeBuddy2API" in the menu.
 - iOS Safari: Share → Add to Home Screen.
 - Browsers only offer installation over HTTPS, or on localhost.
-- Installing it only adds a shortcut: the app still needs the gateway running, and shows the browser's offline page when it is down.
+- Installing it only adds an entry point: pages are not cached, so when the gateway is unreachable the app simply cannot reach it — there is no offline content to fall back on.
