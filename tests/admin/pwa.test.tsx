@@ -136,7 +136,7 @@ describe('web app manifest', () => {
     }
   });
 
-  it('ships a full-bleed iOS home screen icon', () => {
+  it('ships a 180px iOS home screen icon', () => {
     expect(readPngSize(path.join(repoRoot, 'app', 'apple-icon.png'))).toEqual({
       height: 180,
       width: 180,
