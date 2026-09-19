@@ -25,7 +25,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RESULTS = 5;
-export const MAX_MAX_RESULTS = 10;
+const MAX_MAX_RESULTS = 10;
 const MAX_QUERY_LENGTH = 500;
 
 /** A request the factory will issue. `signal` is added by the factory. */

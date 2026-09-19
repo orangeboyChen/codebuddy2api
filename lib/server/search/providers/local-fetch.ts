@@ -723,5 +723,8 @@ export const createLocalFetchProvider = ({
     throw new Error(`Web fetch followed more than ${MAX_REDIRECTS} redirects`);
   };
 
-  return { fetch: fetchPage, id: 'local' };
+  // Named after the backend, not the implementation: `local` is what this used
+  // to be called, and the name reaches logs and the fetch-chain identifier,
+  // where an operator looks for the value they picked in the console.
+  return { fetch: fetchPage, id: 'codebuddy2api' };
 };

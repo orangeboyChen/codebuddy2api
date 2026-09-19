@@ -412,10 +412,13 @@ describe('search tool definitions and backend names', () => {
       ]);
     });
 
-    it('drops a lone `none` only when it is the whole selection', () => {
+    it('treats a selection made only of `none` as off', () => {
       expect(normalizeFetchBackends('none')).toEqual([]);
+      expect(normalizeFetchBackends('none,none')).toEqual([]);
+      expect(normalizeFetchBackends(['none', 'none'])).toEqual([]);
       // A hand-edited value naming a backend is honoured, not disabled.
       expect(normalizeFetchBackends('jina,none')).toEqual(['jina']);
+      expect(normalizeFetchBackends('none,jina')).toEqual(['jina']);
     });
 
     it('drops duplicates and unknown names', () => {
@@ -908,7 +911,7 @@ describe('search provider registry', () => {
     it('builds the local backend and caches it', () => {
       const first = resolveFetchProvider('codebuddy2api');
 
-      expect(first?.id).toBe('local');
+      expect(first?.id).toBe('codebuddy2api');
       expect(resolveFetchProvider('local')).toBe(first);
     });
 
@@ -946,17 +949,17 @@ describe('search provider registry', () => {
     it('composes several selections into one chain, in order', () => {
       const provider = resolveFetchProvider('jina,codebuddy2api');
 
-      expect(provider?.id).toBe('fallback(jina+local)');
+      expect(provider?.id).toBe('fallback(jina+codebuddy2api)');
       expect(
         resolveFetchProviders('jina,codebuddy2api').map(({ id }) => id),
-      ).toEqual(['jina', 'local']);
+      ).toEqual(['jina', 'codebuddy2api']);
     });
 
     it('drops a selected backend that cannot run', () => {
       // Browserable without an address is not a hop worth taking.
       expect(
         resolveFetchProviders('browserable,codebuddy2api').map(({ id }) => id),
-      ).toEqual(['local']);
+      ).toEqual(['codebuddy2api']);
     });
 
     it('resolves nothing for the legacy `none`, which means off', () => {
@@ -964,7 +967,7 @@ describe('search provider registry', () => {
     });
 
     it('falls back to the default for the retired passthrough', () => {
-      expect(resolveFetchProvider('passthrough')?.id).toBe('local');
+      expect(resolveFetchProvider('passthrough')?.id).toBe('codebuddy2api');
     });
 
     it('stores an empty selection as `none`, so clearing the picker turns it off', () => {
@@ -977,9 +980,9 @@ describe('search provider registry', () => {
     });
 
     it('resolves the default when nothing is configured', () => {
-      expect(resolveFetchProvider(null)?.id).toBe('local');
-      expect(resolveFetchProvider(undefined)?.id).toBe('local');
-      expect(resolveFetchProvider('bogus')?.id).toBe('local');
+      expect(resolveFetchProvider(null)?.id).toBe('codebuddy2api');
+      expect(resolveFetchProvider(undefined)?.id).toBe('codebuddy2api');
+      expect(resolveFetchProvider('bogus')?.id).toBe('codebuddy2api');
     });
   });
 
@@ -1931,7 +1934,7 @@ describe('local fetch provider', () => {
   });
 
   it('identifies itself', () => {
-    expect(provider().id).toBe('local');
+    expect(provider().id).toBe('codebuddy2api');
   });
 
   it('reports a missing url without fetching', async () => {

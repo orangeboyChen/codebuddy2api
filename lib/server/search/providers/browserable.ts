@@ -37,8 +37,14 @@ const MIN_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 2_000;
 const MAX_CONTENT_LENGTH = 100_000;
-/** Ceiling on a task-result body before it is parsed, never mind capped. */
-const MAX_BODY_LENGTH = 1_000_000;
+/**
+ * Ceiling on a task-result body before it is parsed, never mind capped.
+ *
+ * Roomier than the page-text cap because a result carries more than the page —
+ * steps, screenshots, the agent's own trace — and truncating that is what turns
+ * a finished task into a body that no longer parses.
+ */
+const MAX_BODY_LENGTH = 4_000_000;
 const MAX_PROMPT_LENGTH = 500;
 
 const SUCCESS_STATUSES = new Set([
@@ -113,6 +119,34 @@ const readDone = (payload: Record<string, unknown>): boolean => {
   const nested = asRecord(payload.data) ?? {};
 
   return payload.done === true || nested.done === true;
+};
+
+/**
+ * The page text from a create-task response, when the task finished at once.
+ *
+ * Narrower than {@link readOutput}: this reads `output` only, and only when the
+ * response does not report the task as still running. A create response carries
+ * other strings — `result: "accepted"`, `status: "queued"` — that must not be
+ * mistaken for the page, or the fetch returns one word instead of a document
+ * and a chain stops there instead of trying the next backend.
+ */
+const readImmediateOutput = (payload: Record<string, unknown>): string => {
+  const status = readStatus(payload);
+
+  if (status && !SUCCESS_STATUSES.has(status)) {
+    return '';
+  }
+
+  const nested = asRecord(payload.data) ?? {};
+  const output = asRecord(payload.output) ?? asRecord(nested.output) ?? {};
+
+  return readFirstString([
+    payload.output,
+    nested.output,
+    output.content,
+    output.result,
+    output.text,
+  ]);
 };
 
 /**
@@ -197,15 +231,22 @@ export const createBrowserableProvider = ({
       // and that page's size is not this deployment's to choose.
       const body = await readCappedResponseBody(response, MAX_BODY_LENGTH);
 
-      // A body that is not JSON is treated as no payload rather than surfacing
-      // a parser error: the caller knows how to report a task it cannot read.
-      const payload = (() => {
-        try {
-          return JSON.parse(body) as unknown;
-        } catch {
-          return null;
-        }
-      })();
+      if (!body.trim()) {
+        return {};
+      }
+
+      // A body that will not parse is an error, not an empty answer: treating it
+      // as "no result yet" would poll to the deadline and then report a
+      // timeout for a deployment that is answering, only unreadably.
+      let payload: unknown;
+
+      try {
+        payload = JSON.parse(body) as unknown;
+      } catch {
+        throw new Error(
+          `Browserable returned a response that is not JSON (${body.length} bytes).`,
+        );
+      }
 
       return asRecord(payload) ?? {};
     } finally {
@@ -275,6 +316,30 @@ export const createBrowserableProvider = ({
     return null;
   };
 
+  /**
+   * One poll, with an aborted request reported as what it is.
+   *
+   * Aborting is how the deadline stops a request that has outstayed it, but the
+   * error that surfaces is an `AbortError` naming neither the task nor the
+   * budget — the least useful thing that could reach the model.
+   */
+  const readTaskOutcomeOrTimeout = async (
+    id: string,
+    budget: () => number,
+  ): Promise<string | null> => {
+    try {
+      return await readTaskOutcome(id, budget);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(
+          `Browserable task ${id} did not finish within ${timeoutMs}ms.`,
+        );
+      }
+
+      throw error;
+    }
+  };
+
   const fetchPage = async ({
     prompt,
     url: rawUrl,
@@ -304,11 +369,23 @@ export const createBrowserableProvider = ({
         },
         false,
         remaining(),
-      )) ?? {};
+      ).catch((error: unknown) => {
+        // Task creation is also on the clock, and an abort there is the whole
+        // budget being spent on one call.
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw new Error(
+            `Browserable did not accept the task within ${timeoutMs}ms.`,
+          );
+        }
+
+        throw error;
+      })) ?? {};
 
     // Some deployments finish synchronously, in which case there is nothing to
-    // poll and no id to read.
-    const immediate = readOutput(created);
+    // poll and no id to read. Only a real `output` counts: a create response
+    // that echoes its status as `result: "accepted"` is an acknowledgement, not
+    // the page.
+    const immediate = readImmediateOutput(created);
 
     if (immediate) {
       return {
@@ -334,7 +411,7 @@ export const createBrowserableProvider = ({
 
       // The remaining time is re-read per request, so a slow deployment cannot
       // stretch one fetch into several full timeouts.
-      const outcome = await readTaskOutcome(id, remaining);
+      const outcome = await readTaskOutcomeOrTimeout(id, remaining);
 
       if (outcome) {
         return {

@@ -968,7 +968,7 @@ describe('server tool plumbing', () => {
         await resolveServerToolBackends();
       delete process.env.SEARXNG_URL;
 
-      expect(fetchProvider?.id).toBe('local');
+      expect(fetchProvider?.id).toBe('codebuddy2api');
       expect(searchProvider?.id).toBe('searxng');
     });
   });

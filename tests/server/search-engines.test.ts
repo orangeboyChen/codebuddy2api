@@ -294,6 +294,11 @@ describe('Tavily', () => {
       query: 'hello',
       search_depth: 'basic',
     });
+    // Both forms of the key are sent: the body field is the long-standing one,
+    // the bearer header is what the API documents now.
+    expect(headersOf(calls[0].init).get('Authorization')).toBe(
+      'Bearer tavily-key',
+    );
   });
 
   it('reads hits from the results array', async () => {

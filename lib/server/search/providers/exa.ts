@@ -18,8 +18,9 @@ const ENDPOINT = 'https://api.exa.ai/search';
 /**
  * Per-hit character budget for the page text Exa returns.
  *
- * Kept well under the snippet cap: with full text on offer a single hit can
- * otherwise fill the whole tool result and crowd out the others.
+ * A little over the snippet cap, so a hit that is truncated reads as truncated
+ * rather than as a complete short answer; the cap is applied by the renderer
+ * either way, which is what stops one hit crowding out the rest.
  */
 const MAX_TEXT_CHARACTERS = 1_000;
 

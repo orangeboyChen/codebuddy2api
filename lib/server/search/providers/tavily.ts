@@ -29,6 +29,9 @@ export const createTavilyProvider = ({
     buildRequest: (query, limit) => ({
       init: {
         body: JSON.stringify({
+          // The body field is how the API took the key for a long time; the
+          // bearer header is how it documents it now. Both are sent so either
+          // form is accepted rather than 401-ing a configured deployment.
           api_key: apiKey,
           max_results: limit,
           query,
@@ -36,6 +39,7 @@ export const createTavilyProvider = ({
         }),
         headers: {
           Accept: 'application/json',
+          Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
         method: 'POST',

@@ -7,6 +7,7 @@
  * are for: the real poll interval is two seconds per attempt.
  */
 
+import { readCappedResponseBody } from '@/lib/server/search/shared';
 import { resolveFetchProvider } from '@/lib/server/search';
 import { createBrowserableProvider } from '@/lib/server/search/providers/browserable';
 import { createJinaFetchProvider } from '@/lib/server/search/providers/jina';
@@ -372,6 +373,90 @@ describe('Browserable', () => {
     ).rejects.toThrow('without a URL');
   });
 
+  it('does not mistake an acknowledgement for the page', async () => {
+    // A create response that echoes `result: "accepted"` is not a page: taking
+    // it as one would return a single word and stop the chain there.
+    stubFetchQueue([
+      makeJsonResponse({ id: 'task-9', result: 'accepted' }),
+      (url: string) =>
+        url.endsWith('/result')
+          ? makeJsonResponse({ status: 'completed', output: 'The page' })
+          : makeJsonResponse(null, 404),
+    ]);
+
+    const pending = createBrowserableProvider({
+      url: 'http://browser.test',
+    }).fetch({ url: 'https://example.com' });
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    const result = await pending;
+
+    expect(result.content).toContain('The page');
+  });
+
+  it('reports a result that cannot be parsed instead of waiting for it', async () => {
+    stubFetchQueue([
+      makeJsonResponse({ id: 'task-9' }),
+      () => new Response('{ not json', { status: 200 }),
+    ]);
+
+    const outcome = createBrowserableProvider({ url: 'http://browser.test' })
+      .fetch({ url: 'https://example.com' })
+      .catch((error: Error) => error);
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await expect(outcome).resolves.toMatchObject({
+      message: expect.stringContaining('not JSON'),
+    });
+  });
+
+  it('names the timeout when the deadline aborts a request', async () => {
+    vi.useFakeTimers();
+    try {
+      // A stub that honours the abort signal, as a real slow deployment would:
+      // the provider's own timer is what ends the request.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          (_input: RequestInfo | URL, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => {
+                reject(
+                  Object.assign(new Error('aborted'), { name: 'AbortError' }),
+                );
+              });
+            }),
+        ) as unknown as typeof fetch,
+      );
+
+      const outcome = createBrowserableProvider({
+        timeoutMs: 5_000,
+        url: 'http://browser.test',
+      })
+        .fetch({ url: 'https://example.com' })
+        .catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // An abort at the deadline has to read as a timeout, not as a bare
+      // AbortError with no task and no budget in it.
+      await expect(outcome).resolves.toMatchObject({
+        message: expect.stringContaining('did not'),
+      });
+      await expect(outcome).resolves.not.toMatchObject({ name: 'AbortError' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('falls back to the task itself when there is no result path', async () => {
     vi.useFakeTimers();
     try {
@@ -542,5 +627,50 @@ describe('the fetch chain', () => {
     await expect(
       chain()?.fetch({ url: 'https://example.com' }),
     ).rejects.toThrow('Browserable failed with HTTP 500');
+  });
+});
+
+describe('readCappedResponseBody', () => {
+  it('stops at the cap instead of buffering the whole body', async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel: () => {
+        cancelled = true;
+      },
+      pull: (controller) => {
+        controller.enqueue(new TextEncoder().encode('y'.repeat(50)));
+      },
+    });
+
+    const text = await readCappedResponseBody(
+      new Response(stream, { status: 200 }),
+      120,
+    );
+
+    expect(text).toBe('y'.repeat(120));
+    expect(cancelled).toBe(true);
+  });
+
+  it('keeps a character that spans two chunks', async () => {
+    // Without a streaming decoder the emoji arrives as two halves and is lost.
+    const bytes = new TextEncoder().encode('a😀b');
+    const stream = new ReadableStream<Uint8Array>({
+      pull: (controller) => {
+        for (const byte of bytes) {
+          controller.enqueue(new Uint8Array([byte]));
+        }
+        controller.close();
+      },
+    });
+
+    await expect(
+      readCappedResponseBody(new Response(stream, { status: 200 }), 100),
+    ).resolves.toBe('a😀b');
+  });
+
+  it('returns an empty string for an empty body', async () => {
+    await expect(
+      readCappedResponseBody(new Response('', { status: 200 }), 100),
+    ).resolves.toBe('');
   });
 });
