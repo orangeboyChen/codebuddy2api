@@ -9,7 +9,7 @@ Proxy CodeBuddy with OpenAI-compatible and Anthropic-compatible APIs for Codex, 
   <img src="./.github/images/codebuddy2api-social.jpg" alt="CodeBuddy2API" width="600" />
 </p>
 
-CodeBuddy2API is a self-hosted gateway with a web-based admin console for managing credentials, access keys, usage, account status, debug traces, and runtime settings.
+CodeBuddy2API is a self-hosted gateway with a web-based admin console for managing credentials, access keys, usage, account status, debug traces, and runtime settings. The console is a progressive web app, so a browser can install it as a desktop or home-screen app.
 
 This project is a substantial refactor of [Sliverkiss/CodeBuddy2api](https://github.com/Sliverkiss/CodeBuddy2api), with a redesigned admin console, multi-protocol API support, and flexible storage backends.
 
