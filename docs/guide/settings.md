@@ -6,19 +6,17 @@
 
 填写或选择以下项目后点击「保存」：
 
-| 页面字段                        | 说明                                                    |
-| ------------------------------- | ------------------------------------------------------- |
-| CodeBuddy 官方 API 端点         | 上游地址，默认 `https://copilot.tencent.com`            |
-| 管理员 Passkey RP ID / 域名     | WebAuthn 使用的 hostname，不要填写协议或端口            |
-| 认证模式（auto/token）          | 上游认证方式                                            |
-| 网络环境（internal/ioa/public） | 上游网络环境                                            |
-| 日志级别                        | 选择 `DEBUG`、`INFO`、`WARNING` 或 `ERROR`              |
-| API 超时时间,首个 token(分钟)   | 首个 delta 迟迟不返回时中断请求；默认 `5`               |
-| 启用本地 WebSearch              | 在本地执行 `web_search` 而不是转发给上游；默认关闭      |
-| WebSearch 后端                  | `web_search` 的执行位置：`codebuddy`、`searxng`、`none` |
-| 启用本地 WebFetch               | 在本地执行 `web_fetch` 而不是转发给上游；默认关闭       |
-| WebFetch 后端                   | `web_fetch` 的执行位置：`codebuddy`、`local`、`none`    |
-| 为 Hy 系列模型转换思想深度      | 把下游思考参数转为上游的 `reasoning_effort`；默认关闭   |
+| 页面字段                        | 说明                                                  |
+| ------------------------------- | ----------------------------------------------------- |
+| CodeBuddy 官方 API 端点         | 上游地址，默认 `https://copilot.tencent.com`          |
+| 管理员 Passkey RP ID / 域名     | WebAuthn 使用的 hostname，不要填写协议或端口          |
+| 认证模式（auto/token）          | 上游认证方式                                          |
+| 网络环境（internal/ioa/public） | 上游网络环境                                          |
+| 日志级别                        | 选择 `DEBUG`、`INFO`、`WARNING` 或 `ERROR`            |
+| API 超时时间,首个 token(分钟)   | 首个 delta 迟迟不返回时中断请求；默认 `5`             |
+| WebSearch 后端                  | `web_search` 使用的搜索引擎，单选；详见下文           |
+| WebFetch 后端                   | `web_fetch` 使用的后端，多选、按顺序尝试；详见下文    |
+| 为 Hy 系列模型转换思想深度      | 把下游思考参数转为上游的 `reasoning_effort`；默认关闭 |
 
 API 超时时间从发起请求开始计时，直到上游返回第一个 delta，因此它限制的是「迟迟没有开始输出」的等待
 时间。一旦开始输出，即使回答较长也会允许其完成。支持小数分钟，取值范围 `0.1`~`1440`。也可以在打开
@@ -46,27 +44,57 @@ Anthropic 客户端把搜索和抓取声明为服务端工具（`web_search_2026
 服务端工具，因此当客户端声明了它们时，本服务会替换成普通的函数工具、自己执行，再把结果
 作为 tool 消息追加回去。模型照常作答，客户端并不知道这一步是在本地完成的。
 
-两个工具各自独立选择后端：
+### WebSearch 后端
 
-| 工具         | 后端        | 行为                                                         |
-| ------------ | ----------- | ------------------------------------------------------------ |
-| `web_search` | `codebuddy` | 用已保存的凭证调用 CodeBuddy 的 `/agenttool/v1/search`       |
-| `web_search` | `searxng`   | 查询 SearXNG 实例。默认值，需要配置 `SEARXNG_URL`            |
-| `web_fetch`  | `codebuddy` | 调用 CodeBuddy 的 `/agenttool/v1/webfetch`，返回抽取后的文本 |
-| `web_fetch`  | `local`     | 本服务直接抓取页面，并把 HTML 转为文本                       |
-| 两者皆可     | `none`      | 从不执行该工具，并从请求中移除它                             |
+`web_search` 由选中的一个引擎执行。所有引擎都会显示（与是否已配置无关），选中后会出现
+该引擎需要的配置项：
+
+| 后端         | 配置项                      | 说明                                                     |
+| ------------ | --------------------------- | -------------------------------------------------------- |
+| `codebuddy`  | 无                          | 调用 CodeBuddy 的 `/agenttool/v1/search`，需要已保存凭证 |
+| `searxng`    | 实例地址（含端口）、API Key | 查询你自己的 SearXNG 实例。默认值，Key 可选              |
+| `duckduckgo` | 区域                        | 不需要任何凭证，返回整理过的即时答案                     |
+| `brave`      | API Key                     | Brave Search，独立索引                                   |
+| `tavily`     | API Key                     | 返回页面正文而不只是摘要                                 |
+| `serper`     | API Key                     | 通过 Serper 获取 Google 结果                             |
+| `bing`       | API Key                     | Bing Web Search                                          |
+| `exa`        | API Key                     | 按语义匹配的搜索                                         |
+
+无法运行的引擎（Key 没填、SearXNG 没填地址）会解析为「没有后端」，该工具会从请求中移除，
+而不是对外宣称后必定失败。默认值之所以是 `searxng`，正是因为新部署没有地址，在填入之前
+不会对外承诺任何东西。唯一的例外是 `codebuddy`：它不需要任何配置，因此只要选中就会生效，缺少
+凭证时会返回一次失败的搜索，而不是被移除。
+
+列表最后一项**关闭**用于停用：选择它（或设置 `CODEBUDDY_WEB_SEARCH_BACKEND=none`）后本服务
+不再执行 `web_search`，客户端声明的该工具会从请求中移除。升级前保存为 `none` 的部署，升级后
+仍然是关闭。
+
+### WebFetch 后端
+
+可以多选，按选择顺序依次尝试，第一个成功的即被采用。多选举手之劳却有实际意义：有的页面
+拒绝直接抓取，而用浏览器抓取又比直接抓取慢得多，两者的失败方式不同。
+
+| 后端            | 配置项        | 说明                                                             |
+| --------------- | ------------- | ---------------------------------------------------------------- |
+| `codebuddy`     | 无            | 调用 CodeBuddy 的 `/agenttool/v1/webfetch`，失败时回退为直接抓取 |
+| `codebuddy2api` | 无            | 本服务直接抓取页面，并把 HTML 转为文本。默认值                   |
+| `browserable`   | 地址、API Key | 用 Browserable 部署驱动真实浏览器。Key 可选                      |
+| `jina`          | API Key       | Jina Reader 以 Markdown 返回页面。Key 可选                       |
+
+一个都不选即为关闭该工具。`web_fetch` 现在默认由本服务本地执行，因此原先保持 `passthrough`
+的部署在升级后会开始自行抓取页面——清空选择即可恢复。
 
 之所以提供 `codebuddy`，是因为它就是 CodeBuddy CLI 自己调用的那个端点：不需要额外部署
-任何东西，直接用网关里已保存的凭证鉴权。`searxng` 保持为默认值，这样已有部署不受影响；
-未设置 `SEARXNG_URL` 时控制台会直接隐藏搜索相关设置，避免部署对外宣称一个自己执行不了的
-工具。
+任何东西，直接用网关里已保存的凭证鉴权。
 
-`local` 抓取后端把 URL 当作不可信输入——它来自模型：连接建立前就会拒绝私有地址和本机
-回环地址，并且每一跳重定向都会重新校验，因此公开的 URL 无法重定向到部署自身的网络。
+`codebuddy2api` 抓取后端把 URL 当作不可信输入——它来自模型：连接建立前就会拒绝私有地址和
+本机回环地址，并且每一跳重定向都会重新校验，因此公开的 URL 无法重定向到部署自身的网络。
 
-没有独立的启用开关：`none` 就是「关闭」，因此后端选择不可能自相矛盾。两者默认都是
-`none`。可以在打开控制台之前用 `CODEBUDDY_WEB_SEARCH_BACKEND`、
-`CODEBUDDY_WEB_FETCH_BACKEND` 预设。
+两项选择都可以在打开控制台之前用 `CODEBUDDY_WEB_SEARCH_BACKEND`、
+`CODEBUDDY_WEB_FETCH_BACKEND`（后者为逗号分隔的列表）预设；每个后端自己的配置也有对应的
+环境变量（`CODEBUDDY_SEARXNG_URL`、`CODEBUDDY_BRAVE_API_KEY`、
+`CODEBUDDY_BROWSERABLE_URL` 等）。SearXNG 在控制台留空时仍会读取 `SEARXNG_URL`
+与 `SEARXNG_API_KEY`。
 
 ## 凭证模型和用量
 

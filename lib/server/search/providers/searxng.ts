@@ -13,9 +13,13 @@ import type {
 } from '../types';
 
 /**
- * SearXNG backend. Reads its configuration from the environment because a
- * search instance is deployment-level infrastructure, not a per-request
- * preference — there is no console UI for the URL.
+ * SearXNG backend.
+ *
+ * The self-hosted option: one instance covers every user of the gateway and no
+ * query leaves the deployment's own network, which is why it is the default
+ * where an instance exists. Its address and optional key are console settings,
+ * with the environment as a fallback for deployments configured before the
+ * console had them.
  */
 
 const SEARXNG_SEARCH_PATH = '/search';
@@ -173,19 +177,28 @@ export const createSearxngProvider = (
 };
 
 /**
- * Builds the provider from `SEARXNG_URL`, returning `null` when the variable is
- * unset or not an absolute HTTP(S) URL. The console keys the visibility of the
- * web search setting off this being non-null.
+ * Builds the provider from the console setting, falling back to the
+ * environment.
+ *
+ * Two sources because SearXNG predates the console settings: a deployment
+ * already running `SEARXNG_URL` keeps working untouched, while a new one can
+ * enter the instance address in the console instead. The console wins where
+ * both are set, because it is the one an operator can change without a restart.
+ *
+ * Returns `null` when neither supplies an absolute HTTP(S) URL, so a deployment
+ * without an instance does not advertise a search tool it cannot run.
  */
-export const createSearxngProviderFromEnv = (): WebSearchProvider | null => {
-  const rawUrl = readEnv('SEARXNG_URL');
+export const createSearxngProviderFromSettings = (
+  settings: { apiKey?: string; url?: string } = {},
+): WebSearchProvider | null => {
+  const rawUrl = settings.url?.trim() || readEnv('SEARXNG_URL');
 
   if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
     return null;
   }
 
   return createSearxngProvider({
-    apiKey: readEnv('SEARXNG_API_KEY'),
+    apiKey: settings.apiKey?.trim() || readEnv('SEARXNG_API_KEY'),
     engines: readEnv('SEARXNG_ENGINES'),
     language: readEnv('SEARXNG_LANGUAGE'),
     maxResults: clampInteger(

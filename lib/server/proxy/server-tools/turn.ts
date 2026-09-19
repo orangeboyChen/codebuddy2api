@@ -1,8 +1,8 @@
 import {
   getActiveConfig,
   getCodeBuddyApiEndpoint,
-  isWebFetchEnabled,
-  isWebSearchEnabled,
+  getFetchBackendSettings,
+  getSearchBackendSettings,
 } from '../../domain/config';
 import { resolveFetchProvider, resolveSearchProvider } from '../../search';
 import type { WebFetchProvider, WebSearchProvider } from '../../search/types';
@@ -51,35 +51,28 @@ import { attachServerToolExecutions, EMPTY_PREAMBLE, sumUsage } from './types';
 /**
  * Resolves the configured backends.
  *
- * A `passthrough` backend resolves to `null`, which is what tells the turn the
- * client runs the tool itself: the declaration is still rewritten into a
- * function upstream can call, but the call that comes back is handed to the
- * client rather than executed here.
+ * `null` means the deployment cannot run the tool: nothing selected for fetch,
+ * or a search engine whose credential was never entered. The declaration is
+ * still rewritten into a function upstream can call, but the call that comes
+ * back yields no execution here — which is what withdraws the tool from the
+ * request.
  */
 export const resolveServerToolBackends = async (): Promise<{
   fetchProvider: WebFetchProvider | null;
   searchProvider: WebSearchProvider | null;
 }> => {
-  const [searchEnabled, fetchEnabled, config] = await Promise.all([
-    isWebSearchEnabled(),
-    isWebFetchEnabled(),
-    getActiveConfig(),
-  ]);
+  const config = await getActiveConfig();
   const resolveEndpoint = getCodeBuddyApiEndpoint;
 
   return {
-    fetchProvider: fetchEnabled
-      ? resolveFetchProvider(
-          config.CODEBUDDY_WEB_FETCH_BACKEND,
-          resolveEndpoint,
-        )
-      : null,
-    searchProvider: searchEnabled
-      ? resolveSearchProvider(
-          config.CODEBUDDY_WEB_SEARCH_BACKEND,
-          resolveEndpoint,
-        )
-      : null,
+    fetchProvider: resolveFetchProvider(config.CODEBUDDY_WEB_FETCH_BACKEND, {
+      fetch: getFetchBackendSettings(config),
+      resolveEndpoint,
+    }),
+    searchProvider: resolveSearchProvider(config.CODEBUDDY_WEB_SEARCH_BACKEND, {
+      resolveEndpoint,
+      search: getSearchBackendSettings(config),
+    }),
   };
 };
 

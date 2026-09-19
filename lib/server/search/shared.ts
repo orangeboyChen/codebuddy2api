@@ -122,3 +122,55 @@ export const formatFetchResult = ({
 
   return lines.join('\n');
 };
+
+/**
+ * Reads a response body into text, stopping at `cap` characters.
+ *
+ * The URL a fetch follows comes from the model, so the body length is not the
+ * deployment's to choose: a page that is merely enormous would otherwise be
+ * buffered whole before anything could trim it. Reading with a ceiling and
+ * cancelling the stream is what keeps an unbounded response from becoming an
+ * unbounded allocation.
+ */
+export const readCappedResponseBody = async (
+  response: Response,
+  cap: number,
+): Promise<string> => {
+  const body = response.body;
+
+  // No stream to read from (a stubbed response, or a body already consumed):
+  // fall back to the whole body, still bounded by the cap.
+  if (!body) {
+    return (await response.text()).slice(0, cap);
+  }
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      text += decoder.decode(value, { stream: true });
+
+      if (text.length >= cap) {
+        text = text.slice(0, cap);
+        await reader.cancel();
+
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  // Flushed so a body that ends mid-character yields a replacement character
+  // instead of losing the bytes: the decoder holds an incomplete trailing
+  // sequence until it is told the stream is over.
+  return text + decoder.decode();
+};

@@ -4,7 +4,6 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as config from '@/lib/server/domain/config';
 import { updateSettings } from '@/lib/server/domain/config';
 import { createAccessKey } from '@/lib/server/domain/access-keys';
 import { resetWebSearchProviders } from '@/lib/server/search';
@@ -586,8 +585,8 @@ describe('Responses image support', () => {
       // "no server search tools" branch, so a turn declaring both silently
       // skipped generation and forwarded the call as an ordinary
       // function_call for the client to resolve.
-      const spy = vi.spyOn(config, 'isWebSearchEnabled');
-      spy.mockResolvedValue(true);
+      // A working search backend is what puts the turn on the server-tool path.
+      await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'duckduckgo' });
 
       const secret = await addCredentialWith();
       let chatCall = 0;
@@ -628,8 +627,6 @@ describe('Responses image support', () => {
       const text = await response.text();
       expect(text).toContain('image_generation_call');
       expect(text).not.toContain('"type":"function_call"');
-
-      spy.mockRestore();
     });
 
     it('streams the image_generation_call as Responses SSE events', async () => {
