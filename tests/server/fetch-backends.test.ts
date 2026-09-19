@@ -310,6 +310,33 @@ describe('Browserable', () => {
     }
   });
 
+  it('believes a `done` flag with no status and no text', async () => {
+    // `output` is what makes the task look finished in other tests; here the
+    // flag is the only signal, and the task finished with nothing to show.
+    stubFetchQueue([
+      makeJsonResponse({ id: 'task-9' }),
+      (url: string) =>
+        url.endsWith('/result')
+          ? makeJsonResponse({ done: true })
+          : makeJsonResponse(null, 404),
+    ]);
+
+    const outcome = createBrowserableProvider({ url: 'http://browser.test' })
+      .fetch({ url: 'https://example.com' })
+      .catch((error: Error) => error);
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Not "did not finish": a finished task is not a timed-out one.
+    await expect(outcome).resolves.toMatchObject({
+      message: expect.stringContaining('finished without returning any text'),
+    });
+  });
+
   it('accepts a deployment that reports completion without a status', async () => {
     vi.useFakeTimers();
     try {
@@ -455,6 +482,60 @@ describe('Browserable', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('stops asking once the budget is spent', async () => {
+    vi.useFakeTimers();
+    try {
+      // Every poll answers at once with "still running", so the only thing that
+      // can end the loop is the deadline.
+      const { calls } = stubFetchQueue([
+        makeJsonResponse({ id: 'task-9' }),
+        () => makeJsonResponse({ status: 'running' }),
+      ]);
+
+      const outcome = createBrowserableProvider({
+        timeoutMs: 5_000,
+        url: 'http://browser.test',
+      })
+        .fetch({ url: 'https://example.com' })
+        .catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Create, then two polls of two paths each: at the 5s deadline the last
+      // poll is skipped rather than issued on borrowed time.
+      expect(calls).toHaveLength(5);
+      await expect(outcome).resolves.toMatchObject({
+        message: expect.stringContaining('did not finish within 5000ms'),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a result too large to read rather than waiting for it', async () => {
+    // A result past the pre-parse ceiling is truncated into something that no
+    // longer parses; swallowing that would poll to the deadline instead.
+    const huge = JSON.stringify({
+      output: 'THE PAGE',
+      padding: 'x'.repeat(4_500_000),
+    });
+    const { calls } = stubFetchQueue([
+      makeJsonResponse({ id: 'task-9' }),
+      () => new Response(huge, { status: 200 }),
+    ]);
+
+    const outcome = createBrowserableProvider({
+      timeoutMs: 5_000,
+      url: 'http://browser.test',
+    })
+      .fetch({ url: 'https://example.com' })
+      .catch((error: Error) => error);
+
+    await expect(outcome).resolves.toMatchObject({
+      message: expect.stringContaining('not JSON'),
+    });
+    expect(calls).toHaveLength(2);
   });
 
   it('falls back to the task itself when there is no result path', async () => {
@@ -666,6 +747,25 @@ describe('readCappedResponseBody', () => {
     await expect(
       readCappedResponseBody(new Response(stream, { status: 200 }), 100),
     ).resolves.toBe('a😀b');
+  });
+
+  it('marks a body that ends mid-character instead of dropping it', async () => {
+    const bytes = new Uint8Array([0x61, 0xf0, 0x9f]);
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+
+    const text = await readCappedResponseBody(
+      new Response(stream, { status: 200 }),
+      100,
+    );
+
+    // The replacement character is what a truncated tail looks like once the
+    // decoder is told the stream is over.
+    expect(text).toBe('a\uFFFD');
   });
 
   it('returns an empty string for an empty body', async () => {

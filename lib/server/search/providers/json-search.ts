@@ -14,6 +14,7 @@ import {
   formatSearchResults,
   MAX_SNIPPET_LENGTH,
   MAX_TITLE_LENGTH,
+  readCappedResponseBody,
 } from '../shared';
 import type {
   WebSearchProvider,
@@ -27,6 +28,8 @@ const MAX_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RESULTS = 5;
 const MAX_MAX_RESULTS = 10;
 const MAX_QUERY_LENGTH = 500;
+/** Ceiling on a response body before it is parsed. */
+const MAX_BODY_LENGTH = 2_000_000;
 
 /** A request the factory will issue. `signal` is added by the factory. */
 export interface JsonSearchRequest {
@@ -126,7 +129,10 @@ export const createJsonSearchProvider = ({
         throw new Error(`${label} search failed with HTTP ${response.status}`);
       }
 
-      const payload = (await response.json()) as Record<string, unknown>;
+      // Bounded before parsing: an engine's response size is not this
+      // deployment's to choose, and a huge document would be buffered whole.
+      const body = await readCappedResponseBody(response, MAX_BODY_LENGTH);
+      const payload = JSON.parse(body) as Record<string, unknown>;
       const results = extractResults(payload).slice(0, maxResults);
 
       return {

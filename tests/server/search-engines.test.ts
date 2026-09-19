@@ -384,6 +384,7 @@ describe('Exa', () => {
     expect(calls[0].url).toBe('https://api.exa.ai/search');
     expect(headersOf(calls[0].init).get('x-api-key')).toBe('exa-key');
     expect(bodyOf(calls[0].init)).toMatchObject({
+      contents: { text: { maxCharacters: expect.any(Number) } },
       numResults: 4,
       query: 'hello',
     });
@@ -397,5 +398,43 @@ describe('Exa', () => {
     const result = await createExaProvider({ apiKey: 'k' }).search('q');
 
     expect(result.results[0]).toMatchObject({ content: 'Page text' });
+  });
+});
+
+describe('engine timeouts', () => {
+  it('abandons a query that overruns its budget', async () => {
+    vi.useFakeTimers();
+
+    try {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          (_input: RequestInfo | URL, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => {
+                reject(
+                  Object.assign(new Error('aborted'), { name: 'AbortError' }),
+                );
+              });
+            }),
+        ) as unknown as typeof fetch,
+      );
+
+      // Caught before the timers run: the abort rejects while nothing is
+      // awaiting it otherwise.
+      const outcome = createJsonSearchProvider({
+        buildRequest: () => ({ url: 'https://engine.test/' }),
+        extractResults: () => [],
+        id: 'stub',
+        label: 'Stub',
+      })
+        .search('hello')
+        .catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      await expect(outcome).resolves.toMatchObject({ name: 'AbortError' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

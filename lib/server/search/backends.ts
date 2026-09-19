@@ -180,5 +180,6 @@ export const normalizeFetchBackends = (value: unknown): FetchBackend[] => {
  * an empty value is indistinguishable from "never configured" and would be
  * replaced by the default on the way in.
  */
-export const serializeFetchBackends = (backends: readonly string[]): string =>
-  backends.length ? backends.join(',') : BACKEND_NONE;
+export const serializeFetchBackends = (
+  backends: readonly string[] | null | undefined,
+): string => (backends?.length ? backends.join(',') : BACKEND_NONE);

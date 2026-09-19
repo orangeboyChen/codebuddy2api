@@ -216,7 +216,3 @@ export const createSearxngProviderFromSettings = (
     url: rawUrl,
   });
 };
-
-/** Environment-only construction, for callers that cannot reach the settings. */
-export const createSearxngProviderFromEnv = (): WebSearchProvider | null =>
-  createSearxngProviderFromSettings();

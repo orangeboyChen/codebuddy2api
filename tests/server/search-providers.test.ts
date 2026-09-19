@@ -870,9 +870,19 @@ describe('search provider registry', () => {
 
     it('resolves nothing when the tool is switched off', () => {
       // `none` is the value a deployment saved before this table existed, and
-      // the console offers it: it must stay off after upgrading.
-      expect(resolveSearchProvider('none')).toBeNull();
-      expect(resolveSearchProvider('NONE', { search: {} })).toBeNull();
+      // the console offers it: it must stay off after upgrading. SearXNG is
+      // configured here, so only the off switch can produce a null.
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+
+      try {
+        expect(resolveSearchProvider('searxng')?.id).toBe('searxng');
+        expect(resolveSearchProvider('none')).toBeNull();
+        expect(resolveSearchProvider('NONE', { search: {} })).toBeNull();
+      } finally {
+        delete process.env.SEARXNG_URL;
+        resetWebSearchProviders();
+      }
     });
 
     it('returns null for a keyed engine whose key was never entered', () => {

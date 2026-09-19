@@ -169,7 +169,8 @@ export const readCappedResponseBody = async (
     reader.releaseLock();
   }
 
-  // Flushed: a multi-byte character split across chunks is buffered by the
-  // decoder, and without this the last one is dropped.
+  // Flushed so a body that ends mid-character yields a replacement character
+  // instead of losing the bytes: the decoder holds an incomplete trailing
+  // sequence until it is told the stream is over.
   return text + decoder.decode();
 };
