@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { getDefaultModel } from '../../domain/config';
-import { stringifyContent } from '../../shared/content';
+import { readReasoning, stringifyContent } from '../../shared/content';
 import { extractImageUrl, isImageContentPart } from '../codebuddy';
 import { createResponseOutputId, normalizeToolCallId } from './ids';
 import {
@@ -341,11 +341,17 @@ export const prepareTranscript = async (
 
   if (body.messages?.length) {
     body.messages.forEach((item) => {
+      // A chat-shaped request posted to this route carries its reasoning on
+      // the message itself, in whichever spelling the client replays. Dropping
+      // it here would lose the reasoning for every later turn of the
+      // conversation, the same way dropping an `input` reasoning item would.
+      const reasoning = readReasoning(item);
       transcript.push({
         role: item.role ?? 'user',
         content:
           mapInputContentToTranscriptContent(item.content) ??
           stringifyContent(item.content),
+        ...(reasoning ? { reasoning } : {}),
       });
     });
   } else if (typeof body.input === 'string') {

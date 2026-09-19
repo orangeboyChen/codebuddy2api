@@ -5,6 +5,13 @@ import { NextRequest } from 'next/server';
 
 import { addCredential } from '@/lib/server/domain/credentials';
 import { handleMessagesRequest } from '@/lib/server/proxy/anthropic';
+import { proxyChatCompletions } from '@/lib/server/proxy/codebuddy';
+import {
+  buildResponsesBodyFromChat,
+  chatMessageReasoningItems,
+} from '@/lib/server/proxy/codebuddy/responses-request';
+import { withUpstreamReasoning } from '@/lib/server/proxy/codebuddy/upstream';
+import { resolveProxyContextByCredentialFilename } from '@/lib/server/proxy/codebuddy/context';
 import { handleResponsesRequest } from '@/lib/server/proxy/responses';
 
 const repoRoot = process.cwd();
@@ -108,6 +115,7 @@ interface UpstreamMessage {
   role?: string;
   content?: unknown;
   reasoning?: string;
+  reasoning_content?: string;
 }
 
 const upstreamMessages = (
@@ -718,6 +726,211 @@ describe('reasoning round trip', () => {
       );
 
       expect(assistant?.reasoning).toBe('reasoning to persist');
+    });
+  });
+  describe('openai clients (/v1/chat/completions)', () => {
+    const assistantReplayingReasoning = {
+      content: 'prior answer',
+      reasoning_content: 'prior reasoning',
+      role: 'assistant',
+    };
+
+    it('puts a replayed reasoning_content onto the field the chat upstream reads', async () => {
+      // The reasoning we hand a client is `reasoning_content`, so that is
+      // what it echoes back. The chat upstream reads `reasoning` on the way
+      // in, so an untouched replay would leave it with a field it ignores.
+      const body = await captureUpstreamBody(() =>
+        proxyChatCompletions(makeResponsesRequest(), {
+          messages: [
+            { content: 'hi', role: 'user' },
+            assistantReplayingReasoning,
+            { content: 'and then?', role: 'user' },
+          ],
+          model: 'claude-sonnet-4-5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBe('prior reasoning');
+      // Kept as well: the value a client sent used to reach the upstream
+      // verbatim, so an upstream reading either spelling still sees it.
+      expect(assistant?.reasoning_content).toBe('prior reasoning');
+    });
+
+    it('leaves an explicit reasoning alone', async () => {
+      const body = await captureUpstreamBody(() =>
+        proxyChatCompletions(makeResponsesRequest(), {
+          messages: [
+            { content: 'hi', role: 'user' },
+            {
+              content: 'prior answer',
+              reasoning: 'what the caller said',
+              reasoning_content: 'what the client replayed',
+              role: 'assistant',
+            },
+          ],
+          model: 'claude-sonnet-4-5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBe('what the caller said');
+    });
+
+    it('ignores a reasoning_content that carries nothing', async () => {
+      const body = await captureUpstreamBody(() =>
+        proxyChatCompletions(makeResponsesRequest(), {
+          messages: [
+            { content: 'hi', role: 'user' },
+            {
+              content: 'prior answer',
+              reasoning_content: '   ',
+              role: 'assistant',
+            },
+          ],
+          model: 'claude-sonnet-4-5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBeUndefined();
+    });
+
+    it('emits a reasoning item when the upstream speaks Responses', async () => {
+      await addCredential(
+        {
+          bearer_token: 'responses-token',
+          upstream_protocol: 'responses',
+          user_id: 'responses@example.com',
+        },
+        'responses-protocol-credential.json',
+      );
+      const context = await resolveProxyContextByCredentialFilename(
+        'responses-protocol-credential.json',
+      );
+
+      const body = await captureUpstreamBody(() =>
+        proxyChatCompletions(
+          makeResponsesRequest(),
+          {
+            messages: [
+              { content: 'hi', role: 'user' },
+              assistantReplayingReasoning,
+              { content: 'and then?', role: 'user' },
+            ],
+            model: 'claude-sonnet-4-5',
+          } as never,
+          context,
+        ),
+      );
+
+      const input = (body?.input ?? []) as Array<Record<string, unknown>>;
+
+      expect(input).toEqual([
+        { content: [{ text: 'hi', type: 'input_text' }], role: 'user' },
+        {
+          summary: [{ text: 'prior reasoning', type: 'summary_text' }],
+          type: 'reasoning',
+        },
+        {
+          content: [{ text: 'prior answer', type: 'input_text' }],
+          role: 'assistant',
+        },
+        { content: [{ text: 'and then?', type: 'input_text' }], role: 'user' },
+      ]);
+    });
+  });
+
+  describe('the Responses request builder', () => {
+    it('reasons ahead of the assistant turn it belongs to', async () => {
+      const body = await buildResponsesBodyFromChat({
+        messages: [
+          { content: 'hi', role: 'user' },
+          {
+            content: 'prior answer',
+            reasoning: 'prior reasoning',
+            role: 'assistant',
+          },
+        ],
+        model: 'claude-sonnet-4-5',
+      } as never);
+
+      const input = (body.input ?? []) as Array<Record<string, unknown>>;
+
+      expect(input[1]).toEqual({
+        summary: [{ text: 'prior reasoning', type: 'summary_text' }],
+        type: 'reasoning',
+      });
+    });
+
+    it('emits nothing for a turn that reasoned about nothing', () => {
+      expect(
+        chatMessageReasoningItems({ content: 'hi', role: 'user' } as never),
+      ).toEqual([]);
+      expect(
+        chatMessageReasoningItems({
+          reasoning_content: '  ',
+          role: 'assistant',
+        }),
+      ).toEqual([]);
+    });
+  });
+
+  describe('withUpstreamReasoning', () => {
+    it('returns the message untouched when there is nothing to carry', () => {
+      const message = { content: 'hi', role: 'user' };
+
+      expect(withUpstreamReasoning(message)).toBe(message);
+      expect(
+        withUpstreamReasoning({ reasoning_content: '', role: 'assistant' }),
+      ).toEqual({ reasoning_content: '', role: 'assistant' });
+    });
+
+    it('fills in an empty reasoning from the replayed one', () => {
+      expect(
+        withUpstreamReasoning({
+          reasoning: '',
+          reasoning_content: 'prior reasoning',
+          role: 'assistant',
+        }),
+      ).toEqual({
+        reasoning: 'prior reasoning',
+        reasoning_content: 'prior reasoning',
+        role: 'assistant',
+      });
+    });
+  });
+
+  describe('a chat-shaped request to /v1/responses', () => {
+    it('carries the reasoning posted on messages to the chat upstream', async () => {
+      const body = await captureUpstreamBody(() =>
+        handleResponsesRequest(makeResponsesRequest(), {
+          messages: [
+            { content: 'hi', role: 'user' },
+            {
+              content: 'prior answer',
+              reasoning_content: 'prior reasoning',
+              role: 'assistant',
+            },
+          ],
+          model: 'claude-sonnet-4-5',
+        } as never),
+      );
+
+      const assistant = upstreamMessages(body).find(
+        (m) => m.role === 'assistant',
+      );
+
+      expect(assistant?.reasoning).toBe('prior reasoning');
     });
   });
 });

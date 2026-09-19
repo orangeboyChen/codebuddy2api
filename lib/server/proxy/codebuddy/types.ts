@@ -21,6 +21,15 @@ export interface OpenAIMessage {
    * upstream's *response* field; this is the request-side counterpart.
    */
   reasoning?: string;
+  /**
+   * The same reasoning in the spelling an OpenAI-compatible client sends.
+   *
+   * Not what the chat upstream reads on the way in — that is `reasoning`
+   * above — but clients replaying a response we handed them echo back exactly
+   * what they received, and the reasoning we emit is `reasoning_content`. It
+   * is recognised on input so the replay can be forwarded, never required.
+   */
+  reasoning_content?: string;
 }
 
 export interface CacheableTextBlock {

@@ -57,7 +57,17 @@ export interface ResponsesRequestBody {
   model?: string;
   input?: string | ResponsesInputItem[];
   instructions?: string;
-  messages?: Array<{ role?: string; content?: unknown }>;
+  /**
+   * A chat-shaped request posted to this route. Reasoning rides along on the
+   * message, in whichever spelling the client replays: `reasoning_content` is
+   * what we hand back, `reasoning` is what we ourselves put on a transcript.
+   */
+  messages?: Array<{
+    role?: string;
+    content?: unknown;
+    reasoning?: unknown;
+    reasoning_content?: unknown;
+  }>;
   stream?: boolean;
   metadata?: Record<string, unknown>;
   reasoning?: Record<string, unknown>;

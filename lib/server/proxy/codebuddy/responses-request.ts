@@ -1,4 +1,4 @@
-import { stringifyContent } from '../../shared/content';
+import { readReasoning, stringifyContent } from '../../shared/content';
 import { resolveHyResponsesReasoning } from '../../shared/hy-thought-depth';
 import type { ChatRequestBody } from './types';
 
@@ -52,6 +52,44 @@ export const extractImageUrl = (part: unknown): string | undefined => {
   }
 
   return undefined;
+};
+
+/**
+ * Builds the `reasoning` item that carries a prior turn's reasoning on a
+ * Responses request.
+ *
+ * The Responses protocol has no per-message reasoning field the way the chat
+ * protocol does: reasoning is its own input item, emitted ahead of the
+ * assistant message it belongs to. Without it, converting a chat request that
+ * replays reasoning would hand the upstream the turn's text with nothing of
+ * the reasoning that produced it.
+ *
+ * `summary` is the shape the Agents SDK replays and the one our own transcript
+ * mapper reads back, so a reasoning item survives the round trip.
+ */
+export const buildResponsesReasoningItem = (
+  reasoning: string,
+): Record<string, unknown> => ({
+  summary: [{ text: reasoning, type: 'summary_text' }],
+  type: 'reasoning',
+});
+
+/**
+ * The reasoning items to put ahead of a chat message, if it carries any.
+ */
+export const chatMessageReasoningItems = (
+  message:
+    | {
+        content?: unknown;
+        reasoning?: unknown;
+        reasoning_content?: unknown;
+        role?: unknown;
+      }
+    | undefined,
+): Array<Record<string, unknown>> => {
+  const reasoning = readReasoning(message);
+
+  return reasoning.trim() ? [buildResponsesReasoningItem(reasoning)] : [];
 };
 
 export const mapChatContentToResponses = (
@@ -221,10 +259,16 @@ export const normalizeResponsesUpstreamBody = async (
     .join('\n\n');
   const input = messages.flatMap((message) => {
     if (!message || typeof message !== 'object') return [];
-    const value = message as { content?: unknown; role?: unknown };
+    const value = message as {
+      content?: unknown;
+      reasoning?: unknown;
+      reasoning_content?: unknown;
+      role?: unknown;
+    };
     if (value.role === 'system' || value.role === 'developer') return [];
     const role = value.role === 'assistant' ? 'assistant' : 'user';
     return [
+      ...chatMessageReasoningItems(value),
       {
         content: mapChatContentToResponses(value.content),
         role,
@@ -315,6 +359,7 @@ export const buildResponsesBodyFromChat = async (
           !hasContent;
 
         return [
+          ...chatMessageReasoningItems(message),
           ...(shouldOmitMessage
             ? []
             : [
