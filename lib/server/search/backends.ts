@@ -150,14 +150,16 @@ export const normalizeFetchBackends = (value: unknown): FetchBackend[] => {
     .map((token) => token.trim().toLowerCase())
     .filter(Boolean);
 
-  // `none` on its own is the off switch. Only the whole value turns the tool
-  // off — `jina,none` from a hand-edited config drops the unknown token and
-  // keeps jina, rather than silently disabling a selection that names a backend.
-  if (lowercased.length === 1 && lowercased[0] === BACKEND_NONE) {
+  // `none` is the off switch, and it is the whole selection that turns the tool
+  // off: `jina,none` from a hand-edited config keeps jina, while a value made
+  // only of `none` — in any quantity — disables the tool.
+  const named = lowercased.filter((token) => token !== BACKEND_NONE);
+
+  if (!named.length && lowercased.length) {
     return [];
   }
 
-  const resolved = lowercased
+  const resolved = named
     .map((token) => RENAMED_BACKENDS[token] ?? token)
     // `passthrough` no longer exists: it meant "the client runs it", and the
     // closest surviving behaviour is the default backend.

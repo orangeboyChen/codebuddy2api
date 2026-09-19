@@ -11,7 +11,7 @@
  * key is optional: a deployment can try the backend before paying for it.
  */
 
-import { formatFetchResult } from '../shared';
+import { formatFetchResult, readCappedResponseBody } from '../shared';
 import { normalizeFetchUrl } from './codebuddy-fetch';
 import { assertRemotelyFetchableUrl } from './local-fetch';
 import type {
@@ -72,9 +72,9 @@ export const createJinaFetchProvider = ({
         throw new Error(`Jina Reader failed with HTTP ${response.status}`);
       }
 
-      const content = (await response.text())
-        .trim()
-        .slice(0, MAX_CONTENT_LENGTH);
+      const content = (
+        await readCappedResponseBody(response, MAX_CONTENT_LENGTH)
+      ).trim();
 
       return {
         content: formatFetchResult({ content, prompt, url: target }),

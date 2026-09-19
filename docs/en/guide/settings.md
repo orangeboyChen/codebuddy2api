@@ -76,6 +76,14 @@ An engine that cannot run — a key that was never filled in, or SearXNG with no
 address — resolves to no backend, and the tool is then dropped from the request
 rather than advertised and left to fail. That is why the default is `searxng`:
 a fresh deployment has no address, so nothing is promised until one is entered.
+`codebuddy` is the exception: it needs no configuration of its own, so it runs
+whenever it is selected and reports a missing credential as a failed search
+rather than being withdrawn.
+
+**Off** closes the list. Pick it — or set `CODEBUDDY_WEB_SEARCH_BACKEND=none` —
+and the gateway stops running `web_search`; a client that declares the tool has
+it dropped from the request. A deployment that saved `none` before this list
+existed keeps that meaning after upgrading.
 
 ### Web fetch backend
 
@@ -86,12 +94,14 @@ a browser agent is far slower than a direct fetch.
 
 | Backend         | Configuration    | Notes                                                                     |
 | --------------- | ---------------- | ------------------------------------------------------------------------- |
-| `codebuddy`     | none             | CodeBuddy's own `/agenttool/v1/webfetch`; returns extracted text.         |
+| `codebuddy`     | none             | CodeBuddy's own `/agenttool/v1/webfetch`, falling back to a direct fetch. |
 | `codebuddy2api` | none             | This server fetches the page directly and converts HTML to text. Default. |
 | `browserable`   | address, API key | Drives a real browser through a Browserable deployment. Key is optional.  |
 | `jina`          | API key          | Jina Reader returns the page as markdown. Key is optional.                |
 
-Selecting none is how the tool is turned off.
+Selecting none is how the tool is turned off. `web_fetch` runs locally by
+default now, so a deployment that had left it set to `passthrough` starts
+fetching pages itself on upgrade — clear the selection to go back.
 
 `codebuddy` is the reason to reach for this setting: it is the same endpoint the
 CodeBuddy CLI calls, so it needs no extra deployment and authenticates with the

@@ -81,7 +81,8 @@ Anthropic 客户端把搜索和抓取声明为服务端工具（`web_search_2026
 | `browserable`   | 地址、API Key | 用 Browserable 部署驱动真实浏览器。Key 可选                      |
 | `jina`          | API Key       | Jina Reader 以 Markdown 返回页面。Key 可选                       |
 
-一个都不选即为关闭该工具。
+一个都不选即为关闭该工具。`web_fetch` 现在默认由本服务本地执行，因此原先保持 `passthrough`
+的部署在升级后会开始自行抓取页面——清空选择即可恢复。
 
 之所以提供 `codebuddy`，是因为它就是 CodeBuddy CLI 自己调用的那个端点：不需要额外部署
 任何东西，直接用网关里已保存的凭证鉴权。

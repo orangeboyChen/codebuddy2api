@@ -98,16 +98,50 @@ const isPrivateIPv4 = (parts: number[]): boolean => {
   );
 };
 
+/**
+ * The private IPv4 address hidden inside an IPv4-mapped IPv6 literal.
+ *
+ * `::ffff:127.0.0.1` is loopback to every stack that supports the mapping, but
+ * it matches none of the IPv6 prefixes below — it starts `::ffff:` — so without
+ * unwrapping it a mapped literal walks straight through the check. Both the
+ * dotted and the hexadecimal low-half spellings are matched, because the URL
+ * parser normalises `[::ffff:127.0.0.1]` to `[::ffff:7f00:1]`.
+ */
+const mappedIPv4 = (host: string): number[] | null => {
+  const match = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+
+  if (match) {
+    const high = Number.parseInt(match[1], 16);
+    const low = Number.parseInt(match[2], 16);
+
+    return [(high >> 8) & 0xff, high & 0xff, (low >> 8) & 0xff, low & 0xff];
+  }
+
+  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(host);
+
+  if (dotted) {
+    return dotted[1].split('.').map(Number);
+  }
+
+  return null;
+};
+
 const isPrivateIPv6 = (host: string): boolean => {
   const normalized = host.toLowerCase();
 
-  return (
+  if (
     normalized === '::1' ||
     normalized === '::' ||
     normalized.startsWith('fe80') ||
     normalized.startsWith('fc') ||
     normalized.startsWith('fd')
-  );
+  ) {
+    return true;
+  }
+
+  const mapped = mappedIPv4(normalized);
+
+  return mapped ? isPrivateIPv4(mapped) : false;
 };
 
 /**

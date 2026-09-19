@@ -25,11 +25,21 @@ interface FetchCall {
   url: string;
 }
 
-/** Stubs `fetch` with a queue of responses, recording every call. */
+/**
+ * Stubs `fetch` with a queue of responses, recording every call.
+ *
+ * A queued `Response` is snapshotted on first use and rebuilt after that: a
+ * response body can only be read once, and the last entry is replayed for every
+ * later call.
+ */
 const stubFetchQueue = (
   responses: Array<Response | ((url: string) => Response)>,
 ): { calls: FetchCall[] } => {
   const calls: FetchCall[] = [];
+  const snapshots = new Map<
+    number,
+    { body: string; headers: Array<[string, string]>; status: number }
+  >();
   let index = 0;
 
   vi.stubGlobal(
@@ -38,10 +48,30 @@ const stubFetchQueue = (
       const url = String(input);
       const requestInit = (init ?? {}) as RequestInit;
       calls.push({ init: requestInit, url });
-      const next = responses[Math.min(index, responses.length - 1)];
+      const slot = Math.min(index, responses.length - 1);
       index += 1;
 
-      return typeof next === 'function' ? next(url) : next;
+      const entry = responses[slot];
+
+      if (typeof entry === 'function') {
+        return entry(url);
+      }
+
+      let snapshot = snapshots.get(slot);
+
+      if (!snapshot) {
+        snapshot = {
+          body: await entry.text(),
+          headers: [...entry.headers],
+          status: entry.status,
+        };
+        snapshots.set(slot, snapshot);
+      }
+
+      return new Response(snapshot.body, {
+        headers: snapshot.headers,
+        status: snapshot.status,
+      });
     }) as unknown as typeof fetch,
   );
 
@@ -246,7 +276,7 @@ describe('Browserable', () => {
     }
   });
 
-  it('treats a completed task with no text as an empty page', async () => {
+  it('reports a task that finished with no text as a failure', async () => {
     vi.useFakeTimers();
     try {
       let polls = 0;
@@ -263,18 +293,62 @@ describe('Browserable', () => {
         },
       ]);
 
+      const outcome = createBrowserableProvider({ url: 'http://browser.test' })
+        .fetch({ url: 'https://example.com' })
+        .catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // An empty page is a failed fetch, as it is for the local backend, so a
+      // chain moves on to the next backend instead of stopping here.
+      expect(polls).toBe(1);
+      await expect(outcome).resolves.toMatchObject({
+        message: expect.stringContaining('finished without returning any text'),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('accepts a deployment that reports completion without a status', async () => {
+    vi.useFakeTimers();
+    try {
+      stubFetchQueue([
+        makeJsonResponse({ id: 'task-9' }),
+        (url: string) =>
+          url.endsWith('/result')
+            ? makeJsonResponse({ done: true, output: 'Done text' })
+            : makeJsonResponse(null, 404),
+      ]);
+
       const pending = createBrowserableProvider({
         url: 'http://browser.test',
       }).fetch({ url: 'https://example.com' });
       await vi.advanceTimersByTimeAsync(10_000);
       const result = await pending;
 
-      // A page that renders to nothing is an answer, not a timeout.
-      expect(polls).toBe(1);
-      expect(result.content).toContain('Web fetch result for');
+      expect(result.content).toContain('Done text');
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('refuses an IPv4-mapped IPv6 address to a private host', async () => {
+    const { calls } = stubFetchQueue([
+      makeJsonResponse({ output: 'text' }),
+      makeTextResponse('text'),
+    ]);
+
+    await expect(
+      createBrowserableProvider({ url: 'http://browser.test' }).fetch({
+        url: 'http://[::ffff:127.0.0.1]:8001/admin',
+      }),
+    ).rejects.toThrow('private or loopback address');
+    await expect(
+      createJinaFetchProvider().fetch({
+        url: 'http://[::ffff:169.254.169.254]/',
+      }),
+    ).rejects.toThrow('private or loopback address');
+    expect(calls).toEqual([]);
   });
 
   it('refuses a private or loopback address', async () => {
