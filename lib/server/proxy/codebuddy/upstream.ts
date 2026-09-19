@@ -115,6 +115,38 @@ export const applyPromptCacheControl = (
   );
 };
 
+/**
+ * Puts a client's replayed reasoning onto the field the chat upstream reads.
+ *
+ * The reasoning we hand back to a client is `reasoning_content` — that is what
+ * the upstream itself streams — so a client replaying a previous turn echoes
+ * the same spelling back at us. The chat upstream only reads `reasoning` on the
+ * way in (`OpenAIMessage.reasoning`), so forwarding the replay untouched would
+ * leave the upstream with a field it ignores and the turn would lose the
+ * reasoning that produced it.
+ *
+ * `reasoning_content` is kept alongside: the value a client sent used to reach
+ * the upstream verbatim, and an upstream that reads either spelling must keep
+ * seeing the one it was already being handed.
+ */
+export const withUpstreamReasoning = (
+  message: OpenAIMessage,
+): OpenAIMessage => {
+  const replayed = message.reasoning_content;
+
+  if (typeof replayed !== 'string' || !replayed.trim()) {
+    return message;
+  }
+
+  // An explicit `reasoning` wins: it is the field the upstream reads, so a
+  // caller that set it has already said what should go upstream.
+  if (typeof message.reasoning === 'string' && message.reasoning.trim()) {
+    return message;
+  }
+
+  return { ...message, reasoning: replayed };
+};
+
 export const normalizeMessages = (
   messages: OpenAIMessage[],
   firstMessageRoleToSystem: boolean,
@@ -127,16 +159,18 @@ export const normalizeMessages = (
   const firstSystemIndex = firstSystemMessageRoleToUser
     ? filtered.findIndex((message) => message.role === 'system')
     : -1;
-  const normalized = filtered.map((message, index) => {
-    if (
-      (firstMessageRoleToSystem && message.role === 'developer') ||
-      index === firstSystemIndex
-    ) {
-      return { ...message, role: 'user' };
-    }
+  const normalized = filtered
+    .map((message, index) => {
+      if (
+        (firstMessageRoleToSystem && message.role === 'developer') ||
+        index === firstSystemIndex
+      ) {
+        return { ...message, role: 'user' };
+      }
 
-    return message;
-  });
+      return message;
+    })
+    .map(withUpstreamReasoning);
 
   // Preserve role:'tool' messages so the OpenAI-compatible upstream
   // receives a valid tool_calls/tool-result pair for multi-step tool loops.
