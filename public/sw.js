@@ -24,13 +24,14 @@ const CACHED_ASSET_PREFIXES = ['/_next/static/'];
 const MAX_CACHED_ENTRIES = 300;
 
 const isCacheableAsset = (url) => {
-  try {
-    const { pathname } = new URL(url, self.location.origin);
+  const { origin, pathname } = new URL(url, self.location.origin);
 
-    return CACHED_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix));
-  } catch {
-    return false;
-  }
+  // Same origin only: re-issuing someone else's asset from inside this worker
+  // would serve it under the worker's own CSP, which forbids just that.
+  return (
+    origin === self.location.origin &&
+    CACHED_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))
+  );
 };
 
 const readCache = async (request) => {
@@ -64,6 +65,7 @@ const writeCache = async (request, response) => {
     const cache = await caches.open(CACHE_NAME);
     // Awaited rather than fired and forgotten: an unhandled rejection here
     // would be invisible, and a full cache has to be able to fail quietly.
+    // Cloned because `put` consumes the body this handler still returns.
     await cache.put(request, response.clone());
     await trimCache(cache);
   } catch {
@@ -80,13 +82,19 @@ self.addEventListener('install', () => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
-      const names = await caches.keys();
-      // Only this app's caches: anything else on the origin belongs to
-      // whichever library put it there.
-      const stale = names.filter(
-        (name) => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME,
-      );
-      await Promise.all(stale.map((name) => caches.delete(name)));
+      try {
+        const names = await caches.keys();
+        // Only this app's caches: anything else on the origin belongs to
+        // whichever library put it there.
+        const stale = names.filter(
+          (name) => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME,
+        );
+        await Promise.all(stale.map((name) => caches.delete(name)));
+      } catch {
+        // Nothing to sweep if storage is unavailable — claiming clients below
+        // still has to happen, or a promoted worker never takes over.
+      }
+
       await self.clients.claim();
     })(),
   );

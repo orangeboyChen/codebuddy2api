@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
+const repoRoot = path.resolve(import.meta.dirname, '../..');
+
 /**
  * The worker is a plain script in `public/`, so no bundler, type checker, or
  * linter looks at it — these tests are the only thing standing between a broken
@@ -9,7 +11,10 @@ import vm from 'node:vm';
  * against stubs in a fresh context, which is also what keeps the stubs honest:
  * the worker only ever touches `self`, `caches`, and `fetch`.
  */
-const workerSource = fs.readFileSync(path.join('public', 'sw.js'), 'utf8');
+const workerSource = fs.readFileSync(
+  path.join(repoRoot, 'public', 'sw.js'),
+  'utf8',
+);
 
 interface CacheStub {
   delete: ReturnType<typeof vi.fn>;
@@ -40,6 +45,7 @@ const makeResponse = (status: number, type = 'basic') => {
 
 const loadWorker = (options: {
   cache?: Partial<CacheStub>;
+  cacheKeysError?: boolean;
   cacheNames?: string[];
   fetchResponse?: unknown;
   openCache?: () => Promise<CacheStub>;
@@ -53,9 +59,13 @@ const loadWorker = (options: {
   };
   const caches = {
     delete: vi.fn().mockResolvedValue(true),
-    keys: vi
-      .fn()
-      .mockResolvedValue(options.cacheNames ?? ['codebuddy2api-shell-v1']),
+    keys: vi.fn().mockImplementation(async () => {
+      if (options.cacheKeysError) {
+        throw new Error('cache storage unavailable');
+      }
+
+      return options.cacheNames ?? ['codebuddy2api-shell-v1'];
+    }),
     open: vi.fn().mockImplementation(async () => {
       if (options.openCache) {
         return options.openCache();
@@ -83,10 +93,13 @@ const loadWorker = (options: {
     .mockResolvedValue(options.fetchResponse ?? makeResponse(200));
 
   vm.runInNewContext(workerSource, {
+    URL,
     caches,
+    clearTimeout,
+    console,
     fetch,
     self: workerSelf,
-    URL,
+    setTimeout,
   });
 
   return {
@@ -157,6 +170,9 @@ describe('service worker', () => {
     expect(response).toBeTruthy();
     expect(cache.put).toHaveBeenCalledTimes(1);
     expect(cache.put.mock.calls[0][0]).toEqual(event.request);
+    // A clone, not the response itself: `put` consumes the body, and this
+    // handler still returns it to the page.
+    expect(cache.put.mock.calls[0][1]).not.toBe(response);
   });
 
   it('leaves every request outside the build assets to the browser', async () => {
@@ -166,6 +182,8 @@ describe('service worker', () => {
       makeFetchEvent('https://console.test/dashboard'),
       makeFetchEvent('https://console.test/admin-api/credentials'),
       makeFetchEvent('https://console.test/_next/static/chunks/a.js', 'POST'),
+      // Another origin serving the same path is not ours to intercept.
+      makeFetchEvent('https://cdn.other.test/_next/static/chunks/a.js'),
     ]) {
       worker.dispatch('fetch', event);
       expect(event.respondWith).not.toHaveBeenCalled();
@@ -218,7 +236,13 @@ describe('service worker', () => {
     );
     const cache: CacheStub = {
       delete: vi.fn().mockResolvedValue(true),
-      keys: vi.fn().mockResolvedValue(keys),
+      // Resolving on a later tick is what makes the assertions below prove the
+      // worker awaits its cache writes instead of firing them and returning.
+      keys: vi
+        .fn()
+        .mockImplementation(
+          () => new Promise((resolve) => setTimeout(() => resolve(keys), 0)),
+        ),
       match: vi.fn().mockResolvedValue(undefined),
       put: vi.fn().mockResolvedValue(undefined),
     };
@@ -247,10 +271,21 @@ describe('service worker', () => {
     const event = { waitUntil: vi.fn() };
 
     worker.dispatch('activate', event);
-    await settled(event.waitUntil.mock.calls[0][0] as Promise<unknown>);
+    await expect(event.waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
 
     expect(worker.caches.delete).toHaveBeenCalledTimes(1);
     expect(worker.caches.delete).toHaveBeenCalledWith('codebuddy2api-shell-v0');
+    expect(worker.clients.claim).toHaveBeenCalledTimes(1);
+  });
+
+  it('still claims clients when the cache sweep fails', async () => {
+    const worker = loadWorker({ cacheKeysError: true });
+    const event = { waitUntil: vi.fn() };
+
+    worker.dispatch('activate', event);
+    await expect(event.waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
+
+    expect(worker.caches.delete).not.toHaveBeenCalled();
     expect(worker.clients.claim).toHaveBeenCalledTimes(1);
   });
 
