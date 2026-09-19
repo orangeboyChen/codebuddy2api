@@ -13,6 +13,7 @@
 
 import { formatFetchResult } from '../shared';
 import { normalizeFetchUrl } from './codebuddy-fetch';
+import { assertRemotelyFetchableUrl } from './local-fetch';
 import type {
   WebFetchProvider,
   WebFetchQuery,
@@ -24,22 +25,14 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_CONTENT_LENGTH = 100_000;
-const MIN_CONTENT_LENGTH = 1_000;
-const MAX_URL_LENGTH = 2_048;
 
 export const createJinaFetchProvider = ({
   apiKey,
-  maxContentLength,
   timeoutMs: requestedTimeoutMs,
 }: {
   apiKey?: string;
-  maxContentLength?: number;
   timeoutMs?: number;
 } = {}): WebFetchProvider => {
-  const limit = Math.min(
-    Math.max(maxContentLength ?? MAX_CONTENT_LENGTH, MIN_CONTENT_LENGTH),
-    MAX_CONTENT_LENGTH,
-  );
   const timeoutMs = Math.min(
     Math.max(requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS),
     MAX_TIMEOUT_MS,
@@ -49,7 +42,9 @@ export const createJinaFetchProvider = ({
     prompt,
     url,
   }: WebFetchQuery): Promise<WebFetchResponse> => {
-    const target = normalizeFetchUrl(url).slice(0, MAX_URL_LENGTH);
+    // Refused before it is sent: this backend fetches from Jina's network, so
+    // the model's URL has to be checked here as well as by the local backend.
+    const target = assertRemotelyFetchableUrl(normalizeFetchUrl(url));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -63,7 +58,10 @@ export const createJinaFetchProvider = ({
         headers.set('Authorization', `Bearer ${apiKey}`);
       }
 
-      const response = await fetch(`${ENDPOINT}${target}`, {
+      // Encoded, not concatenated: the target is a path segment, and leaving a
+      // `?query` in it would be read as Jina's own options instead of as part
+      // of the page to read.
+      const response = await fetch(`${ENDPOINT}${encodeURIComponent(target)}`, {
         cache: 'no-store',
         headers,
         method: 'GET',
@@ -74,7 +72,9 @@ export const createJinaFetchProvider = ({
         throw new Error(`Jina Reader failed with HTTP ${response.status}`);
       }
 
-      const content = (await response.text()).trim().slice(0, limit);
+      const content = (await response.text())
+        .trim()
+        .slice(0, MAX_CONTENT_LENGTH);
 
       return {
         content: formatFetchResult({ content, prompt, url: target }),

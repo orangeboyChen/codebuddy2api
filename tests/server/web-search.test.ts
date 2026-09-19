@@ -889,7 +889,7 @@ describe('server tool routing', () => {
       expect(JSON.stringify(events)).toContain('It shipped yesterday.');
     });
 
-    it('leaves a server tool with no backend for the client to resolve', async () => {
+    it('withdraws a server tool that no backend can run', async () => {
       // SearXNG selected with no instance: nothing here can run the tool.
       await updateSettings({ CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng' });
       clearSearxngEnv();

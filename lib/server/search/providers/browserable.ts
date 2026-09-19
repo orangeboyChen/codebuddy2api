@@ -1,6 +1,10 @@
 /**
  * Browserable backend — a self-hostable browser agent.
  *
+ * The address is expected to be an absolute `http(s)` URL; the registry checks
+ * that before building this, because a provider that cannot be built is one the
+ * deployment should not advertise.
+ *
  * The reason to pick it is reach: it drives a real browser, so pages that
  * refuse a plain fetch still come back — scripted pages, pages behind a login
  * the instance already holds, pages that block datacentre addresses. The cost
@@ -21,6 +25,7 @@
 import { asRecord } from '../../shared/content';
 import { formatFetchResult } from '../shared';
 import { normalizeFetchUrl } from './codebuddy-fetch';
+import { assertRemotelyFetchableUrl } from './local-fetch';
 import type {
   WebFetchProvider,
   WebFetchQuery,
@@ -32,9 +37,7 @@ const MIN_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 2_000;
 const MAX_CONTENT_LENGTH = 100_000;
-const MIN_CONTENT_LENGTH = 1_000;
 const MAX_PROMPT_LENGTH = 500;
-const MAX_URL_LENGTH = 2_048;
 
 const SUCCESS_STATUSES = new Set([
   'complete',
@@ -124,20 +127,14 @@ const readOutput = (payload: Record<string, unknown>): string => {
 
 export const createBrowserableProvider = ({
   apiKey,
-  maxContentLength,
   timeoutMs: requestedTimeoutMs,
   url,
 }: {
   apiKey?: string;
-  maxContentLength?: number;
   timeoutMs?: number;
   url: string;
 }): WebFetchProvider => {
   const base = url.trim().replace(/\/+$/, '');
-  const limit = Math.min(
-    Math.max(maxContentLength ?? MAX_CONTENT_LENGTH, MIN_CONTENT_LENGTH),
-    MAX_CONTENT_LENGTH,
-  );
   const timeoutMs = Math.min(
     Math.max(requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS),
     MAX_TIMEOUT_MS,
@@ -160,9 +157,10 @@ export const createBrowserableProvider = ({
     path: string,
     init: Omit<RequestInit, 'headers'> & { headers?: Headers },
     missingIsEmpty = false,
+    budgetMs = timeoutMs,
   ): Promise<Record<string, unknown> | null> => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), budgetMs);
 
     try {
       const response = await fetch(`${base}${path}`, {
@@ -191,16 +189,25 @@ export const createBrowserableProvider = ({
   /**
    * One poll of a running task, in both documented shapes.
    *
-   * `null` means "still running"; a result means the task produced text; a
-   * terminal failure throws, because retrying the same instruction will fail
-   * the same way.
+   * `null` means "still running". A finished task reports `{ done: true }` even
+   * when it produced no text — a page that renders to nothing is an answer, not
+   * a reason to poll until the deadline and report a timeout. A terminal failure
+   * throws, because retrying the same instruction will fail the same way.
    */
-  const readTaskOutcome = async (id: string): Promise<string | null> => {
+  const readTaskOutcome = async (
+    id: string,
+    budgetMs: number,
+  ): Promise<{ content: string; done: boolean } | null> => {
     const encoded = encodeURIComponent(id);
     const paths = [`/tasks/${encoded}/result`, `/tasks/${encoded}`];
 
     for (const path of paths) {
-      const payload = await requestJson(path, { method: 'GET' }, true);
+      const payload = await requestJson(
+        path,
+        { method: 'GET' },
+        true,
+        budgetMs,
+      );
 
       if (!payload) {
         continue;
@@ -210,7 +217,7 @@ export const createBrowserableProvider = ({
       const output = readOutput(payload);
 
       if (SUCCESS_STATUSES.has(status)) {
-        return output || null;
+        return { content: output, done: true };
       }
 
       if (TERMINAL_STATUSES.has(status)) {
@@ -220,7 +227,7 @@ export const createBrowserableProvider = ({
       // No status field at all: content is the only signal available, so it is
       // taken as completion rather than waited past.
       if (output && !status) {
-        return output;
+        return { content: output, done: true };
       }
     }
 
@@ -231,7 +238,9 @@ export const createBrowserableProvider = ({
     prompt,
     url: rawUrl,
   }: WebFetchQuery): Promise<WebFetchResponse> => {
-    const target = normalizeFetchUrl(rawUrl).slice(0, MAX_URL_LENGTH);
+    // Refused before it is sent: the agent fetches from its own network, so the
+    // model's URL has to be checked here as well as by the local backend.
+    const target = assertRemotelyFetchableUrl(normalizeFetchUrl(rawUrl));
     const focus = prompt?.trim().slice(0, MAX_PROMPT_LENGTH) ?? '';
     // The prompt is the model's extraction hint, and it is what makes a browser
     // agent worth its latency: without it the agent has no idea what to return.
@@ -239,11 +248,20 @@ export const createBrowserableProvider = ({
       ? `Open ${target} and extract: ${focus}`
       : `Open ${target} and return the visible text of the page.`;
 
+    const deadline = Date.now() + timeoutMs;
+    /** Milliseconds left before the whole call has to give up. */
+    const remaining = () => Math.max(deadline - Date.now(), MIN_TIMEOUT_MS);
+
     const created =
-      (await requestJson('/tasks', {
-        body: JSON.stringify({ task, url: target }),
-        method: 'POST',
-      })) ?? {};
+      (await requestJson(
+        '/tasks',
+        {
+          body: JSON.stringify({ task, url: target }),
+          method: 'POST',
+        },
+        false,
+        remaining(),
+      )) ?? {};
 
     // Some deployments finish synchronously, in which case there is nothing to
     // poll and no id to read.
@@ -252,7 +270,7 @@ export const createBrowserableProvider = ({
     if (immediate) {
       return {
         content: formatFetchResult({
-          content: immediate.slice(0, limit),
+          content: immediate.slice(0, MAX_CONTENT_LENGTH),
           prompt,
           url: target,
         }),
@@ -268,17 +286,17 @@ export const createBrowserableProvider = ({
       );
     }
 
-    const deadline = Date.now() + timeoutMs;
-
     for (;;) {
-      await sleep(POLL_INTERVAL_MS);
+      await sleep(Math.min(POLL_INTERVAL_MS, remaining()));
 
-      const outcome = await readTaskOutcome(id);
+      // Each poll is bounded by the time left for the whole call, so a slow
+      // deployment cannot stretch one fetch into several full timeouts.
+      const outcome = await readTaskOutcome(id, remaining());
 
-      if (outcome) {
+      if (outcome?.done) {
         return {
           content: formatFetchResult({
-            content: outcome.slice(0, limit),
+            content: outcome.content.slice(0, MAX_CONTENT_LENGTH),
             prompt,
             url: target,
           }),

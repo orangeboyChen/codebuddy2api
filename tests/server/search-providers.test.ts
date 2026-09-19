@@ -412,6 +412,12 @@ describe('search tool definitions and backend names', () => {
       ]);
     });
 
+    it('drops a lone `none` only when it is the whole selection', () => {
+      expect(normalizeFetchBackends('none')).toEqual([]);
+      // A hand-edited value naming a backend is honoured, not disabled.
+      expect(normalizeFetchBackends('jina,none')).toEqual(['jina']);
+    });
+
     it('drops duplicates and unknown names', () => {
       expect(normalizeFetchBackends('jina,jina,codebuddy2api')).toEqual([
         'jina',
@@ -466,9 +472,6 @@ describe('search tool definitions and backend names', () => {
     ]);
     expect(DEFAULT_SEARCH_BACKEND).toBe('searxng');
     expect(DEFAULT_FETCH_BACKENDS).toEqual(['codebuddy2api']);
-    for (const backend of SEARCH_BACKENDS) {
-      expect(SEARCH_BACKENDS).toContain(backend);
-    }
     // No passthrough: a server tool is executed here or withdrawn, never left
     // for a client that has no way to resolve it.
     expect(SEARCH_BACKENDS).not.toContain('passthrough');
@@ -860,6 +863,13 @@ describe('search provider registry', () => {
           })?.id,
         ).toBe(engine);
       }
+    });
+
+    it('resolves nothing when the tool is switched off', () => {
+      // `none` is the value a deployment saved before this table existed, and
+      // the console offers it: it must stay off after upgrading.
+      expect(resolveSearchProvider('none')).toBeNull();
+      expect(resolveSearchProvider('NONE', { search: {} })).toBeNull();
     });
 
     it('returns null for a keyed engine whose key was never entered', () => {

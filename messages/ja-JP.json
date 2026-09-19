@@ -458,6 +458,7 @@
       "searxngUrlHint": "ポートを含むインスタンスのアドレス。空欄の場合は環境変数 SEARXNG_URL にフォールバックします。",
       "browserableUrlHint": "デプロイのアドレス（例: http://127.0.0.1:8000）。取得はタスクとして実行されるため直接取得より大幅に遅く、速いバックエンドの後に置くのが適しています。",
       "jinaKeyHint": "任意です。未設定の場合は公開エンドポイントを低いレート制限で利用します。",
+      "searchBackendOff": "オフ（Web 検索を実行しない）",
       "duckduckgoRegions": {
         "worldwide": "全世界",
         "china": "中国",

@@ -95,14 +95,24 @@ export const BACKEND_CONFIG_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The value that turns a server tool off.
+ *
+ * `none` predates this table — it was the old name for "never run this tool" —
+ * and it keeps exactly that meaning for both tools, so a deployment that
+ * switched a tool off still has it off after upgrading. It is not an engine:
+ * the console offers it as an explicit choice for search and as an empty
+ * selection for fetch.
+ */
+export const BACKEND_NONE = 'none';
+
+/**
  * Values accepted from an existing deployment's saved settings.
  *
- * `local` and `none` were the previous names and are still honoured so an
- * upgrade does not silently change which side executes the tool.
+ * `local` was the previous name for the gateway's own fetcher and is still
+ * honoured so an upgrade does not silently change which side executes the tool.
  */
 const RENAMED_BACKENDS: Record<string, string> = {
   local: 'codebuddy2api',
-  none: 'passthrough',
 };
 
 const normalizeToken = (value: unknown): string => {
@@ -113,15 +123,12 @@ const normalizeToken = (value: unknown): string => {
   return RENAMED_BACKENDS[raw] ?? raw;
 };
 
+/** Whether the stored selection is the explicit "off" value. */
+export const isBackendDisabled = (value: unknown): boolean =>
+  normalizeToken(value) === BACKEND_NONE;
+
 export const normalizeSearchBackend = (value: unknown): SearchBackend => {
   const normalized = normalizeToken(value);
-
-  // `passthrough` (and the `none` it was renamed from) is no longer a backend:
-  // the closest surviving behaviour is the default, which a deployment can then
-  // point at whichever engine it has.
-  if (normalized === 'passthrough') {
-    return DEFAULT_SEARCH_BACKEND;
-  }
 
   return (SEARCH_BACKENDS as readonly string[]).includes(normalized)
     ? (normalized as SearchBackend)
@@ -143,15 +150,17 @@ export const normalizeFetchBackends = (value: unknown): FetchBackend[] => {
     .map((token) => token.trim().toLowerCase())
     .filter(Boolean);
 
-  // `none` was the previous name for "never run this tool" and keeps exactly
-  // that meaning: an empty chain. `passthrough` meant "the client runs it",
-  // which no longer exists, so it falls through to the default below.
-  if (lowercased.includes('none')) {
+  // `none` on its own is the off switch. Only the whole value turns the tool
+  // off — `jina,none` from a hand-edited config drops the unknown token and
+  // keeps jina, rather than silently disabling a selection that names a backend.
+  if (lowercased.length === 1 && lowercased[0] === BACKEND_NONE) {
     return [];
   }
 
   const resolved = lowercased
     .map((token) => RENAMED_BACKENDS[token] ?? token)
+    // `passthrough` no longer exists: it meant "the client runs it", and the
+    // closest surviving behaviour is the default backend.
     .filter((token) => token !== 'passthrough')
     .filter((token): token is FetchBackend =>
       (FETCH_BACKENDS as readonly string[]).includes(token),
@@ -170,4 +179,4 @@ export const normalizeFetchBackends = (value: unknown): FetchBackend[] => {
  * replaced by the default on the way in.
  */
 export const serializeFetchBackends = (backends: readonly string[]): string =>
-  backends.length ? backends.join(',') : 'none';
+  backends.length ? backends.join(',') : BACKEND_NONE;

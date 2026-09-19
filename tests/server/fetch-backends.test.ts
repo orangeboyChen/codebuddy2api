@@ -66,7 +66,9 @@ describe('Jina Reader', () => {
       url: 'https://example.com/post',
     });
 
-    expect(calls[0].url).toBe('https://r.jina.ai/https://example.com/post');
+    expect(calls[0].url).toBe(
+      `https://r.jina.ai/${encodeURIComponent('https://example.com/post')}`,
+    );
     expect(headersOf(calls[0].init).get('X-Return-Format')).toBe('markdown');
     expect(result.content).toContain('# Page');
     expect(result.url).toBe('https://example.com/post');
@@ -100,7 +102,52 @@ describe('Jina Reader', () => {
     });
 
     expect(calls[0].url).toBe(
-      'https://r.jina.ai/https://raw.githubusercontent.com/o/r/main/README.md',
+      `https://r.jina.ai/${encodeURIComponent('https://raw.githubusercontent.com/o/r/main/README.md')}`,
+    );
+  });
+
+  it('keeps a query string part of the page it asks for', async () => {
+    // Concatenating the target would turn `?q=` into Jina's own options and
+    // silently read a different page.
+    const { calls } = stubFetchQueue([makeTextResponse('text')]);
+
+    await createJinaFetchProvider().fetch({
+      url: 'https://example.com/search?q=hello&page=2',
+    });
+
+    expect(new URL(calls[0].url).search).toBe('');
+    expect(decodeURIComponent(new URL(calls[0].url).pathname)).toBe(
+      '/https://example.com/search?q=hello&page=2',
+    );
+  });
+
+  it('refuses a private or loopback address', async () => {
+    // The model supplies the URL, so a remote fetcher must not be handed one
+    // that only means something inside the deployment's own network.
+    const { calls } = stubFetchQueue([makeTextResponse('text')]);
+
+    await expect(
+      createJinaFetchProvider().fetch({ url: 'http://169.254.169.254/latest' }),
+    ).rejects.toThrow('private or loopback address');
+    await expect(
+      createJinaFetchProvider().fetch({ url: 'http://127.0.0.1:8001/admin' }),
+    ).rejects.toThrow('private or loopback address');
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses a URL that is not absolute', async () => {
+    stubFetchQueue([makeTextResponse('text')]);
+
+    await expect(
+      createJinaFetchProvider().fetch({ url: 'example.com/post' }),
+    ).rejects.toThrow('not a valid absolute URL');
+  });
+
+  it('refuses a fetch with no URL at all', async () => {
+    stubFetchQueue([makeTextResponse('text')]);
+
+    await expect(createJinaFetchProvider().fetch({ url: '' })).rejects.toThrow(
+      'without a URL',
     );
   });
 
@@ -113,15 +160,16 @@ describe('Jina Reader', () => {
   });
 
   it('caps the text it hands back', async () => {
-    // The floor on the cap is 1_000 characters, so a smaller request is raised
-    // to it rather than honoured literally.
-    stubFetchQueue([makeTextResponse('x'.repeat(20_000))]);
+    stubFetchQueue([makeTextResponse('x'.repeat(200_000))]);
 
-    const result = await createJinaFetchProvider({
-      maxContentLength: 120,
-    }).fetch({ url: 'https://example.com' });
+    const result = await createJinaFetchProvider().fetch({
+      url: 'https://example.com',
+    });
 
-    expect(result.content.length).toBeLessThan(2_000);
+    // The page text is capped at 100k; the surrounding lines are a few dozen
+    // characters, so the result cannot be much longer than the cap.
+    expect(result.content.length).toBeGreaterThan(100_000);
+    expect(result.content.length).toBeLessThan(100_500);
   });
 });
 
@@ -160,23 +208,94 @@ describe('Browserable', () => {
   it('polls the task until it reports a result', async () => {
     vi.useFakeTimers();
     try {
-      stubFetchQueue([
+      // The result path answers "running" twice before it completes, so the
+      // assertion fails unless the polling loop really iterates.
+      let polls = 0;
+      const { calls } = stubFetchQueue([
         makeJsonResponse({ task_id: 'task-9' }),
-        makeJsonResponse({ status: 'running' }),
-        makeJsonResponse({ status: 'completed', output: 'Finished text' }),
+        (url: string) => {
+          if (!url.endsWith('/result')) {
+            // The task path is not served by this deployment.
+            return makeJsonResponse(null, 404);
+          }
+
+          polls += 1;
+
+          return polls < 3
+            ? makeJsonResponse({ status: 'running' })
+            : makeJsonResponse({
+                status: 'completed',
+                output: 'Finished text',
+              });
+        },
       ]);
 
       const pending = createBrowserableProvider({
         url: 'http://browser.test',
       }).fetch({ url: 'https://example.com' });
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(10_000);
       const result = await pending;
-      await vi.advanceTimersByTimeAsync(2_000);
 
+      expect(polls).toBe(3);
+      expect(calls.filter((call) => call.url.endsWith('/result'))).toHaveLength(
+        3,
+      );
       expect(result.content).toContain('Finished text');
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('treats a completed task with no text as an empty page', async () => {
+    vi.useFakeTimers();
+    try {
+      let polls = 0;
+      stubFetchQueue([
+        makeJsonResponse({ id: 'task-9' }),
+        (url: string) => {
+          if (!url.endsWith('/result')) {
+            return makeJsonResponse(null, 404);
+          }
+
+          polls += 1;
+
+          return makeJsonResponse({ status: 'completed', output: '' });
+        },
+      ]);
+
+      const pending = createBrowserableProvider({
+        url: 'http://browser.test',
+      }).fetch({ url: 'https://example.com' });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+
+      // A page that renders to nothing is an answer, not a timeout.
+      expect(polls).toBe(1);
+      expect(result.content).toContain('Web fetch result for');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a private or loopback address', async () => {
+    const { calls } = stubFetchQueue([makeJsonResponse({ output: 'text' })]);
+
+    await expect(
+      createBrowserableProvider({ url: 'http://browser.test' }).fetch({
+        url: 'http://169.254.169.254/latest/meta-data/',
+      }),
+    ).rejects.toThrow('private or loopback address');
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses a fetch with no URL at all', async () => {
+    stubFetchQueue([makeJsonResponse({ output: 'text' })]);
+
+    await expect(
+      createBrowserableProvider({ url: 'http://browser.test' }).fetch({
+        url: '  ',
+      }),
+    ).rejects.toThrow('without a URL');
   });
 
   it('falls back to the task itself when there is no result path', async () => {
@@ -270,6 +389,42 @@ describe('Browserable', () => {
         url: 'https://example.com',
       }),
     ).rejects.toThrow('Browserable failed with HTTP 500');
+  });
+});
+
+describe('the registry hands each backend its console settings', () => {
+  it('sends the Jina key entered in the console', async () => {
+    const { calls } = stubFetchQueue([makeTextResponse('text')]);
+
+    await resolveFetchProvider('jina', {
+      fetch: { jinaApiKey: 'from-console' },
+    })?.fetch({ url: 'https://example.com' });
+
+    expect(headersOf(calls[0].init).get('Authorization')).toBe(
+      'Bearer from-console',
+    );
+  });
+
+  it('sends the Browserable key and address entered in the console', async () => {
+    const { calls } = stubFetchQueue([makeJsonResponse({ output: 'text' })]);
+
+    await resolveFetchProvider('browserable', {
+      fetch: {
+        browserableApiKey: 'from-console',
+        browserableUrl: 'http://browser.test',
+      },
+    })?.fetch({ url: 'https://example.com' });
+
+    expect(calls[0].url).toBe('http://browser.test/tasks');
+    expect(headersOf(calls[0].init).get('x-api-key')).toBe('from-console');
+  });
+
+  it('drops a Browserable address that is not absolute', () => {
+    expect(
+      resolveFetchProvider('browserable', {
+        fetch: { browserableUrl: 'browser.test:8000' },
+      }),
+    ).toBeNull();
   });
 });
 

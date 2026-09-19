@@ -18,8 +18,10 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
 import {
   BACKEND_CONFIG_KEYS,
+  BACKEND_NONE,
   FETCH_BACKEND_CONFIG_KEYS,
   FETCH_BACKENDS,
+  isBackendDisabled,
   normalizeFetchBackends,
   normalizeSearchBackend,
   SEARCH_BACKENDS,
@@ -306,6 +308,10 @@ const BackendConfigFields = ({
  * cannot run yet is a choice to make, not a choice to hide — the alternative
  * (listing only what the environment already provides) is what made an engine
  * reachable only by editing environment variables.
+ *
+ * `none` closes the list because a deployment that had switched the tool off
+ * has to be able to keep it off: without it, upgrading would silently start
+ * running searches for anyone who had turned them off.
  */
 const WebSearchBackendField = ({
   hint,
@@ -321,6 +327,7 @@ const WebSearchBackendField = ({
   translations: (key: string) => string;
 }) => {
   const settingKey = 'CODEBUDDY_WEB_SEARCH_BACKEND';
+  const off = isBackendDisabled(settings.values[settingKey]);
   const selected = normalizeSearchBackend(settings.values[settingKey]);
 
   return (
@@ -335,15 +342,21 @@ const WebSearchBackendField = ({
         className="w-full"
         id={settingKey}
         onChange={(value) => onChange(settingKey, value)}
-        options={SEARCH_BACKENDS.map((backend) => ({
-          label: SEARCH_BACKEND_LABELS[backend] ?? backend,
-          value: backend,
-        }))}
-        value={selected}
+        options={[
+          ...SEARCH_BACKENDS.map((backend) => ({
+            label: SEARCH_BACKEND_LABELS[backend] ?? backend,
+            value: backend,
+          })),
+          {
+            label: translations('settingsPanel.searchBackendOff'),
+            value: BACKEND_NONE,
+          },
+        ]}
+        value={off ? BACKEND_NONE : selected}
       />
       {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
       <BackendConfigFields
-        configKeys={SEARCH_BACKEND_CONFIG_KEYS[selected] ?? []}
+        configKeys={off ? [] : (SEARCH_BACKEND_CONFIG_KEYS[selected] ?? [])}
         onChange={onChange}
         settings={settings}
         translations={translations}

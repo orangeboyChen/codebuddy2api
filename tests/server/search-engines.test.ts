@@ -21,6 +21,7 @@ import {
 } from '@/lib/server/search/providers/json-search';
 import { createSerperProvider } from '@/lib/server/search/providers/serper';
 import { createTavilyProvider } from '@/lib/server/search/providers/tavily';
+import { resolveSearchProvider } from '@/lib/server/search';
 import { MAX_SNIPPET_LENGTH } from '@/lib/server/search/shared';
 
 const makeJsonResponse = (payload: unknown, status = 200): Response =>
@@ -138,6 +139,18 @@ describe('the shared engine plumbing', () => {
 });
 
 describe('DuckDuckGo', () => {
+  it('sends the region the console stored', async () => {
+    // The registry is what turns a stored setting into a request; a key spelled
+    // differently on either side would otherwise never reach the wire.
+    const { calls } = stubJsonFetch({ RelatedTopics: [] });
+
+    await resolveSearchProvider('duckduckgo', {
+      search: { duckduckgoRegion: 'cn-zh' },
+    })?.search('hello');
+
+    expect(calls[0].url).toContain('kl=cn-zh');
+  });
+
   it('asks for JSON answers in the selected region', async () => {
     const { calls } = stubJsonFetch({ RelatedTopics: [] });
 

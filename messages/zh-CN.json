@@ -454,6 +454,7 @@
       "searxngUrlHint": "实例地址，包含端口。留空则回退到环境变量 SEARXNG_URL。",
       "browserableUrlHint": "部署地址，例如 http://127.0.0.1:8000。抓取会作为任务交给它执行，因此比直接抓取慢得多，建议排在更快的后端之后。",
       "jinaKeyHint": "可选。不填则使用公共端点，速率较低。",
+      "searchBackendOff": "关闭该工具",
       "duckduckgoRegions": {
         "worldwide": "全球",
         "china": "中国",

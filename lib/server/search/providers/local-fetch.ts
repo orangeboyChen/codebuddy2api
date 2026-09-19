@@ -449,6 +449,43 @@ const assertFetchableUrl = (url: URL): void => {
 };
 
 /**
+ * Validates a URL before it is handed to a *remote* fetch backend.
+ *
+ * The URL comes from the model, so a backend that fetches on this machine's
+ * behalf is not the only one that has to refuse it: handing a model-supplied
+ * `http://169.254.169.254/...` or `http://127.0.0.1:8001/...` to a reader
+ * service or a browser agent would fetch it from wherever *that* service sits
+ * and hand the body straight back to the model. Without this, picking one of
+ * those backends would defeat the guard this file applies to its own fetch.
+ *
+ * Only what is visible in the URL is checked. A name that resolves to a private
+ * address cannot be caught without resolving it, and resolving it here would
+ * prove nothing — the connection is made by the remote service, not by this
+ * one — so literals and non-HTTP schemes are what this refuses.
+ */
+export const assertRemotelyFetchableUrl = (rawUrl: string): string => {
+  const trimmed = rawUrl.trim().slice(0, MAX_URL_LENGTH);
+
+  if (!trimmed) {
+    throw new Error(
+      'Web fetch was called without a URL, so nothing was retrieved.',
+    );
+  }
+
+  const parsed = parseUrl(trimmed);
+
+  if (!parsed) {
+    throw new Error(
+      `Web fetch could not run: "${trimmed}" is not a valid absolute URL.`,
+    );
+  }
+
+  assertFetchableUrl(parsed);
+
+  return parsed.toString();
+};
+
+/**
  * Recognises content the model cannot read as text.
  *
  * A PDF or image would otherwise be decoded as a binary string and dumped into

@@ -1,5 +1,6 @@
 import { getCodeBuddyApiEndpoint } from '../domain/config';
 import {
+  isBackendDisabled,
   normalizeFetchBackends,
   normalizeSearchBackend,
   type FetchBackend,
@@ -85,9 +86,16 @@ export const resolveSearchProvider = (
   backend: SearchBackend | string | null | undefined,
   options: ResolveBackendOptions = {},
 ): WebSearchProvider | null => {
-  const resolved = normalizeSearchBackend(backend);
   const { resolveEndpoint = getCodeBuddyApiEndpoint, search: settings = {} } =
     options;
+
+  // `none` is the off switch a deployment may have saved before this table
+  // existed, and the console offers it too.
+  if (isBackendDisabled(backend)) {
+    return null;
+  }
+
+  const resolved = normalizeSearchBackend(backend);
 
   if (resolved === 'codebuddy') {
     return createCodeBuddySearchProvider({
@@ -157,7 +165,9 @@ const resolveOneFetchProvider = (
 
   const url = settings.browserableUrl?.trim();
 
-  if (!url) {
+  // A relative or mistyped address cannot be built into a request, so the
+  // backend is dropped the same way a missing address is.
+  if (!url || !/^https?:\/\//i.test(url)) {
     return null;
   }
 
