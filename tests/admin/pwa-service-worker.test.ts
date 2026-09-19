@@ -45,10 +45,10 @@ const makeResponse = (status: number, type = 'basic') => {
 
 const loadWorker = (options: {
   cache?: Partial<CacheStub>;
+  cacheDeleteError?: boolean;
   cacheKeysError?: boolean;
   cacheNames?: string[];
   fetchResponse?: unknown;
-  openCache?: () => Promise<CacheStub>;
 }): WorkerHarness => {
   const cache: CacheStub = {
     delete: vi.fn().mockResolvedValue(true),
@@ -58,7 +58,13 @@ const loadWorker = (options: {
     ...options.cache,
   };
   const caches = {
-    delete: vi.fn().mockResolvedValue(true),
+    delete: vi.fn().mockImplementation(async () => {
+      if (options.cacheDeleteError) {
+        throw new Error('cache storage unavailable');
+      }
+
+      return true;
+    }),
     keys: vi.fn().mockImplementation(async () => {
       if (options.cacheKeysError) {
         throw new Error('cache storage unavailable');
@@ -67,10 +73,6 @@ const loadWorker = (options: {
       return options.cacheNames ?? ['codebuddy2api-shell-v1'];
     }),
     open: vi.fn().mockImplementation(async () => {
-      if (options.openCache) {
-        return options.openCache();
-      }
-
       if (options.cache) {
         return cache;
       }
@@ -286,6 +288,19 @@ describe('service worker', () => {
     await expect(event.waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
 
     expect(worker.caches.delete).not.toHaveBeenCalled();
+    expect(worker.clients.claim).toHaveBeenCalledTimes(1);
+  });
+
+  it('still claims clients when a cache cannot be deleted', async () => {
+    const worker = loadWorker({
+      cacheDeleteError: true,
+      cacheNames: ['codebuddy2api-shell-v1', 'codebuddy2api-shell-v0'],
+    });
+    const event = { waitUntil: vi.fn() };
+
+    worker.dispatch('activate', event);
+    await expect(event.waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
+
     expect(worker.clients.claim).toHaveBeenCalledTimes(1);
   });
 
