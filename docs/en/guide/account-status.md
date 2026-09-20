@@ -5,7 +5,23 @@ Account Status checks quota, check-in state, and available models for each CodeB
 1. Click **Refresh all**, or click **Refresh** on one account.
 2. Review the plan, used / total quota, remaining percentage, and **Reset time**.
 3. Check the check-in state; click **Check in** or **Check in all** when available.
-4. Expand **Available models** before choosing a model in API Test or a client.
+4. Expand **Models (N)** before choosing a model in API Test or a client.
+
+Each model shows what the upstream catalog advertises: its display name and
+model ID (click to copy), the credit multiplier (for example `x3.33`), its
+description, and **Enterprise / Internal / Free** badges, followed by the
+context length, output ceiling and image / tool / reasoning support. The first
+eight models are shown; click **Show all (N)** for the full list, after which
+the button reads **Collapse**. An account with eight models or fewer has no
+toggle at all.
+
+The description is the one matching the console locale: upstream ships Chinese
+and English, so the Japanese console falls back to the English text.
+
+The catalog comes from upstream `/v3/config` and is cached with the credential
+after the first query, so later page loads do not call upstream again. Editing
+the model list by hand in **Credentials** also drops the metadata of models
+that edit removes.
 
 ## Automatic check-in
 

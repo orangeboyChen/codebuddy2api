@@ -3,6 +3,7 @@ import {
   findEligibleCredentialRecordByFilename,
   getCredentialSupportedModels,
   listEligibleCredentialRecords,
+  updateCredentialSupportedModelCatalog,
   updateCredentialSupportedModels,
 } from '@/lib/server/domain/credentials';
 import { getModelsByCredential } from '@/lib/server/proxy/codebuddy';
@@ -58,10 +59,7 @@ export const POST = async (request: Request): Promise<Response> => {
   const value = models[filename];
 
   if (value && !value.error) {
-    await updateCredentialSupportedModels(
-      filename,
-      value.models.map((model) => model.id),
-    );
+    await updateCredentialSupportedModelCatalog(filename, value.models);
   }
 
   return Response.json({ models });

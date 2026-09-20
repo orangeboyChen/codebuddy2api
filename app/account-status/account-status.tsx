@@ -15,10 +15,34 @@ import {
 } from '@lobehub/ui';
 import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import { CalendarClock, Check, Copy, RefreshCw } from 'lucide-react';
-import { useTranslations } from 'next-intl';
-import { useCallback, useMemo, useState } from 'react';
+import { useLocale, useTranslations } from 'next-intl';
+import { useCallback, useId, useMemo, useState } from 'react';
 
 import type { CredentialSummary } from '@/app/credentials/credentials';
+
+/**
+ * A model an account can use, as advertised by the upstream model catalog.
+ *
+ * Mirrors `DiscoveredModel` on the server; the client cannot import from
+ * `lib/server`, and only keeps the fields the console renders.
+ */
+export interface AccountStatusModel {
+  contextWindow?: number;
+  /** Credit multiplier upstream bills, for example `"x3.33"`. */
+  credits?: string;
+  descriptionEn?: string;
+  descriptionZh?: string;
+  displayName: string;
+  id: string;
+  isEnterprise?: boolean;
+  isFree?: boolean;
+  isInternal?: boolean;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  supportsImages?: boolean;
+  supportsReasoning?: boolean;
+  supportsToolCall?: boolean;
+}
 
 interface AccountStatusProps {
   credentials: CredentialSummary[];
@@ -36,9 +60,15 @@ export interface AccountStatusSnapshot {
   };
   error: string | null;
   filename: string;
-  models: string[];
+  models: AccountStatusModel[];
   queriedAt: string;
 }
+
+/**
+ * Models shown before the list has to be expanded. Accounts routinely offer a
+ * few dozen models, so the collapsed card stays scannable.
+ */
+const MODEL_PREVIEW_COUNT = 8;
 
 /**
  * Fallback when a credential has no stored time. Mirrors
@@ -174,13 +204,166 @@ const CopyableModel = ({ model }: { model: string }) => {
   };
   return (
     <Tooltip title={copied ? text('common.copy') : text('common.copy')}>
-      <Tag onClick={() => void copy()}>
+      <Tag
+        className="account-status-model-id"
+        onClick={() => void copy()}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          void copy();
+        }}
+        // A span with a click handler is invisible to the keyboard; an
+        // expanded list can hold one of these per model.
+        role="button"
+        tabIndex={0}
+      >
         <Flexbox align="center" gap={4} horizontal>
           {copied ? <Check size={12} /> : <Copy size={12} />}
           <span data-model-id={model}>{model}</span>
         </Flexbox>
       </Tag>
     </Tooltip>
+  );
+};
+
+const formatTokenCount = (value: number): string => {
+  // Both branches round: `1048576` is `1M`, not `1.048576M`, and the two
+  // abbreviations have to look like they came from the same ruler.
+  if (value >= 1_000_000) return `${Math.round(value / 1_000_000)}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+
+  return String(value);
+};
+
+const ModelRow = ({ model }: { model: AccountStatusModel }) => {
+  const locale = useLocale();
+  const text = useTranslations('Admin');
+  // Upstream ships both languages; fall back so a missing translation still
+  // describes the model instead of leaving the row blank.
+  const description = locale.startsWith('zh')
+    ? (model.descriptionZh ?? model.descriptionEn)
+    : (model.descriptionEn ?? model.descriptionZh);
+  // Both server fallbacks derive the display name from the id, so the two are
+  // routinely identical. Rendering both would put the same string on the card
+  // twice, which reads as a stutter and breaks text-based locators.
+  const showDisplayName = model.displayName.trim() !== model.id.trim();
+  const context = model.contextWindow ?? model.maxInputTokens;
+  const badges = [
+    model.isEnterprise
+      ? ['enterprise', text('accountStatus.modelEnterprise')]
+      : null,
+    model.isInternal ? ['internal', text('accountStatus.modelInternal')] : null,
+    model.isFree ? ['free', text('accountStatus.modelFree')] : null,
+  ].filter((badge): badge is [string, string] => badge !== null);
+  const meta = [
+    context === undefined
+      ? null
+      : [
+          'context',
+          text('accountStatus.modelContext', {
+            tokens: formatTokenCount(context),
+          }),
+        ],
+    model.maxOutputTokens === undefined
+      ? null
+      : [
+          'output',
+          text('accountStatus.modelOutput', {
+            tokens: formatTokenCount(model.maxOutputTokens),
+          }),
+        ],
+    model.supportsImages ? ['images', text('accountStatus.modelImages')] : null,
+    model.supportsToolCall ? ['tools', text('accountStatus.modelTools')] : null,
+    model.supportsReasoning
+      ? ['reasoning', text('accountStatus.modelReasoning')]
+      : null,
+    // Keyed by field, not by the rendered text: two labels that translate
+    // alike would otherwise collide.
+  ].filter((item): item is [string, string] => item !== null);
+
+  return (
+    <Flexbox className="account-status-model" direction="vertical" gap={6}>
+      <Flexbox align="center" gap={8} horizontal wrap="wrap">
+        {showDisplayName ? (
+          <Text className="account-status-model-name" strong>
+            {model.displayName}
+          </Text>
+        ) : null}
+        <CopyableModel model={model.id} />
+        {badges.map(([key, label]) => (
+          <Tag key={key}>{label}</Tag>
+        ))}
+        {model.credits ? (
+          <Tag className="account-status-model-credits">
+            {text('accountStatus.modelCredits')} {model.credits}
+          </Tag>
+        ) : null}
+      </Flexbox>
+      {description ? (
+        <Text className="account-status-model-description" type="secondary">
+          {description}
+        </Text>
+      ) : null}
+      {meta.length ? (
+        <Flexbox align="center" gap={8} horizontal wrap="wrap">
+          {meta.map(([key, label]) => (
+            <Text
+              className="account-status-model-meta"
+              key={key}
+              type="secondary"
+            >
+              {label}
+            </Text>
+          ))}
+        </Flexbox>
+      ) : null}
+    </Flexbox>
+  );
+};
+
+const ModelList = ({ models }: { models: AccountStatusModel[] }) => {
+  const text = useTranslations('Admin');
+  const [expanded, setExpanded] = useState(false);
+  const listId = useId();
+
+  if (!models.length) {
+    return <Text type="secondary">{text('accountStatus.noModels')}</Text>;
+  }
+
+  const visible = expanded ? models : models.slice(0, MODEL_PREVIEW_COUNT);
+
+  return (
+    <Flexbox direction="vertical" gap={8}>
+      <Flexbox
+        align="center"
+        distribution="space-between"
+        horizontal
+        width="100%"
+        wrap="wrap"
+      >
+        <Text strong>
+          {text('accountStatus.modelCount', { count: models.length })}
+        </Text>
+        {models.length > MODEL_PREVIEW_COUNT ? (
+          <Button
+            aria-controls={listId}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded
+              ? text('accountStatus.collapseModels')
+              : text('accountStatus.showModels', { count: models.length })}
+          </Button>
+        ) : null}
+      </Flexbox>
+      <Flexbox direction="vertical" gap={10} id={listId}>
+        {visible.map((model, index) => (
+          // The id is the row's identity, but a cache edited by hand can still
+          // hold one twice; the index keeps the key unique either way.
+          <ModelRow key={`${model.id}-${index}`} model={model} />
+        ))}
+      </Flexbox>
+    </Flexbox>
   );
 };
 
@@ -351,16 +534,7 @@ const AccountStatusCard = ({
         onTimeChange={(next) => onAutoCheckinChange({ time: next })}
       />
       <Flexbox direction="vertical" gap={8}>
-        <Text strong>{text('accountStatus.models')}</Text>
-        {snapshot.models.length ? (
-          <Flexbox gap={8} horizontal wrap="wrap">
-            {snapshot.models.map((model) => (
-              <CopyableModel key={model} model={model} />
-            ))}
-          </Flexbox>
-        ) : (
-          <Text type="secondary">{text('accountStatus.noModels')}</Text>
-        )}
+        <ModelList models={snapshot.models} />
       </Flexbox>
     </Block>
   );

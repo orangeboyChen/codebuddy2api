@@ -9,7 +9,83 @@ import {
   listEligibleCredentialRecords,
 } from '../../domain/credentials';
 import { getCredentialValue } from './context';
+import { normalizeModelFields } from './model-fields';
 import type { DiscoveredModel } from './types';
+
+/**
+ * A single `models[]` entry of the upstream product config. Fields beyond `id`
+ * are optional because upstream only populates them where it knows a value.
+ */
+interface UpstreamModelEntry {
+  contextWindow?: { defaultLength?: unknown; supportedLengths?: unknown };
+  credits?: unknown;
+  descriptionEn?: unknown;
+  descriptionZh?: unknown;
+  disabled?: unknown;
+  id?: unknown;
+  maxInputTokens?: unknown;
+  maxOutputTokens?: unknown;
+  name?: unknown;
+  supportsImages?: unknown;
+  supportsReasoning?: unknown;
+  supportsToolCall?: unknown;
+  tags?: unknown;
+  vendor?: unknown;
+}
+
+/**
+ * Upstream renders badges as `badge:<label>:<color>` tags, e.g.
+ * `badge:企业版:#3B82F6`. Labels are localized server-side, so both the Chinese
+ * and English spellings are recognized.
+ */
+const BADGE_LABELS: Record<
+  'enterprise' | 'free' | 'internal',
+  readonly string[]
+> = {
+  enterprise: ['企业版', 'enterprise'],
+  free: ['免费', 'free'],
+  internal: ['内部模型', 'internal'],
+};
+
+const readBadges = (tags: unknown) => {
+  const entries: unknown[] = Array.isArray(tags) ? tags : [];
+  const labels = entries.flatMap((tag) => {
+    if (typeof tag !== 'string') return [];
+    const [prefix, ...rest] = tag.split(':');
+
+    if (prefix.trim().toLowerCase() !== 'badge') return [];
+
+    // The colour is the trailing segment, so a label may itself contain the
+    // separator; a tag carrying no colour at all is nothing but a label.
+    const label = (rest.length > 1 ? rest.slice(0, -1) : rest)
+      .join(':')
+      .trim()
+      .toLowerCase();
+
+    return label ? [label] : [];
+  });
+  const has = (candidates: readonly string[]) =>
+    labels.some((label) => candidates.includes(label)) || undefined;
+
+  return {
+    isEnterprise: has(BADGE_LABELS.enterprise),
+    isFree: has(BADGE_LABELS.free),
+    isInternal: has(BADGE_LABELS.internal),
+  };
+};
+
+const toDiscoveredModel = (
+  entry: UpstreamModelEntry,
+): DiscoveredModel | undefined => {
+  if (entry.disabled === true) return undefined;
+
+  return normalizeModelFields({
+    ...entry,
+    contextWindow: entry.contextWindow?.defaultLength,
+    displayName: entry.name,
+    ...readBadges(entry.tags),
+  });
+};
 
 export const getModelsForCredential = async ({
   bearerToken,
@@ -78,7 +154,7 @@ export const getModelsForCredential = async ({
     code?: unknown;
     data?: {
       agents?: Array<{ models?: unknown; name?: unknown }>;
-      models?: Array<{ disabled?: unknown; id?: unknown; name?: unknown }>;
+      models?: UpstreamModelEntry[];
     };
   };
 
@@ -91,24 +167,9 @@ export const getModelsForCredential = async ({
   )?.models;
   const modelsById = new Map(
     (payload.data?.models ?? []).flatMap((model) => {
-      const id = typeof model.id === 'string' ? model.id.trim() : '';
+      const discovered = toDiscoveredModel(model);
 
-      if (!id || model.disabled === true) {
-        return [];
-      }
-
-      return [
-        [
-          id,
-          {
-            displayName:
-              typeof model.name === 'string' && model.name.trim()
-                ? model.name
-                : id,
-            id,
-          },
-        ] as const,
-      ];
+      return discovered ? ([[discovered.id, discovered]] as const) : [];
     }),
   );
   const declaredModelIds = new Set(
@@ -121,10 +182,14 @@ export const getModelsForCredential = async ({
     return [];
   }
 
+  // Upstream can list one id twice. The first row wins, so neither the card
+  // nor the admin console's model field ever shows a repeated id.
+  const seen = new Set<string>();
+
   return cliModels.flatMap((modelId) => {
-    if (typeof modelId !== 'string') {
-      return [];
-    }
+    if (typeof modelId !== 'string' || seen.has(modelId)) return [];
+
+    seen.add(modelId);
 
     const model = modelsById.get(modelId);
     if (!model && declaredModelIds.has(modelId)) {

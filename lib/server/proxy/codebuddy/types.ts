@@ -116,7 +116,35 @@ export interface ProxyContext {
   };
 }
 
+/**
+ * A model the upstream config offers to a credential.
+ *
+ * Only `id` and `displayName` are guaranteed. The remaining fields come from
+ * the `/v3/config` model catalog and are absent whenever upstream describes a
+ * model sparsely, so consumers must treat them as optional.
+ */
 export interface DiscoveredModel {
+  /**
+   * Credit multiplier upstream bills for this model, for example `"x3.33"`.
+   * Absent for models whose cost upstream does not advertise.
+   */
+  credits?: string;
+  contextWindow?: number;
+  descriptionEn?: string;
+  descriptionZh?: string;
   displayName: string;
   id: string;
+  /**
+   * Whether upstream tags the model with the enterprise badge; such models are
+   * only served to accounts that belong to an enterprise.
+   */
+  isEnterprise?: boolean;
+  isFree?: boolean;
+  isInternal?: boolean;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  supportsImages?: boolean;
+  supportsReasoning?: boolean;
+  supportsToolCall?: boolean;
+  vendor?: string;
 }
