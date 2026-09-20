@@ -2070,6 +2070,87 @@ describe('anthropic messages api', () => {
     );
   });
 
+  it('keeps the text the usage hint was delivered alongside in one block', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'ok' },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '<system-reminder>\nToken usage: 190010/180000; -10010 remaining\n</system-reminder>\nkeep me',
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('Token usage');
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+    ]);
+    expect(JSON.stringify(upstreamBody.messages.at(-1))).toContain('keep me');
+  });
+
+  it('drops a block message the usage hint left with nothing', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'ok' },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '<system-reminder>\nToken usage: 190010/180000; -10010 remaining\n</system-reminder>',
+              },
+              { type: 'text', text: 'Token usage: 12/34; 22 remaining' },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('Token usage');
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+  });
+
   describe('image content blocks', () => {
     const captureUpstreamBody = async (
       credentialOverrides: Record<string, unknown>,
