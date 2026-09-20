@@ -229,6 +229,10 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
   const description = locale.startsWith('zh')
     ? (model.descriptionZh ?? model.descriptionEn)
     : (model.descriptionEn ?? model.descriptionZh);
+  // Both server fallbacks derive the display name from the id, so the two are
+  // routinely identical. Rendering both would put the same string on the card
+  // twice, which reads as a stutter and breaks text-based locators.
+  const showDisplayName = model.displayName.trim() !== model.id.trim();
   const context = model.contextWindow ?? model.maxInputTokens;
   const badges = [
     model.isEnterprise && text('accountStatus.modelEnterprise'),
@@ -254,9 +258,11 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
   return (
     <Flexbox className="account-status-model" direction="vertical" gap={6}>
       <Flexbox align="center" gap={8} horizontal wrap="wrap">
-        <Text className="account-status-model-name" strong>
-          {model.displayName}
-        </Text>
+        {showDisplayName ? (
+          <Text className="account-status-model-name" strong>
+            {model.displayName}
+          </Text>
+        ) : null}
         <CopyableModel model={model.id} />
         {badges.map((badge) => (
           <Tag key={badge}>{badge}</Tag>

@@ -97,7 +97,7 @@ test.describe('Account Status tab', () => {
     expect(createResponse.ok()).toBe(true);
     try {
       await page.goto('/account-status');
-      const modelTag = page.getByText('e2e-copy-model');
+      const modelTag = page.locator('[data-model-id="e2e-copy-model"]');
       await expect(modelTag).toBeVisible();
       // The tag is server-rendered, so it is visible before React attaches the
       // click handler that copies. On a slow runner the click would otherwise

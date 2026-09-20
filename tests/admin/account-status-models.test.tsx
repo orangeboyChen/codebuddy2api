@@ -101,6 +101,15 @@ describe('account status model details', () => {
     expect(screen.getByText('推理')).toBeTruthy();
   });
 
+  it('renders a model id only once when it is also the display name', () => {
+    // The saved-id fallback produces `displayName === id`, so the row would
+    // otherwise print the same string twice and every text locator for the
+    // model id would match two elements.
+    renderView([model({ displayName: 'bare-id', id: 'bare-id' })]);
+
+    expect(screen.getAllByText('bare-id')).toHaveLength(1);
+  });
+
   it('falls back to the English description outside Chinese locales', () => {
     renderView([model({ descriptionZh: undefined })], 'en-US');
 
