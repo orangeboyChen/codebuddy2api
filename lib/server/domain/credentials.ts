@@ -296,7 +296,8 @@ export const getCredentialSupportedModels = (
  *
  * Returns an empty array when nothing is cached, or when the stored JSON no
  * longer parses as a model list: a stale or hand-edited cache must degrade to
- * "no details" rather than break the console.
+ * "no details" rather than break the console. Entries are keyed by id, so a
+ * repeated id collapses to the first row that carried it.
  */
 export const getCredentialSupportedModelDetails = (
   credential: CredentialData | null | undefined,
@@ -310,14 +311,25 @@ export const getCredentialSupportedModelDetails = (
 
     if (!Array.isArray(parsed)) return [];
 
-    return parsed.flatMap((entry) => {
-      if (!entry || typeof entry !== 'object') return [];
+    // Upstream can list one id twice, and a hand-edited cache can too. The
+    // first row wins, so no caller renders two cards — or two React keys —
+    // for a single model.
+    const catalog = new Map<string, DiscoveredModel>();
+
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object') continue;
       const model = entry as { id?: unknown };
 
-      return typeof model.id === 'string' && model.id.trim()
-        ? [{ ...(entry as DiscoveredModel), id: model.id.trim() }]
-        : [];
-    });
+      if (typeof model.id !== 'string') continue;
+
+      const id = model.id.trim();
+
+      if (!id || catalog.has(id)) continue;
+
+      catalog.set(id, { ...(entry as DiscoveredModel), id });
+    }
+
+    return [...catalog.values()];
   } catch {
     return [];
   }

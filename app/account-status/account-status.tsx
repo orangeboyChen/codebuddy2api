@@ -320,8 +320,10 @@ const ModelList = ({ models }: { models: AccountStatusModel[] }) => {
         ) : null}
       </Flexbox>
       <Flexbox direction="vertical" gap={10}>
-        {visible.map((model) => (
-          <ModelRow key={model.id} model={model} />
+        {visible.map((model, index) => (
+          // The id is the row's identity, but a cache edited by hand can still
+          // hold one twice; the index keeps the key unique either way.
+          <ModelRow key={`${model.id}-${index}`} model={model} />
         ))}
       </Flexbox>
     </Flexbox>

@@ -124,6 +124,23 @@ describe('account status model details', () => {
     expect(tag).not.toBeNull();
   });
 
+  it('renders a repeated id without colliding React keys', () => {
+    const error = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      renderView([
+        model({ displayName: 'First', id: 'same-id' }),
+        model({ displayName: 'Second', id: 'same-id' }),
+      ]);
+
+      expect(screen.getAllByText('same-id')).toHaveLength(2);
+      expect(error.mock.calls.flat().join('\n')).not.toMatch(/same key/);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it('falls back to the English description outside Chinese locales', () => {
     renderView([model({ descriptionZh: undefined })], 'en-US');
 

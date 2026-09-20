@@ -125,6 +125,21 @@ describe('credential lifecycle edge cases', () => {
     ).toEqual([{ credits: 'x3.33', displayName: 'GLM 5.1', id: 'glm-5.1' }]);
   });
 
+  it('keeps one row per model id when the cache repeats an id', () => {
+    expect(
+      getCredentialSupportedModelDetails({
+        supported_models_detail: JSON.stringify([
+          { displayName: 'First', id: 'glm-5.1' },
+          { displayName: 'Second', credits: 'x9.99', id: ' glm-5.1 ' },
+          { displayName: 'Hy3', id: 'hy3-ioa' },
+        ]),
+      }),
+    ).toEqual([
+      { displayName: 'First', id: 'glm-5.1' },
+      { displayName: 'Hy3', id: 'hy3-ioa' },
+    ]);
+  });
+
   it('keeps cached model details for models a manual edit retains', async () => {
     await expect(
       updateCredentialSupportedModelCatalog('missing.json', []),
