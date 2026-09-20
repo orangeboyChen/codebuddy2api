@@ -16,8 +16,10 @@ import {
   resetCredentialRuntimeState,
   resolveCredentialForRequest,
   updateCredentialSupportedModelCatalog,
+  updateCredentialSupportedModelDetail,
   updateCredentialSupportedModels,
 } from '@/lib/server/domain/credentials';
+import { MODEL_DESCRIPTION_MAX_LENGTH } from '@/lib/server/proxy/codebuddy/model-fields';
 import {
   getCredsDir,
   resetStorageRuntime,
@@ -297,5 +299,92 @@ describe('credential lifecycle edge cases', () => {
     });
     expect([first.filename, 'second.json']).toContain(resolved?.filename);
     await flushCredentialRuntimeState();
+  });
+
+  it('normalizes hand-edited cache entries instead of passing them through', () => {
+    // A cache may be written by an older version, or by hand. A non-string
+    // field would otherwise reach the card, where `{model.credits}` on an
+    // object throws and takes the whole page down.
+    expect(
+      getCredentialSupportedModelDetails({
+        supported_models_detail: JSON.stringify([
+          {
+            contextWindow: 'huge',
+            credits: { multiplier: 1 },
+            evil: '<script>alert(1)</script>',
+            id: 'g',
+            isEnterprise: 'yes',
+          },
+          { id: 'h' },
+        ]),
+      }),
+    ).toEqual([
+      { displayName: 'g', id: 'g' },
+      { displayName: 'h', id: 'h' },
+    ]);
+  });
+
+  it('truncates a long model description before caching it', async () => {
+    const created = await addCredential({ bearer_token: 'token' }, 'described');
+
+    await updateCredentialSupportedModelCatalog(created.filename, [
+      {
+        descriptionEn: 'x'.repeat(4000),
+        descriptionZh: 'y'.repeat(4000),
+        displayName: 'Verbose',
+        id: 'verbose',
+      },
+    ]);
+
+    const stored = await findCredentialRecordByFilename(created.filename);
+    const [model] = getCredentialSupportedModelDetails(stored?.data);
+
+    expect(model?.descriptionEn).toHaveLength(MODEL_DESCRIPTION_MAX_LENGTH);
+    expect(model?.descriptionZh).toHaveLength(MODEL_DESCRIPTION_MAX_LENGTH);
+  });
+
+  it('caps the cached catalog so a verbose upstream cannot balloon a credential', async () => {
+    const created = await addCredential({ bearer_token: 'token' }, 'verbose');
+    const verboseDescription = 'x'.repeat(4000);
+
+    await updateCredentialSupportedModelCatalog(
+      created.filename,
+      Array.from({ length: 400 }, (_, index) => ({
+        descriptionEn: verboseDescription,
+        descriptionZh: verboseDescription,
+        displayName: `Model ${index}`,
+        id: `model-${index}`,
+      })),
+    );
+
+    const stored = await findCredentialRecordByFilename(created.filename);
+    const raw = String(stored?.data.supported_models_detail ?? '');
+
+    // 400 described models is roughly 400KB. The credential document is
+    // re-encrypted in full on every write, so the cache drops descriptions
+    // and keeps the ids that routing and the card both need.
+    expect(raw).not.toContain(verboseDescription);
+    expect(raw.length).toBeLessThan(256 * 1024);
+    expect(getCredentialSupportedModelDetails(stored?.data)).toHaveLength(400);
+  });
+
+  it('caches details without rewriting the routing whitelist', async () => {
+    const created = await addCredential(
+      { bearer_token: 'token', supported_models: 'curated-a' },
+      'detail-only',
+    );
+
+    await updateCredentialSupportedModelDetail(created.filename, [
+      { displayName: 'Upstream One', id: ' upstream-1 ' },
+      { displayName: 'Blank', id: '   ' },
+    ]);
+
+    // `supported_models` is what `resolveCredentialForRequest` routes by, so
+    // only the explicit refresh and manual-edit paths may write it.
+    const stored = await findCredentialRecordByFilename(created.filename);
+    expect(stored?.data.supported_models).toBe('curated-a');
+    expect(getCredentialSupportedModelDetails(stored?.data)).toMatchObject([
+      { id: 'upstream-1' },
+    ]);
   });
 });

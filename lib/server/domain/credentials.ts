@@ -6,6 +6,7 @@ import {
   removeCredentialReferencesFromAccessKeys,
 } from './access-keys';
 import { getAutoCheckinTime } from './auto-checkin-settings';
+import { normalizeModelFields } from '../proxy/codebuddy/model-fields';
 import type { DiscoveredModel } from '../proxy/codebuddy/types';
 import {
   deleteStorageJson,
@@ -318,15 +319,15 @@ export const getCredentialSupportedModelDetails = (
 
     for (const entry of parsed) {
       if (!entry || typeof entry !== 'object') continue;
-      const model = entry as { id?: unknown };
 
-      if (typeof model.id !== 'string') continue;
+      // Rebuilt field by field rather than spread: a hand-edited or older
+      // cache may carry a non-string field, and rendering one of those —
+      // `credits` as an object, say — would take the page down.
+      const model = normalizeModelFields(entry as Record<string, unknown>);
 
-      const id = model.id.trim();
+      if (!model || catalog.has(model.id)) continue;
 
-      if (!id || catalog.has(id)) continue;
-
-      catalog.set(id, { ...(entry as DiscoveredModel), id });
+      catalog.set(model.id, model);
     }
 
     return [...catalog.values()];
@@ -723,9 +724,32 @@ export const updateCredentialByIndex = async (
   return addCredential(credentialData, records[index].filename);
 };
 
+/**
+ * A cached catalog this large turns a few-hundred-byte credential document into
+ * a few-hundred-kilobyte one, and the credential namespace is encrypted whole
+ * on every write. Descriptions are the bulk of it.
+ */
+const MAX_MODEL_DETAIL_BYTES = 256 * 1024;
+
 const serializeCredentialModelDetails = (
   models: DiscoveredModel[],
-): string | undefined => (models.length ? JSON.stringify(models) : undefined);
+): string | undefined => {
+  if (!models.length) return undefined;
+
+  const serialized = JSON.stringify(models);
+
+  if (serialized.length <= MAX_MODEL_DETAIL_BYTES) return serialized;
+
+  // Descriptions go first; the ids that routing and the card both need always
+  // stay.
+  return JSON.stringify(
+    models.map((model) => ({
+      ...model,
+      descriptionEn: undefined,
+      descriptionZh: undefined,
+    })),
+  );
+};
 
 const writeCredentialModels = async (
   credential: CredentialRecord,
@@ -737,6 +761,36 @@ const writeCredentialModels = async (
     supported_models: ids.join(','),
     supported_models_detail: serializeCredentialModelDetails(details),
   });
+};
+
+const writeCredentialModelDetails = async (
+  credential: CredentialRecord,
+  details: DiscoveredModel[],
+): Promise<void> => {
+  await writeStorageJson('credentials', credential.filename, {
+    ...credential.data,
+    supported_models_detail: serializeCredentialModelDetails(details),
+  });
+};
+
+/**
+ * Normalizes and de-duplicates a catalog before it is cached.
+ */
+const toCatalog = (models: DiscoveredModel[]): DiscoveredModel[] => {
+  const catalog = new Map<string, DiscoveredModel>();
+
+  for (const model of models) {
+    const normalized = normalizeModelFields({
+      ...model,
+      id: model.id.trim(),
+    });
+
+    if (normalized && !catalog.has(normalized.id)) {
+      catalog.set(normalized.id, normalized);
+    }
+  }
+
+  return [...catalog.values()];
 };
 
 export const updateCredentialSupportedModels = async (
@@ -774,19 +828,33 @@ export const updateCredentialSupportedModelCatalog = async (
     throw new Error('Credential is unavailable');
   }
 
-  const catalog = new Map(
-    models
-      .map((model) => ({ ...model, id: model.id.trim() }))
-      .filter((model) => model.id)
-      .map((model) => [model.id, model] as const),
-  );
-  const details = [...catalog.values()];
+  const details = toCatalog(models);
 
   await writeCredentialModels(
     credential,
     details.map((model) => model.id),
     details,
   );
+};
+
+/**
+ * Caches the metadata of a catalog without touching `supported_models`.
+ *
+ * `supported_models` is the whitelist `resolveCredentialForRequest` routes by,
+ * and an operator curates it by hand — a page view is not an instruction to
+ * rewrite it. Only an explicit refresh or a manual model edit writes it.
+ */
+export const updateCredentialSupportedModelDetail = async (
+  filename: string,
+  models: DiscoveredModel[],
+): Promise<void> => {
+  const credential = await findCredentialRecordByFilename(filename);
+
+  if (!credential) {
+    throw new Error('Credential is unavailable');
+  }
+
+  await writeCredentialModelDetails(credential, toCatalog(models));
 };
 
 export const selectCredential = async (
