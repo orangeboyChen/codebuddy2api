@@ -43,7 +43,9 @@ const jsonResponse = (payload: unknown, status = 200) =>
 
 describe('account status domain', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // restore, not just clear: a fetch spy left with an implementation leaks
+    // into the next case, and clearAllMocks only drops call records.
+    vi.restoreAllMocks();
     vi.mocked(getCodeBuddyApiEndpoint).mockResolvedValue(
       'https://codebuddy.example.test',
     );
@@ -57,6 +59,12 @@ describe('account status domain', () => {
     vi.mocked(getModelsForCredential).mockResolvedValue([
       { displayName: 'Model One', id: 'model-one' },
     ]);
+  });
+
+  // A spy restored after an assertion never runs when that assertion throws,
+  // which leaves console.warn mocked for everything that follows.
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('normalizes quota, check-in, and models', async () => {
@@ -112,7 +120,11 @@ describe('account status domain', () => {
 
     const [result] = await getAccountStatus();
 
-    expect(result.models).toEqual(discovered);
+    // Spelled out rather than compared against the mock's own return value:
+    // the point is that discovery's models reach the caller unchanged.
+    expect(result.models).toEqual([
+      { credits: 'x1.5', displayName: 'Model One', id: 'model-one' },
+    ]);
     expect(updateCredentialSupportedModelCatalog).toHaveBeenCalledWith(
       'one.json',
       discovered,
@@ -135,7 +147,6 @@ describe('account status domain', () => {
     ]);
     expect(result.error).toBeNull();
     expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
   });
 
   it('falls back to saved model ids when discovery finds nothing', async () => {

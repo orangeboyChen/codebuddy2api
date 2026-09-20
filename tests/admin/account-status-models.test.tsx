@@ -170,11 +170,43 @@ describe('account status model details', () => {
     }
   });
 
-  it('falls back to the English description outside Chinese locales', () => {
-    renderView([model({ descriptionZh: undefined })], 'en-US');
+  // Both descriptions are supplied so the assertion can tell the locale
+  // branches apart: with only one of them, either branch renders it.
+  it('shows the description that matches the console locale', () => {
+    renderView(
+      [
+        model({
+          descriptionEn: 'EN description',
+          descriptionZh: 'ZH description',
+        }),
+      ],
+      'zh-CN',
+    );
 
-    expect(screen.getByText('General purpose model')).toBeTruthy();
+    expect(screen.getByText('ZH description')).toBeTruthy();
+    expect(screen.queryByText('EN description')).toBeNull();
+  });
+
+  it('falls back to the English description outside Chinese locales', () => {
+    renderView(
+      [
+        model({
+          descriptionEn: 'EN description',
+          descriptionZh: 'ZH description',
+        }),
+      ],
+      'en-US',
+    );
+
+    expect(screen.getByText('EN description')).toBeTruthy();
+    expect(screen.queryByText('ZH description')).toBeNull();
     expect(screen.getByText('Enterprise')).toBeTruthy();
+  });
+
+  it('shows the Chinese description when upstream ships no English one', () => {
+    renderView([model({ descriptionEn: undefined })], 'en-US');
+
+    expect(screen.getByText('通用模型')).toBeTruthy();
   });
 
   it('labels the credit multiplier, not a credit balance, in English', () => {

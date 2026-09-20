@@ -4726,7 +4726,7 @@ describe('server units', () => {
 
     await expect(
       getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
-    ).resolves.toEqual([
+    ).resolves.toStrictEqual([
       {
         contextWindow: 200000,
         credits: 'x3.33',
