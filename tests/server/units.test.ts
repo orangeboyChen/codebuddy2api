@@ -4675,6 +4675,129 @@ describe('server units', () => {
     });
   });
 
+  it('carries the upstream model catalog metadata through discovery', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [
+              {
+                models: ['glm-5.3', 'hy3-ioa', 'sparse', 'unknown-tag'],
+                name: 'cli',
+              },
+            ],
+            models: [
+              {
+                contextWindow: { defaultLength: 200000 },
+                credits: 'x3.33',
+                descriptionEn: 'General purpose model',
+                descriptionZh: '通用模型',
+                id: 'glm-5.3',
+                maxInputTokens: 200000,
+                maxOutputTokens: 64000,
+                name: 'GLM 5.3',
+                supportsImages: true,
+                supportsReasoning: true,
+                supportsToolCall: true,
+                tags: ['craft', 'badge:企业版:#3B82F6'],
+                vendor: 'e',
+              },
+              {
+                credits: 'x0.00',
+                descriptionZh: '混元思考模型',
+                id: 'hy3-ioa',
+                name: 'Hy3',
+                supportsImages: false,
+                tags: ['badge:内部模型:#3B82F6', 'badge:free:#22C55E'],
+              },
+              { id: 'sparse', name: 'Sparse' },
+              { id: 'unknown-tag', name: 'Unknown', tags: [42, 'craft'] },
+              {
+                contextWindow: { defaultLength: 'not-a-number' },
+                id: 'ignored',
+                name: 'Ignored',
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
+    ).resolves.toEqual([
+      {
+        contextWindow: 200000,
+        credits: 'x3.33',
+        descriptionEn: 'General purpose model',
+        descriptionZh: '通用模型',
+        displayName: 'GLM 5.3',
+        id: 'glm-5.3',
+        isEnterprise: true,
+        isFree: undefined,
+        isInternal: undefined,
+        maxInputTokens: 200000,
+        maxOutputTokens: 64000,
+        supportsImages: true,
+        supportsReasoning: true,
+        supportsToolCall: true,
+        vendor: 'e',
+      },
+      {
+        contextWindow: undefined,
+        credits: 'x0.00',
+        descriptionEn: undefined,
+        descriptionZh: '混元思考模型',
+        displayName: 'Hy3',
+        id: 'hy3-ioa',
+        isEnterprise: undefined,
+        isFree: true,
+        isInternal: true,
+        maxInputTokens: undefined,
+        maxOutputTokens: undefined,
+        supportsImages: false,
+        supportsReasoning: undefined,
+        supportsToolCall: undefined,
+        vendor: undefined,
+      },
+      {
+        contextWindow: undefined,
+        credits: undefined,
+        descriptionEn: undefined,
+        descriptionZh: undefined,
+        displayName: 'Sparse',
+        id: 'sparse',
+        isEnterprise: undefined,
+        isFree: undefined,
+        isInternal: undefined,
+        maxInputTokens: undefined,
+        maxOutputTokens: undefined,
+        supportsImages: undefined,
+        supportsReasoning: undefined,
+        supportsToolCall: undefined,
+        vendor: undefined,
+      },
+      {
+        contextWindow: undefined,
+        credits: undefined,
+        descriptionEn: undefined,
+        descriptionZh: undefined,
+        displayName: 'Unknown',
+        id: 'unknown-tag',
+        isEnterprise: undefined,
+        isFree: undefined,
+        isInternal: undefined,
+        maxInputTokens: undefined,
+        maxOutputTokens: undefined,
+        supportsImages: undefined,
+        supportsReasoning: undefined,
+        supportsToolCall: undefined,
+        vendor: undefined,
+      },
+    ]);
+  });
+
   it('falls back to the enterprise model route when /v3/config is unavailable', async () => {
     const fetchMock = vi.spyOn(global, 'fetch');
     fetchMock

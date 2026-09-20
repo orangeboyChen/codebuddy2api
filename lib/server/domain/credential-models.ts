@@ -2,7 +2,7 @@ import {
   findCredentialRecordByFilename,
   getCredentialSupportedModels,
   listEligibleCredentialRecords,
-  updateCredentialSupportedModels,
+  updateCredentialSupportedModelCatalog,
 } from './credentials';
 import { getModelsByCredential } from '../proxy/codebuddy';
 
@@ -24,10 +24,7 @@ export const refreshCredentialModels = async (
     const models = result[credential.filename]?.models ?? [];
 
     if (models.length) {
-      await updateCredentialSupportedModels(
-        credential.filename,
-        models.map((model) => model.id),
-      );
+      await updateCredentialSupportedModelCatalog(credential.filename, models);
     }
   } catch (error) {
     console.warn('[CodeBuddy2API] Unable to refresh credential models', error);

@@ -7,6 +7,7 @@ import {
   findEligibleCredentialRecordByFilename,
   flushCredentialRuntimeState,
   getCredentialProxySettings,
+  getCredentialSupportedModelDetails,
   getCredentialSupportedModels,
   listCredentialFilenames,
   listCredentials,
@@ -14,6 +15,7 @@ import {
   readCredentialRecords,
   resetCredentialRuntimeState,
   resolveCredentialForRequest,
+  updateCredentialSupportedModelCatalog,
   updateCredentialSupportedModels,
 } from '@/lib/server/domain/credentials';
 import {
@@ -90,6 +92,75 @@ describe('credential lifecycle edge cases', () => {
     ).toMatchObject({
       upstreamProtocol: 'chat',
     });
+  });
+
+  it('reads back only well-formed cached model catalogs', () => {
+    expect(getCredentialSupportedModelDetails(null)).toEqual([]);
+    expect(getCredentialSupportedModelDetails({})).toEqual([]);
+    expect(
+      getCredentialSupportedModelDetails({
+        supported_models_detail: '   ',
+      }),
+    ).toEqual([]);
+    expect(
+      getCredentialSupportedModelDetails({
+        supported_models_detail: 'not json',
+      }),
+    ).toEqual([]);
+    expect(
+      getCredentialSupportedModelDetails({
+        supported_models_detail: '{"id":"glm-5.1"}',
+      }),
+    ).toEqual([]);
+    expect(
+      getCredentialSupportedModelDetails({
+        supported_models_detail: JSON.stringify([
+          { id: ' glm-5.1 ', displayName: 'GLM 5.1', credits: 'x3.33' },
+          null,
+          'glm-5.1',
+          { displayName: 'No id' },
+          { id: '   ' },
+        ]),
+      }),
+    ).toEqual([{ credits: 'x3.33', displayName: 'GLM 5.1', id: 'glm-5.1' }]);
+  });
+
+  it('keeps cached model details for models a manual edit retains', async () => {
+    await expect(
+      updateCredentialSupportedModelCatalog('missing.json', []),
+    ).rejects.toThrow('Credential is unavailable');
+
+    const created = await addCredential(
+      { bearer_token: 'token', user_id: 'user@example.com' },
+      'catalog',
+    );
+
+    await updateCredentialSupportedModelCatalog(created.filename, [
+      { displayName: 'GLM 5.1', id: ' glm-5.1 ', credits: 'x3.33' },
+      { displayName: 'GLM 5.1 duplicate', id: 'glm-5.1', credits: 'x3.33' },
+      { displayName: 'Dropped', id: '  ' },
+      { displayName: 'Hy3', id: 'hy3-ioa', isEnterprise: true },
+    ]);
+    const stored = await findCredentialRecordByFilename(created.filename);
+    expect(stored?.data.supported_models).toBe('glm-5.1,hy3-ioa');
+    expect(getCredentialSupportedModelDetails(stored?.data)).toMatchObject([
+      { id: 'glm-5.1', credits: 'x3.33' },
+      { id: 'hy3-ioa', isEnterprise: true },
+    ]);
+
+    await updateCredentialSupportedModels(created.filename, ['glm-5.1', ' ']);
+    const pruned = await findCredentialRecordByFilename(created.filename);
+    expect(pruned?.data.supported_models).toBe('glm-5.1');
+    expect(getCredentialSupportedModelDetails(pruned?.data)).toMatchObject([
+      { id: 'glm-5.1', credits: 'x3.33' },
+    ]);
+
+    await updateCredentialSupportedModels(created.filename, []);
+    expect(
+      getCredentialSupportedModelDetails(
+        (await findCredentialRecordByFilename(created.filename))?.data,
+      ),
+    ).toEqual([]);
   });
 
   it('handles updates for missing and existing credentials', async () => {

@@ -1,10 +1,14 @@
 import { getCodeBuddyApiEndpoint } from './config';
 import {
+  getCredentialSupportedModelDetails,
+  getCredentialSupportedModels,
   listCredentials,
   listEligibleCredentialRecords,
   type CredentialRecord,
+  updateCredentialSupportedModelCatalog,
 } from './credentials';
 import { getModelsForCredential } from '../proxy/codebuddy';
+import type { DiscoveredModel } from '../proxy/codebuddy/types';
 import { asRecord } from '../shared/content';
 
 export interface AccountStatusSnapshot {
@@ -18,7 +22,7 @@ export interface AccountStatusSnapshot {
   };
   error: string | null;
   filename: string;
-  models: string[];
+  models: DiscoveredModel[];
   queriedAt: string;
 }
 
@@ -156,13 +160,60 @@ const normalizeQuotaPayload = (payload: unknown): unknown => {
   return hasValues ? { total, used, remaining } : payload;
 };
 
+/**
+ * The saved model ids, as models without metadata. Used when upstream cannot be
+ * reached: the ids still describe what the account can call.
+ */
+const savedModelsAsModels = (
+  credentialData: CredentialRecord['data'],
+): DiscoveredModel[] =>
+  getCredentialSupportedModels(credentialData).map((id) => ({
+    displayName: id,
+    id,
+  }));
+
+/**
+ * Resolves the models an account can use, together with their metadata.
+ *
+ * The cached catalog wins because `/v3/config` answers with hundreds of
+ * kilobytes per account, and account status is rendered for every credential
+ * on every page load. A credential whose catalog has never been fetched pays
+ * for one upstream call and then caches the answer.
+ */
+const loadCredentialModels = async (
+  credential: CredentialRecord,
+): Promise<DiscoveredModel[]> => {
+  const cached = getCredentialSupportedModelDetails(credential.data);
+
+  if (cached.length) return cached;
+
+  const discovered = await getModelsForCredential({
+    bearerToken: getBearerToken(credential),
+    credentialData: credential.data,
+  });
+
+  if (!discovered.length) return savedModelsAsModels(credential.data);
+
+  try {
+    await updateCredentialSupportedModelCatalog(
+      credential.filename,
+      discovered,
+    );
+  } catch (error) {
+    // Losing the cache is survivable; losing the models we just fetched is not.
+    console.warn('[CodeBuddy2API] Unable to cache credential models', error);
+  }
+
+  return discovered;
+};
+
 const loadAccountStatus = async (
   credential: CredentialRecord,
 ): Promise<AccountStatusSnapshot> => {
   const errors: string[] = [];
   let creditsPayload: unknown;
   let checkinPayload: unknown;
-  let models: string[] = [];
+  let models: DiscoveredModel[] = [];
 
   try {
     const now = new Date();
@@ -196,20 +247,18 @@ const loadAccountStatus = async (
     );
   }
   try {
-    const savedModels = String(credential.data.supported_models ?? '')
-      .split(',')
-      .map((model) => model.trim())
-      .filter(Boolean);
-    models = savedModels.length
-      ? savedModels
-      : (
-          await getModelsForCredential({
-            bearerToken: getBearerToken(credential),
-            credentialData: credential.data,
-          })
-        ).map((model) => model.id);
+    models = await loadCredentialModels(credential);
   } catch (error) {
-    errors.push(error instanceof Error ? error.message : 'Model query failed');
+    models = savedModelsAsModels(credential.data);
+
+    // The saved ids still describe the account, so only an empty fallback is
+    // worth surfacing as an error; otherwise every unreachable upstream would
+    // turn a working card red.
+    if (!models.length) {
+      errors.push(
+        error instanceof Error ? error.message : 'Model query failed',
+      );
+    }
   }
 
   const claimedValue = findValue(checkinPayload, [

@@ -15,10 +15,34 @@ import {
 } from '@lobehub/ui';
 import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import { CalendarClock, Check, Copy, RefreshCw } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState } from 'react';
 
 import type { CredentialSummary } from '@/app/credentials/credentials';
+
+/**
+ * A model an account can use, as advertised by the upstream model catalog.
+ *
+ * Mirrors `DiscoveredModel` on the server; the client cannot import from
+ * `lib/server`, and only keeps the fields the console renders.
+ */
+export interface AccountStatusModel {
+  contextWindow?: number;
+  /** Credit multiplier upstream bills, for example `"x3.33"`. */
+  credits?: string;
+  descriptionEn?: string;
+  descriptionZh?: string;
+  displayName: string;
+  id: string;
+  isEnterprise?: boolean;
+  isFree?: boolean;
+  isInternal?: boolean;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  supportsImages?: boolean;
+  supportsReasoning?: boolean;
+  supportsToolCall?: boolean;
+}
 
 interface AccountStatusProps {
   credentials: CredentialSummary[];
@@ -36,9 +60,15 @@ export interface AccountStatusSnapshot {
   };
   error: string | null;
   filename: string;
-  models: string[];
+  models: AccountStatusModel[];
   queriedAt: string;
 }
+
+/**
+ * Models shown before the list has to be expanded. Accounts routinely offer a
+ * few dozen models, so the collapsed card stays scannable.
+ */
+const MODEL_PREVIEW_COUNT = 8;
 
 /**
  * Fallback when a credential has no stored time. Mirrors
@@ -181,6 +211,114 @@ const CopyableModel = ({ model }: { model: string }) => {
         </Flexbox>
       </Tag>
     </Tooltip>
+  );
+};
+
+const formatTokenCount = (value: number): string => {
+  if (value >= 1_000_000) return `${value / 1_000_000}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+
+  return String(value);
+};
+
+const ModelRow = ({ model }: { model: AccountStatusModel }) => {
+  const locale = useLocale();
+  const text = useTranslations('Admin');
+  // Upstream ships both languages; fall back so a missing translation still
+  // describes the model instead of leaving the row blank.
+  const description = locale.startsWith('zh')
+    ? (model.descriptionZh ?? model.descriptionEn)
+    : (model.descriptionEn ?? model.descriptionZh);
+  const context = model.contextWindow ?? model.maxInputTokens;
+  const badges = [
+    model.isEnterprise && text('accountStatus.modelEnterprise'),
+    model.isInternal && text('accountStatus.modelInternal'),
+    model.isFree && text('accountStatus.modelFree'),
+  ].filter((badge): badge is string => Boolean(badge));
+  const meta = [
+    context === undefined
+      ? ''
+      : text('accountStatus.modelContext', {
+          tokens: formatTokenCount(context),
+        }),
+    model.maxOutputTokens === undefined
+      ? ''
+      : text('accountStatus.modelOutput', {
+          tokens: formatTokenCount(model.maxOutputTokens),
+        }),
+    model.supportsImages ? text('accountStatus.modelImages') : '',
+    model.supportsToolCall ? text('accountStatus.modelTools') : '',
+    model.supportsReasoning ? text('accountStatus.modelReasoning') : '',
+  ].filter(Boolean);
+
+  return (
+    <Flexbox className="account-status-model" direction="vertical" gap={6}>
+      <Flexbox align="center" gap={8} horizontal wrap="wrap">
+        <Text className="account-status-model-name" strong>
+          {model.displayName}
+        </Text>
+        <CopyableModel model={model.id} />
+        {badges.map((badge) => (
+          <Tag key={badge}>{badge}</Tag>
+        ))}
+        {model.credits ? (
+          <Tag className="account-status-model-credits">
+            {text('accountStatus.modelCredits')} {model.credits}
+          </Tag>
+        ) : null}
+      </Flexbox>
+      {description ? (
+        <Text className="account-status-model-description" type="secondary">
+          {description}
+        </Text>
+      ) : null}
+      {meta.length ? (
+        <Flexbox align="center" gap={8} horizontal wrap="wrap">
+          {meta.map((item) => (
+            <Text
+              className="account-status-model-meta"
+              key={item}
+              type="secondary"
+            >
+              {item}
+            </Text>
+          ))}
+        </Flexbox>
+      ) : null}
+    </Flexbox>
+  );
+};
+
+const ModelList = ({ models }: { models: AccountStatusModel[] }) => {
+  const text = useTranslations('Admin');
+  const [expanded, setExpanded] = useState(false);
+
+  if (!models.length) {
+    return <Text type="secondary">{text('accountStatus.noModels')}</Text>;
+  }
+
+  const visible = expanded ? models : models.slice(0, MODEL_PREVIEW_COUNT);
+
+  return (
+    <Flexbox direction="vertical" gap={8}>
+      <Flexbox align="center" distribution="space-between" horizontal>
+        <Text strong>
+          {text('accountStatus.modelCount', { count: models.length })}
+        </Text>
+        {models.length > MODEL_PREVIEW_COUNT ? (
+          <Button onClick={() => setExpanded((value) => !value)}>
+            {expanded
+              ? text('accountStatus.collapseModels')
+              : text('accountStatus.showModels', { count: models.length })}
+          </Button>
+        ) : null}
+      </Flexbox>
+      <Flexbox direction="vertical" gap={10}>
+        {visible.map((model) => (
+          <ModelRow key={model.id} model={model} />
+        ))}
+      </Flexbox>
+    </Flexbox>
   );
 };
 
@@ -351,16 +489,7 @@ const AccountStatusCard = ({
         onTimeChange={(next) => onAutoCheckinChange({ time: next })}
       />
       <Flexbox direction="vertical" gap={8}>
-        <Text strong>{text('accountStatus.models')}</Text>
-        {snapshot.models.length ? (
-          <Flexbox gap={8} horizontal wrap="wrap">
-            {snapshot.models.map((model) => (
-              <CopyableModel key={model} model={model} />
-            ))}
-          </Flexbox>
-        ) : (
-          <Text type="secondary">{text('accountStatus.noModels')}</Text>
-        )}
+        <ModelList models={snapshot.models} />
       </Flexbox>
     </Block>
   );

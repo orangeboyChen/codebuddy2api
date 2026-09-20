@@ -6,6 +6,7 @@ import {
   removeCredentialReferencesFromAccessKeys,
 } from './access-keys';
 import { getAutoCheckinTime } from './auto-checkin-settings';
+import type { DiscoveredModel } from '../proxy/codebuddy/types';
 import {
   deleteStorageJson,
   getCredsDir,
@@ -35,6 +36,13 @@ export type CredentialData = Record<string, unknown> & {
   first_message_role_to_system?: boolean;
   first_system_message_role_to_user?: boolean;
   supported_models?: string;
+  /**
+   * JSON-encoded `DiscoveredModel[]` cached from the last upstream model
+   * discovery. Kept beside `supported_models` so the console can show each
+   * model's credits, description and badges without re-querying `/v3/config`,
+   * whose payload is hundreds of kilobytes per account.
+   */
+  supported_models_detail?: string;
   /** Whether the built-in scheduler checks this account in automatically. */
   auto_checkin_enabled?: boolean;
   /**
@@ -281,6 +289,38 @@ export const getCredentialSupportedModels = (
         .filter(Boolean),
     ),
   ];
+};
+
+/**
+ * Reads the cached upstream model catalog for a credential.
+ *
+ * Returns an empty array when nothing is cached, or when the stored JSON no
+ * longer parses as a model list: a stale or hand-edited cache must degrade to
+ * "no details" rather than break the console.
+ */
+export const getCredentialSupportedModelDetails = (
+  credential: CredentialData | null | undefined,
+): DiscoveredModel[] => {
+  const raw = credential?.supported_models_detail;
+
+  if (typeof raw !== 'string' || !raw.trim()) return [];
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const model = entry as { id?: unknown };
+
+      return typeof model.id === 'string' && model.id.trim()
+        ? [{ ...(entry as DiscoveredModel), id: model.id.trim() }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
 };
 
 export const readCredentialRecords = async (): Promise<CredentialRecord[]> => {
@@ -671,6 +711,22 @@ export const updateCredentialByIndex = async (
   return addCredential(credentialData, records[index].filename);
 };
 
+const serializeCredentialModelDetails = (
+  models: DiscoveredModel[],
+): string | undefined => (models.length ? JSON.stringify(models) : undefined);
+
+const writeCredentialModels = async (
+  credential: CredentialRecord,
+  ids: string[],
+  details: DiscoveredModel[],
+): Promise<void> => {
+  await writeStorageJson('credentials', credential.filename, {
+    ...credential.data,
+    supported_models: ids.join(','),
+    supported_models_detail: serializeCredentialModelDetails(details),
+  });
+};
+
 export const updateCredentialSupportedModels = async (
   filename: string,
   models: string[],
@@ -681,12 +737,44 @@ export const updateCredentialSupportedModels = async (
     throw new Error('Credential is unavailable');
   }
 
-  await writeStorageJson('credentials', filename, {
-    ...credential.data,
-    supported_models: [
-      ...new Set(models.map((model) => model.trim()).filter(Boolean)),
-    ].join(','),
-  });
+  const ids = [...new Set(models.map((model) => model.trim()).filter(Boolean))];
+
+  // A manual model edit invalidates the metadata of models it drops, so the
+  // console never advertises details for a model this account no longer has.
+  const details = getCredentialSupportedModelDetails(credential.data).filter(
+    (model) => ids.includes(model.id),
+  );
+
+  await writeCredentialModels(credential, ids, details);
+};
+
+/**
+ * Persists a full upstream model catalog: the model ids the proxy routes with,
+ * plus the metadata the console renders.
+ */
+export const updateCredentialSupportedModelCatalog = async (
+  filename: string,
+  models: DiscoveredModel[],
+): Promise<void> => {
+  const credential = await findCredentialRecordByFilename(filename);
+
+  if (!credential) {
+    throw new Error('Credential is unavailable');
+  }
+
+  const catalog = new Map(
+    models
+      .map((model) => ({ ...model, id: model.id.trim() }))
+      .filter((model) => model.id)
+      .map((model) => [model.id, model] as const),
+  );
+  const details = [...catalog.values()];
+
+  await writeCredentialModels(
+    credential,
+    details.map((model) => model.id),
+    details,
+  );
 };
 
 export const selectCredential = async (
