@@ -10,7 +10,7 @@ import AccountStatus, {
 } from '@/app/account-status/account-status';
 import type { CredentialSummary } from '@/app/credentials/credentials';
 import type { AppLocale } from '@/lib/i18n/routing';
-import { getMessages } from '@/lib/i18n/messages';
+import { type AppMessages, getMessages } from '@/lib/i18n/messages';
 
 const credential = (): CredentialSummary => ({
   auto_checkin_enabled: false,
@@ -56,10 +56,14 @@ const snapshot = (models: AccountStatusModel[], filename = 'one.json') => ({
 const renderView = (
   models: AccountStatusModel[],
   locale: AppLocale = 'zh-CN',
+  messages: AppMessages | undefined = undefined,
 ) =>
   render(
     <ConfigProvider motion={motion}>
-      <NextIntlClientProvider locale={locale} messages={getMessages(locale)}>
+      <NextIntlClientProvider
+        locale={locale}
+        messages={messages ?? getMessages(locale)}
+      >
         <AccountStatus
           credentials={[credential()]}
           initialStatuses={[snapshot(models)]}
@@ -186,6 +190,46 @@ describe('account status model details', () => {
     fireEvent.click(screen.getByText('收起'));
 
     expect(screen.getAllByText(/^model-\d$/)).toHaveLength(8);
+  });
+
+  it('announces whether the model list is expanded', () => {
+    const models = Array.from({ length: 10 }, (_, index) =>
+      model({ displayName: `Model ${index}`, id: `model-${index}` }),
+    );
+    renderView(models);
+
+    const collapsed = screen.getByRole('button', { name: /展开全部/ });
+
+    expect(collapsed.getAttribute('aria-expanded')).toBe('false');
+    expect(collapsed.getAttribute('aria-controls')).toBeTruthy();
+
+    fireEvent.click(collapsed);
+
+    expect(
+      screen
+        .getByRole('button', { name: '收起' })
+        .getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
+  it('keys badges by field so two alike labels do not collide', () => {
+    const messages = JSON.parse(
+      JSON.stringify(getMessages('zh-CN')),
+    ) as AppMessages;
+    messages.Admin.accountStatus.modelFree =
+      messages.Admin.accountStatus.modelEnterprise;
+    const error = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      renderView([model({ isFree: true })], 'zh-CN', messages);
+
+      expect(screen.getAllByText('企业版')).toHaveLength(2);
+      expect(error.mock.calls.flat().join('\n')).not.toMatch(/same key/);
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it('reports an account with no models', () => {

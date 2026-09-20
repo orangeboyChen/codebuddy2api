@@ -16,7 +16,7 @@ import {
 import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import { CalendarClock, Check, Copy, RefreshCw } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useId, useMemo, useState } from 'react';
 
 import type { CredentialSummary } from '@/app/credentials/credentials';
 
@@ -235,25 +235,37 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
   const showDisplayName = model.displayName.trim() !== model.id.trim();
   const context = model.contextWindow ?? model.maxInputTokens;
   const badges = [
-    model.isEnterprise && text('accountStatus.modelEnterprise'),
-    model.isInternal && text('accountStatus.modelInternal'),
-    model.isFree && text('accountStatus.modelFree'),
-  ].filter((badge): badge is string => Boolean(badge));
+    model.isEnterprise
+      ? ['enterprise', text('accountStatus.modelEnterprise')]
+      : null,
+    model.isInternal ? ['internal', text('accountStatus.modelInternal')] : null,
+    model.isFree ? ['free', text('accountStatus.modelFree')] : null,
+  ].filter((badge): badge is [string, string] => badge !== null);
   const meta = [
     context === undefined
-      ? ''
-      : text('accountStatus.modelContext', {
-          tokens: formatTokenCount(context),
-        }),
+      ? null
+      : [
+          'context',
+          text('accountStatus.modelContext', {
+            tokens: formatTokenCount(context),
+          }),
+        ],
     model.maxOutputTokens === undefined
-      ? ''
-      : text('accountStatus.modelOutput', {
-          tokens: formatTokenCount(model.maxOutputTokens),
-        }),
-    model.supportsImages ? text('accountStatus.modelImages') : '',
-    model.supportsToolCall ? text('accountStatus.modelTools') : '',
-    model.supportsReasoning ? text('accountStatus.modelReasoning') : '',
-  ].filter(Boolean);
+      ? null
+      : [
+          'output',
+          text('accountStatus.modelOutput', {
+            tokens: formatTokenCount(model.maxOutputTokens),
+          }),
+        ],
+    model.supportsImages ? ['images', text('accountStatus.modelImages')] : null,
+    model.supportsToolCall ? ['tools', text('accountStatus.modelTools')] : null,
+    model.supportsReasoning
+      ? ['reasoning', text('accountStatus.modelReasoning')]
+      : null,
+    // Keyed by field, not by the rendered text: two labels that translate
+    // alike would otherwise collide.
+  ].filter((item): item is [string, string] => item !== null);
 
   return (
     <Flexbox className="account-status-model" direction="vertical" gap={6}>
@@ -264,8 +276,8 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
           </Text>
         ) : null}
         <CopyableModel model={model.id} />
-        {badges.map((badge) => (
-          <Tag key={badge}>{badge}</Tag>
+        {badges.map(([key, label]) => (
+          <Tag key={key}>{label}</Tag>
         ))}
         {model.credits ? (
           <Tag className="account-status-model-credits">
@@ -280,13 +292,13 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
       ) : null}
       {meta.length ? (
         <Flexbox align="center" gap={8} horizontal wrap="wrap">
-          {meta.map((item) => (
+          {meta.map(([key, label]) => (
             <Text
               className="account-status-model-meta"
-              key={item}
+              key={key}
               type="secondary"
             >
-              {item}
+              {label}
             </Text>
           ))}
         </Flexbox>
@@ -298,6 +310,7 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
 const ModelList = ({ models }: { models: AccountStatusModel[] }) => {
   const text = useTranslations('Admin');
   const [expanded, setExpanded] = useState(false);
+  const listId = useId();
 
   if (!models.length) {
     return <Text type="secondary">{text('accountStatus.noModels')}</Text>;
@@ -307,19 +320,29 @@ const ModelList = ({ models }: { models: AccountStatusModel[] }) => {
 
   return (
     <Flexbox direction="vertical" gap={8}>
-      <Flexbox align="center" distribution="space-between" horizontal>
+      <Flexbox
+        align="center"
+        distribution="space-between"
+        horizontal
+        width="100%"
+        wrap="wrap"
+      >
         <Text strong>
           {text('accountStatus.modelCount', { count: models.length })}
         </Text>
         {models.length > MODEL_PREVIEW_COUNT ? (
-          <Button onClick={() => setExpanded((value) => !value)}>
+          <Button
+            aria-controls={listId}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
             {expanded
               ? text('accountStatus.collapseModels')
               : text('accountStatus.showModels', { count: models.length })}
           </Button>
         ) : null}
       </Flexbox>
-      <Flexbox direction="vertical" gap={10}>
+      <Flexbox direction="vertical" gap={10} id={listId}>
         {visible.map((model, index) => (
           // The id is the row's identity, but a cache edited by hand can still
           // hold one twice; the index keeps the key unique either way.
