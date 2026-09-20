@@ -11,7 +11,12 @@ Each model shows what the upstream catalog advertises: its display name and
 model ID (click to copy), the credit multiplier (for example `x3.33`), its
 description, and **Enterprise / Internal / Free** badges, followed by the
 context length, output ceiling and image / tool / reasoning support. The first
-eight models are shown; click **Show all (N)** for the full list.
+eight models are shown; click **Show all (N)** for the full list, after which
+the button reads **Collapse**. An account with eight models or fewer has no
+toggle at all.
+
+The description is the one matching the console locale: upstream ships Chinese
+and English, so the Japanese console falls back to the English text.
 
 The catalog comes from upstream `/v3/config` and is cached with the credential
 after the first query, so later page loads do not call upstream again. Editing
