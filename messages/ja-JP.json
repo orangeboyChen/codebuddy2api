@@ -453,8 +453,20 @@
       "passkeyRpIdPlaceholder": "空欄なら現在のホストに追従",
       "saveSuccess": "設定を保存しました。",
       "title": "サービス設定",
-      "webSearchBackendHint": "Web 検索の実行先。codebuddy は保存済み資格情報を使って CodeBuddy の agent-tool エンドポイントを呼びます。searxng は SearXNG インスタンスに問い合わせます（SEARXNG_URL の設定が必要）。none はこのツールを無効化します。",
-      "webFetchBackendHint": "Web フェッチの実行先。codebuddy は保存済み資格情報を使って CodeBuddy の agent-tool エンドポイントを呼び、失敗時は直接取得にフォールバックします。local はこのサーバーから直接ページを取得します。none はこのツールを無効化します。",
+      "webSearchBackendHint": "Web 検索に使うエンジン。codebuddy は保存済み資格情報で CodeBuddy の agent-tool エンドポイントを呼びます。searxng は自分の SearXNG インスタンスに問い合わせます。duckduckgo は資格情報が不要です。brave / tavily / serper / bing / exa は選択後に表示される API キーが必要です。必要な設定がないエンジンは実行されず、ツールはリクエストから取り除かれます。",
+      "webFetchBackendHint": "Web フェッチに使うバックエンド（複数選択可）。選択した順に試し、最初に成功した結果を採用します。何も選ばない場合はこのツールを無効化します。codebuddy は CodeBuddy の agent-tool エンドポイント、codebuddy2api はこのサーバーからの直接取得、browserable は指定アドレスのブラウザ、jina は Jina Reader（キーは任意）です。",
+      "searxngUrlHint": "ポートを含むインスタンスのアドレス。空欄の場合は環境変数 SEARXNG_URL にフォールバックします。",
+      "browserableUrlHint": "デプロイのアドレス（例: http://127.0.0.1:8000）。取得はタスクとして実行されるため直接取得より大幅に遅く、速いバックエンドの後に置くのが適しています。",
+      "jinaKeyHint": "任意です。未設定の場合は公開エンドポイントを低いレート制限で利用します。",
+      "searchBackendOff": "オフ（Web 検索を実行しない）",
+      "duckduckgoRegions": {
+        "worldwide": "全世界",
+        "china": "中国",
+        "unitedStates": "アメリカ",
+        "japan": "日本",
+        "unitedKingdom": "イギリス",
+        "germany": "ドイツ"
+      },
       "usageCacheDescription": "保存済みの使用量イベントをすべて削除します。この操作は元に戻せません。",
       "usageCacheTitle": "使用量イベントキャッシュ"
     },

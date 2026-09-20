@@ -62,7 +62,9 @@ import {
   getActiveConfig,
   getApiFirstDeltaTimeoutMs,
   getDefaultModel,
+  getFetchBackendSettings,
   getHyThoughtDepthEnabled,
+  getSearchBackendSettings,
   getSettingLabels,
   isHyModel,
   updateSettings,
@@ -6003,6 +6005,95 @@ describe('server units', () => {
     expect(
       getSettingLabels('zh-CN').CODEBUDDY_API_TIMEOUT_MINUTES,
     ).toBeTruthy();
+  });
+
+  describe('server-tool backend settings', () => {
+    it('stores the configuration of a backend alongside its selection', async () => {
+      await updateSettings({
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+        CODEBUDDY_SEARXNG_URL: 'http://searx.test:8080',
+        CODEBUDDY_SEARXNG_API_KEY: 'searx-key',
+      });
+
+      await expect(getActiveConfig()).resolves.toMatchObject({
+        CODEBUDDY_SEARXNG_API_KEY: 'searx-key',
+        CODEBUDDY_SEARXNG_URL: 'http://searx.test:8080',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+    });
+
+    it('defaults the fetch selection to the local backend', async () => {
+      await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: '' });
+
+      await expect(getActiveConfig()).resolves.toMatchObject({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+      });
+    });
+
+    it('hands each backend only the settings it needs', async () => {
+      await updateSettings({
+        CODEBUDDY_BRAVE_API_KEY: 'brave-key',
+        CODEBUDDY_BROWSERABLE_URL: 'http://browser.test',
+        CODEBUDDY_DUCKDUCKGO_REGION: 'cn-zh',
+        CODEBUDDY_JINA_API_KEY: 'jina-key',
+      });
+
+      const config = await getActiveConfig();
+
+      expect(getSearchBackendSettings(config)).toEqual({
+        bingApiKey: '',
+        braveApiKey: 'brave-key',
+        duckduckgoRegion: 'cn-zh',
+        exaApiKey: '',
+        searxngApiKey: '',
+        searxngUrl: '',
+        serperApiKey: '',
+        tavilyApiKey: '',
+      });
+      expect(getFetchBackendSettings(config)).toEqual({
+        browserableApiKey: '',
+        browserableUrl: 'http://browser.test',
+        jinaApiKey: 'jina-key',
+      });
+    });
+
+    it('labels every backend setting in every supported locale', () => {
+      const keys = [
+        'CODEBUDDY_WEB_SEARCH_BACKEND',
+        'CODEBUDDY_WEB_FETCH_BACKEND',
+        'CODEBUDDY_SEARXNG_URL',
+        'CODEBUDDY_SEARXNG_API_KEY',
+        'CODEBUDDY_DUCKDUCKGO_REGION',
+        'CODEBUDDY_BRAVE_API_KEY',
+        'CODEBUDDY_TAVILY_API_KEY',
+        'CODEBUDDY_SERPER_API_KEY',
+        'CODEBUDDY_BING_API_KEY',
+        'CODEBUDDY_EXA_API_KEY',
+        'CODEBUDDY_BROWSERABLE_URL',
+        'CODEBUDDY_BROWSERABLE_API_KEY',
+        'CODEBUDDY_JINA_API_KEY',
+      ] as const;
+
+      for (const locale of ['en-US', 'ja-JP', 'zh-CN'] as const) {
+        const labels = getSettingLabels(locale);
+
+        for (const key of keys) {
+          expect(labels[key]).toBeTruthy();
+        }
+      }
+    });
+
+    it('reads a backend setting from the environment before anything is saved', async () => {
+      process.env.CODEBUDDY_BRAVE_API_KEY = 'from-env';
+
+      try {
+        await expect(getActiveConfig()).resolves.toMatchObject({
+          CODEBUDDY_BRAVE_API_KEY: 'from-env',
+        });
+      } finally {
+        delete process.env.CODEBUDDY_BRAVE_API_KEY;
+      }
+    });
   });
 
   describe('API timeout enforcement', () => {

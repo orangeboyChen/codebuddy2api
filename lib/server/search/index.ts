@@ -1,6 +1,7 @@
 import { getCodeBuddyApiEndpoint } from '../domain/config';
 import {
-  normalizeFetchBackend,
+  isBackendDisabled,
+  normalizeFetchBackends,
   normalizeSearchBackend,
   type FetchBackend,
   type SearchBackend,
@@ -13,78 +14,88 @@ import type {
   WebSearchProvider,
   WebSearchResponse,
 } from './types';
+import type {
+  FetchBackendSettings,
+  ResolveBackendOptions,
+  SearchBackendSettings,
+} from './settings';
 
+import { createBrowserableProvider } from './providers/browserable';
+import { createBingProvider } from './providers/bing';
+import { createBraveProvider } from './providers/brave';
 import { createCodeBuddyFetchProvider } from './providers/codebuddy-fetch';
 import { createCodeBuddySearchProvider } from './providers/codebuddy-search';
+import { createDuckduckgoProvider } from './providers/duckduckgo';
+import { createExaProvider } from './providers/exa';
+import { createJinaFetchProvider } from './providers/jina';
 import { createLocalFetchProvider } from './providers/local-fetch';
-import { createSearxngProviderFromEnv } from './providers/searxng';
+import { createSearxngProviderFromSettings } from './providers/searxng';
+import { createSerperProvider } from './providers/serper';
+import { createTavilyProvider } from './providers/tavily';
 
 /**
  * Server-tool backend registry.
  *
  * The proxy only ever talks to `WebSearchProvider` / `WebFetchProvider`, so
- * supporting another backend is a matter of adding a case here. Backends are
- * built per call rather than cached: a CodeBuddy backend is only usable while a
- * credential exists, and a setting change has to take effect on the next
- * request. Both are decisions a startup-time lookup would get wrong.
+ * supporting another backend is a matter of adding a case here. Search resolves
+ * to one provider — the console picks one engine — while fetch resolves to a
+ * chain, because the console lets a deployment select several and try them in
+ * order.
+ *
+ * Credentialed backends are built per call rather than cached: a CodeBuddy
+ * backend is only usable while a credential exists, and a setting change has to
+ * take effect on the next request. Both are decisions a startup-time lookup
+ * would get wrong.
  *
  * This module deliberately does not read runtime settings — `domain/config`
  * imports back into `search`, so a settings lookup here would close an import
- * cycle. Callers pass the chosen backend in instead.
+ * cycle. Callers pass the resolved settings in instead.
  */
 
 export type { FetchBackend, SearchBackend } from './tool';
-export {
-  DEFAULT_FETCH_BACKEND,
-  DEFAULT_SEARCH_BACKEND,
-  FETCH_BACKENDS,
-  normalizeFetchBackend,
-  normalizeSearchBackend,
-  SEARCH_BACKENDS,
-} from './tool';
-
-let cachedLocalFetch: WebFetchProvider | null = null;
-let cachedSearxng: WebSearchProvider | null | undefined;
+export * from './backends';
+export type {
+  FetchBackendSettings,
+  ResolveBackendOptions,
+  SearchBackendSettings,
+} from './settings';
 
 /** The local backend holds no state, so one instance serves every request. */
+let cachedLocalFetch: WebFetchProvider | null = null;
+
 const getLocalFetchProvider = (): WebFetchProvider => {
   cachedLocalFetch ??= createLocalFetchProvider();
 
   return cachedLocalFetch;
 };
 
-/**
- * Caches the SearXNG instance until {@link resetWebSearchProviders}.
- *
- * The cache is keyed on presence, not on the URL: the point is a stable
- * identity for callers that compare providers, and `resetWebSearchProviders`
- * exists precisely for tests and for deployments that change the URL at
- * runtime.
- */
-const getSearxngProvider = (): WebSearchProvider | null => {
-  if (cachedSearxng === undefined) {
-    cachedSearxng = createSearxngProviderFromEnv();
-  }
-
-  return cachedSearxng;
+/** Test seam: clears cached provider instances so env changes are re-read. */
+export const resetWebSearchProviders = (): void => {
+  cachedLocalFetch = null;
 };
 
 /**
  * Builds the `web_search` backend named by `backend`.
  *
- * `searxng` degrades to `null` when `SEARXNG_URL` is absent: offering a
- * backend that cannot be constructed would let a deployment advertise a tool
- * it cannot execute.
+ * Returns `null` when the chosen engine cannot run — an engine whose API key was
+ * never entered, or SearXNG with no instance URL. Advertising a backend that
+ * cannot be constructed would let a deployment promise a tool it cannot
+ * execute, so the tool is withdrawn from the request instead.
  */
 export const resolveSearchProvider = (
   backend: SearchBackend | string | null | undefined,
-  resolveEndpoint: EndpointResolver = getCodeBuddyApiEndpoint,
+  options: ResolveBackendOptions = {},
 ): WebSearchProvider | null => {
-  const resolved = normalizeSearchBackend(backend);
+  const { resolveEndpoint = getCodeBuddyApiEndpoint, search: settings = {} } =
+    options;
 
-  if (resolved === 'passthrough') {
+  // `none` is the off switch a deployment may have saved before this table
+  // existed, and the console offers it too.
+  if (isBackendDisabled(backend)) {
     return null;
   }
+
+  const resolved = normalizeSearchBackend(backend);
 
   if (resolved === 'codebuddy') {
     return createCodeBuddySearchProvider({
@@ -93,47 +104,164 @@ export const resolveSearchProvider = (
     });
   }
 
-  return getSearxngProvider();
-};
+  // Needs no credential, so it runs for any deployment that selects it.
+  if (resolved === 'duckduckgo') {
+    return createDuckduckgoProvider({ region: settings.duckduckgoRegion });
+  }
 
-/** Builds the `web_fetch` backend named by `backend`. */
-export const resolveFetchProvider = (
-  backend: FetchBackend | string | null | undefined,
-  resolveEndpoint: EndpointResolver = getCodeBuddyApiEndpoint,
-): WebFetchProvider | null => {
-  const resolved = normalizeFetchBackend(backend);
+  if (resolved === 'searxng') {
+    // Built per call: the URL comes from the console, and a deployment may
+    // point at another instance without restarting.
+    return createSearxngProviderFromSettings({
+      apiKey: settings.searxngApiKey,
+      url: settings.searxngUrl,
+    });
+  }
 
-  if (resolved === 'passthrough') {
+  const apiKey = {
+    brave: settings.braveApiKey,
+    bing: settings.bingApiKey,
+    exa: settings.exaApiKey,
+    serper: settings.serperApiKey,
+    tavily: settings.tavilyApiKey,
+  }[resolved]?.trim();
+
+  if (!apiKey) {
     return null;
   }
 
-  if (resolved === 'codebuddy2api') {
+  return {
+    brave: createBraveProvider,
+    bing: createBingProvider,
+    exa: createExaProvider,
+    serper: createSerperProvider,
+    tavily: createTavilyProvider,
+  }[resolved]({ apiKey });
+};
+
+const resolveOneFetchProvider = (
+  backend: FetchBackend,
+  options: {
+    fetch: FetchBackendSettings;
+    resolveEndpoint: EndpointResolver;
+  },
+): WebFetchProvider | null => {
+  const { fetch: settings, resolveEndpoint } = options;
+
+  if (backend === 'codebuddy') {
+    return createCodeBuddyFetchProvider({
+      resolveEndpoint,
+      resolveToken: resolveCodeBuddyToken,
+    });
+  }
+
+  if (backend === 'codebuddy2api') {
     return getLocalFetchProvider();
   }
 
-  return createCodeBuddyFetchProvider({
-    resolveEndpoint,
-    resolveToken: resolveCodeBuddyToken,
+  if (backend === 'jina') {
+    return createJinaFetchProvider({ apiKey: settings.jinaApiKey });
+  }
+
+  const url = settings.browserableUrl?.trim();
+
+  // A relative or mistyped address cannot be built into a request, so the
+  // backend is dropped the same way a missing address is.
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return null;
+  }
+
+  return createBrowserableProvider({
+    apiKey: settings.browserableApiKey,
+    url,
   });
 };
 
 /**
- * Whether the SearXNG backend is configured.
+ * Builds every selected `web_fetch` backend, in selection order.
  *
- * Re-exported from a leaf module so `domain/config` can call it without
- * importing this registry and closing an import cycle.
+ * Backends that cannot run — Browserable with no address — are dropped rather
+ * than kept as entries certain to fail.
  */
-export { isLocalWebSearchConfigured } from './searxng-availability';
+export const resolveFetchProviders = (
+  backends: FetchBackend | readonly FetchBackend[] | string | null | undefined,
+  options: ResolveBackendOptions = {},
+): WebFetchProvider[] => {
+  const {
+    fetch: fetchSettings = {},
+    resolveEndpoint = getCodeBuddyApiEndpoint,
+  } = options;
 
-/** Test seam: clears cached provider instances so env changes are re-read. */
-export const resetWebSearchProviders = (): void => {
-  cachedLocalFetch = null;
-  cachedSearxng = undefined;
+  return normalizeFetchBackends(backends).flatMap((backend) => {
+    const provider = resolveOneFetchProvider(backend, {
+      fetch: fetchSettings,
+      resolveEndpoint,
+    });
+
+    return provider ? [provider] : [];
+  });
 };
 
-/** Synchronous accessor used by the console and by existing call sites. */
-export const getWebSearchProvider = (): WebSearchProvider | null => {
-  return getSearxngProvider();
+/**
+ * Builds the `web_fetch` backend for a selection, as one provider.
+ *
+ * Several selections compose into a chain tried in order: picking a fast
+ * backend and a slow one gets the fast answer when the fast one works and still
+ * gets an answer when it does not. `null` means nothing was selected, which is
+ * how a deployment turns the tool off.
+ */
+export const resolveFetchProvider = (
+  backends: FetchBackend | readonly FetchBackend[] | string | null | undefined,
+  options: ResolveBackendOptions = {},
+): WebFetchProvider | null => {
+  const providers = resolveFetchProviders(backends, options);
+
+  if (!providers.length) {
+    return null;
+  }
+
+  return providers.length === 1
+    ? providers[0]
+    : createFallbackFetchProvider(providers);
+};
+
+/**
+ * Tries each provider in turn and keeps the first answer.
+ *
+ * Only the last failure is reported, because the caller needs one reason to
+ * show the model; the earlier ones are logged so an operator can still see
+ * which hop broke.
+ */
+const createFallbackFetchProvider = (
+  providers: readonly WebFetchProvider[],
+): WebFetchProvider => {
+  const fetchPage = async (query: WebFetchQuery): Promise<WebFetchResponse> => {
+    let lastError: unknown = null;
+
+    for (const [index, provider] of providers.entries()) {
+      try {
+        return await provider.fetch(query);
+      } catch (error) {
+        lastError = error;
+
+        if (index < providers.length - 1) {
+          console.warn('[CodeBuddy2API] Web fetch backend failed', {
+            backend: provider.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('every configured web fetch backend failed');
+  };
+
+  return {
+    fetch: fetchPage,
+    id: `fallback(${providers.map((provider) => provider.id).join('+')})`,
+  };
 };
 
 const describeError = (error: unknown): string => {
@@ -161,21 +289,23 @@ export const runWebSearchResult = async ({
   provider,
   query,
   resolveEndpoint,
+  search,
 }: {
   backend?: SearchBackend | string | null;
   provider?: WebSearchProvider | null;
   query: string;
   resolveEndpoint?: EndpointResolver;
+  search?: SearchBackendSettings;
 }): Promise<WebSearchResponse> => {
   const resolved =
     provider !== undefined
       ? provider
-      : resolveSearchProvider(backend, resolveEndpoint);
+      : resolveSearchProvider(backend, { resolveEndpoint, search });
 
   if (!resolved) {
     return {
       content:
-        'Web search is unavailable: no local search backend is configured for this deployment.',
+        'Web search is unavailable: no search backend is configured for this deployment.',
       results: [],
     };
   }
@@ -203,11 +333,13 @@ export const runWebSearch = async (
  */
 export const runWebFetchResult = async ({
   backend,
+  fetch: fetchSettings,
   provider,
   query,
   resolveEndpoint,
 }: {
-  backend?: FetchBackend | string | null;
+  backend?: FetchBackend | readonly FetchBackend[] | string | null;
+  fetch?: FetchBackendSettings;
   provider?: WebFetchProvider | null;
   query: WebFetchQuery;
   resolveEndpoint?: EndpointResolver;
@@ -215,7 +347,10 @@ export const runWebFetchResult = async ({
   const resolved =
     provider !== undefined
       ? provider
-      : resolveFetchProvider(backend, resolveEndpoint);
+      : resolveFetchProvider(backend, {
+          fetch: fetchSettings,
+          resolveEndpoint,
+        });
 
   if (!resolved) {
     return {

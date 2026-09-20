@@ -6,12 +6,23 @@ import {
   readStorageJson,
   writeStorageJson,
 } from '../storage';
-import { normalizeFetchBackend, normalizeSearchBackend } from '../search/tool';
+import type {
+  FetchBackendSettings,
+  SearchBackendSettings,
+} from '../search/settings';
 import {
   getCredentialSupportedModels,
   listEligibleCredentialRecords,
 } from './credentials';
 
+/**
+ * One entry per server-tool backend setting, plus the configuration each
+ * backend needs.
+ *
+ * A backend's own settings are ordinary entries in this config rather than
+ * environment variables, so every backend is configurable from the console and
+ * a deployment never has to restart to point at a different engine.
+ */
 export interface RuntimeConfig {
   CODEBUDDY_API_ENDPOINT: string;
   CODEBUDDY_ADMIN_PASSKEY_RP_ID: string;
@@ -21,6 +32,17 @@ export interface RuntimeConfig {
   CODEBUDDY_API_TIMEOUT_MINUTES: number;
   CODEBUDDY_WEB_SEARCH_BACKEND: string;
   CODEBUDDY_WEB_FETCH_BACKEND: string;
+  CODEBUDDY_SEARXNG_URL: string;
+  CODEBUDDY_SEARXNG_API_KEY: string;
+  CODEBUDDY_DUCKDUCKGO_REGION: string;
+  CODEBUDDY_BRAVE_API_KEY: string;
+  CODEBUDDY_TAVILY_API_KEY: string;
+  CODEBUDDY_SERPER_API_KEY: string;
+  CODEBUDDY_BING_API_KEY: string;
+  CODEBUDDY_EXA_API_KEY: string;
+  CODEBUDDY_BROWSERABLE_URL: string;
+  CODEBUDDY_BROWSERABLE_API_KEY: string;
+  CODEBUDDY_JINA_API_KEY: string;
   CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: boolean;
 }
 
@@ -70,7 +92,18 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_LOG_LEVEL: 'INFO',
   CODEBUDDY_API_TIMEOUT_MINUTES: DEFAULT_API_TIMEOUT_MINUTES,
   CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
-  CODEBUDDY_WEB_FETCH_BACKEND: 'passthrough',
+  CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+  CODEBUDDY_SEARXNG_URL: '',
+  CODEBUDDY_SEARXNG_API_KEY: '',
+  CODEBUDDY_DUCKDUCKGO_REGION: 'wt-wt',
+  CODEBUDDY_BRAVE_API_KEY: '',
+  CODEBUDDY_TAVILY_API_KEY: '',
+  CODEBUDDY_SERPER_API_KEY: '',
+  CODEBUDDY_BING_API_KEY: '',
+  CODEBUDDY_EXA_API_KEY: '',
+  CODEBUDDY_BROWSERABLE_URL: '',
+  CODEBUDDY_BROWSERABLE_API_KEY: '',
+  CODEBUDDY_JINA_API_KEY: '',
   CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: false,
 };
 let configMutationQueue: Promise<void> = Promise.resolve();
@@ -88,6 +121,17 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API timeout, first token (minutes)',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'Web search backend',
     CODEBUDDY_WEB_FETCH_BACKEND: 'Web fetch backend',
+    CODEBUDDY_SEARXNG_URL: 'SearXNG instance address (with port)',
+    CODEBUDDY_SEARXNG_API_KEY: 'SearXNG API key',
+    CODEBUDDY_DUCKDUCKGO_REGION: 'DuckDuckGo region',
+    CODEBUDDY_BRAVE_API_KEY: 'Brave Search API key',
+    CODEBUDDY_TAVILY_API_KEY: 'Tavily API key',
+    CODEBUDDY_SERPER_API_KEY: 'Serper API key',
+    CODEBUDDY_BING_API_KEY: 'Bing API key',
+    CODEBUDDY_EXA_API_KEY: 'Exa API key',
+    CODEBUDDY_BROWSERABLE_URL: 'Browserable address',
+    CODEBUDDY_BROWSERABLE_API_KEY: 'Browserable API key (optional)',
+    CODEBUDDY_JINA_API_KEY: 'Jina Reader API key (optional)',
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'Translate thought depth for Hy models',
   },
   'ja-JP': {
@@ -99,6 +143,17 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API タイムアウト・最初のトークン (分)',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'Web 検索バックエンド',
     CODEBUDDY_WEB_FETCH_BACKEND: 'Web フェッチバックエンド',
+    CODEBUDDY_SEARXNG_URL: 'SearXNG インスタンスのアドレス(ポートを含む)',
+    CODEBUDDY_SEARXNG_API_KEY: 'SearXNG API キー',
+    CODEBUDDY_DUCKDUCKGO_REGION: 'DuckDuckGo の地域',
+    CODEBUDDY_BRAVE_API_KEY: 'Brave Search API キー',
+    CODEBUDDY_TAVILY_API_KEY: 'Tavily API キー',
+    CODEBUDDY_SERPER_API_KEY: 'Serper API キー',
+    CODEBUDDY_BING_API_KEY: 'Bing API キー',
+    CODEBUDDY_EXA_API_KEY: 'Exa API キー',
+    CODEBUDDY_BROWSERABLE_URL: 'Browserable のアドレス',
+    CODEBUDDY_BROWSERABLE_API_KEY: 'Browserable API キー(任意)',
+    CODEBUDDY_JINA_API_KEY: 'Jina Reader API キー(任意)',
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'Hy モデルの思考深度を変換する',
   },
   'zh-CN': {
@@ -110,6 +165,17 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_API_TIMEOUT_MINUTES: 'API 超时时间,首个 token(分钟)',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'WebSearch 后端',
     CODEBUDDY_WEB_FETCH_BACKEND: 'WebFetch 后端',
+    CODEBUDDY_SEARXNG_URL: 'SearXNG 实例地址(含端口)',
+    CODEBUDDY_SEARXNG_API_KEY: 'SearXNG API Key',
+    CODEBUDDY_DUCKDUCKGO_REGION: 'DuckDuckGo 区域',
+    CODEBUDDY_BRAVE_API_KEY: 'Brave Search API Key',
+    CODEBUDDY_TAVILY_API_KEY: 'Tavily API Key',
+    CODEBUDDY_SERPER_API_KEY: 'Serper API Key',
+    CODEBUDDY_BING_API_KEY: 'Bing API Key',
+    CODEBUDDY_EXA_API_KEY: 'Exa API Key',
+    CODEBUDDY_BROWSERABLE_URL: 'Browserable 地址',
+    CODEBUDDY_BROWSERABLE_API_KEY: 'Browserable API Key(可选)',
+    CODEBUDDY_JINA_API_KEY: 'Jina Reader API Key(可选)',
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: '为 Hy 系列模型转换思想深度',
   },
 };
@@ -117,8 +183,10 @@ const SETTING_LABELS_BY_LOCALE: Record<
 /**
  * Labels for the settings the console should render.
  *
- * The backend selectors are always shown because CodeBuddy's own endpoints
- * need no deployment-level configuration beyond a credential.
+ * Every backend is offered. An engine that needs a credential is still listed
+ * while its key is empty — the console shows the field to fill in rather than
+ * hiding the choice — and it is the backend that declines to run, not the
+ * console that declines to offer it.
  */
 export const getSettingLabels = (
   locale: ConfigLabelLocale = 'zh-CN',
@@ -242,6 +310,56 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
       persisted.CODEBUDDY_WEB_FETCH_BACKEND ??
         process.env.CODEBUDDY_WEB_FETCH_BACKEND,
     ),
+    CODEBUDDY_SEARXNG_URL: normalizeValue(
+      'CODEBUDDY_SEARXNG_URL',
+      persisted.CODEBUDDY_SEARXNG_URL ?? process.env.CODEBUDDY_SEARXNG_URL,
+    ),
+    CODEBUDDY_SEARXNG_API_KEY: normalizeValue(
+      'CODEBUDDY_SEARXNG_API_KEY',
+      persisted.CODEBUDDY_SEARXNG_API_KEY ??
+        process.env.CODEBUDDY_SEARXNG_API_KEY,
+    ),
+    CODEBUDDY_DUCKDUCKGO_REGION: normalizeValue(
+      'CODEBUDDY_DUCKDUCKGO_REGION',
+      persisted.CODEBUDDY_DUCKDUCKGO_REGION ??
+        process.env.CODEBUDDY_DUCKDUCKGO_REGION,
+    ),
+    CODEBUDDY_BRAVE_API_KEY: normalizeValue(
+      'CODEBUDDY_BRAVE_API_KEY',
+      persisted.CODEBUDDY_BRAVE_API_KEY ?? process.env.CODEBUDDY_BRAVE_API_KEY,
+    ),
+    CODEBUDDY_TAVILY_API_KEY: normalizeValue(
+      'CODEBUDDY_TAVILY_API_KEY',
+      persisted.CODEBUDDY_TAVILY_API_KEY ??
+        process.env.CODEBUDDY_TAVILY_API_KEY,
+    ),
+    CODEBUDDY_SERPER_API_KEY: normalizeValue(
+      'CODEBUDDY_SERPER_API_KEY',
+      persisted.CODEBUDDY_SERPER_API_KEY ??
+        process.env.CODEBUDDY_SERPER_API_KEY,
+    ),
+    CODEBUDDY_BING_API_KEY: normalizeValue(
+      'CODEBUDDY_BING_API_KEY',
+      persisted.CODEBUDDY_BING_API_KEY ?? process.env.CODEBUDDY_BING_API_KEY,
+    ),
+    CODEBUDDY_EXA_API_KEY: normalizeValue(
+      'CODEBUDDY_EXA_API_KEY',
+      persisted.CODEBUDDY_EXA_API_KEY ?? process.env.CODEBUDDY_EXA_API_KEY,
+    ),
+    CODEBUDDY_BROWSERABLE_URL: normalizeValue(
+      'CODEBUDDY_BROWSERABLE_URL',
+      persisted.CODEBUDDY_BROWSERABLE_URL ??
+        process.env.CODEBUDDY_BROWSERABLE_URL,
+    ),
+    CODEBUDDY_BROWSERABLE_API_KEY: normalizeValue(
+      'CODEBUDDY_BROWSERABLE_API_KEY',
+      persisted.CODEBUDDY_BROWSERABLE_API_KEY ??
+        process.env.CODEBUDDY_BROWSERABLE_API_KEY,
+    ),
+    CODEBUDDY_JINA_API_KEY: normalizeValue(
+      'CODEBUDDY_JINA_API_KEY',
+      persisted.CODEBUDDY_JINA_API_KEY ?? process.env.CODEBUDDY_JINA_API_KEY,
+    ),
     CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: normalizeValue(
       'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED',
       persisted.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED ??
@@ -251,31 +369,36 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
 };
 
 /**
- * Whether a web search tool call should be executed locally.
+ * The configuration the `web_search` backends need, for the engine selected in
+ * {@link getActiveConfig}.
  *
- * Derived from the backend choice rather than a separate switch: `none` *is*
- * "off", so a second control would only add a way to contradict it. Resolved per
- * request so a change in the console takes effect at once.
+ * Passed to the registry rather than read there: `search` and this module import
+ * each other, so the registry resolving its own settings would close the cycle.
  */
-export const isWebSearchEnabled = async (): Promise<boolean> => {
-  const config = await getActiveConfig();
-
-  return (
-    normalizeSearchBackend(config.CODEBUDDY_WEB_SEARCH_BACKEND) !==
-    'passthrough'
-  );
+export const getSearchBackendSettings = (
+  config: RuntimeConfig,
+): SearchBackendSettings => {
+  return {
+    braveApiKey: config.CODEBUDDY_BRAVE_API_KEY,
+    bingApiKey: config.CODEBUDDY_BING_API_KEY,
+    duckduckgoRegion: config.CODEBUDDY_DUCKDUCKGO_REGION,
+    exaApiKey: config.CODEBUDDY_EXA_API_KEY,
+    searxngApiKey: config.CODEBUDDY_SEARXNG_API_KEY,
+    searxngUrl: config.CODEBUDDY_SEARXNG_URL,
+    serperApiKey: config.CODEBUDDY_SERPER_API_KEY,
+    tavilyApiKey: config.CODEBUDDY_TAVILY_API_KEY,
+  };
 };
 
-/**
- * Whether a `web_fetch` tool call should be executed locally, resolved the same
- * way as {@link isWebSearchEnabled}.
- */
-export const isWebFetchEnabled = async (): Promise<boolean> => {
-  const config = await getActiveConfig();
-
-  return (
-    normalizeFetchBackend(config.CODEBUDDY_WEB_FETCH_BACKEND) !== 'passthrough'
-  );
+/** The configuration the `web_fetch` backends need; see {@link getSearchBackendSettings}. */
+export const getFetchBackendSettings = (
+  config: RuntimeConfig,
+): FetchBackendSettings => {
+  return {
+    browserableApiKey: config.CODEBUDDY_BROWSERABLE_API_KEY,
+    browserableUrl: config.CODEBUDDY_BROWSERABLE_URL,
+    jinaApiKey: config.CODEBUDDY_JINA_API_KEY,
+  };
 };
 
 export const updateSettings = async (
