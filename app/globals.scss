@@ -391,6 +391,19 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+// Model ids run to dozens of characters without a single space, so the tag and
+// the flex row inside it keep their intrinsic width and push the card past a
+// 360px viewport. The descendants need the wrap rule too: limiting only the
+// tag leaves the row inside it at full width.
+.account-status-model-id,
+.account-status-model-id .lobe-flex,
+.account-status-model-id [data-model-id] {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .account-status-model-meta {
   font-size: 12px;
 }

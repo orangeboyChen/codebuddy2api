@@ -110,6 +110,20 @@ describe('account status model details', () => {
     expect(screen.getAllByText('bare-id')).toHaveLength(1);
   });
 
+  it('marks the copyable id so a long id wraps instead of overflowing', () => {
+    renderView([
+      model({ id: `${'glm-5.3-enterprise-preview-'.repeat(3)}end` }),
+    ]);
+
+    // The wrap rules in globals.scss hang off this class; without it a long id
+    // keeps its intrinsic width and pushes the card past a 360px viewport.
+    const tag = document
+      .querySelector('[data-model-id]')
+      ?.closest('.account-status-model-id');
+
+    expect(tag).not.toBeNull();
+  });
+
   it('falls back to the English description outside Chinese locales', () => {
     renderView([model({ descriptionZh: undefined })], 'en-US');
 
