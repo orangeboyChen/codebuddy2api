@@ -10,6 +10,7 @@ import {
   createAnthropicId,
   extractSystemText,
   mapContentPartsToChat,
+  stripTokenUsageReminder,
 } from './content';
 import type {
   AnthropicContentBlock,
@@ -149,7 +150,11 @@ export const mapAnthropicContentToChat = (
   role: 'user' | 'assistant',
 ): ChatMessage[] => {
   if (typeof content === 'string') {
-    return [{ role, content }];
+    const text = stripTokenUsageReminder(content);
+
+    // A message that was nothing but the client's usage hint leaves no content
+    // to forward, and an empty message is not one the upstream accepts either.
+    return text !== content && !text.trim() ? [] : [{ role, content: text }];
   }
 
   const parts: ChatContentPart[] = [];
@@ -195,7 +200,14 @@ export const mapAnthropicContentToChat = (
 
   for (const block of content) {
     if (block.type === 'text') {
-      const text = block.text ?? '';
+      const raw = block.text ?? '';
+      const text = stripTokenUsageReminder(raw);
+
+      // The hint rides along in the same message as the real text, so only a
+      // block that was nothing else is dropped.
+      if (text !== raw && !text.trim()) {
+        continue;
+      }
 
       parts.push(
         block.cache_control
