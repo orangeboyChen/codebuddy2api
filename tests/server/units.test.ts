@@ -6137,6 +6137,127 @@ describe('server units', () => {
     ).toBeTruthy();
   });
 
+  it('reads only real token limits from the upstream catalog', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [
+              {
+                models: ['n-bool', 'n-arr', 'n-neg', 'n-str', 'n-zero'],
+                name: 'cli',
+              },
+            ],
+            models: [
+              {
+                id: 'n-bool',
+                maxInputTokens: true,
+                maxOutputTokens: false,
+                name: 'B',
+              },
+              { contextWindow: { defaultLength: [] }, id: 'n-arr', name: 'A' },
+              { id: 'n-neg', maxOutputTokens: -1, name: 'N' },
+              {
+                contextWindow: { defaultLength: '  500  ' },
+                id: 'n-str',
+                name: 'S',
+              },
+              { id: 'n-zero', maxOutputTokens: 0, name: 'Z' },
+            ],
+          },
+        }),
+      ),
+    );
+
+    // `Number(true)` is 1 and `Number([])` is 0, so a boolean or an object is
+    // not a limit at all; nor is a zero or a negative one. Reporting any of
+    // them would invent a window the catalog does not claim.
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
+    ).resolves.toEqual([
+      { displayName: 'B', id: 'n-bool' },
+      { displayName: 'A', id: 'n-arr' },
+      { displayName: 'N', id: 'n-neg' },
+      { contextWindow: 500, displayName: 'S', id: 'n-str' },
+      { displayName: 'Z', id: 'n-zero' },
+    ]);
+  });
+
+  it('reads a badge whatever the tag case or label shape', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [
+              {
+                models: ['mixed-case', 'with-colour', 'no-colour', 'bare'],
+                name: 'cli',
+              },
+            ],
+            models: [
+              {
+                id: 'mixed-case',
+                name: 'Mixed',
+                tags: ['Badge:Free:#0f0', 'BADGE:企业版:#00f'],
+              },
+              {
+                id: 'with-colour',
+                name: 'With',
+                tags: ['badge:免费:#0f0', 'craft'],
+              },
+              { id: 'no-colour', name: 'Plain', tags: ['badge:免费'] },
+              { id: 'bare', name: 'Bare', tags: ['badge:', 42] },
+            ],
+          },
+        }),
+      ),
+    );
+
+    // The tag prefix is case-insensitive, and a label may itself contain the
+    // separator: the colour is always the trailing segment.
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
+    ).resolves.toEqual([
+      {
+        displayName: 'Mixed',
+        id: 'mixed-case',
+        isEnterprise: true,
+        isFree: true,
+      },
+      { displayName: 'With', id: 'with-colour', isFree: true },
+      { displayName: 'Plain', id: 'no-colour', isFree: true },
+      { displayName: 'Bare', id: 'bare' },
+    ]);
+  });
+
+  it('lists a model id once when upstream repeats it', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['dup', 'dup', 'other'], name: 'cli' }],
+            models: [
+              { id: 'dup', name: 'Dup' },
+              { id: 'other', name: 'Other' },
+            ],
+          },
+        }),
+      ),
+    );
+
+    // The admin console renders this list into a text field, where a repeated
+    // id reads as a typo the operator then has to clean up.
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
+    ).resolves.toEqual([
+      { displayName: 'Dup', id: 'dup' },
+      { displayName: 'Other', id: 'other' },
+    ]);
+  });
+
   describe('API timeout enforcement', () => {
     const context = createProxyContextFromCredential({
       data: {

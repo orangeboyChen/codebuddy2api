@@ -9,6 +9,7 @@ import {
   listEligibleCredentialRecords,
 } from '../../domain/credentials';
 import { getCredentialValue } from './context';
+import { normalizeModelFields } from './model-fields';
 import type { DiscoveredModel } from './types';
 
 /**
@@ -32,22 +33,6 @@ interface UpstreamModelEntry {
   vendor?: unknown;
 }
 
-const asTrimmedString = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.trim() ? value.trim() : undefined;
-
-const asFiniteNumber = (value: unknown): number | undefined => {
-  // `Number(null)` and `Number('')` are both 0, and upstream never advertises
-  // a zero-token context or output window: an empty field means "unknown", so
-  // reporting 0 would invent a limit the catalog does not claim.
-  if (value === null || value === undefined || value === '') return undefined;
-
-  const number = Number(value);
-  return Number.isFinite(number) ? number : undefined;
-};
-
-const asBoolean = (value: unknown): boolean | undefined =>
-  typeof value === 'boolean' ? value : undefined;
-
 /**
  * Upstream renders badges as `badge:<label>:<color>` tags, e.g.
  * `badge:企业版:#3B82F6`. Labels are localized server-side, so both the Chinese
@@ -66,8 +51,18 @@ const readBadges = (tags: unknown) => {
   const entries: unknown[] = Array.isArray(tags) ? tags : [];
   const labels = entries.flatMap((tag) => {
     if (typeof tag !== 'string') return [];
-    const [prefix, label] = tag.split(':');
-    return prefix === 'badge' && label ? [label.trim().toLowerCase()] : [];
+    const [prefix, ...rest] = tag.split(':');
+
+    if (prefix.trim().toLowerCase() !== 'badge') return [];
+
+    // The colour is the trailing segment, so a label may itself contain the
+    // separator; a tag carrying no colour at all is nothing but a label.
+    const label = (rest.length > 1 ? rest.slice(0, -1) : rest)
+      .join(':')
+      .trim()
+      .toLowerCase();
+
+    return label ? [label] : [];
   });
   const has = (candidates: readonly string[]) =>
     labels.some((label) => candidates.includes(label)) || undefined;
@@ -82,25 +77,14 @@ const readBadges = (tags: unknown) => {
 const toDiscoveredModel = (
   entry: UpstreamModelEntry,
 ): DiscoveredModel | undefined => {
-  const id = asTrimmedString(entry.id);
-  if (!id || entry.disabled === true) return undefined;
-  const contextWindow = asFiniteNumber(entry.contextWindow?.defaultLength);
+  if (entry.disabled === true) return undefined;
 
-  return {
-    contextWindow,
-    credits: asTrimmedString(entry.credits),
-    descriptionEn: asTrimmedString(entry.descriptionEn),
-    descriptionZh: asTrimmedString(entry.descriptionZh),
-    displayName: asTrimmedString(entry.name) ?? id,
-    id,
-    maxInputTokens: asFiniteNumber(entry.maxInputTokens),
-    maxOutputTokens: asFiniteNumber(entry.maxOutputTokens),
-    supportsImages: asBoolean(entry.supportsImages),
-    supportsReasoning: asBoolean(entry.supportsReasoning),
-    supportsToolCall: asBoolean(entry.supportsToolCall),
-    vendor: asTrimmedString(entry.vendor),
+  return normalizeModelFields({
+    ...entry,
+    contextWindow: entry.contextWindow?.defaultLength,
+    displayName: entry.name,
     ...readBadges(entry.tags),
-  };
+  });
 };
 
 export const getModelsForCredential = async ({
@@ -198,10 +182,14 @@ export const getModelsForCredential = async ({
     return [];
   }
 
+  // Upstream can list one id twice. The first row wins, so neither the card
+  // nor the admin console's model field ever shows a repeated id.
+  const seen = new Set<string>();
+
   return cliModels.flatMap((modelId) => {
-    if (typeof modelId !== 'string') {
-      return [];
-    }
+    if (typeof modelId !== 'string' || seen.has(modelId)) return [];
+
+    seen.add(modelId);
 
     const model = modelsById.get(modelId);
     if (!model && declaredModelIds.has(modelId)) {
