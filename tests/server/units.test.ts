@@ -4683,7 +4683,13 @@ describe('server units', () => {
           data: {
             agents: [
               {
-                models: ['glm-5.3', 'hy3-ioa', 'sparse', 'unknown-tag'],
+                models: [
+                  'glm-5.3',
+                  'hy3-ioa',
+                  'sparse',
+                  'unknown-tag',
+                  'nulled',
+                ],
                 name: 'cli',
               },
             ],
@@ -4717,6 +4723,14 @@ describe('server units', () => {
                 contextWindow: { defaultLength: 'not-a-number' },
                 id: 'ignored',
                 name: 'Ignored',
+              },
+              // A null field is upstream saying it does not know the value;
+              // it must not reach the card as a 0-token limit.
+              {
+                contextWindow: { defaultLength: null },
+                id: 'nulled',
+                maxOutputTokens: null,
+                name: 'Nulled',
               },
             ],
           },
@@ -4785,6 +4799,23 @@ describe('server units', () => {
         descriptionZh: undefined,
         displayName: 'Unknown',
         id: 'unknown-tag',
+        isEnterprise: undefined,
+        isFree: undefined,
+        isInternal: undefined,
+        maxInputTokens: undefined,
+        maxOutputTokens: undefined,
+        supportsImages: undefined,
+        supportsReasoning: undefined,
+        supportsToolCall: undefined,
+        vendor: undefined,
+      },
+      {
+        contextWindow: undefined,
+        credits: undefined,
+        descriptionEn: undefined,
+        descriptionZh: undefined,
+        displayName: 'Nulled',
+        id: 'nulled',
         isEnterprise: undefined,
         isFree: undefined,
         isInternal: undefined,

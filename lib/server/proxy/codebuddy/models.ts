@@ -36,6 +36,11 @@ const asTrimmedString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() ? value.trim() : undefined;
 
 const asFiniteNumber = (value: unknown): number | undefined => {
+  // `Number(null)` and `Number('')` are both 0, and upstream never advertises
+  // a zero-token context or output window: an empty field means "unknown", so
+  // reporting 0 would invent a limit the catalog does not claim.
+  if (value === null || value === undefined || value === '') return undefined;
+
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
 };
