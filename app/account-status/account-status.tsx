@@ -204,7 +204,19 @@ const CopyableModel = ({ model }: { model: string }) => {
   };
   return (
     <Tooltip title={copied ? text('common.copy') : text('common.copy')}>
-      <Tag className="account-status-model-id" onClick={() => void copy()}>
+      <Tag
+        className="account-status-model-id"
+        onClick={() => void copy()}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          void copy();
+        }}
+        // A span with a click handler is invisible to the keyboard; an
+        // expanded list can hold one of these per model.
+        role="button"
+        tabIndex={0}
+      >
         <Flexbox align="center" gap={4} horizontal>
           {copied ? <Check size={12} /> : <Copy size={12} />}
           <span data-model-id={model}>{model}</span>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
 import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
@@ -103,6 +103,31 @@ describe('account status model details', () => {
     expect(screen.getByText('图像')).toBeTruthy();
     expect(screen.getByText('工具')).toBeTruthy();
     expect(screen.getByText('推理')).toBeTruthy();
+  });
+
+  it('copies a model id from the keyboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    try {
+      renderView([model()]);
+
+      const tag = document
+        .querySelector('[data-model-id="glm-5.3"]')
+        ?.closest('[role="button"]') as HTMLElement | null;
+
+      expect(tag).not.toBeNull();
+      expect(tag?.tabIndex).toBe(0);
+
+      fireEvent.keyDown(tag as HTMLElement, { key: 'Enter' });
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('glm-5.3'));
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
   });
 
   it('renders a model id only once when it is also the display name', () => {
