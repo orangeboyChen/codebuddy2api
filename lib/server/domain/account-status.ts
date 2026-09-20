@@ -5,7 +5,7 @@ import {
   listCredentials,
   listEligibleCredentialRecords,
   type CredentialRecord,
-  updateCredentialSupportedModelCatalog,
+  updateCredentialSupportedModelDetail,
 } from './credentials';
 import { getModelsForCredential } from '../proxy/codebuddy';
 import type { DiscoveredModel } from '../proxy/codebuddy/types';
@@ -173,6 +173,32 @@ const savedModelsAsModels = (
   }));
 
 /**
+ * How long one credential stays quiet after a discovery that failed or found
+ * nothing.
+ *
+ * Without it, an unreachable or empty upstream costs one request per
+ * credential on every page load, forever: eight accounts against a hung
+ * upstream measured 30s per load, with every card still green.
+ */
+export const MODEL_DISCOVERY_COOLDOWN_MS = 5 * 60 * 1000;
+
+const credentialModelDiscoveryFailures = new Map<string, number>();
+
+/** Drops the cooldown bookkeeping; tests call it to start from a known state. */
+export const resetCredentialModelDiscoveryFailures = (): void => {
+  credentialModelDiscoveryFailures.clear();
+};
+
+const isDiscoveryCoolingDown = (filename: string): boolean => {
+  const failedAt = credentialModelDiscoveryFailures.get(filename);
+
+  return (
+    failedAt !== undefined &&
+    Date.now() - failedAt < MODEL_DISCOVERY_COOLDOWN_MS
+  );
+};
+
+/**
  * Resolves the models an account can use, together with their metadata.
  *
  * The cached catalog wins because `/v3/config` answers with hundreds of
@@ -187,18 +213,38 @@ const loadCredentialModels = async (
 
   if (cached.length) return cached;
 
-  const discovered = await getModelsForCredential({
-    bearerToken: getBearerToken(credential),
-    credentialData: credential.data,
-  });
+  if (isDiscoveryCoolingDown(credential.filename)) {
+    return savedModelsAsModels(credential.data);
+  }
 
-  if (!discovered.length) return savedModelsAsModels(credential.data);
+  const bearerToken = getBearerToken(credential);
+
+  // A blank token would send `Authorization: Bearer ` and always fail; the
+  // saved ids are the only answer this credential can offer.
+  if (!bearerToken) return savedModelsAsModels(credential.data);
+
+  let discovered: DiscoveredModel[];
 
   try {
-    await updateCredentialSupportedModelCatalog(
-      credential.filename,
-      discovered,
-    );
+    discovered = await getModelsForCredential({
+      bearerToken,
+      credentialData: credential.data,
+    });
+  } catch (error) {
+    credentialModelDiscoveryFailures.set(credential.filename, Date.now());
+    throw error;
+  }
+
+  if (!discovered.length) {
+    credentialModelDiscoveryFailures.set(credential.filename, Date.now());
+
+    return savedModelsAsModels(credential.data);
+  }
+
+  try {
+    // Only the metadata is cached here: `supported_models` is the routing
+    // whitelist, and rendering a page is not a request to rewrite it.
+    await updateCredentialSupportedModelDetail(credential.filename, discovered);
   } catch (error) {
     // Losing the cache is survivable; losing the models we just fetched is not.
     console.warn('[CodeBuddy2API] Unable to cache credential models', error);
