@@ -105,6 +105,15 @@ describe('account status model details', () => {
     expect(screen.getByText('推理')).toBeTruthy();
   });
 
+  it('rounds the token limits it abbreviates', () => {
+    // The M branch divides without rounding, so a 1,048,576-token window used
+    // to render as `上下文 1.048576M`.
+    renderView([model({ contextWindow: 1_048_576, maxOutputTokens: 8_192 })]);
+
+    expect(screen.getByText('上下文 1M')).toBeTruthy();
+    expect(screen.getByText('输出 8K')).toBeTruthy();
+  });
+
   it('copies a model id from the keyboard', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {

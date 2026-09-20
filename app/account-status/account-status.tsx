@@ -227,7 +227,9 @@ const CopyableModel = ({ model }: { model: string }) => {
 };
 
 const formatTokenCount = (value: number): string => {
-  if (value >= 1_000_000) return `${value / 1_000_000}M`;
+  // Both branches round: `1048576` is `1M`, not `1.048576M`, and the two
+  // abbreviations have to look like they came from the same ruler.
+  if (value >= 1_000_000) return `${Math.round(value / 1_000_000)}M`;
   if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
 
   return String(value);
