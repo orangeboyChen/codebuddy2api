@@ -131,6 +131,14 @@ describe('account status model details', () => {
     expect(screen.getByText('Enterprise')).toBeTruthy();
   });
 
+  it('labels the credit multiplier, not a credit balance, in English', () => {
+    renderView([model()], 'en-US');
+
+    // The value is a billing rate (`x3.33`), so "Credits" reads as a balance.
+    expect(screen.getByText('Multiplier x3.33')).toBeTruthy();
+    expect(screen.queryByText(/^Credits/)).toBeNull();
+  });
+
   it('omits the fields upstream does not advertise', () => {
     renderView([
       model({
