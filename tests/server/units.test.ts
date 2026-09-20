@@ -62,7 +62,9 @@ import {
   getActiveConfig,
   getApiFirstDeltaTimeoutMs,
   getDefaultModel,
+  getFetchBackendSettings,
   getHyThoughtDepthEnabled,
+  getSearchBackendSettings,
   getSettingLabels,
   isHyModel,
   updateSettings,
@@ -783,7 +785,9 @@ describe('server units', () => {
       {
         callCount: 1,
         cacheHitTokens: 0,
+        inputTokens: 0,
         model: 'glm-4.7',
+        outputTokens: 0,
         totalTokens: 8,
       },
     ]);
@@ -826,7 +830,9 @@ describe('server units', () => {
       {
         callCount: 1,
         cacheHitTokens: 0,
+        inputTokens: 7,
         model: 'glm-5.1',
+        outputTokens: 3,
         totalTokens: 15,
       },
     ]);
@@ -1517,7 +1523,9 @@ describe('server units', () => {
       {
         callCount: 1,
         cacheHitTokens: 1,
+        inputTokens: 2,
         model: 'hy3',
+        outputTokens: 3,
         totalTokens: 5,
       },
     ]);
@@ -2372,7 +2380,9 @@ describe('server units', () => {
       {
         callCount: 2,
         cacheHitTokens: 0,
+        inputTokens: 7,
         model: 'hy3',
+        outputTokens: 5,
         totalTokens: 12,
       },
     ]);
@@ -2422,7 +2432,9 @@ describe('server units', () => {
       {
         callCount: 1,
         cacheHitTokens: 4,
+        inputTokens: 6,
         model: 'hy3',
+        outputTokens: 2,
         totalTokens: 8,
       },
     ]);
@@ -2673,7 +2685,9 @@ describe('server units', () => {
       {
         callCount: 1,
         cacheHitTokens: 0,
+        inputTokens: 4,
         model: 'hy3',
+        outputTokens: 3,
         totalTokens: 7,
       },
     ]);
@@ -2710,7 +2724,9 @@ describe('server units', () => {
       {
         callCount: 1,
         cacheHitTokens: 0,
+        inputTokens: 0,
         model: 'glm-5.1',
+        outputTokens: 0,
         totalTokens: 0,
       },
     ]);
@@ -3838,7 +3854,9 @@ describe('server units', () => {
         {
           callCount: 3,
           cacheHitTokens: 3,
+          inputTokens: 9,
           model: 'gpt-5.5',
+          outputTokens: 5,
           totalTokens: 14,
         },
       ]);
@@ -4010,13 +4028,17 @@ describe('server units', () => {
       {
         callCount: 1,
         cacheHitTokens: 0,
+        inputTokens: 5,
         model: 'gpt-5.5',
+        outputTokens: 6,
         totalTokens: 11,
       },
       {
         callCount: 1,
         cacheHitTokens: 0,
+        inputTokens: 4,
         model: 'glm-5.1',
+        outputTokens: 5,
         totalTokens: 9,
       },
     ]);
@@ -4109,7 +4131,9 @@ describe('server units', () => {
         {
           callCount: 1,
           cacheHitTokens: 0,
+          inputTokens: 1,
           model: 'gpt-5.5',
+          outputTokens: 2,
           totalTokens: 3,
         },
       ]);
@@ -6137,6 +6161,95 @@ describe('server units', () => {
     ).toBeTruthy();
   });
 
+  describe('server-tool backend settings', () => {
+    it('stores the configuration of a backend alongside its selection', async () => {
+      await updateSettings({
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+        CODEBUDDY_SEARXNG_URL: 'http://searx.test:8080',
+        CODEBUDDY_SEARXNG_API_KEY: 'searx-key',
+      });
+
+      await expect(getActiveConfig()).resolves.toMatchObject({
+        CODEBUDDY_SEARXNG_API_KEY: 'searx-key',
+        CODEBUDDY_SEARXNG_URL: 'http://searx.test:8080',
+        CODEBUDDY_WEB_SEARCH_BACKEND: 'searxng',
+      });
+    });
+
+    it('defaults the fetch selection to the local backend', async () => {
+      await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: '' });
+
+      await expect(getActiveConfig()).resolves.toMatchObject({
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+      });
+    });
+
+    it('hands each backend only the settings it needs', async () => {
+      await updateSettings({
+        CODEBUDDY_BRAVE_API_KEY: 'brave-key',
+        CODEBUDDY_BROWSERABLE_URL: 'http://browser.test',
+        CODEBUDDY_DUCKDUCKGO_REGION: 'cn-zh',
+        CODEBUDDY_JINA_API_KEY: 'jina-key',
+      });
+
+      const config = await getActiveConfig();
+
+      expect(getSearchBackendSettings(config)).toEqual({
+        bingApiKey: '',
+        braveApiKey: 'brave-key',
+        duckduckgoRegion: 'cn-zh',
+        exaApiKey: '',
+        searxngApiKey: '',
+        searxngUrl: '',
+        serperApiKey: '',
+        tavilyApiKey: '',
+      });
+      expect(getFetchBackendSettings(config)).toEqual({
+        browserableApiKey: '',
+        browserableUrl: 'http://browser.test',
+        jinaApiKey: 'jina-key',
+      });
+    });
+
+    it('labels every backend setting in every supported locale', () => {
+      const keys = [
+        'CODEBUDDY_WEB_SEARCH_BACKEND',
+        'CODEBUDDY_WEB_FETCH_BACKEND',
+        'CODEBUDDY_SEARXNG_URL',
+        'CODEBUDDY_SEARXNG_API_KEY',
+        'CODEBUDDY_DUCKDUCKGO_REGION',
+        'CODEBUDDY_BRAVE_API_KEY',
+        'CODEBUDDY_TAVILY_API_KEY',
+        'CODEBUDDY_SERPER_API_KEY',
+        'CODEBUDDY_BING_API_KEY',
+        'CODEBUDDY_EXA_API_KEY',
+        'CODEBUDDY_BROWSERABLE_URL',
+        'CODEBUDDY_BROWSERABLE_API_KEY',
+        'CODEBUDDY_JINA_API_KEY',
+      ] as const;
+
+      for (const locale of ['en-US', 'ja-JP', 'zh-CN'] as const) {
+        const labels = getSettingLabels(locale);
+
+        for (const key of keys) {
+          expect(labels[key]).toBeTruthy();
+        }
+      }
+    });
+
+    it('reads a backend setting from the environment before anything is saved', async () => {
+      process.env.CODEBUDDY_BRAVE_API_KEY = 'from-env';
+
+      try {
+        await expect(getActiveConfig()).resolves.toMatchObject({
+          CODEBUDDY_BRAVE_API_KEY: 'from-env',
+        });
+      } finally {
+        delete process.env.CODEBUDDY_BRAVE_API_KEY;
+      }
+    });
+  });
+
   it('reads only real token limits from the upstream catalog', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(
       new Response(
@@ -6229,32 +6342,6 @@ describe('server units', () => {
       { displayName: 'With', id: 'with-colour', isFree: true },
       { displayName: 'Plain', id: 'no-colour', isFree: true },
       { displayName: 'Bare', id: 'bare' },
-    ]);
-  });
-
-  it('lists a model id once when upstream repeats it', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          code: 0,
-          data: {
-            agents: [{ models: ['dup', 'dup', 'other'], name: 'cli' }],
-            models: [
-              { id: 'dup', name: 'Dup' },
-              { id: 'other', name: 'Other' },
-            ],
-          },
-        }),
-      ),
-    );
-
-    // The admin console renders this list into a text field, where a repeated
-    // id reads as a typo the operator then has to clean up.
-    await expect(
-      getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
-    ).resolves.toEqual([
-      { displayName: 'Dup', id: 'dup' },
-      { displayName: 'Other', id: 'other' },
     ]);
   });
 

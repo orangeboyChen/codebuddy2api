@@ -18,9 +18,9 @@ import http from 'node:http';
 import https from 'node:https';
 
 import {
-  getWebSearchProvider,
   resetWebSearchProviders,
   resolveFetchProvider,
+  resolveFetchProviders,
   resolveSearchProvider,
   runWebFetch,
   runWebFetchResult,
@@ -53,13 +53,16 @@ import {
 } from '@/lib/server/search/token';
 import {
   buildWebFetchToolDefinition,
-  DEFAULT_FETCH_BACKEND,
+  DEFAULT_FETCH_BACKENDS,
   DEFAULT_SEARCH_BACKEND,
+  FETCH_BACKEND_CONFIG_KEYS,
   FETCH_BACKENDS,
-  normalizeFetchBackend,
+  normalizeFetchBackends,
   normalizeSearchBackend,
   normalizeToolName,
+  SEARCH_BACKEND_CONFIG_KEYS,
   SEARCH_BACKENDS,
+  serializeFetchBackends,
   WEB_FETCH_TOOL_NAME,
 } from '@/lib/server/search/tool';
 
@@ -343,20 +346,30 @@ const trustedResolver: HostResolver = Object.assign(async () => ['10.0.0.5'], {
 
 describe('search tool definitions and backend names', () => {
   describe('normalizeSearchBackend', () => {
-    it('keeps the three known backends', () => {
+    it('keeps the known engines', () => {
       expect(normalizeSearchBackend('codebuddy')).toBe('codebuddy');
       expect(normalizeSearchBackend('searxng')).toBe('searxng');
-      expect(normalizeSearchBackend('passthrough')).toBe('passthrough');
+      expect(normalizeSearchBackend('duckduckgo')).toBe('duckduckgo');
+      expect(normalizeSearchBackend('brave')).toBe('brave');
+      expect(normalizeSearchBackend('tavily')).toBe('tavily');
+      expect(normalizeSearchBackend('serper')).toBe('serper');
+      expect(normalizeSearchBackend('bing')).toBe('bing');
+      expect(normalizeSearchBackend('exa')).toBe('exa');
     });
 
     it('ignores case and surrounding whitespace', () => {
       expect(normalizeSearchBackend('  CodeBuddy ')).toBe('codebuddy');
       expect(normalizeSearchBackend('SEARXNG')).toBe('searxng');
+      expect(normalizeSearchBackend(' DuckDuckGo ')).toBe('duckduckgo');
     });
 
-    it('renames the legacy `none` backend to passthrough', () => {
-      // `none` used to mean "the client runs it", which reads like "off".
-      expect(normalizeSearchBackend('none')).toBe('passthrough');
+    it('maps the retired passthrough onto the default engine', () => {
+      // `passthrough` (and the `none` it was renamed from) no longer exists, so
+      // an upgraded deployment lands on the default rather than on nothing.
+      expect(normalizeSearchBackend('none')).toBe(DEFAULT_SEARCH_BACKEND);
+      expect(normalizeSearchBackend('passthrough')).toBe(
+        DEFAULT_SEARCH_BACKEND,
+      );
     });
 
     it('falls back to the default for a backend only fetch knows', () => {
@@ -376,41 +389,114 @@ describe('search tool definitions and backend names', () => {
     });
   });
 
-  describe('normalizeFetchBackend', () => {
-    it('keeps the three known backends', () => {
-      expect(normalizeFetchBackend('codebuddy')).toBe('codebuddy');
-      expect(normalizeFetchBackend('codebuddy2api')).toBe('codebuddy2api');
-      expect(normalizeFetchBackend('passthrough')).toBe('passthrough');
+  describe('normalizeFetchBackends', () => {
+    it('keeps the known backends', () => {
+      expect(normalizeFetchBackends('codebuddy')).toEqual(['codebuddy']);
+      expect(normalizeFetchBackends('codebuddy2api')).toEqual([
+        'codebuddy2api',
+      ]);
+      expect(normalizeFetchBackends('browserable')).toEqual(['browserable']);
+      expect(normalizeFetchBackends('jina')).toEqual(['jina']);
+    });
+
+    it('reads a multi-selection in the order it was made', () => {
+      // Order is the fallback order, so it must survive the round trip through
+      // the console's comma-separated value.
+      expect(normalizeFetchBackends('jina,codebuddy2api')).toEqual([
+        'jina',
+        'codebuddy2api',
+      ]);
+      expect(normalizeFetchBackends(['browserable', 'jina'])).toEqual([
+        'browserable',
+        'jina',
+      ]);
+    });
+
+    it('treats a selection made only of `none` as off', () => {
+      expect(normalizeFetchBackends('none')).toEqual([]);
+      expect(normalizeFetchBackends('none,none')).toEqual([]);
+      expect(normalizeFetchBackends(['none', 'none'])).toEqual([]);
+      // A hand-edited value naming a backend is honoured, not disabled.
+      expect(normalizeFetchBackends('jina,none')).toEqual(['jina']);
+      expect(normalizeFetchBackends('none,jina')).toEqual(['jina']);
+    });
+
+    it('drops duplicates and unknown names', () => {
+      expect(normalizeFetchBackends('jina,jina,codebuddy2api')).toEqual([
+        'jina',
+        'codebuddy2api',
+      ]);
+      expect(normalizeFetchBackends('jina,searxng')).toEqual(['jina']);
     });
 
     it('renames the legacy backends', () => {
-      expect(normalizeFetchBackend('local')).toBe('codebuddy2api');
-      expect(normalizeFetchBackend('none')).toBe('passthrough');
+      expect(normalizeFetchBackends('local')).toEqual(['codebuddy2api']);
     });
 
     it('ignores case and surrounding whitespace', () => {
-      expect(normalizeFetchBackend(' Local ')).toBe('codebuddy2api');
-      expect(normalizeFetchBackend('CODEBUDDY')).toBe('codebuddy');
+      expect(normalizeFetchBackends(' Local ')).toEqual(['codebuddy2api']);
+      expect(normalizeFetchBackends('CODEBUDDY')).toEqual(['codebuddy']);
     });
 
-    it('falls back to passthrough for unknown values', () => {
-      expect(normalizeFetchBackend('searxng')).toBe('passthrough');
-      expect(normalizeFetchBackend(null)).toBe('passthrough');
-      expect(normalizeFetchBackend(undefined)).toBe('passthrough');
+    it('treats the legacy `none` as an empty chain, not as the default', () => {
+      // `none` always meant "never run this tool", so it still means that.
+      expect(normalizeFetchBackends('none')).toEqual([]);
+    });
+
+    it('falls back to the default for the retired passthrough', () => {
+      expect(normalizeFetchBackends('passthrough')).toEqual(
+        DEFAULT_FETCH_BACKENDS,
+      );
+    });
+
+    it('falls back to the default for an empty selection', () => {
+      expect(normalizeFetchBackends('')).toEqual(DEFAULT_FETCH_BACKENDS);
+      expect(normalizeFetchBackends(null)).toEqual(DEFAULT_FETCH_BACKENDS);
+      expect(normalizeFetchBackends(undefined)).toEqual(DEFAULT_FETCH_BACKENDS);
     });
   });
 
   it('exposes the backend lists the console offers', () => {
-    expect(SEARCH_BACKENDS).toEqual(['codebuddy', 'searxng', 'passthrough']);
+    expect(SEARCH_BACKENDS).toEqual([
+      'codebuddy',
+      'searxng',
+      'duckduckgo',
+      'brave',
+      'tavily',
+      'serper',
+      'bing',
+      'exa',
+    ]);
     expect(FETCH_BACKENDS).toEqual([
       'codebuddy',
       'codebuddy2api',
-      'passthrough',
+      'browserable',
+      'jina',
     ]);
     expect(DEFAULT_SEARCH_BACKEND).toBe('searxng');
-    expect(DEFAULT_FETCH_BACKEND).toBe('passthrough');
+    expect(DEFAULT_FETCH_BACKENDS).toEqual(['codebuddy2api']);
+    // No passthrough: a server tool is executed here or withdrawn, never left
+    // for a client that has no way to resolve it.
+    expect(SEARCH_BACKENDS).not.toContain('passthrough');
+    expect(FETCH_BACKENDS).not.toContain('passthrough');
+  });
+
+  it('lists the settings each backend needs', () => {
+    expect(SEARCH_BACKEND_CONFIG_KEYS.searxng).toEqual([
+      'CODEBUDDY_SEARXNG_URL',
+      'CODEBUDDY_SEARXNG_API_KEY',
+    ]);
+    expect(SEARCH_BACKEND_CONFIG_KEYS.codebuddy).toEqual([]);
+    expect(FETCH_BACKEND_CONFIG_KEYS.browserable).toEqual([
+      'CODEBUDDY_BROWSERABLE_URL',
+      'CODEBUDDY_BROWSERABLE_API_KEY',
+    ]);
+    expect(FETCH_BACKEND_CONFIG_KEYS.codebuddy2api).toEqual([]);
     for (const backend of SEARCH_BACKENDS) {
-      expect(SEARCH_BACKENDS).toContain(backend);
+      expect(SEARCH_BACKEND_CONFIG_KEYS[backend]).toBeDefined();
+    }
+    for (const backend of FETCH_BACKENDS) {
+      expect(FETCH_BACKEND_CONFIG_KEYS[backend]).toBeDefined();
     }
   });
 
@@ -722,25 +808,38 @@ describe('search provider registry', () => {
 
   describe('resolveSearchProvider', () => {
     it('builds the CodeBuddy backend', () => {
-      expect(resolveSearchProvider('codebuddy', endpointResolver)?.id).toBe(
-        'codebuddy',
-      );
+      expect(
+        resolveSearchProvider('codebuddy', {
+          resolveEndpoint: endpointResolver,
+        })?.id,
+      ).toBe('codebuddy');
     });
 
     it('builds a fresh CodeBuddy backend per call', () => {
       // A cached backend would freeze the endpoint it was built with.
-      const first = resolveSearchProvider('codebuddy', endpointResolver);
-      const second = resolveSearchProvider('codebuddy', endpointResolver);
+      const first = resolveSearchProvider('codebuddy', {
+        resolveEndpoint: endpointResolver,
+      });
+      const second = resolveSearchProvider('codebuddy', {
+        resolveEndpoint: endpointResolver,
+      });
 
       expect(first).not.toBe(second);
     });
 
-    it('returns null for passthrough and for its legacy name', () => {
-      expect(resolveSearchProvider('passthrough')).toBeNull();
-      expect(resolveSearchProvider('none')).toBeNull();
+    it('builds the DuckDuckGo backend, which needs no credential', () => {
+      expect(resolveSearchProvider('duckduckgo')?.id).toBe('duckduckgo');
     });
 
-    it('builds the SearXNG backend when one is configured', () => {
+    it('builds the SearXNG backend from the console setting', () => {
+      const provider = resolveSearchProvider('searxng', {
+        search: { searxngUrl: 'https://searx.test/' },
+      });
+
+      expect(provider?.id).toBe('searxng');
+    });
+
+    it('builds the SearXNG backend from the environment when the setting is empty', () => {
       process.env.SEARXNG_URL = 'https://searx.test/';
       resetWebSearchProviders();
 
@@ -749,6 +848,51 @@ describe('search provider registry', () => {
 
     it('returns null for SearXNG when no instance is configured', () => {
       expect(resolveSearchProvider('searxng')).toBeNull();
+    });
+
+    it('builds the keyed engines once their key is entered', () => {
+      const engines = {
+        brave: 'brave-key',
+        bing: 'bing-key',
+        exa: 'exa-key',
+        serper: 'serper-key',
+        tavily: 'tavily-key',
+      } as const;
+
+      for (const [engine, key] of Object.entries(engines)) {
+        expect(
+          resolveSearchProvider(engine, {
+            search: { [`${engine}ApiKey`]: key },
+          })?.id,
+        ).toBe(engine);
+      }
+    });
+
+    it('resolves nothing when the tool is switched off', () => {
+      // `none` is the value a deployment saved before this table existed, and
+      // the console offers it: it must stay off after upgrading. SearXNG is
+      // configured here, so only the off switch can produce a null.
+      process.env.SEARXNG_URL = 'https://searx.test';
+      resetWebSearchProviders();
+
+      try {
+        expect(resolveSearchProvider('searxng')?.id).toBe('searxng');
+        expect(resolveSearchProvider('none')).toBeNull();
+        expect(resolveSearchProvider('NONE', { search: {} })).toBeNull();
+      } finally {
+        delete process.env.SEARXNG_URL;
+        resetWebSearchProviders();
+      }
+    });
+
+    it('returns null for a keyed engine whose key was never entered', () => {
+      // Advertising a tool the deployment cannot run is worse than not
+      // advertising it, so the engine declines instead.
+      expect(resolveSearchProvider('brave')).toBeNull();
+      expect(resolveSearchProvider('bing', { search: {} })).toBeNull();
+      expect(
+        resolveSearchProvider('tavily', { search: { tavilyApiKey: '  ' } }),
+      ).toBeNull();
     });
 
     it('defaults to SearXNG for an unknown or missing backend', () => {
@@ -760,15 +904,16 @@ describe('search provider registry', () => {
       expect(resolveSearchProvider('bogus')?.id).toBe('searxng');
     });
 
-    it('caches the SearXNG backend until it is reset', () => {
-      process.env.SEARXNG_URL = 'https://searx.test/';
-      resetWebSearchProviders();
-      const first = resolveSearchProvider('searxng');
+    it('builds SearXNG per call, so a changed address takes effect at once', () => {
+      const first = resolveSearchProvider('searxng', {
+        search: { searxngUrl: 'https://searx.test/' },
+      });
 
-      expect(resolveSearchProvider('searxng')).toBe(first);
-
-      resetWebSearchProviders();
-      expect(resolveSearchProvider('searxng')).not.toBe(first);
+      expect(
+        resolveSearchProvider('searxng', {
+          search: { searxngUrl: 'https://searx.test/' },
+        }),
+      ).not.toBe(first);
     });
   });
 
@@ -776,7 +921,7 @@ describe('search provider registry', () => {
     it('builds the local backend and caches it', () => {
       const first = resolveFetchProvider('codebuddy2api');
 
-      expect(first?.id).toBe('local');
+      expect(first?.id).toBe('codebuddy2api');
       expect(resolveFetchProvider('local')).toBe(first);
     });
 
@@ -788,36 +933,66 @@ describe('search provider registry', () => {
     });
 
     it('builds the CodeBuddy backend', () => {
-      expect(resolveFetchProvider('codebuddy', endpointResolver)?.id).toBe(
-        'codebuddy',
-      );
+      expect(
+        resolveFetchProvider('codebuddy', { resolveEndpoint: endpointResolver })
+          ?.id,
+      ).toBe('codebuddy');
     });
 
-    it('returns null for passthrough and for its legacy name', () => {
-      expect(resolveFetchProvider('passthrough')).toBeNull();
+    it('builds the Jina backend, whose key is optional', () => {
+      expect(resolveFetchProvider('jina')?.id).toBe('jina');
+      expect(
+        resolveFetchProvider('jina', { fetch: { jinaApiKey: 'jina-key' } })?.id,
+      ).toBe('jina');
+    });
+
+    it('builds the Browserable backend once an address is entered', () => {
+      expect(resolveFetchProvider('browserable')).toBeNull();
+
+      const provider = resolveFetchProvider('browserable', {
+        fetch: { browserableUrl: 'http://browser.test/' },
+      });
+
+      expect(provider?.id).toBe('browserable');
+    });
+
+    it('composes several selections into one chain, in order', () => {
+      const provider = resolveFetchProvider('jina,codebuddy2api');
+
+      expect(provider?.id).toBe('fallback(jina+codebuddy2api)');
+      expect(
+        resolveFetchProviders('jina,codebuddy2api').map(({ id }) => id),
+      ).toEqual(['jina', 'codebuddy2api']);
+    });
+
+    it('drops a selected backend that cannot run', () => {
+      // Browserable without an address is not a hop worth taking.
+      expect(
+        resolveFetchProviders('browserable,codebuddy2api').map(({ id }) => id),
+      ).toEqual(['codebuddy2api']);
+    });
+
+    it('resolves nothing for the legacy `none`, which means off', () => {
       expect(resolveFetchProvider('none')).toBeNull();
     });
 
-    it('returns null for an unknown or missing backend', () => {
-      // Passthrough is the default: a fetch the client did not ask us to run
-      // is the client's to run.
-      expect(resolveFetchProvider(null)).toBeNull();
-      expect(resolveFetchProvider(undefined)).toBeNull();
-      expect(resolveFetchProvider('bogus')).toBeNull();
-    });
-  });
-
-  describe('getWebSearchProvider', () => {
-    it('returns null when SearXNG is not configured', () => {
-      expect(getWebSearchProvider()).toBeNull();
+    it('falls back to the default for the retired passthrough', () => {
+      expect(resolveFetchProvider('passthrough')?.id).toBe('codebuddy2api');
     });
 
-    it('returns the cached SearXNG backend when it is', () => {
-      process.env.SEARXNG_URL = 'https://searx.test/';
-      resetWebSearchProviders();
+    it('stores an empty selection as `none`, so clearing the picker turns it off', () => {
+      // An empty string is indistinguishable from "never configured" and would
+      // be replaced by the default on the way in.
+      expect(serializeFetchBackends([])).toBe('none');
+      expect(serializeFetchBackends(['jina', 'codebuddy2api'])).toBe(
+        'jina,codebuddy2api',
+      );
+    });
 
-      expect(getWebSearchProvider()?.id).toBe('searxng');
-      expect(getWebSearchProvider()).toBe(getWebSearchProvider());
+    it('resolves the default when nothing is configured', () => {
+      expect(resolveFetchProvider(null)?.id).toBe('codebuddy2api');
+      expect(resolveFetchProvider(undefined)?.id).toBe('codebuddy2api');
+      expect(resolveFetchProvider('bogus')?.id).toBe('codebuddy2api');
     });
   });
 
@@ -836,10 +1011,11 @@ describe('search provider registry', () => {
     });
 
     it('reports an unconfigured backend instead of failing', async () => {
+      // SearXNG with no instance configured resolves to no provider at all.
       await expect(
-        runWebSearchResult({ backend: 'passthrough', query: 'hello' }),
+        runWebSearchResult({ backend: 'searxng', query: 'hello' }),
       ).resolves.toMatchObject({
-        content: expect.stringContaining('no local search backend'),
+        content: expect.stringContaining('no search backend is configured'),
         results: [],
       });
     });
@@ -958,8 +1134,12 @@ describe('search provider registry', () => {
     });
 
     it('reports an unconfigured backend instead of failing', async () => {
+      // Browserable with no address is dropped, leaving nothing to run.
       await expect(
-        runWebFetchResult({ query: { url: 'https://a.test' } }),
+        runWebFetchResult({
+          backend: 'browserable',
+          query: { url: 'https://a.test' },
+        }),
       ).resolves.toEqual({
         content: expect.stringContaining('no web fetch backend is enabled'),
       });
@@ -1764,7 +1944,7 @@ describe('local fetch provider', () => {
   });
 
   it('identifies itself', () => {
-    expect(provider().id).toBe('local');
+    expect(provider().id).toBe('codebuddy2api');
   });
 
   it('reports a missing url without fetching', async () => {

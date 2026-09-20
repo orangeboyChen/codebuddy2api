@@ -136,7 +136,9 @@ interface UsageResponse {
   tableRows?: Array<{
     callCount?: number;
     cacheHitTokens?: number;
+    inputTokens?: number;
     model?: string;
+    outputTokens?: number;
     totalTokens?: number;
   }>;
   rangeSummary?: {
@@ -798,7 +800,9 @@ const AdminPageLayoutContent = ({
         tableRows: (result.data?.tableRows ?? []).map((row) => ({
           callCount: row.callCount ?? 0,
           cacheHitTokens: row.cacheHitTokens ?? 0,
+          inputTokens: row.inputTokens ?? 0,
           model: row.model ?? 'unknown',
+          outputTokens: row.outputTokens ?? 0,
           totalTokens: row.totalTokens ?? 0,
         })),
         rangeSummary: {

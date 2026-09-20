@@ -328,6 +328,7 @@
         "300": "300 sec"
       },
       "cacheHitToday": "Cache-hit tokens today",
+      "cacheHitValue": "Cache ↓ {value}",
       "callTrend": "Call trend",
       "callsToday": "Calls today",
       "clearHistory": "Clear history",
@@ -360,6 +361,7 @@
       "tableCacheHit": "Cache hits",
       "tableCalls": "Calls",
       "tableCredential": "Credential",
+      "tableInputOutput": "Input / output",
       "tableTokens": "Total tokens",
       "summaryCacheHit": "Cache-hit tokens",
       "summaryCalls": "Calls",
@@ -460,8 +462,20 @@
       "passkeyRpIdPlaceholder": "Leave empty to follow the current host",
       "saveSuccess": "Settings saved.",
       "title": "Service settings",
-      "webSearchBackendHint": "Where web search runs. codebuddy calls CodeBuddy's own agent-tool endpoint using a saved credential; searxng queries a SearXNG instance (configure SEARXNG_URL); none turns the tool off.",
-      "webFetchBackendHint": "Where web fetch runs. codebuddy calls CodeBuddy's own agent-tool endpoint using a saved credential, falling back to a direct fetch if it fails; local fetches the page from this server; none turns the tool off.",
+      "webSearchBackendHint": "Which engine runs web search. codebuddy calls CodeBuddy's own agent-tool endpoint with a saved credential; searxng queries your own SearXNG instance; duckduckgo needs no credential; brave, tavily, serper, bing and exa need the API key shown once you pick them. An engine missing its configuration does not run, and the tool is then withdrawn from the request.",
+      "webFetchBackendHint": "Which backends fetch a page. Select several to try them in order — the first one that answers wins — or select none to turn the tool off. codebuddy calls CodeBuddy's agent-tool endpoint, codebuddy2api fetches from this server, browserable drives the browser at the address you enter, and jina uses Jina Reader (its key is optional).",
+      "searxngUrlHint": "Address of the instance, including its port. Leave empty to fall back to the SEARXNG_URL environment variable.",
+      "browserableUrlHint": "Address of the deployment, for example http://127.0.0.1:8000. A fetch is sent to it as a task, so it is far slower than a direct fetch — put it after a faster backend.",
+      "jinaKeyHint": "Optional. Without a key the public endpoint is used at a lower rate limit.",
+      "searchBackendOff": "Off (do not run web search)",
+      "duckduckgoRegions": {
+        "worldwide": "Worldwide",
+        "china": "China",
+        "unitedStates": "United States",
+        "japan": "Japan",
+        "unitedKingdom": "United Kingdom",
+        "germany": "Germany"
+      },
       "usageCacheDescription": "Remove all stored usage events. This cannot be undone.",
       "usageCacheTitle": "Usage event cache"
     },

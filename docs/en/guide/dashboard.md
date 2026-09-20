@@ -14,3 +14,12 @@ Open Dashboard after signing in to confirm that the proxy and credential pool ar
 2. Copy the **API endpoint**, then create an API key in **Credentials**.
 3. Configure your client with the endpoint and key.
 4. Use **API Test** to send a first request.
+
+## Install it as an app
+
+The console is a PWA, so browsers offer to install it; the installed icon opens the console, or the sign-in page when you are signed out.
+
+- Desktop Chrome or Edge: the install icon at the right of the address bar, or "Install CodeBuddy2API" in the menu.
+- iOS Safari: Share → Add to Home Screen.
+- Browsers only offer installation over HTTPS, or on localhost.
+- Installing it only adds an entry point: pages are not cached, so when the gateway is unreachable the app simply cannot reach it — there is no offline content to fall back on.

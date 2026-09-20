@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
 import { NextIntlClientProvider } from 'next-intl';
@@ -7,6 +7,7 @@ import { cookies, headers } from 'next/headers';
 import './globals.scss';
 import LobeUiProvider from '@/app/lobe-ui-provider';
 import LobeStyleRegistry from '@/app/lobe-style-registry';
+import PwaRegistrar from '@/app/pwa-registrar';
 import {
   parseThemeMode,
   resolveThemeMode,
@@ -25,6 +26,27 @@ import { getMessages } from '@/lib/i18n/messages';
 export const metadata: Metadata = {
   title: 'CodeBuddy2API',
   description: 'Next.js admin shell for the CodeBuddy2API migration.',
+  applicationName: 'CodeBuddy2API',
+  appleWebApp: {
+    capable: true,
+    title: 'CodeBuddy2API',
+  },
+  // Next emits `mobile-web-app-capable` for `appleWebApp.capable`; the Apple
+  // spelling is what an iOS that cannot read the manifest falls back to.
+  other: { 'apple-mobile-web-app-capable': 'yes' },
+};
+
+/**
+ * Installed shortcuts paint their own window chrome from this, so it follows
+ * the OS theme rather than the colour the console happens to have loaded in.
+ */
+export const viewport: Viewport = {
+  themeColor: [
+    { color: '#FFFFFF', media: '(prefers-color-scheme: light)' },
+    { color: '#191A23', media: '(prefers-color-scheme: dark)' },
+  ],
+  width: 'device-width',
+  initialScale: 1,
 };
 
 const RootLayout = async ({
@@ -67,6 +89,7 @@ const RootLayout = async ({
             </LobeUiProvider>
           </LobeStyleRegistry>
         </AntdRegistry>
+        <PwaRegistrar />
       </body>
     </html>
   );

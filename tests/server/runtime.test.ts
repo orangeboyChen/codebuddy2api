@@ -1110,7 +1110,9 @@ describe('server runtime', () => {
       {
         callCount: 1,
         cacheHitTokens: 0,
+        inputTokens: 6,
         model: 'glm-5.1',
+        outputTokens: 4,
         totalTokens: 10,
       },
     ]);
