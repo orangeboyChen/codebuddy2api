@@ -134,4 +134,49 @@ test.describe('Account Status tab', () => {
       }
     }
   });
+
+  test('wraps a long model id instead of overflowing a phone viewport', async ({
+    page,
+  }) => {
+    // Upstream ids run to dozens of characters with no space to break on, and
+    // the tag they sit in is `white-space: nowrap` by default.
+    const longId = `glm-5.3-enterprise-preview-v2-final-${'0123456789'.repeat(4)}`;
+    const filename = `account-status-long-id-${process.pid}.json`;
+    const createResponse = await page.request.post('/admin-api/credentials', {
+      data: {
+        bearer_token: 'e2e-token',
+        filename,
+        supported_models: longId,
+        user_id: 'e2e@example.test',
+      },
+    });
+    expect(createResponse.ok()).toBe(true);
+    try {
+      await page.setViewportSize({ width: 360, height: 800 });
+      await page.goto('/account-status');
+      await expect(page.locator(`[data-model-id="${longId}"]`)).toBeVisible();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollWidth - window.innerWidth,
+          ),
+        )
+        .toBeLessThanOrEqual(0);
+    } finally {
+      const credentialsResponse = await page.request.get(
+        '/admin-api/credentials',
+      );
+      const credentials = (await credentialsResponse.json()) as {
+        credentials?: Array<{ filename?: string }>;
+      };
+      const index = credentials.credentials?.findIndex(
+        (credential) => credential.filename === filename,
+      );
+      if (index !== undefined && index >= 0) {
+        await page.request.post('/admin-api/credentials/delete', {
+          data: { index },
+        });
+      }
+    }
+  });
 });

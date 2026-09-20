@@ -391,15 +391,17 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
-// Model ids run to dozens of characters without a single space, so the tag and
-// the flex row inside it keep their intrinsic width and push the card past a
-// 360px viewport. The descendants need the wrap rule too: limiting only the
-// tag leaves the row inside it at full width.
+// Model ids run to dozens of characters without a single space, and antd's
+// tag is `white-space: nowrap` in a stylesheet injected after this one — so
+// the reset has to land on the tag's contents, or the tag keeps its intrinsic
+// width and pushes the card past a 360px viewport. `max-width` on the tag
+// itself caps whatever is left.
 .account-status-model-id,
 .account-status-model-id .lobe-flex,
 .account-status-model-id [data-model-id] {
   max-width: 100%;
   min-width: 0;
+  white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
