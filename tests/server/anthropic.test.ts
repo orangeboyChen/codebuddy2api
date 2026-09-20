@@ -1874,6 +1874,202 @@ describe('anthropic messages api', () => {
     expect(textBlock?.text).toBe('The answer is 42.');
   });
 
+  it('drops the Claude Code token usage hint and keeps the real user text', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '<system-reminder>\nToken usage: 190010/180000; -10010 remaining\n</system-reminder>\n',
+              },
+              {
+                type: 'text',
+                text: 'fourth',
+                cache_control: { type: 'ephemeral' },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('Token usage');
+    expect(upstreamBody.messages.at(-1)?.role).toBe('user');
+    expect(JSON.stringify(upstreamBody.messages.at(-1))).toContain('fourth');
+  });
+
+  it('drops a user message that carries nothing but the usage hint', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'ok' },
+          {
+            role: 'user',
+            content:
+              '<system-reminder>\nToken usage: 190010/180000; -10010 remaining\n</system-reminder>\n',
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('Token usage');
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+  });
+
+  it('drops the usage hint from an assistant message and without tags', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'Token usage: 12/34; 22 remaining' },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('Token usage');
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual(['user']);
+  });
+
+  it('strips the usage hint from a plain string message', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: 'Token usage: 190010/180000; -10010 remaining\nfourth',
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('Token usage');
+    expect(upstreamBody.messages.at(-1)?.content).toContain('fourth');
+  });
+
+  it('tolerates a text block that carries no text value', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text' }, { type: 'text', text: 'real' }],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(upstreamBody.messages.at(-1)?.content).toBe('real');
+  });
+
+  it('keeps text that merely mentions token usage', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: 'Explain how you estimate token usage for a prompt.',
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(upstreamBody.messages.at(-1)?.content).toBe(
+      'Explain how you estimate token usage for a prompt.',
+    );
+  });
+
   describe('image content blocks', () => {
     const captureUpstreamBody = async (
       credentialOverrides: Record<string, unknown>,

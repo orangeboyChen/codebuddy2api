@@ -118,6 +118,35 @@ export const mapContentPartsToChat = (
   return blocks;
 };
 
+// Claude Code's client-side usage hint, appended to the tail of the
+// conversation as a meta message whenever its token-usage attachment is on:
+// `<system-reminder>\nToken usage: 190010/180000; -10010 remaining\n
+// </system-reminder>`. The wrapped form is matched first so the tags go with
+// it; the bare form covers the hint arriving without them. Counts can go
+// negative when the client's accounting overruns.
+const TOKEN_USAGE_REMINDER_PATTERNS: RegExp[] = [
+  /<system-reminder>\s*Token usage:[^<]*<\/system-reminder>/gi,
+  /Token usage:\s*-?\d+\s*\/\s*-?\d+\s*;\s*-?\d+\s+remaining/gi,
+];
+
+/**
+ * Removes Claude Code's usage hint from a text value, leaving whatever it was
+ * delivered alongside intact.
+ *
+ * The hint reports the client's own context accounting to the operator, so it
+ * carries nothing the model should act on, and the CodeBuddy upstream rejects a
+ * request carrying it.
+ */
+export const stripTokenUsageReminder = (text: string): string => {
+  let stripped = text;
+
+  for (const pattern of TOKEN_USAGE_REMINDER_PATTERNS) {
+    stripped = stripped.replace(pattern, '');
+  }
+
+  return stripped;
+};
+
 export const extractSystemText = (
   system: string | AnthropicContentBlock[] | undefined,
 ): ChatTextContent => {
