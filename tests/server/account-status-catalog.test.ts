@@ -18,6 +18,7 @@ const {
   getCredentialSupportedModelDetails,
   getCredentialSupportedModels,
   resetCredentialRuntimeState,
+  updateCredentialSupportedModelDetail,
 } = await import('@/lib/server/domain/credentials');
 const {
   getAccountStatus,
@@ -170,6 +171,126 @@ describe('account status model catalog caching', () => {
       { displayName: 'saved-a', id: 'saved-a' },
     ]);
     expect(getModelsForCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it('trims a catalog too large to cache instead of writing it whole', async () => {
+    const filename = await addAccount({}, 'huge');
+
+    await updateCredentialSupportedModelDetail(
+      filename,
+      Array.from({ length: 1500 }, (_, index) => ({
+        credits: 'x3.33',
+        descriptionZh: '描述'.repeat(80),
+        displayName: `Model ${index}`,
+        id: `model-${index}`,
+        relatedModels: { lite: `model-${index}-lite` },
+        vendor: 'e',
+      })),
+    );
+
+    const stored = await findCredentialRecordByFilename(filename);
+    const raw = stored?.data?.supported_models_detail;
+
+    // The credential namespace is encrypted whole on every write, so a catalog
+    // is trimmed rather than cached unbounded.
+    expect(typeof raw).toBe('string');
+    expect((raw ?? '').length).toBeLessThanOrEqual(256 * 1024);
+
+    const details = getCredentialSupportedModelDetails(stored?.data);
+
+    expect(details.length).toBeGreaterThan(0);
+    // What survives still routes and still renders; the bulk that went is the
+    // descriptions and the per-model extras.
+    expect(details[0]?.id).toBe('model-0');
+    expect(details[0]?.vendor).toBe('e');
+    expect(details[0]?.descriptionZh).toBeUndefined();
+    expect(details[0]?.relatedModels).toBeUndefined();
+  });
+
+  it('sheds a campaign before it sheds models, and drops one it cannot trim', async () => {
+    const build = (count: number, withPromotion: boolean) =>
+      Array.from({ length: count }, (_, index) => ({
+        descriptionZh: '描述'.repeat(80),
+        displayName: `Model ${index}`,
+        id: `model-${index}`,
+        ...(withPromotion
+          ? {
+              promotion: {
+                label: '限时免费',
+                textZh: '说明'.repeat(80),
+              },
+            }
+          : {}),
+      }));
+
+    const promoted = await addAccount({}, 'promoted-huge');
+
+    await updateCredentialSupportedModelDetail(promoted, build(1500, true));
+
+    // The promotion copy is the first thing to go.
+    expect(
+      getCredentialSupportedModelDetails(
+        (await findCredentialRecordByFilename(promoted))?.data,
+      )[0]?.promotion?.textZh,
+    ).toBeUndefined();
+
+    const enormous = await addAccount({}, 'enormous');
+
+    // One model that cannot be trimmed: an id far longer than the budget.
+    await updateCredentialSupportedModelDetail(enormous, [
+      { displayName: 'Huge', id: 'i'.repeat(400_000) },
+    ]);
+
+    // Better no cache than a credential document written whole on every save.
+    expect(
+      (await findCredentialRecordByFilename(enormous))?.data
+        ?.supported_models_detail,
+    ).toBeUndefined();
+  });
+
+  it('withholds a cached campaign until its window opens', async () => {
+    const filename = await addAccount(
+      {
+        supported_models: 'scheduled',
+        supported_models_detail: JSON.stringify([
+          {
+            displayName: 'Scheduled',
+            id: 'scheduled',
+            promotion: {
+              endsAt: '2099-02-01T00:00:00.000Z',
+              label: '限时免费',
+              startsAt: '2099-01-01T00:00:00.000Z',
+            },
+          },
+        ]),
+      },
+      'scheduled',
+    );
+
+    vi.useFakeTimers();
+
+    try {
+      vi.setSystemTime(new Date('2026-09-21T00:00:00.000Z'));
+
+      const [before] = await getAccountStatus([filename]);
+
+      // Still in the cache — just not running yet.
+      expect(before?.models[0]?.promotion).toBeUndefined();
+
+      vi.setSystemTime(new Date('2099-01-02T00:00:00.000Z'));
+
+      const [during] = await getAccountStatus([filename]);
+
+      expect(during?.models[0]?.promotion?.label).toBe('限时免费');
+
+      vi.setSystemTime(new Date('2099-02-02T00:00:00.000Z'));
+
+      const [after] = await getAccountStatus([filename]);
+
+      expect(after?.models[0]?.promotion).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('never asks upstream for a credential holding a blank token', async () => {

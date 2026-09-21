@@ -4698,7 +4698,6 @@ describe('server units', () => {
       'saved.json': { error: null, models: [] },
     });
   });
-
   it('carries the upstream model catalog metadata through discovery', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValueOnce(
       new Response(
@@ -4719,14 +4718,29 @@ describe('server units', () => {
             ],
             models: [
               {
-                contextWindow: { defaultLength: 200000 },
+                contextWindow: {
+                  defaultLength: 200000,
+                  supportedLengths: [200000, 1000000],
+                },
                 credits: 'x3.33',
                 descriptionEn: 'General purpose model',
                 descriptionZh: '通用模型',
                 id: 'glm-5.3',
+                isDefault: true,
+                maxAllowedSize: 192000,
                 maxInputTokens: 200000,
                 maxOutputTokens: 64000,
                 name: 'GLM 5.3',
+                onlyReasoning: true,
+                reasoning: {
+                  effort: 'high',
+                  summary: 'auto',
+                  supportedEfforts: ['low', 'medium', 'high'],
+                },
+                relatedModels: {
+                  lite: 'glm-5.3-lite',
+                  reasoning: 'glm-5.3-thinking',
+                },
                 supportsImages: true,
                 supportsReasoning: true,
                 supportsToolCall: true,
@@ -4766,91 +4780,473 @@ describe('server units', () => {
       getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
     ).resolves.toStrictEqual([
       {
+        capabilityTags: ['craft'],
+        contextLengths: [200000, 1000000],
         contextWindow: 200000,
         credits: 'x3.33',
+        defaultEffort: 'high',
         descriptionEn: 'General purpose model',
         descriptionZh: '通用模型',
         displayName: 'GLM 5.3',
         id: 'glm-5.3',
+        isDefault: true,
         isEnterprise: true,
         isFree: undefined,
         isInternal: undefined,
+        maxAllowedSize: 192000,
         maxInputTokens: 200000,
         maxOutputTokens: 64000,
+        onlyReasoning: true,
+        promotion: undefined,
+        relatedModels: {
+          lite: 'glm-5.3-lite',
+          reasoning: 'glm-5.3-thinking',
+        },
+        supportedEfforts: ['low', 'medium', 'high'],
         supportsImages: true,
         supportsReasoning: true,
         supportsToolCall: true,
+        tier: undefined,
         vendor: 'e',
       },
       {
+        capabilityTags: undefined,
+        contextLengths: undefined,
         contextWindow: undefined,
         credits: 'x0.00',
+        defaultEffort: undefined,
         descriptionEn: undefined,
         descriptionZh: '混元思考模型',
         displayName: 'Hy3',
         id: 'hy3-ioa',
+        isDefault: undefined,
         isEnterprise: undefined,
         isFree: true,
         isInternal: true,
+        maxAllowedSize: undefined,
         maxInputTokens: undefined,
         maxOutputTokens: undefined,
+        onlyReasoning: undefined,
+        promotion: undefined,
+        relatedModels: undefined,
+        supportedEfforts: undefined,
         supportsImages: false,
         supportsReasoning: undefined,
         supportsToolCall: undefined,
+        tier: undefined,
         vendor: undefined,
       },
       {
+        capabilityTags: undefined,
+        contextLengths: undefined,
         contextWindow: undefined,
         credits: undefined,
+        defaultEffort: undefined,
         descriptionEn: undefined,
         descriptionZh: undefined,
         displayName: 'Sparse',
         id: 'sparse',
+        isDefault: undefined,
         isEnterprise: undefined,
         isFree: undefined,
         isInternal: undefined,
+        maxAllowedSize: undefined,
         maxInputTokens: undefined,
         maxOutputTokens: undefined,
+        onlyReasoning: undefined,
+        promotion: undefined,
+        relatedModels: undefined,
+        supportedEfforts: undefined,
         supportsImages: undefined,
         supportsReasoning: undefined,
         supportsToolCall: undefined,
+        tier: undefined,
         vendor: undefined,
       },
       {
+        // A non-string tag is skipped; the capability it sits beside is not.
+        capabilityTags: ['craft'],
+        contextLengths: undefined,
         contextWindow: undefined,
         credits: undefined,
+        defaultEffort: undefined,
         descriptionEn: undefined,
         descriptionZh: undefined,
         displayName: 'Unknown',
         id: 'unknown-tag',
+        isDefault: undefined,
         isEnterprise: undefined,
         isFree: undefined,
         isInternal: undefined,
+        maxAllowedSize: undefined,
         maxInputTokens: undefined,
         maxOutputTokens: undefined,
+        onlyReasoning: undefined,
+        promotion: undefined,
+        relatedModels: undefined,
+        supportedEfforts: undefined,
         supportsImages: undefined,
         supportsReasoning: undefined,
         supportsToolCall: undefined,
+        tier: undefined,
         vendor: undefined,
       },
       {
+        capabilityTags: undefined,
+        contextLengths: undefined,
         contextWindow: undefined,
         credits: undefined,
+        defaultEffort: undefined,
         descriptionEn: undefined,
         descriptionZh: undefined,
         displayName: 'Nulled',
         id: 'nulled',
+        isDefault: undefined,
         isEnterprise: undefined,
         isFree: undefined,
         isInternal: undefined,
+        maxAllowedSize: undefined,
         maxInputTokens: undefined,
         maxOutputTokens: undefined,
+        onlyReasoning: undefined,
+        promotion: undefined,
+        relatedModels: undefined,
+        supportedEfforts: undefined,
         supportsImages: undefined,
         supportsReasoning: undefined,
         supportsToolCall: undefined,
+        tier: undefined,
         vendor: undefined,
       },
     ]);
+  });
+
+  it('attaches the promotion and tier upstream names a model in', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['hy3', 'glm-5.3'], name: 'cli' }],
+            models: [
+              { credits: 'x0.04', id: 'hy3', name: 'Hy3' },
+              { credits: 'x3.33', id: 'glm-5.3', name: 'GLM 5.3' },
+            ],
+            modelPromotions: [
+              // A switched-off campaign is not an offer.
+              {
+                badge: { label: '已下线' },
+                enabled: false,
+                id: 'off',
+                modelIds: ['hy3'],
+                priority: 9,
+              },
+              {
+                badge: { label: '限时免费' },
+                discount: { discountedCredits: 'x0.00' },
+                hover: { textEn: 'Free until then', textZh: '限时免费' },
+                id: 'free',
+                modelIds: ['hy3', 'glm-5.3'],
+                priority: 2,
+                schedule: { validUntil: '2099-10-01T00:00:00.000Z' },
+              },
+              // Higher priority, but empty: it must not shadow the campaign
+              // below it, or the card would show nothing at all.
+              { badge: {}, id: 'empty', modelIds: ['hy3'], priority: 5 },
+              // Lower priority, so the model keeps the campaign above.
+              {
+                badge: { label: '次要优惠' },
+                id: 'minor',
+                modelIds: ['hy3'],
+                priority: 1,
+              },
+              42,
+              null,
+            ],
+            modelTiers: [
+              {
+                badge: { label: '高级版' },
+                id: 'advanced',
+                modelIds: ['glm-5.3'],
+                tier: 'advanced',
+              },
+              // Higher priority, so this is the tier the card quotes.
+              {
+                badge: { label: '旗舰版' },
+                id: 'flagship',
+                modelIds: ['glm-5.3'],
+                priority: 3,
+                tier: 'flagship',
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    expect(models.find((model) => model.id === 'hy3')?.promotion).toStrictEqual(
+      {
+        discountedCredits: 'x0.00',
+        endsAt: '2099-10-01T00:00:00.000Z',
+        label: '限时免费',
+        startsAt: undefined,
+        textEn: 'Free until then',
+        textZh: '限时免费',
+      },
+    );
+    // hy3 is named by no tier, so it carries none.
+    expect(models.find((model) => model.id === 'hy3')?.tier).toBeUndefined();
+    expect(models.find((model) => model.id === 'glm-5.3')?.tier).toStrictEqual({
+      label: '旗舰版',
+      level: 'flagship',
+    });
+  });
+
+  it('ignores campaign lists that are not lists', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['plain'], name: 'cli' }],
+            models: [{ id: 'plain', name: 'Plain' }],
+            modelPromotions: 'not-a-list',
+            modelTiers: { nope: true },
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    expect(models).toHaveLength(1);
+    expect(models[0]?.promotion).toBeUndefined();
+    expect(models[0]?.tier).toBeUndefined();
+  });
+
+  it('treats a campaign marked off in any shape as withdrawn', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['off'], name: 'cli' }],
+            models: [{ id: 'off', name: 'Off' }],
+            modelPromotions: [
+              {
+                badge: { label: '布尔' },
+                enabled: false,
+                id: 'a',
+                modelIds: ['off'],
+              },
+              {
+                badge: { label: '零' },
+                enabled: 0,
+                id: 'b',
+                modelIds: ['off'],
+              },
+              {
+                badge: { label: '字符串' },
+                enabled: 'false',
+                id: 'c',
+                modelIds: ['off'],
+              },
+              {
+                badge: { label: '有效' },
+                enabled: true,
+                id: 'd',
+                modelIds: ['off'],
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    expect(models[0]?.promotion?.label).toBe('有效');
+  });
+
+  it('reads a capability tag only when one is there', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['blank-tag'], name: 'cli' }],
+            models: [{ id: 'blank-tag', name: 'Blank', tags: ['   ', ''] }],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    expect(models[0]?.capabilityTags).toBeUndefined();
+  });
+
+  it('names a model the catalog never describes', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['ghost'], name: 'cli' }],
+            models: [],
+            modelTiers: [
+              // Junk beside the real id: neither drops the other, and neither
+              // attaches to a model the catalog never described.
+              { badge: { label: 'x' }, id: 'j', modelIds: [42, '  ', 'ghost'] },
+            ],
+          },
+        }),
+      ),
+    );
+
+    // The cli agent names an id the catalog has no row for, so the id stands in
+    // for itself and the tier that names it still applies.
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
+    ).resolves.toEqual([
+      {
+        displayName: 'ghost',
+        id: 'ghost',
+      },
+    ]);
+  });
+
+  it('lets a running campaign outrank a closed or pending one', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['hy3'], name: 'cli' }],
+            models: [{ credits: 'x3.33', id: 'hy3', name: 'Hy3' }],
+            modelPromotions: [
+              // Over, and higher priority: it must not take the model.
+              {
+                badge: { label: '已结束' },
+                id: 'over',
+                modelIds: ['hy3'],
+                priority: 9,
+                schedule: { validUntil: '2020-01-01T00:00:00.000Z' },
+              },
+              // Opening later, and higher priority than the one running.
+              {
+                badge: { label: '未开始' },
+                id: 'pending',
+                modelIds: ['hy3'],
+                priority: 5,
+                schedule: {
+                  validFrom: '2099-01-01T00:00:00.000Z',
+                  validUntil: '2099-02-01T00:00:00.000Z',
+                },
+              },
+              {
+                badge: { label: '进行中' },
+                id: 'live',
+                modelIds: ['hy3'],
+                priority: 1,
+                schedule: { validUntil: '2099-12-01T00:00:00.000Z' },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    expect(models[0]?.promotion?.label).toBe('进行中');
+  });
+
+  it('keeps a pending campaign when nothing else is running', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['hy3'], name: 'cli' }],
+            models: [{ id: 'hy3', name: 'Hy3' }],
+            modelPromotions: [
+              {
+                badge: { label: '未开始' },
+                id: 'pending',
+                modelIds: ['hy3'],
+                schedule: { validFrom: '2099-01-01T00:00:00.000Z' },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    // Stored with its window, so the card can start quoting it later.
+    expect(models[0]?.promotion?.startsAt).toBe('2099-01-01T00:00:00.000Z');
+  });
+
+  it('reads a campaign priority only when upstream sends a number', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['tiered'], name: 'cli' }],
+            models: [{ id: 'tiered', name: 'Tiered' }],
+            modelTiers: [
+              // A non-numeric priority is no priority, so this loses to the
+              // entry below rather than beating it.
+              {
+                badge: { label: '文本优先级' },
+                id: 'text',
+                modelIds: ['tiered'],
+                priority: 'high',
+              },
+              {
+                badge: { label: '数字优先级' },
+                id: 'one',
+                modelIds: ['tiered'],
+                priority: 1,
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    expect(models[0]?.tier).toStrictEqual({
+      label: '数字优先级',
+      level: undefined,
+    });
   });
 
   it('falls back to the enterprise model route when /v3/config is unavailable', async () => {
@@ -6339,7 +6735,13 @@ describe('server units', () => {
         isEnterprise: true,
         isFree: true,
       },
-      { displayName: 'With', id: 'with-colour', isFree: true },
+      // A tag that is not a badge is a capability, and is kept as it arrived.
+      {
+        capabilityTags: ['craft'],
+        displayName: 'With',
+        id: 'with-colour',
+        isFree: true,
+      },
       { displayName: 'Plain', id: 'no-colour', isFree: true },
       { displayName: 'Bare', id: 'bare' },
     ]);

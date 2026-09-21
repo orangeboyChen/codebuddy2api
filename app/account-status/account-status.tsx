@@ -27,21 +27,44 @@ import type { CredentialSummary } from '@/app/credentials/credentials';
  * `lib/server`, and only keeps the fields the console renders.
  */
 export interface AccountStatusModel {
+  /** Capability tags upstream declares, for example `text-to-image`. */
+  capabilityTags?: string[];
   contextWindow?: number;
   /** Credit multiplier upstream bills, for example `"x3.33"`. */
   credits?: string;
+  /** The context lengths a caller may choose between, in tokens. */
+  contextLengths?: number[];
+  /** The thinking effort upstream applies when a caller names none. */
+  defaultEffort?: string;
   descriptionEn?: string;
   descriptionZh?: string;
   displayName: string;
   id: string;
+  isDefault?: boolean;
   isEnterprise?: boolean;
   isFree?: boolean;
   isInternal?: boolean;
+  /** The largest request upstream accepts, in tokens. */
+  maxAllowedSize?: number;
   maxInputTokens?: number;
   maxOutputTokens?: number;
+  onlyReasoning?: boolean;
+  promotion?: {
+    discountedCredits?: string;
+    endsAt?: string;
+    label?: string;
+    startsAt?: string;
+    textEn?: string;
+    textZh?: string;
+  };
+  /** The ids behind this model's variants, keyed by variant. */
+  relatedModels?: Record<string, string>;
+  supportedEfforts?: string[];
   supportsImages?: boolean;
   supportsReasoning?: boolean;
   supportsToolCall?: boolean;
+  tier?: { label?: string; level?: string };
+  vendor?: string;
 }
 
 interface AccountStatusProps {
@@ -243,17 +266,37 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
   const description = locale.startsWith('zh')
     ? (model.descriptionZh ?? model.descriptionEn)
     : (model.descriptionEn ?? model.descriptionZh);
+  const promotionText = locale.startsWith('zh')
+    ? (model.promotion?.textZh ?? model.promotion?.textEn)
+    : (model.promotion?.textEn ?? model.promotion?.textZh);
   // Both server fallbacks derive the display name from the id, so the two are
   // routinely identical. Rendering both would put the same string on the card
   // twice, which reads as a stutter and breaks text-based locators.
   const showDisplayName = model.displayName.trim() !== model.id.trim();
   const context = model.contextWindow ?? model.maxInputTokens;
+  // Upstream often ships the badge and the copy as the same sentence. Printing
+  // both would stutter on the card and leave two matches for every text
+  // locator looking for it, so the copy is dropped when it repeats the badge.
+  const discount = model.promotion?.discountedCredits?.trim();
+  // A promotion can advertise a price for a model upstream describes sparsely,
+  // with no standing multiplier beside it; the discount is still the number a
+  // caller is billed, so it stands on its own when it is the only one.
+  const multiplier = discount ?? model.credits?.trim();
+  const promotionLabel = model.promotion?.label?.trim();
+  const promotionNote =
+    promotionText && promotionText.trim() !== promotionLabel
+      ? promotionText
+      : undefined;
+  const tierLabel = model.tier?.label?.trim();
   const badges = [
     model.isEnterprise
       ? ['enterprise', text('accountStatus.modelEnterprise')]
       : null,
     model.isInternal ? ['internal', text('accountStatus.modelInternal')] : null,
     model.isFree ? ['free', text('accountStatus.modelFree')] : null,
+    model.isDefault ? ['default', text('accountStatus.modelDefault')] : null,
+    promotionLabel ? ['promotion', promotionLabel] : null,
+    tierLabel ? ['tier', tierLabel] : null,
   ].filter((badge): badge is [string, string] => badge !== null);
   const meta = [
     context === undefined
@@ -277,9 +320,77 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
     model.supportsReasoning
       ? ['reasoning', text('accountStatus.modelReasoning')]
       : null,
+    model.onlyReasoning
+      ? ['only-reasoning', text('accountStatus.modelOnlyReasoning')]
+      : null,
     // Keyed by field, not by the rendered text: two labels that translate
     // alike would otherwise collide.
   ].filter((item): item is [string, string] => item !== null);
+  const variants = Object.entries(model.relatedModels ?? {}).map(
+    ([variant, id]) => `${variant}: ${id}`,
+  );
+  const contextLengths = (model.contextLengths ?? [])
+    .map((length) => formatTokenCount(length))
+    .join(' / ');
+  // Lower-signal facts: what upstream says about the model rather than what a
+  // caller picks between. They sit on their own line so the row above stays
+  // readable, and each one is absent when upstream says nothing.
+  const details = [
+    model.vendor
+      ? ['vendor', text('accountStatus.modelVendor', { vendor: model.vendor })]
+      : null,
+    model.maxAllowedSize === undefined
+      ? null
+      : [
+          'limit',
+          text('accountStatus.modelRequestLimit', {
+            tokens: formatTokenCount(model.maxAllowedSize),
+          }),
+        ],
+    contextLengths
+      ? [
+          'lengths',
+          text('accountStatus.modelContextLengths', {
+            lengths: contextLengths,
+          }),
+        ]
+      : null,
+    model.defaultEffort
+      ? [
+          'effort',
+          text('accountStatus.modelDefaultEffort', {
+            effort: model.defaultEffort,
+          }),
+        ]
+      : null,
+    model.supportedEfforts?.length
+      ? [
+          'efforts',
+          text('accountStatus.modelSupportedEfforts', {
+            efforts: model.supportedEfforts.join(', '),
+          }),
+        ]
+      : null,
+    variants.length
+      ? [
+          'variants',
+          text('accountStatus.modelVariants', {
+            variants: variants.join(', '),
+          }),
+        ]
+      : null,
+    // The window is printed from the UTC date upstream sent: formatting it in
+    // the reader's zone would re-render differently on the server and the
+    // client, and a promotion is not worth a hydration mismatch.
+    model.promotion?.endsAt
+      ? [
+          'promotion-ends',
+          text('accountStatus.modelPromotionEndsAt', {
+            date: model.promotion.endsAt.slice(0, 10),
+          }),
+        ]
+      : null,
+  ].filter((detail): detail is [string, string] => detail !== null);
 
   return (
     <Flexbox className="account-status-model" direction="vertical" gap={6}>
@@ -293,9 +404,16 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
         {badges.map(([key, label]) => (
           <Tag key={key}>{label}</Tag>
         ))}
-        {model.credits ? (
+        {multiplier ? (
           <Tag className="account-status-model-credits">
-            {text('accountStatus.modelCredits')} {model.credits}
+            {/* A promotion quoting the standing multiplier is not a discount,
+                and printing it as one reads as a bug. */}
+            {discount && model.credits && discount !== model.credits.trim()
+              ? text('accountStatus.modelCreditsDiscounted', {
+                  discounted: discount,
+                  original: model.credits,
+                })
+              : text('accountStatus.modelCredits', { credits: multiplier })}
           </Tag>
         ) : null}
       </Flexbox>
@@ -304,11 +422,38 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
           {description}
         </Text>
       ) : null}
+      {promotionNote ? (
+        <Text className="account-status-model-promotion-text" type="secondary">
+          {promotionNote}
+        </Text>
+      ) : null}
       {meta.length ? (
         <Flexbox align="center" gap={8} horizontal wrap="wrap">
           {meta.map(([key, label]) => (
             <Text
               className="account-status-model-meta"
+              key={key}
+              type="secondary"
+            >
+              {label}
+            </Text>
+          ))}
+        </Flexbox>
+      ) : null}
+      {model.capabilityTags?.length ? (
+        <Flexbox align="center" gap={4} horizontal wrap="wrap">
+          {model.capabilityTags.map((tag) => (
+            <Tag className="account-status-model-capability" key={tag}>
+              {tag}
+            </Tag>
+          ))}
+        </Flexbox>
+      ) : null}
+      {details.length ? (
+        <Flexbox align="center" gap={8} horizontal wrap="wrap">
+          {details.map(([key, label]) => (
+            <Text
+              className="account-status-model-detail"
               key={key}
               type="secondary"
             >
