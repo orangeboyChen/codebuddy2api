@@ -2293,6 +2293,37 @@ describe('anthropic messages api', () => {
     expect(upstreamBody.messages.at(-1)?.content).toContain('working on it');
   });
 
+  it('keeps a total_tokens element that is not a countdown', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: 'parse <total_tokens>computed value</total_tokens> here',
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual(['user']);
+    expect(upstreamBody.messages.at(-1)?.content).toBe(
+      'parse <total_tokens>computed value</total_tokens> here',
+    );
+  });
+
   describe('image content blocks', () => {
     const captureUpstreamBody = async (
       credentialOverrides: Record<string, unknown>,

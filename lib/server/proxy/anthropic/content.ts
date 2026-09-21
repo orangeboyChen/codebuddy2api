@@ -127,10 +127,19 @@ export const mapContentPartsToChat = (
 // bare counterpart so the enclosing tags go away with the hint; the bare forms
 // cover a hint arriving without them. Counts can go negative when the client's
 // accounting overruns.
+//
+// The countdown only counts as a hint when it carries a numeric
+// `<N> token(s) left` payload, so a prompt that quotes a `<total_tokens>`
+// element of its own — a schema sample, say — keeps its text.
+const TOTAL_TOKENS_COUNTDOWN = String.raw`<total_tokens>\s*-?[\d,._]+\s*tokens?\s+left\s*<\/total_tokens>`;
+
 const TOKEN_USAGE_REMINDER_PATTERNS: RegExp[] = [
   /<system-reminder>\s*Token usage:[^<]*<\/system-reminder>/gi,
-  /<system-reminder>\s*<total_tokens>[^<]*<\/total_tokens>\s*<\/system-reminder>/gi,
-  /<total_tokens>[^<]*<\/total_tokens>/gi,
+  new RegExp(
+    `<system-reminder>\\s*${TOTAL_TOKENS_COUNTDOWN}\\s*<\\/system-reminder>`,
+    'gi',
+  ),
+  new RegExp(TOTAL_TOKENS_COUNTDOWN, 'gi'),
   /Token usage:\s*-?\d+\s*\/\s*-?\d+\s*;\s*-?\d+\s+remaining/gi,
 ];
 
