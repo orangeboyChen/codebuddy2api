@@ -5079,6 +5079,57 @@ describe('server units', () => {
     expect(models[0]?.promotion?.label).toBe('有效');
   });
 
+  it('reads a capability tag only when one is there', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['blank-tag'], name: 'cli' }],
+            models: [{ id: 'blank-tag', name: 'Blank', tags: ['   ', ''] }],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    expect(models[0]?.capabilityTags).toBeUndefined();
+  });
+
+  it('names a model the catalog never describes', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['ghost'], name: 'cli' }],
+            models: [],
+            modelTiers: [
+              // Junk beside the real id: neither drops the other, and neither
+              // attaches to a model the catalog never described.
+              { badge: { label: 'x' }, id: 'j', modelIds: [42, '  ', 'ghost'] },
+            ],
+          },
+        }),
+      ),
+    );
+
+    // The cli agent names an id the catalog has no row for, so the id stands in
+    // for itself and the tier that names it still applies.
+    await expect(
+      getModelsForCredential({ bearerToken: 'token-a', credentialData: {} }),
+    ).resolves.toEqual([
+      {
+        displayName: 'ghost',
+        id: 'ghost',
+      },
+    ]);
+  });
+
   it('reads a campaign priority only when upstream sends a number', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValueOnce(
       new Response(

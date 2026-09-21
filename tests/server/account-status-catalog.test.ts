@@ -207,6 +207,47 @@ describe('account status model catalog caching', () => {
     expect(details[0]?.relatedModels).toBeUndefined();
   });
 
+  it('sheds a campaign before it sheds models, and drops one it cannot trim', async () => {
+    const build = (count: number, withPromotion: boolean) =>
+      Array.from({ length: count }, (_, index) => ({
+        descriptionZh: '描述'.repeat(80),
+        displayName: `Model ${index}`,
+        id: `model-${index}`,
+        ...(withPromotion
+          ? {
+              promotion: {
+                label: '限时免费',
+                textZh: '说明'.repeat(80),
+              },
+            }
+          : {}),
+      }));
+
+    const promoted = await addAccount({}, 'promoted-huge');
+
+    await updateCredentialSupportedModelDetail(promoted, build(1500, true));
+
+    // The promotion copy is the first thing to go.
+    expect(
+      getCredentialSupportedModelDetails(
+        (await findCredentialRecordByFilename(promoted))?.data,
+      )[0]?.promotion?.textZh,
+    ).toBeUndefined();
+
+    const enormous = await addAccount({}, 'enormous');
+
+    // One model that cannot be trimmed: an id far longer than the budget.
+    await updateCredentialSupportedModelDetail(enormous, [
+      { displayName: 'Huge', id: 'i'.repeat(400_000) },
+    ]);
+
+    // Better no cache than a credential document written whole on every save.
+    expect(
+      (await findCredentialRecordByFilename(enormous))?.data
+        ?.supported_models_detail,
+    ).toBeUndefined();
+  });
+
   it('withholds a cached campaign until its window opens', async () => {
     const filename = await addAccount(
       {

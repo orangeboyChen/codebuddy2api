@@ -104,6 +104,31 @@ describe('normalizeModelFields', () => {
     expect(model?.relatedModels).toStrictEqual({ vision: 'ok' });
   });
 
+  it('drops a list whose every entry is unusable', () => {
+    const model = normalize({
+      capabilityTags: ['', '   ', 42],
+      contextLengths: [0, -5, 'many'],
+      id: 'empty-lists',
+      relatedModels: { '': 'orphan', lite: '  ' },
+      supportedEfforts: [42],
+    });
+
+    expect(model?.capabilityTags).toBeUndefined();
+    expect(model?.contextLengths).toBeUndefined();
+    expect(model?.relatedModels).toBeUndefined();
+    expect(model?.supportedEfforts).toBeUndefined();
+  });
+
+  it('drops a window that parses to no date', () => {
+    // Month 13 matches the shape of a date and parses to nothing.
+    expect(
+      normalize({
+        id: 'impossible',
+        promotion: { endsAt: '2099-13-45T00:00:00Z' },
+      })?.promotion?.endsAt,
+    ).toBeUndefined();
+  });
+
   it('caps the strings the card prints', () => {
     const model = normalize({
       credits: 'x'.repeat(300),
@@ -350,6 +375,21 @@ describe('pruneInactivePromotions', () => {
     );
 
     expect(model?.promotion).toBeUndefined();
+  });
+
+  it('keeps a promotion whose window is open', () => {
+    const model = normalizeModelFields({
+      id: 'running',
+      promotion: {
+        endsAt: '2026-09-22T00:00:00.000Z',
+        label: '进行中',
+        startsAt: '2026-09-20T00:00:00.000Z',
+      },
+    })!;
+
+    expect(pruneInactivePromotions([model], now)[0]?.promotion?.label).toBe(
+      '进行中',
+    );
   });
 
   it('leaves a model without a promotion alone', () => {
