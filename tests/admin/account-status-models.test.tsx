@@ -412,6 +412,19 @@ describe('account status model details', () => {
     expect(screen.queryByText(/→/)).toBeNull();
   });
 
+  it('shows a promotional price for a model with no standing multiplier', () => {
+    renderView([
+      model({
+        credits: undefined,
+        promotion: { discountedCredits: 'x0.00', label: '限时免费' },
+      }),
+    ]);
+
+    // Upstream describes this model sparsely, but the offer is still the number
+    // a caller is billed.
+    expect(screen.getByText('倍率 x0.00')).toBeTruthy();
+  });
+
   it('marks the capability tags so a 360px viewport can break them', () => {
     renderView([model({ capabilityTags: ['text-to-image'] })]);
 

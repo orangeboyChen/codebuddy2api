@@ -5130,6 +5130,85 @@ describe('server units', () => {
     ]);
   });
 
+  it('lets a running campaign outrank a closed or pending one', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['hy3'], name: 'cli' }],
+            models: [{ credits: 'x3.33', id: 'hy3', name: 'Hy3' }],
+            modelPromotions: [
+              // Over, and higher priority: it must not take the model.
+              {
+                badge: { label: '已结束' },
+                id: 'over',
+                modelIds: ['hy3'],
+                priority: 9,
+                schedule: { validUntil: '2020-01-01T00:00:00.000Z' },
+              },
+              // Opening later, and higher priority than the one running.
+              {
+                badge: { label: '未开始' },
+                id: 'pending',
+                modelIds: ['hy3'],
+                priority: 5,
+                schedule: {
+                  validFrom: '2099-01-01T00:00:00.000Z',
+                  validUntil: '2099-02-01T00:00:00.000Z',
+                },
+              },
+              {
+                badge: { label: '进行中' },
+                id: 'live',
+                modelIds: ['hy3'],
+                priority: 1,
+                schedule: { validUntil: '2099-12-01T00:00:00.000Z' },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    expect(models[0]?.promotion?.label).toBe('进行中');
+  });
+
+  it('keeps a pending campaign when nothing else is running', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            agents: [{ models: ['hy3'], name: 'cli' }],
+            models: [{ id: 'hy3', name: 'Hy3' }],
+            modelPromotions: [
+              {
+                badge: { label: '未开始' },
+                id: 'pending',
+                modelIds: ['hy3'],
+                schedule: { validFrom: '2099-01-01T00:00:00.000Z' },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const models = await getModelsForCredential({
+      bearerToken: 'token-a',
+      credentialData: {},
+    });
+
+    // Stored with its window, so the card can start quoting it later.
+    expect(models[0]?.promotion?.startsAt).toBe('2099-01-01T00:00:00.000Z');
+  });
+
   it('reads a campaign priority only when upstream sends a number', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValueOnce(
       new Response(

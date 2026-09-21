@@ -278,6 +278,10 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
   // both would stutter on the card and leave two matches for every text
   // locator looking for it, so the copy is dropped when it repeats the badge.
   const discount = model.promotion?.discountedCredits?.trim();
+  // A promotion can advertise a price for a model upstream describes sparsely,
+  // with no standing multiplier beside it; the discount is still the number a
+  // caller is billed, so it stands on its own when it is the only one.
+  const multiplier = discount ?? model.credits?.trim();
   const promotionLabel = model.promotion?.label?.trim();
   const promotionNote =
     promotionText && promotionText.trim() !== promotionLabel
@@ -400,18 +404,16 @@ const ModelRow = ({ model }: { model: AccountStatusModel }) => {
         {badges.map(([key, label]) => (
           <Tag key={key}>{label}</Tag>
         ))}
-        {model.credits ? (
+        {multiplier ? (
           <Tag className="account-status-model-credits">
             {/* A promotion quoting the standing multiplier is not a discount,
                 and printing it as one reads as a bug. */}
-            {discount && discount !== model.credits.trim()
+            {discount && model.credits && discount !== model.credits.trim()
               ? text('accountStatus.modelCreditsDiscounted', {
                   discounted: discount,
                   original: model.credits,
                 })
-              : text('accountStatus.modelCredits', {
-                  credits: model.credits,
-                })}
+              : text('accountStatus.modelCredits', { credits: multiplier })}
           </Tag>
         ) : null}
       </Flexbox>

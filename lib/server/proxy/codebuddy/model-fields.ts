@@ -289,6 +289,28 @@ export const normalizeModelFields = (
 };
 
 /**
+ * Where `now` falls relative to a campaign window: before it opens, inside it,
+ * or after it closes.
+ *
+ * Read by the campaign resolver so an offer that is over cannot win a model
+ * away from one that is running. A bound that cannot be printed — no offset,
+ * say — is treated as no bound at all rather than as a reason to drop the
+ * campaign.
+ */
+export const campaignWindowState = (
+  schedule: { validFrom?: unknown; validUntil?: unknown } | undefined,
+  now: number,
+): 'open' | 'future' | 'closed' => {
+  const endsAt = asTimestamp(schedule?.validUntil);
+  const startsAt = asTimestamp(schedule?.validFrom);
+
+  if (endsAt !== undefined && Date.parse(endsAt) <= now) return 'closed';
+  if (startsAt !== undefined && Date.parse(startsAt) > now) return 'future';
+
+  return 'open';
+};
+
+/**
  * Whether a promotion is running at `now`.
  *
  * A campaign with no window is always running; one that has not opened yet is

@@ -9,7 +9,7 @@ import {
   listEligibleCredentialRecords,
 } from '../../domain/credentials';
 import { getCredentialValue } from './context';
-import { normalizeModelFields } from './model-fields';
+import { campaignWindowState, normalizeModelFields } from './model-fields';
 import type { DiscoveredModel } from './types';
 
 /**
@@ -150,9 +150,10 @@ const asCampaignPriority = (value: unknown): number =>
 const resolveCampaignsByModel = (
   entries: unknown,
   build: (entry: UpstreamCampaignEntry) => Record<string, unknown> | undefined,
+  now: number,
 ): Map<string, Record<string, unknown>> => {
   const byModel = new Map<string, Record<string, unknown>>();
-  const priorities = new Map<string, number>();
+  const winners = new Map<string, { open: boolean; priority: number }>();
 
   if (!Array.isArray(entries)) return byModel;
 
@@ -174,14 +175,25 @@ const resolveCampaignsByModel = (
       continue;
     }
 
+    // Nor may an offer that is over: only the winner is kept, so a stale
+    // high-priority campaign would otherwise take the model away from whatever
+    // is running now.
+    if (campaignWindowState(entry.schedule, now) === 'closed') continue;
+
+    const open = campaignWindowState(entry.schedule, now) === 'open';
     const priority = asCampaignPriority(entry.priority);
 
     for (const modelId of asCampaignModelIds(entry.modelIds)) {
-      const current = priorities.get(modelId);
+      const current = winners.get(modelId);
 
-      if (current !== undefined && current >= priority) continue;
+      // A campaign running now outranks one that has not opened yet, whatever
+      // their priorities, so a scheduled campaign cannot hide a live offer.
+      if (current) {
+        if (current.open && !open) continue;
+        if (current.open === open && current.priority >= priority) continue;
+      }
 
-      priorities.set(modelId, priority);
+      winners.set(modelId, { open, priority });
       byModel.set(modelId, built);
     }
   }
@@ -197,21 +209,29 @@ const resolveCampaignsByModel = (
  * clock. This console reports the offer as upstream advertises it and settles
  * nothing, so a daily window is out of scope rather than evaluated wrongly.
  */
-const readPromotions = (entries: unknown) =>
-  resolveCampaignsByModel(entries, (entry) => ({
-    discountedCredits: entry.discount?.discountedCredits,
-    endsAt: entry.schedule?.validUntil,
-    label: entry.badge?.label,
-    startsAt: entry.schedule?.validFrom,
-    textEn: entry.hover?.textEn,
-    textZh: entry.hover?.textZh,
-  }));
+const readPromotions = (now: number) => (entries: unknown) =>
+  resolveCampaignsByModel(
+    entries,
+    (entry) => ({
+      discountedCredits: entry.discount?.discountedCredits,
+      endsAt: entry.schedule?.validUntil,
+      label: entry.badge?.label,
+      startsAt: entry.schedule?.validFrom,
+      textEn: entry.hover?.textEn,
+      textZh: entry.hover?.textZh,
+    }),
+    now,
+  );
 
-const readTiers = (entries: unknown) =>
-  resolveCampaignsByModel(entries, (entry) => ({
-    label: entry.badge?.label,
-    level: entry.tier,
-  }));
+const readTiers = (now: number) => (entries: unknown) =>
+  resolveCampaignsByModel(
+    entries,
+    (entry) => ({
+      label: entry.badge?.label,
+      level: entry.tier,
+    }),
+    now,
+  );
 
 export const getModelsForCredential = async ({
   bearerToken,
@@ -305,8 +325,9 @@ export const getModelsForCredential = async ({
       .map((model) => (typeof model.id === 'string' ? model.id.trim() : ''))
       .filter(Boolean),
   );
-  const promotionsByModel = readPromotions(payload.data?.modelPromotions);
-  const tiersByModel = readTiers(payload.data?.modelTiers);
+  const now = Date.now();
+  const promotionsByModel = readPromotions(now)(payload.data?.modelPromotions);
+  const tiersByModel = readTiers(now)(payload.data?.modelTiers);
   // The campaign lists are upstream data too, so they are merged into the
   // model and read back through the same normalizer that vets everything else
   // on it — a cap or a type the console rejects applies to them as well.
