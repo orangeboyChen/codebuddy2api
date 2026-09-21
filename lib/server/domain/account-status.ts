@@ -206,26 +206,46 @@ const isDiscoveryCoolingDown = (filename: string): boolean => {
  * kilobytes per account, and account status is rendered for every credential
  * on every page load. A credential whose catalog has never been fetched pays
  * for one upstream call and then caches the answer.
+ *
+ * `refresh` is the operator asking for the answer again — the Refresh button
+ * on a card, or Refresh all. It goes back upstream even though a catalog is
+ * cached, and replaces that catalog with whatever upstream answers; a refresh
+ * that comes back empty or fails keeps the cache, because the point was to
+ * update it, not to throw it away.
  */
 const loadCredentialModels = async (
   credential: CredentialRecord,
+  refresh = false,
 ): Promise<DiscoveredModel[]> => {
-  const cached = getCredentialSupportedModelDetails(credential.data);
+  const cached = pruneInactivePromotions(
+    getCredentialSupportedModelDetails(credential.data),
+  );
+  // Whatever the card can still show when upstream cannot be asked: the cached
+  // catalog if there is one, and otherwise the saved ids, which still say what
+  // the account can call.
+  const fallback = cached.length
+    ? cached
+    : savedModelsAsModels(credential.data);
 
   // The window is read where the catalog is read, not where it is written: a
   // campaign scheduled to open later is still in the cache, and an offer whose
   // window has closed is not quoted however long the cache lives.
-  if (cached.length) return pruneInactivePromotions(cached);
+  if (!refresh && cached.length) return cached;
 
-  if (isDiscoveryCoolingDown(credential.filename)) {
-    return savedModelsAsModels(credential.data);
+  // A refresh is also a way out of a cooldown: the operator is asking for the
+  // call the cooldown is holding back.
+  if (refresh) credentialModelDiscoveryFailures.delete(credential.filename);
+
+  if (!refresh && isDiscoveryCoolingDown(credential.filename)) {
+    return fallback;
   }
 
   const bearerToken = getBearerToken(credential);
 
-  // A blank token would send `Authorization: Bearer ` and always fail; the
-  // saved ids are the only answer this credential can offer.
-  if (!bearerToken) return savedModelsAsModels(credential.data);
+  // A blank token would send `Authorization: Bearer ` and always fail. The
+  // cache is still a better answer than the bare ids, so a refresh of a
+  // credential with no token keeps it rather than dropping the metadata.
+  if (!bearerToken) return fallback;
 
   let discovered: DiscoveredModel[];
 
@@ -236,13 +256,16 @@ const loadCredentialModels = async (
     });
   } catch (error) {
     credentialModelDiscoveryFailures.set(credential.filename, Date.now());
+
+    if (cached.length) return cached;
+
     throw error;
   }
 
   if (!discovered.length) {
     credentialModelDiscoveryFailures.set(credential.filename, Date.now());
 
-    return savedModelsAsModels(credential.data);
+    return fallback;
   }
 
   try {
@@ -259,6 +282,7 @@ const loadCredentialModels = async (
 
 const loadAccountStatus = async (
   credential: CredentialRecord,
+  refresh = false,
 ): Promise<AccountStatusSnapshot> => {
   const errors: string[] = [];
   let creditsPayload: unknown;
@@ -297,7 +321,7 @@ const loadAccountStatus = async (
     );
   }
   try {
-    models = await loadCredentialModels(credential);
+    models = await loadCredentialModels(credential, refresh);
   } catch (error) {
     models = savedModelsAsModels(credential.data);
 
@@ -381,12 +405,17 @@ const loadAccountStatus = async (
 
 export const getAccountStatus = async (
   filenames?: string[],
+  { refresh = false }: { refresh?: boolean } = {},
 ): Promise<AccountStatusSnapshot[]> => {
   const credentials = await listEligibleCredentialRecords(filenames);
   const results: AccountStatusSnapshot[] = [];
   for (let index = 0; index < credentials.length; index += 4) {
     const chunk = credentials.slice(index, index + 4);
-    results.push(...(await Promise.all(chunk.map(loadAccountStatus))));
+    results.push(
+      ...(await Promise.all(
+        chunk.map((credential) => loadAccountStatus(credential, refresh)),
+      )),
+    );
   }
   return results;
 };

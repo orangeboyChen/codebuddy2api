@@ -248,6 +248,136 @@ describe('account status model catalog caching', () => {
     ).toBeUndefined();
   });
 
+  it('reads the cache again on refresh instead of going back upstream', async () => {
+    const filename = await addAccount({}, 'cached-twice');
+
+    await getAccountStatus([filename]);
+    const [second] = await getAccountStatus([filename]);
+
+    expect(second?.models).toEqual([
+      { displayName: 'Upstream One', id: 'upstream-1' },
+    ]);
+    expect(getModelsForCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it('goes back upstream on refresh and replaces the cached catalog', async () => {
+    const filename = await addAccount({}, 'refreshing');
+
+    await getAccountStatus([filename]);
+
+    vi.mocked(getModelsForCredential).mockResolvedValue([
+      { displayName: 'Upstream Two', id: 'upstream-2', vendor: 'e' },
+    ]);
+
+    const [refreshed] = await getAccountStatus([filename], { refresh: true });
+
+    expect(getModelsForCredential).toHaveBeenCalledTimes(2);
+    expect(refreshed?.models).toEqual([
+      { displayName: 'Upstream Two', id: 'upstream-2', vendor: 'e' },
+    ]);
+
+    const stored = await findCredentialRecordByFilename(filename);
+
+    // Replaced, not merged: a model upstream dropped is gone from the card.
+    expect(getCredentialSupportedModelDetails(stored?.data)).toMatchObject([
+      { id: 'upstream-2' },
+    ]);
+  });
+
+  it('keeps the cached catalog when a refresh comes back empty', async () => {
+    const filename = await addAccount({}, 'empty-refresh');
+
+    await getAccountStatus([filename]);
+
+    vi.mocked(getModelsForCredential).mockResolvedValue([]);
+
+    const [refreshed] = await getAccountStatus([filename], { refresh: true });
+
+    // The point of a refresh is to update the cache, not to empty it.
+    expect(refreshed?.models).toEqual([
+      { displayName: 'Upstream One', id: 'upstream-1' },
+    ]);
+  });
+
+  it('keeps the cached catalog when a refresh fails', async () => {
+    const filename = await addAccount({}, 'failing-refresh');
+
+    await getAccountStatus([filename]);
+
+    vi.mocked(getModelsForCredential).mockRejectedValue(
+      new Error('upstream unreachable'),
+    );
+
+    const [refreshed] = await getAccountStatus([filename], { refresh: true });
+
+    expect(refreshed?.models).toEqual([
+      { displayName: 'Upstream One', id: 'upstream-1' },
+    ]);
+    expect(refreshed?.error).toBeNull();
+  });
+
+  it('lets a refresh retry a discovery that is still cooling down', async () => {
+    const filename = await addAccount({}, 'cooldown-refresh');
+
+    vi.mocked(getModelsForCredential).mockRejectedValueOnce(
+      new Error('upstream unreachable'),
+    );
+
+    await getAccountStatus([filename]);
+
+    // A page view would hold off for the rest of the cooldown; the operator
+    // pressing Refresh is asking for the call anyway.
+    vi.mocked(getModelsForCredential).mockResolvedValue([
+      { displayName: 'Recovered', id: 'recovered' },
+    ]);
+
+    const [refreshed] = await getAccountStatus([filename], { refresh: true });
+
+    expect(refreshed?.models).toEqual([
+      { displayName: 'Recovered', id: 'recovered' },
+    ]);
+  });
+
+  it('keeps the cached catalog when a refresh has no token to send', async () => {
+    const filename = await addAccount({}, 'blank-refresh');
+
+    await getAccountStatus([filename]);
+
+    // The token is gone but the catalog is not: a refresh must not drop the
+    // metadata a page load would still show.
+    await addCredential(
+      { bearer_token: '   ', user_id: 'blank@example.com' },
+      filename,
+    );
+
+    const stored = await findCredentialRecordByFilename(filename);
+
+    expect(String(stored?.data?.bearer_token ?? '').trim()).toBe('');
+
+    const [refreshed] = await getAccountStatus([filename], { refresh: true });
+
+    expect(getModelsForCredential).toHaveBeenCalledTimes(1);
+    expect(refreshed?.models).toEqual([
+      { displayName: 'Upstream One', id: 'upstream-1' },
+    ]);
+  });
+
+  it('leaves the routing whitelist alone on refresh', async () => {
+    const filename = await addAccount(
+      { supported_models: 'curated-a,curated-b' },
+      'curated-refresh',
+    );
+
+    await getAccountStatus([filename], { refresh: true });
+
+    const stored = await findCredentialRecordByFilename(filename);
+
+    expect(getCredentialSupportedModels(stored?.data)).toEqual([
+      'curated-a',
+      'curated-b',
+    ]);
+  });
+
   it('withholds a cached campaign until its window opens', async () => {
     const filename = await addAccount(
       {

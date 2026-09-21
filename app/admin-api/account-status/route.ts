@@ -69,7 +69,13 @@ export const POST = async (request: Request): Promise<Response> => {
     }
     return Response.json({ statuses: await checkinAccounts() });
   }
+  // Refresh is the only action that asks for the catalog again; every other
+  // one reads what is cached, because a page view is not a request to upstream.
+  const refresh = body.action === 'refresh';
+
   return Response.json({
-    statuses: await getAccountStatus(filename ? [filename] : undefined),
+    statuses: await getAccountStatus(filename ? [filename] : undefined, {
+      refresh,
+    }),
   });
 };

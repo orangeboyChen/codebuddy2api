@@ -149,7 +149,9 @@ describe('account status admin route', () => {
 
   it('supports refresh and single or batch check-in actions', async () => {
     await POST(request({ action: 'refresh', filename: ' one.json ' }));
-    expect(getAccountStatus).toHaveBeenCalledWith(['one.json']);
+    expect(getAccountStatus).toHaveBeenCalledWith(['one.json'], {
+      refresh: true,
+    });
 
     await POST(request({ action: 'checkin', filename: 'one.json' }));
     expect(checkinAccount).toHaveBeenCalledWith('one.json');
@@ -158,6 +160,8 @@ describe('account status admin route', () => {
     expect(checkinAccounts).toHaveBeenCalledWith();
 
     await POST(request({ action: 'unknown', filename: 42 }));
-    expect(getAccountStatus).toHaveBeenCalledWith(undefined);
+    expect(getAccountStatus).toHaveBeenCalledWith(undefined, {
+      refresh: false,
+    });
   });
 });
