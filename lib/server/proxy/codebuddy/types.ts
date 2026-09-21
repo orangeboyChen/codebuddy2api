@@ -117,6 +117,40 @@ export interface ProxyContext {
 }
 
 /**
+ * A promotion upstream attaches to a model — a discount window, a badge such
+ * as `限时免费`, or both.
+ *
+ * Upstream ships these server-side and only alongside the catalogs that carry
+ * them, so every field is optional and an account without a running promotion
+ * simply has none. Billing stays with upstream: the console reports what it
+ * was told, and never recomputes a price.
+ */
+export interface DiscoveredModelPromotion {
+  /** The multiplier charged while the promotion runs, for example `"x0.00"`. */
+  discountedCredits?: string;
+  /** ISO timestamp after which upstream stops applying the promotion. */
+  endsAt?: string;
+  /** The badge label upstream shows next to the model, localised by upstream. */
+  label?: string;
+  /** ISO timestamp the promotion starts applying. */
+  startsAt?: string;
+  /** Operator copy upstream shows with the badge, in Chinese and English. */
+  textEn?: string;
+  textZh?: string;
+}
+
+/**
+ * The account tier upstream requires before it serves a model, for example
+ * `advanced`. Models below the account's tier are quoted with an upgrade hint.
+ */
+export interface DiscoveredModelTier {
+  /** The badge label upstream shows, for example `高级版`. */
+  label?: string;
+  /** The tier level: `trial`, `standard`, `advanced` or `flagship`. */
+  level?: string;
+}
+
+/**
  * A model the upstream config offers to a credential.
  *
  * Only `id` and `displayName` are guaranteed. The remaining fields come from
@@ -125,15 +159,35 @@ export interface ProxyContext {
  */
 export interface DiscoveredModel {
   /**
+   * Capability tags upstream declares on the model — `craft`, `text-to-image`
+   * and friends — with the `badge:` tags read as badges stripped out.
+   */
+  capabilityTags?: string[];
+  /**
    * Credit multiplier upstream bills for this model, for example `"x3.33"`.
    * Absent for models whose cost upstream does not advertise.
    */
   credits?: string;
   contextWindow?: number;
+  /**
+   * The context lengths upstream lets a caller choose between, for example
+   * `[200000, 1000000]`. Empty when only the default window is offered.
+   */
+  contextLengths?: number[];
+  /**
+   * The thinking effort upstream applies when a caller names none, for example
+   * `high`.
+   */
+  defaultEffort?: string;
   descriptionEn?: string;
   descriptionZh?: string;
   displayName: string;
   id: string;
+  /**
+   * Whether upstream marks the model as the account's default, which is the
+   * model a request gets when the caller names none.
+   */
+  isDefault?: boolean;
   /**
    * Whether upstream tags the model with the enterprise badge; such models are
    * only served to accounts that belong to an enterprise.
@@ -141,10 +195,31 @@ export interface DiscoveredModel {
   isEnterprise?: boolean;
   isFree?: boolean;
   isInternal?: boolean;
+  /**
+   * The largest request upstream accepts, which can sit below the context
+   * window: the window is what the model understands, this is what one call
+   * may carry.
+   */
+  maxAllowedSize?: number;
   maxInputTokens?: number;
   maxOutputTokens?: number;
+  /**
+   * Whether upstream serves the model in thinking mode only — a caller cannot
+   * turn thinking off, so a client that tries gets an error back.
+   */
+  onlyReasoning?: boolean;
+  promotion?: DiscoveredModelPromotion;
+  /**
+   * The ids behind this model's variants, keyed by variant — `lite`,
+   * `reasoning`, `vision`, `longContext`, `subagent` — as upstream declares
+   * them.
+   */
+  relatedModels?: Record<string, string>;
+  /** The thinking efforts upstream lets a caller pick from. */
+  supportedEfforts?: string[];
   supportsImages?: boolean;
   supportsReasoning?: boolean;
   supportsToolCall?: boolean;
+  tier?: DiscoveredModelTier;
   vendor?: string;
 }

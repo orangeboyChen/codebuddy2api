@@ -731,24 +731,71 @@ export const updateCredentialByIndex = async (
  */
 const MAX_MODEL_DETAIL_BYTES = 256 * 1024;
 
+// Dropping a field means writing it as `undefined`: JSON omits the key, and
+// the catalog is re-normalized on every read, so a trimmed cache is read back
+// as a model that simply has no value for it.
+const withoutDescriptions = (models: DiscoveredModel[]): DiscoveredModel[] =>
+  models.map((model) => ({
+    ...model,
+    descriptionEn: undefined,
+    descriptionZh: undefined,
+  }));
+
+const withoutExtras = (models: DiscoveredModel[]): DiscoveredModel[] =>
+  models.map((model) => ({
+    ...model,
+    capabilityTags: undefined,
+    contextLengths: undefined,
+    relatedModels: undefined,
+    supportedEfforts: undefined,
+    tier: undefined,
+    ...(model.promotion
+      ? {
+          promotion: {
+            ...model.promotion,
+            textEn: undefined,
+            textZh: undefined,
+          },
+        }
+      : {}),
+  }));
+
+/**
+ * Serializes a catalog that is small enough to cache.
+ *
+ * The steps shed the least useful bytes first — descriptions, then the per-model
+ * extras — and only then the tail of the catalog, because a list missing its
+ * last models still routes and still renders, while an unbounded one turns a
+ * few-hundred-byte credential document into a few-hundred-kilobyte one that is
+ * encrypted whole on every write.
+ */
 const serializeCredentialModelDetails = (
   models: DiscoveredModel[],
 ): string | undefined => {
   if (!models.length) return undefined;
 
-  const serialized = JSON.stringify(models);
+  const full = JSON.stringify(models);
 
-  if (serialized.length <= MAX_MODEL_DETAIL_BYTES) return serialized;
+  if (full.length <= MAX_MODEL_DETAIL_BYTES) return full;
 
-  // Descriptions go first; the ids that routing and the card both need always
-  // stay.
-  return JSON.stringify(
-    models.map((model) => ({
-      ...model,
-      descriptionEn: undefined,
-      descriptionZh: undefined,
-    })),
-  );
+  const lean = withoutExtras(withoutDescriptions(models));
+  const leanSerialized = JSON.stringify(lean);
+
+  if (leanSerialized.length <= MAX_MODEL_DETAIL_BYTES) return leanSerialized;
+
+  let kept = lean;
+
+  while (kept.length > 1) {
+    const serialized = JSON.stringify(kept);
+
+    if (serialized.length <= MAX_MODEL_DETAIL_BYTES) return serialized;
+
+    kept = kept.slice(0, Math.ceil(kept.length / 2));
+  }
+
+  const last = JSON.stringify(kept);
+
+  return last.length <= MAX_MODEL_DETAIL_BYTES ? last : undefined;
 };
 
 const writeCredentialModels = async (

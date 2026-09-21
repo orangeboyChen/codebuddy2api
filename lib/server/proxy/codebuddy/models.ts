@@ -23,14 +23,40 @@ interface UpstreamModelEntry {
   descriptionZh?: unknown;
   disabled?: unknown;
   id?: unknown;
+  isDefault?: unknown;
+  maxAllowedSize?: unknown;
   maxInputTokens?: unknown;
   maxOutputTokens?: unknown;
   name?: unknown;
+  onlyReasoning?: unknown;
+  reasoning?: {
+    effort?: unknown;
+    supportedEfforts?: unknown;
+  };
+  relatedModels?: unknown;
   supportsImages?: unknown;
   supportsReasoning?: unknown;
   supportsToolCall?: unknown;
   tags?: unknown;
   vendor?: unknown;
+}
+
+/**
+ * Promotions and tiers upstream ships beside the catalog.
+ *
+ * They arrive as catalog-wide lists naming the models they apply to, not as
+ * fields on the models themselves, so a model only gets one when a list entry
+ * names it.
+ */
+interface UpstreamCampaignEntry {
+  badge?: { label?: unknown };
+  discount?: { discountedCredits?: unknown };
+  enabled?: unknown;
+  hover?: { textEn?: unknown; textZh?: unknown };
+  modelIds?: unknown;
+  priority?: unknown;
+  schedule?: { validFrom?: unknown; validUntil?: unknown };
+  tier?: unknown;
 }
 
 /**
@@ -49,11 +75,22 @@ const BADGE_LABELS: Record<
 
 const readBadges = (tags: unknown) => {
   const entries: unknown[] = Array.isArray(tags) ? tags : [];
-  const labels = entries.flatMap((tag) => {
-    if (typeof tag !== 'string') return [];
+  const labels: string[] = [];
+  // Everything a tag says that is not a badge is a capability: `craft`,
+  // `text-to-image`, `lite`. They are printed as they arrive, so the card can
+  // show what upstream claims without the console inventing a vocabulary.
+  const capabilityTags: string[] = [];
+  entries.forEach((tag) => {
+    if (typeof tag !== 'string') return;
     const [prefix, ...rest] = tag.split(':');
 
-    if (prefix.trim().toLowerCase() !== 'badge') return [];
+    if (prefix.trim().toLowerCase() !== 'badge') {
+      const capability = tag.trim();
+
+      if (capability) capabilityTags.push(capability);
+
+      return;
+    }
 
     // The colour is the trailing segment, so a label may itself contain the
     // separator; a tag carrying no colour at all is nothing but a label.
@@ -62,12 +99,13 @@ const readBadges = (tags: unknown) => {
       .trim()
       .toLowerCase();
 
-    return label ? [label] : [];
+    if (label) labels.push(label);
   });
   const has = (candidates: readonly string[]) =>
     labels.some((label) => candidates.includes(label)) || undefined;
 
   return {
+    capabilityTags: capabilityTags.length ? capabilityTags : undefined,
     isEnterprise: has(BADGE_LABELS.enterprise),
     isFree: has(BADGE_LABELS.free),
     isInternal: has(BADGE_LABELS.internal),
@@ -81,11 +119,99 @@ const toDiscoveredModel = (
 
   return normalizeModelFields({
     ...entry,
+    contextLengths: entry.contextWindow?.supportedLengths,
     contextWindow: entry.contextWindow?.defaultLength,
+    defaultEffort: entry.reasoning?.effort,
     displayName: entry.name,
+    supportedEfforts: entry.reasoning?.supportedEfforts,
     ...readBadges(entry.tags),
   });
 };
+
+const asCampaignModelIds = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.flatMap((item) =>
+        typeof item === 'string' && item.trim() ? [item.trim()] : [],
+      )
+    : [];
+
+const asCampaignPriority = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+/**
+ * Resolves the catalog-wide promotion and tier lists down to one entry per
+ * model.
+ *
+ * Upstream ships no documented order between two campaigns naming the same
+ * model, so the console picks one itself: the highest `priority` wins, and the
+ * first entry wins a tie. Whichever is chosen, the card quotes one campaign
+ * rather than whichever happened to come last.
+ */
+const resolveCampaignsByModel = (
+  entries: unknown,
+  build: (entry: UpstreamCampaignEntry) => Record<string, unknown> | undefined,
+): Map<string, Record<string, unknown>> => {
+  const byModel = new Map<string, Record<string, unknown>>();
+  const priorities = new Map<string, number>();
+
+  if (!Array.isArray(entries)) return byModel;
+
+  for (const raw of entries) {
+    if (!raw || typeof raw !== 'object') continue;
+
+    const entry = raw as UpstreamCampaignEntry;
+    // Anything upstream marks off — boolean or not — is withdrawn.
+    const withdrawn =
+      entry.enabled === false ||
+      entry.enabled === 0 ||
+      entry.enabled === 'false';
+    const built = withdrawn ? undefined : build(entry);
+
+    // An entry that says nothing — an empty badge, a schedule without a date —
+    // must not claim the model: it would otherwise win on priority and hide a
+    // campaign below it that does have something to show.
+    if (!built || !Object.values(built).some((value) => value !== undefined)) {
+      continue;
+    }
+
+    const priority = asCampaignPriority(entry.priority);
+
+    for (const modelId of asCampaignModelIds(entry.modelIds)) {
+      const current = priorities.get(modelId);
+
+      if (current !== undefined && current >= priority) continue;
+
+      priorities.set(modelId, priority);
+      byModel.set(modelId, built);
+    }
+  }
+
+  return byModel;
+};
+
+/**
+ * Reads a promotion, keeping what the console can print.
+ *
+ * Only the outer validity window is kept: a promotion may also be scoped to a
+ * daily window, which the client upstream of this one re-evaluates against the
+ * clock. This console reports the offer as upstream advertises it and settles
+ * nothing, so a daily window is out of scope rather than evaluated wrongly.
+ */
+const readPromotions = (entries: unknown) =>
+  resolveCampaignsByModel(entries, (entry) => ({
+    discountedCredits: entry.discount?.discountedCredits,
+    endsAt: entry.schedule?.validUntil,
+    label: entry.badge?.label,
+    startsAt: entry.schedule?.validFrom,
+    textEn: entry.hover?.textEn,
+    textZh: entry.hover?.textZh,
+  }));
+
+const readTiers = (entries: unknown) =>
+  resolveCampaignsByModel(entries, (entry) => ({
+    label: entry.badge?.label,
+    level: entry.tier,
+  }));
 
 export const getModelsForCredential = async ({
   bearerToken,
@@ -155,6 +281,8 @@ export const getModelsForCredential = async ({
     data?: {
       agents?: Array<{ models?: unknown; name?: unknown }>;
       models?: UpstreamModelEntry[];
+      modelPromotions?: unknown;
+      modelTiers?: unknown;
     };
   };
 
@@ -177,6 +305,25 @@ export const getModelsForCredential = async ({
       .map((model) => (typeof model.id === 'string' ? model.id.trim() : ''))
       .filter(Boolean),
   );
+  const promotionsByModel = readPromotions(payload.data?.modelPromotions);
+  const tiersByModel = readTiers(payload.data?.modelTiers);
+  // The campaign lists are upstream data too, so they are merged into the
+  // model and read back through the same normalizer that vets everything else
+  // on it — a cap or a type the console rejects applies to them as well.
+  const withCampaigns = (model: DiscoveredModel): DiscoveredModel => {
+    const promotion = promotionsByModel.get(model.id);
+    const tier = tiersByModel.get(model.id);
+
+    if (!promotion && !tier) return model;
+
+    return (
+      normalizeModelFields({
+        ...model,
+        ...(promotion ? { promotion } : {}),
+        ...(tier ? { tier } : {}),
+      }) ?? model
+    );
+  };
 
   if (!Array.isArray(cliModels)) {
     return [];
@@ -196,10 +343,7 @@ export const getModelsForCredential = async ({
       return [];
     }
     return [
-      model ?? {
-        displayName: modelId,
-        id: modelId,
-      },
+      model ? withCampaigns(model) : { displayName: modelId, id: modelId },
     ];
   });
 };

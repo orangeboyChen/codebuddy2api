@@ -18,6 +18,7 @@ const {
   getCredentialSupportedModelDetails,
   getCredentialSupportedModels,
   resetCredentialRuntimeState,
+  updateCredentialSupportedModelDetail,
 } = await import('@/lib/server/domain/credentials');
 const {
   getAccountStatus,
@@ -170,6 +171,40 @@ describe('account status model catalog caching', () => {
       { displayName: 'saved-a', id: 'saved-a' },
     ]);
     expect(getModelsForCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it('trims a catalog too large to cache instead of writing it whole', async () => {
+    const filename = await addAccount({}, 'huge');
+
+    await updateCredentialSupportedModelDetail(
+      filename,
+      Array.from({ length: 1500 }, (_, index) => ({
+        credits: 'x3.33',
+        descriptionZh: '描述'.repeat(80),
+        displayName: `Model ${index}`,
+        id: `model-${index}`,
+        relatedModels: { lite: `model-${index}-lite` },
+        vendor: 'e',
+      })),
+    );
+
+    const stored = await findCredentialRecordByFilename(filename);
+    const raw = stored?.data?.supported_models_detail;
+
+    // The credential namespace is encrypted whole on every write, so a catalog
+    // is trimmed rather than cached unbounded.
+    expect(typeof raw).toBe('string');
+    expect((raw ?? '').length).toBeLessThanOrEqual(256 * 1024);
+
+    const details = getCredentialSupportedModelDetails(stored?.data);
+
+    expect(details.length).toBeGreaterThan(0);
+    // What survives still routes and still renders; the bulk that went is the
+    // descriptions and the per-model extras.
+    expect(details[0]?.id).toBe('model-0');
+    expect(details[0]?.vendor).toBe('e');
+    expect(details[0]?.descriptionZh).toBeUndefined();
+    expect(details[0]?.relatedModels).toBeUndefined();
   });
 
   it('never asks upstream for a credential holding a blank token', async () => {

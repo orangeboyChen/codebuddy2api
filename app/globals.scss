@@ -410,6 +410,29 @@ textarea {
   font-size: 12px;
 }
 
+// A capability tag is one unbroken word too (`text-to-image`), and a variant
+// list is several model ids in a row: both sit in nowrap tags or long lines
+// unless they are told to break, which is what keeps the row inside a 360px
+// viewport. The compound selector carries the extra specificity antd's own
+// `white-space: nowrap` on `.ant-tag` brings.
+.account-status-model-capability,
+.account-status-model-capability.ant-tag {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.account-status-model-detail,
+.account-status-model-promotion-text {
+  font-size: 12px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 @media (max-width: 767px) {
   .console-main {
     padding-inline: 16px;
