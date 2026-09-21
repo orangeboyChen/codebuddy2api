@@ -392,6 +392,27 @@ describe('pruneInactivePromotions', () => {
     );
   });
 
+  it('stops showing a campaign whose window closed while cached', () => {
+    // The normalizer drops an ended campaign on the way in, but a catalog can
+    // also be handed over already holding one — by a clock that moved, or by a
+    // hand-edited cache — so the pruner checks the window for itself.
+    const [model] = pruneInactivePromotions(
+      [
+        {
+          displayName: 'Over',
+          id: 'over',
+          promotion: {
+            endsAt: '2026-09-20T00:00:00.000Z',
+            label: '已结束',
+          },
+        },
+      ],
+      now,
+    );
+
+    expect(model?.promotion).toBeUndefined();
+  });
+
   it('leaves a model without a promotion alone', () => {
     const models = [normalizeModelFields({ id: 'plain' })!];
 

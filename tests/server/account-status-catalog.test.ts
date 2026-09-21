@@ -378,6 +378,35 @@ describe('account status model catalog caching', () => {
     ]);
   });
 
+  it('halves a catalog whose lean form is still too large', async () => {
+    const filename = await addAccount({}, 'unboundedly-huge');
+
+    // Descriptions and extras are not what makes this one oversized: even
+    // stripped down it does not fit, so the guard has to drop models.
+    await updateCredentialSupportedModelDetail(
+      filename,
+      Array.from({ length: 6000 }, (_, index) => ({
+        descriptionZh: '描述'.repeat(40),
+        displayName: `Model ${index}`,
+        id: `model-${index}`.padEnd(60, '0'),
+      })),
+    );
+
+    const stored = await findCredentialRecordByFilename(filename);
+    const raw = stored?.data?.supported_models_detail;
+
+    expect(typeof raw).toBe('string');
+    expect((raw ?? '').length).toBeLessThanOrEqual(256 * 1024);
+
+    const details = getCredentialSupportedModelDetails(stored?.data);
+
+    expect(details.length).toBeGreaterThan(0);
+    expect(details.length).toBeLessThan(6000);
+    // The head of the catalog is what the card renders first, so it is what
+    // survives the cut.
+    expect(details[0]?.id.startsWith('model-0')).toBe(true);
+  });
+
   it('withholds a cached campaign until its window opens', async () => {
     const filename = await addAccount(
       {
