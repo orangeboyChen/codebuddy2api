@@ -26,9 +26,13 @@ The description is the one matching the console locale: upstream ships Chinese
 and English, so the Japanese console falls back to the English text.
 
 The catalog comes from upstream `/v3/config` and is cached with the credential
-after the first query, so later page loads do not call upstream again. Editing
-the model list by hand in **Credentials** also drops the metadata of models
-that edit removes.
+after the first query, so later page loads do not call upstream again.
+**Refresh** on a card, or **Refresh all**, does call upstream again and
+replaces the cached catalog with what it answers; a refresh that fails or comes
+back empty keeps the cache. Editing the model list by hand in **Credentials**
+also drops the metadata of models that edit removes. A refresh updates the
+catalog only — never the model allowlist **Credentials** curates, which is what
+the gateway routes by.
 
 ## Automatic check-in
 

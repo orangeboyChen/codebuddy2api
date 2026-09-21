@@ -206,18 +206,29 @@ const isDiscoveryCoolingDown = (filename: string): boolean => {
  * kilobytes per account, and account status is rendered for every credential
  * on every page load. A credential whose catalog has never been fetched pays
  * for one upstream call and then caches the answer.
+ *
+ * `refresh` is the operator asking for the answer again — the Refresh button
+ * on a card, or Refresh all. It goes back upstream even though a catalog is
+ * cached, and replaces that catalog with whatever upstream answers; a refresh
+ * that comes back empty or fails keeps the cache, because the point was to
+ * update it, not to throw it away.
  */
 const loadCredentialModels = async (
   credential: CredentialRecord,
+  refresh = false,
 ): Promise<DiscoveredModel[]> => {
   const cached = getCredentialSupportedModelDetails(credential.data);
 
   // The window is read where the catalog is read, not where it is written: a
   // campaign scheduled to open later is still in the cache, and an offer whose
   // window has closed is not quoted however long the cache lives.
-  if (cached.length) return pruneInactivePromotions(cached);
+  if (!refresh && cached.length) return pruneInactivePromotions(cached);
 
-  if (isDiscoveryCoolingDown(credential.filename)) {
+  // A refresh is also a way out of a cooldown: the operator is asking for the
+  // call the cooldown is holding back.
+  if (refresh) credentialModelDiscoveryFailures.delete(credential.filename);
+
+  if (!refresh && isDiscoveryCoolingDown(credential.filename)) {
     return savedModelsAsModels(credential.data);
   }
 
@@ -236,13 +247,18 @@ const loadCredentialModels = async (
     });
   } catch (error) {
     credentialModelDiscoveryFailures.set(credential.filename, Date.now());
+
+    if (cached.length) return pruneInactivePromotions(cached);
+
     throw error;
   }
 
   if (!discovered.length) {
     credentialModelDiscoveryFailures.set(credential.filename, Date.now());
 
-    return savedModelsAsModels(credential.data);
+    return cached.length
+      ? pruneInactivePromotions(cached)
+      : savedModelsAsModels(credential.data);
   }
 
   try {
@@ -259,6 +275,7 @@ const loadCredentialModels = async (
 
 const loadAccountStatus = async (
   credential: CredentialRecord,
+  refresh = false,
 ): Promise<AccountStatusSnapshot> => {
   const errors: string[] = [];
   let creditsPayload: unknown;
@@ -297,7 +314,7 @@ const loadAccountStatus = async (
     );
   }
   try {
-    models = await loadCredentialModels(credential);
+    models = await loadCredentialModels(credential, refresh);
   } catch (error) {
     models = savedModelsAsModels(credential.data);
 
@@ -381,12 +398,17 @@ const loadAccountStatus = async (
 
 export const getAccountStatus = async (
   filenames?: string[],
+  { refresh = false }: { refresh?: boolean } = {},
 ): Promise<AccountStatusSnapshot[]> => {
   const credentials = await listEligibleCredentialRecords(filenames);
   const results: AccountStatusSnapshot[] = [];
   for (let index = 0; index < credentials.length; index += 4) {
     const chunk = credentials.slice(index, index + 4);
-    results.push(...(await Promise.all(chunk.map(loadAccountStatus))));
+    results.push(
+      ...(await Promise.all(
+        chunk.map((credential) => loadAccountStatus(credential, refresh)),
+      )),
+    );
   }
   return results;
 };
