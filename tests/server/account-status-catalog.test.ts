@@ -207,6 +207,51 @@ describe('account status model catalog caching', () => {
     expect(details[0]?.relatedModels).toBeUndefined();
   });
 
+  it('withholds a cached campaign until its window opens', async () => {
+    const filename = await addAccount(
+      {
+        supported_models: 'scheduled',
+        supported_models_detail: JSON.stringify([
+          {
+            displayName: 'Scheduled',
+            id: 'scheduled',
+            promotion: {
+              endsAt: '2099-02-01T00:00:00.000Z',
+              label: '限时免费',
+              startsAt: '2099-01-01T00:00:00.000Z',
+            },
+          },
+        ]),
+      },
+      'scheduled',
+    );
+
+    vi.useFakeTimers();
+
+    try {
+      vi.setSystemTime(new Date('2026-09-21T00:00:00.000Z'));
+
+      const [before] = await getAccountStatus([filename]);
+
+      // Still in the cache — just not running yet.
+      expect(before?.models[0]?.promotion).toBeUndefined();
+
+      vi.setSystemTime(new Date('2099-01-02T00:00:00.000Z'));
+
+      const [during] = await getAccountStatus([filename]);
+
+      expect(during?.models[0]?.promotion?.label).toBe('限时免费');
+
+      vi.setSystemTime(new Date('2099-02-02T00:00:00.000Z'));
+
+      const [after] = await getAccountStatus([filename]);
+
+      expect(after?.models[0]?.promotion).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('never asks upstream for a credential holding a blank token', async () => {
     const filename = await addAccount({ bearer_token: '   ' }, 'blank');
 

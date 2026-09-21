@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   MODEL_DESCRIPTION_MAX_LENGTH,
   normalizeModelFields,
+  pruneInactivePromotions,
 } from '@/lib/server/proxy/codebuddy/model-fields';
 
 const normalize = (entry: Record<string, unknown>) =>
@@ -177,7 +178,7 @@ describe('normalizeModelFields', () => {
     ).toBe('2099-10-01T00:00:00.000Z');
   });
 
-  it('drops a promotion that has ended or has not begun', () => {
+  it('drops a promotion whose window has closed', () => {
     vi.useFakeTimers();
 
     try {
@@ -187,12 +188,6 @@ describe('normalizeModelFields', () => {
         normalize({
           id: 'over',
           promotion: { endsAt: '2026-09-20T00:00:00.000Z', label: '已结束' },
-        })?.promotion,
-      ).toBeUndefined();
-      expect(
-        normalize({
-          id: 'pending',
-          promotion: { label: '未开始', startsAt: '2026-09-22T00:00:00.000Z' },
         })?.promotion,
       ).toBeUndefined();
       expect(
@@ -212,6 +207,14 @@ describe('normalizeModelFields', () => {
         textEn: undefined,
         textZh: undefined,
       });
+      // Not yet open, but kept: the catalog outlives the moment it was
+      // fetched, so a campaign scheduled to open later has to reach the cache.
+      expect(
+        normalize({
+          id: 'pending',
+          promotion: { label: '未开始', startsAt: '2026-09-22T00:00:00.000Z' },
+        })?.promotion?.startsAt,
+      ).toBe('2026-09-22T00:00:00.000Z');
     } finally {
       vi.useRealTimers();
     }
@@ -295,5 +298,63 @@ describe('normalizeModelFields', () => {
     expect(normalize(once as unknown as Record<string, unknown>)).toStrictEqual(
       once,
     );
+  });
+});
+
+describe('pruneInactivePromotions', () => {
+  const at = '2026-09-21T00:00:00.000Z';
+  const now = Date.parse(at);
+
+  it('hides a campaign that has not opened yet', () => {
+    const [model] = pruneInactivePromotions(
+      [
+        normalizeModelFields({
+          id: 'pending',
+          promotion: { label: '未开始', startsAt: '2026-09-22T00:00:00.000Z' },
+        })!,
+      ],
+      now,
+    );
+
+    expect(model?.promotion).toBeUndefined();
+    // The model itself is untouched: only the offer is withheld.
+    expect(model?.id).toBe('pending');
+  });
+
+  it('shows the same campaign once its window opens', () => {
+    const model = normalizeModelFields({
+      id: 'pending',
+      promotion: { label: '未开始', startsAt: '2026-09-22T00:00:00.000Z' },
+    });
+
+    expect(
+      pruneInactivePromotions([model!], now)[0]?.promotion,
+    ).toBeUndefined();
+    expect(
+      pruneInactivePromotions(
+        [model!],
+        Date.parse('2026-09-22T00:00:00.000Z'),
+      )[0]?.promotion?.label,
+    ).toBe('未开始');
+  });
+
+  it('stops showing a campaign after its window closes', () => {
+    const [model] = pruneInactivePromotions(
+      [
+        normalizeModelFields({
+          id: 'over',
+          promotion: { endsAt: '2026-09-20T00:00:00.000Z', label: '已结束' },
+        })!,
+      ],
+      now,
+    );
+
+    expect(model?.promotion).toBeUndefined();
+  });
+
+  it('leaves a model without a promotion alone', () => {
+    const models = [normalizeModelFields({ id: 'plain' })!];
+
+    expect(pruneInactivePromotions(models, now)).toStrictEqual(models);
   });
 });

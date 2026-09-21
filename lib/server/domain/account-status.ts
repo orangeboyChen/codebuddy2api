@@ -9,6 +9,7 @@ import {
 } from './credentials';
 import { getModelsForCredential } from '../proxy/codebuddy';
 import type { DiscoveredModel } from '../proxy/codebuddy/types';
+import { pruneInactivePromotions } from '../proxy/codebuddy/model-fields';
 import { asRecord } from '../shared/content';
 
 export interface AccountStatusSnapshot {
@@ -211,7 +212,10 @@ const loadCredentialModels = async (
 ): Promise<DiscoveredModel[]> => {
   const cached = getCredentialSupportedModelDetails(credential.data);
 
-  if (cached.length) return cached;
+  // The window is read where the catalog is read, not where it is written: a
+  // campaign scheduled to open later is still in the cache, and an offer whose
+  // window has closed is not quoted however long the cache lives.
+  if (cached.length) return pruneInactivePromotions(cached);
 
   if (isDiscoveryCoolingDown(credential.filename)) {
     return savedModelsAsModels(credential.data);
@@ -250,7 +254,7 @@ const loadCredentialModels = async (
     console.warn('[CodeBuddy2API] Unable to cache credential models', error);
   }
 
-  return discovered;
+  return pruneInactivePromotions(discovered);
 };
 
 const loadAccountStatus = async (

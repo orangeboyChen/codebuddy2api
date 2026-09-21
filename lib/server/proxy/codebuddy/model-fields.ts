@@ -158,10 +158,11 @@ const asPromotion =
     const startsAt = asTimestamp(entry.startsAt);
 
     // A promotion is a window, and the catalog is cached — so the window is
-    // re-read every time the model is normalized: an offer that has ended, or
-    // has not begun, stops being quoted instead of being shown forever.
+    // re-read every time the model is normalized and an offer that has ended
+    // stops being quoted rather than being shown forever. One that has not
+    // begun is kept: the catalog outlives the moment it was fetched, and
+    // `pruneInactivePromotions` hides it until its window opens.
     if (endsAt !== undefined && Date.parse(endsAt) <= now) return undefined;
-    if (startsAt !== undefined && Date.parse(startsAt) > now) return undefined;
 
     const promotion = {
       discountedCredits: asShortString(entry.discountedCredits),
@@ -286,3 +287,49 @@ export const normalizeModelFields = (
     vendor: asShortString(entry.vendor),
   };
 };
+
+/**
+ * Whether a promotion is running at `now`.
+ *
+ * A campaign with no window is always running; one that has not opened yet is
+ * not, and neither is one whose window has closed.
+ */
+const isPromotionRunning = (
+  promotion: DiscoveredModelPromotion,
+  now: number,
+): boolean => {
+  const endsAt =
+    promotion.endsAt === undefined ? undefined : Date.parse(promotion.endsAt);
+  const startsAt =
+    promotion.startsAt === undefined
+      ? undefined
+      : Date.parse(promotion.startsAt);
+
+  if (startsAt !== undefined && Number.isFinite(startsAt) && startsAt > now) {
+    return false;
+  }
+
+  if (endsAt !== undefined && Number.isFinite(endsAt) && endsAt <= now) {
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Strips the promotions that are not running right now.
+ *
+ * The catalog is cached, so a campaign scheduled to open later has to survive
+ * being stored and only start being quoted once its window opens — which is
+ * what this is for, applied where the catalog is read rather than where it is
+ * written.
+ */
+export const pruneInactivePromotions = (
+  models: DiscoveredModel[],
+  now: number = Date.now(),
+): DiscoveredModel[] =>
+  models.map((model) =>
+    model.promotion && !isPromotionRunning(model.promotion, now)
+      ? { ...model, promotion: undefined }
+      : model,
+  );
