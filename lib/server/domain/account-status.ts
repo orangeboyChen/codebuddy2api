@@ -217,26 +217,35 @@ const loadCredentialModels = async (
   credential: CredentialRecord,
   refresh = false,
 ): Promise<DiscoveredModel[]> => {
-  const cached = getCredentialSupportedModelDetails(credential.data);
+  const cached = pruneInactivePromotions(
+    getCredentialSupportedModelDetails(credential.data),
+  );
+  // Whatever the card can still show when upstream cannot be asked: the cached
+  // catalog if there is one, and otherwise the saved ids, which still say what
+  // the account can call.
+  const fallback = cached.length
+    ? cached
+    : savedModelsAsModels(credential.data);
 
   // The window is read where the catalog is read, not where it is written: a
   // campaign scheduled to open later is still in the cache, and an offer whose
   // window has closed is not quoted however long the cache lives.
-  if (!refresh && cached.length) return pruneInactivePromotions(cached);
+  if (!refresh && cached.length) return cached;
 
   // A refresh is also a way out of a cooldown: the operator is asking for the
   // call the cooldown is holding back.
   if (refresh) credentialModelDiscoveryFailures.delete(credential.filename);
 
   if (!refresh && isDiscoveryCoolingDown(credential.filename)) {
-    return savedModelsAsModels(credential.data);
+    return fallback;
   }
 
   const bearerToken = getBearerToken(credential);
 
-  // A blank token would send `Authorization: Bearer ` and always fail; the
-  // saved ids are the only answer this credential can offer.
-  if (!bearerToken) return savedModelsAsModels(credential.data);
+  // A blank token would send `Authorization: Bearer ` and always fail. The
+  // cache is still a better answer than the bare ids, so a refresh of a
+  // credential with no token keeps it rather than dropping the metadata.
+  if (!bearerToken) return fallback;
 
   let discovered: DiscoveredModel[];
 
@@ -248,7 +257,7 @@ const loadCredentialModels = async (
   } catch (error) {
     credentialModelDiscoveryFailures.set(credential.filename, Date.now());
 
-    if (cached.length) return pruneInactivePromotions(cached);
+    if (cached.length) return cached;
 
     throw error;
   }
@@ -256,9 +265,7 @@ const loadCredentialModels = async (
   if (!discovered.length) {
     credentialModelDiscoveryFailures.set(credential.filename, Date.now());
 
-    return cached.length
-      ? pruneInactivePromotions(cached)
-      : savedModelsAsModels(credential.data);
+    return fallback;
   }
 
   try {

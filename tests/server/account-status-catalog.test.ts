@@ -338,6 +338,30 @@ describe('account status model catalog caching', () => {
     ]);
   });
 
+  it('keeps the cached catalog when a refresh has no token to send', async () => {
+    const filename = await addAccount({}, 'blank-refresh');
+
+    await getAccountStatus([filename]);
+
+    // The token is gone but the catalog is not: a refresh must not drop the
+    // metadata a page load would still show.
+    await addCredential(
+      { bearer_token: '   ', user_id: 'blank@example.com' },
+      filename,
+    );
+
+    const stored = await findCredentialRecordByFilename(filename);
+
+    expect(String(stored?.data?.bearer_token ?? '').trim()).toBe('');
+
+    const [refreshed] = await getAccountStatus([filename], { refresh: true });
+
+    expect(getModelsForCredential).toHaveBeenCalledTimes(1);
+    expect(refreshed?.models).toEqual([
+      { displayName: 'Upstream One', id: 'upstream-1' },
+    ]);
+  });
+
   it('leaves the routing whitelist alone on refresh', async () => {
     const filename = await addAccount(
       { supported_models: 'curated-a,curated-b' },

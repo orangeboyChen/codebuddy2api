@@ -462,3 +462,73 @@ describe('account status model details', () => {
     expect(screen.getByText('暂无模型')).toBeTruthy();
   });
 });
+
+describe('account status refresh', () => {
+  const accounts = (): CredentialSummary[] => [
+    credential(),
+    { ...credential(), filename: 'two.json', name: 'second' },
+  ];
+
+  const renderAccounts = () =>
+    render(
+      <ConfigProvider motion={motion}>
+        <NextIntlClientProvider locale="zh-CN" messages={getMessages('zh-CN')}>
+          <AccountStatus
+            credentials={accounts()}
+            initialStatuses={[
+              snapshot([], 'one.json'),
+              snapshot([], 'two.json'),
+            ]}
+          />
+        </NextIntlClientProvider>
+      </ConfigProvider>,
+    );
+
+  it('refreshes every account in a single batched request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        statuses: [snapshot([], 'one.json'), snapshot([], 'two.json')],
+      }),
+      ok: true,
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      renderAccounts();
+
+      fireEvent.click(screen.getByText('刷新全部'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      // One request with no filename: the server walks every account four at a
+      // time. One request per account would start them all at once instead.
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+
+      expect(url).toBe('/admin-api/account-status');
+      expect(JSON.parse(String(init.body))).toEqual({ action: 'refresh' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports a failed batch refresh on every card', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ json: async () => ({}), ok: false, status: 500 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      renderAccounts();
+
+      fireEvent.click(screen.getByText('刷新全部'));
+
+      await waitFor(() =>
+        expect(
+          screen.getAllByText('Account status request failed (500)').length,
+        ).toBe(2),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

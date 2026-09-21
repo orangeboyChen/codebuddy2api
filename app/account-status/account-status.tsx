@@ -753,10 +753,47 @@ const AccountStatus = ({
     },
     [],
   );
+  /**
+   * Refreshes every account in one request.
+   *
+   * A refresh asks upstream for a catalog of hundreds of kilobytes per account,
+   * and the server walks the accounts four at a time. One request per account
+   * from here would put that batching out of reach: fifty accounts would mean
+   * fifty simultaneous downloads, which upstream answers by throttling — and a
+   * throttled refresh silently leaves the old catalog in place.
+   */
+  const loadAllRefresh = useCallback(async () => {
+    const response = await fetch('/admin-api/account-status', {
+      body: JSON.stringify({ action: 'refresh' }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+    });
+    if (!response.ok) {
+      throw new Error(`Account status request failed (${response.status})`);
+    }
+    const payload = (await response.json()) as {
+      statuses?: AccountStatusSnapshot[];
+    };
+
+    if (payload.statuses?.length) {
+      setSnapshots((current) => ({
+        ...current,
+        ...Object.fromEntries(
+          payload.statuses?.map((snapshot) => [snapshot.filename, snapshot]) ??
+            [],
+        ),
+      }));
+    }
+  }, []);
   const loadAll = useCallback(
     async (action: 'refresh' | 'checkin') => {
       setBatchBusy(action);
       try {
+        if (action === 'refresh') {
+          await loadAllRefresh();
+
+          return;
+        }
         await Promise.all(
           credentials
             .filter((credential) => {
@@ -766,11 +803,31 @@ const AccountStatus = ({
             })
             .map((credential) => loadOne(credential.filename, action)),
         );
+      } catch (error) {
+        // A batch has no single card to blame, so every card that was part of
+        // it carries the reason.
+        setSnapshots((current) => {
+          const next = { ...current };
+
+          for (const credential of credentials) {
+            if (credential.is_expired) continue;
+            next[credential.filename] = {
+              ...(next[credential.filename] ??
+                failedSnapshot(credential.filename, error)),
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Account status query failed',
+            };
+          }
+
+          return next;
+        });
       } finally {
         setBatchBusy(null);
       }
     },
-    [credentials, loadOne, snapshots],
+    [credentials, loadAllRefresh, loadOne, snapshots],
   );
   const saveAutoCheckin = useCallback(
     async (filename: string, next: { enabled?: boolean; time?: string }) => {
