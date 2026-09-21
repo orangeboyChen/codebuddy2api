@@ -2151,6 +2151,179 @@ describe('anthropic messages api', () => {
     ]);
   });
 
+  it('drops the trailing total tokens countdown message', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'ok' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                text: '<total_tokens>15000000 tokens left</total_tokens>',
+                type: 'text',
+                cache_control: { type: 'ephemeral' },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('total_tokens>');
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    expect(JSON.stringify(upstreamBody.messages.at(-1))).toContain('ok');
+  });
+
+  it('drops the total tokens countdown wrapped in a system reminder', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          {
+            role: 'user',
+            content:
+              '<system-reminder>\n<total_tokens>14999841 tokens left</total_tokens>\n</system-reminder>\n',
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('system-reminder');
+    expect(JSON.stringify(upstreamBody)).not.toContain('total_tokens>');
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual(['user']);
+    expect(upstreamBody.messages.at(-1)?.content).toBe('first');
+  });
+
+  it('keeps the text the total tokens countdown was delivered alongside', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '<total_tokens>15000000 tokens left</total_tokens>\nfix the failing test in lib/foo.ts',
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('total_tokens>');
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual(['user']);
+    expect(JSON.stringify(upstreamBody.messages.at(-1))).toContain(
+      'fix the failing test in lib/foo.ts',
+    );
+  });
+
+  it('strips the total tokens countdown from a plain string message', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'assistant',
+            content:
+              '<total_tokens>15000000 tokens left</total_tokens>\nworking on it',
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(JSON.stringify(upstreamBody)).not.toContain('total_tokens>');
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual(['assistant']);
+    expect(upstreamBody.messages.at(-1)?.content).toContain('working on it');
+  });
+
+  it('keeps a total_tokens element that is not a countdown', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: 'parse <total_tokens>computed value</total_tokens> here',
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual(['user']);
+    expect(upstreamBody.messages.at(-1)?.content).toBe(
+      'parse <total_tokens>computed value</total_tokens> here',
+    );
+  });
+
   describe('image content blocks', () => {
     const captureUpstreamBody = async (
       credentialOverrides: Record<string, unknown>,

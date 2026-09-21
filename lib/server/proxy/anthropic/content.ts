@@ -118,14 +118,28 @@ export const mapContentPartsToChat = (
   return blocks;
 };
 
-// Claude Code's client-side usage hint, appended to the tail of the
-// conversation as a meta message whenever its token-usage attachment is on:
+// Claude Code's client-side usage hints, appended to the tail of the
+// conversation as meta messages whenever its token-usage attachment is on:
 // `<system-reminder>\nToken usage: 190010/180000; -10010 remaining\n
-// </system-reminder>`. The wrapped form is matched first so the tags go with
-// it; the bare form covers the hint arriving without them. Counts can go
-// negative when the client's accounting overruns.
+// </system-reminder>` and the padded countdown `<total_tokens>15000000 tokens
+// left</total_tokens>`, which Claude Code delivers either on its own or inside
+// the same `<system-reminder>` shell. Each wrapped form is matched before its
+// bare counterpart so the enclosing tags go away with the hint; the bare forms
+// cover a hint arriving without them. Counts can go negative when the client's
+// accounting overruns.
+//
+// The countdown only counts as a hint when it carries a numeric
+// `<N> token(s) left` payload, so a prompt that quotes a `<total_tokens>`
+// element of its own — a schema sample, say — keeps its text.
+const TOTAL_TOKENS_COUNTDOWN = String.raw`<total_tokens>\s*-?[\d,._]+\s*tokens?\s+left\s*<\/total_tokens>`;
+
 const TOKEN_USAGE_REMINDER_PATTERNS: RegExp[] = [
   /<system-reminder>\s*Token usage:[^<]*<\/system-reminder>/gi,
+  new RegExp(
+    `<system-reminder>\\s*${TOTAL_TOKENS_COUNTDOWN}\\s*<\\/system-reminder>`,
+    'gi',
+  ),
+  new RegExp(TOTAL_TOKENS_COUNTDOWN, 'gi'),
   /Token usage:\s*-?\d+\s*\/\s*-?\d+\s*;\s*-?\d+\s+remaining/gi,
 ];
 
