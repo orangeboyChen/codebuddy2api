@@ -303,7 +303,7 @@ describe('storage backends', () => {
     expect(putDocument).toHaveBeenCalledWith(
       expect.objectContaining({
         encryptedPayload: expect.any(String),
-        encryptionMode: 'aes-256-gcm',
+        encryptionMode: 'aes-256-gcm:v2',
         key: 'store',
         namespace: 'access-keys',
         payload: null,
@@ -312,7 +312,7 @@ describe('storage backends', () => {
     expect(putDocument).toHaveBeenCalledWith(
       expect.objectContaining({
         encryptedPayload: expect.any(String),
-        encryptionMode: 'aes-256-gcm',
+        encryptionMode: 'aes-256-gcm:v2',
         key: 'cred-a.json',
         namespace: 'credentials',
         payload: null,
@@ -332,7 +332,7 @@ describe('storage backends', () => {
     expect(putDocument).toHaveBeenCalledWith(
       expect.objectContaining({
         encryptedPayload: expect.any(String),
-        encryptionMode: 'aes-256-gcm',
+        encryptionMode: 'aes-256-gcm:v2',
         key: 'cred-b.json',
         namespace: 'credentials',
         payload: null,
@@ -341,7 +341,7 @@ describe('storage backends', () => {
     expect(putDocument).toHaveBeenCalledWith(
       expect.objectContaining({
         encryptedPayload: expect.any(String),
-        encryptionMode: 'aes-256-gcm',
+        encryptionMode: 'aes-256-gcm:v2',
         key: 'resp-a',
         namespace: 'responses',
         payload: null,
