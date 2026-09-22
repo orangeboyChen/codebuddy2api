@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -15,6 +16,43 @@ const cleanupTempState = (): void => {
 };
 
 describe('access key secret comparison', () => {
+  it('compares through the constant-time primitive, not ===', async () => {
+    // The point of this suite. Every other assertion below holds for a plain
+    // `===` as well, so without this one the file would still go green after
+    // the constant-time comparison was reverted.
+    const timingSafeEqual = vi.spyOn(crypto, 'timingSafeEqual');
+
+    try {
+      const secret = await createKey('timing');
+
+      await expect(findAccessKeyBySecret(secret)).resolves.toMatchObject({
+        name: 'timing',
+      });
+
+      expect(timingSafeEqual).toHaveBeenCalled();
+
+      // Both operands are fixed-length digests, so the call cannot throw on a
+      // length mismatch and cannot leak the length of either secret.
+      const [left, right] = timingSafeEqual.mock.calls[0] as unknown as [
+        { length: number },
+        { length: number },
+      ];
+      expect(left).toBeInstanceOf(Buffer);
+      expect(right).toBeInstanceOf(Buffer);
+      expect(left.length).toBe(right.length);
+      expect(left.length).toBe(32);
+
+      await expect(
+        findAccessKeyBySecret('cb2_not-a-real-secret'),
+      ).resolves.toBeNull();
+      // A miss is compared the same way; a short-circuiting comparison would
+      // have bailed out before reaching the primitive for some of these.
+      expect(timingSafeEqual).toHaveBeenCalledTimes(2);
+    } finally {
+      timingSafeEqual.mockRestore();
+    }
+  });
+
   beforeEach(async () => {
     cleanupTempState();
     resetCredentialRuntimeState();

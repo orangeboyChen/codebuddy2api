@@ -1,4 +1,4 @@
-import crypto, { createHash, timingSafeEqual } from 'node:crypto';
+import crypto, { createHash } from 'node:crypto';
 
 import { readStorageJsonResult, writeStorageJson } from '../storage';
 
@@ -267,7 +267,9 @@ const hashSecretForComparison = (secret: string): Buffer => {
 };
 
 const secretsMatch = (candidate: string, stored: string): boolean => {
-  return timingSafeEqual(
+  // Reached through the module object rather than a named import so tests can
+  // observe that the constant-time path is the one actually taken.
+  return crypto.timingSafeEqual(
     hashSecretForComparison(candidate),
     hashSecretForComparison(stored),
   );
