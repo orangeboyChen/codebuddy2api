@@ -342,4 +342,291 @@ describe('account status domain', () => {
     const results = await checkinAccounts();
     expect(results).toHaveLength(5);
   });
+
+  const enterpriseCredential = (filename: string) => ({
+    data: {
+      bearer_token: `token-${filename}`,
+      enterprise_id: 'tenant-42',
+    },
+    filePath: `/tmp/${filename}`,
+    filename,
+  });
+
+  it('reads enterprise credits from the tenant meter', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ credit: 250, limitNum: 1000 }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    // A tenant seat is billed per tenant, so the package list is never asked.
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/v2/billing/meter/get-enterprise-user-usage',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.error).toBeNull();
+    expect(result.credits).toEqual({
+      plan: null,
+      remaining: 750,
+      resetAt: null,
+      total: 1000,
+      used: 250,
+    });
+  });
+
+  it('unwraps the meter envelope and normalizes a numeric reset time', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            data: {
+              credit: 12,
+              cycleResetTime: 1766000000000,
+              limitNum: 60,
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(result.credits).toEqual({
+      plan: null,
+      remaining: 48,
+      resetAt: new Date(1766000000000).toISOString(),
+      total: 60,
+      used: 12,
+    });
+  });
+
+  it('keeps a string reset time exactly as the meter reports it', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            credit: 5,
+            cycleResetTime: '2026-10-01T00:00:00Z',
+            limitNum: 20,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(result.credits.resetAt).toBe('2026-10-01T00:00:00Z');
+    expect(result.credits.remaining).toBe(15);
+  });
+
+  it('retries the tenant meter without the version prefix when it 404s', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({}, 404))
+      .mockResolvedValueOnce(jsonResponse({ credit: 1, limitNum: 10 }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/v2/billing/meter/get-enterprise-user-usage',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/billing/meter/get-enterprise-user-usage',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).not.toContain('/v2/');
+    expect(result.error).toBeNull();
+    expect(result.credits.remaining).toBe(9);
+  });
+
+  it('falls back to the package list when the meter reports no limit', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ data: {} }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          userQuota: { plan: 'Team', remaining: 35, total: 40, used: 5 },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/v2/billing/meter/get-user-resource',
+    );
+    expect(result.error).toBeNull();
+    expect(result.credits).toEqual({
+      plan: 'Team',
+      remaining: 35,
+      resetAt: null,
+      total: 40,
+      used: 5,
+    });
+  });
+
+  it('reports a tenant meter failure without hiding the package list', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({}, 500))
+      .mockResolvedValueOnce(
+        jsonResponse({ userQuota: { remaining: 5, total: 8, used: 3 } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(result.error).toContain(
+      '/v2/billing/meter/get-enterprise-user-usage returned 500',
+    );
+    expect(result.credits.remaining).toBe(5);
+  });
+
+  it('retries the tenant meter when it answers 405', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({}, 405))
+      .mockResolvedValueOnce(jsonResponse({ limitNum: 10 }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(String(fetchMock.mock.calls[1][0])).not.toContain('/v2/');
+    expect(result.error).toBeNull();
+    // No credit in the payload, so nothing has been spent yet.
+    expect(result.credits).toEqual({
+      plan: null,
+      remaining: 10,
+      resetAt: null,
+      total: 10,
+      used: 0,
+    });
+  });
+
+  it('falls back to the package list when the meter is not an object', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse('unavailable'))
+      .mockResolvedValueOnce(
+        jsonResponse({ userQuota: { remaining: 7, total: 9, used: 2 } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/v2/billing/meter/get-user-resource',
+    );
+    expect(result.error).toBeNull();
+    expect(result.credits.remaining).toBe(7);
+  });
+
+  it('falls back to the package list when the meter limit is null', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ credit: 5, limitNum: null }))
+      .mockResolvedValueOnce(
+        jsonResponse({ userQuota: { remaining: 4, total: 9, used: 5 } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    // A null limit means "no limit reported", not a zero quota.
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/v2/billing/meter/get-user-resource',
+    );
+    expect(result.error).toBeNull();
+    expect(result.credits.remaining).toBe(4);
+  });
+
+  it('falls back to the package list when the meter limit is empty', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ credit: 5, limitNum: '' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ userQuota: { remaining: 2, total: 6, used: 4 } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/v2/billing/meter/get-user-resource',
+    );
+    expect(result.credits.remaining).toBe(2);
+  });
+
+  it('falls back to the package list when the meter limit is not a number', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ credit: 5, limitNum: 'unlimited' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ userQuota: { remaining: 1, total: 3, used: 2 } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/v2/billing/meter/get-user-resource',
+    );
+    expect(result.credits.remaining).toBe(1);
+  });
+
+  it('carries the enterprise edition name onto the credits card', async () => {
+    vi.mocked(listEligibleCredentialRecords).mockResolvedValue([
+      enterpriseCredential('ent.json'),
+    ] as never);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        jsonResponse({ credit: 2, editionName: 'Enterprise', limitNum: 10 }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 'CLAIMED' }));
+
+    const [result] = await getAccountStatus();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.credits).toEqual({
+      plan: 'Enterprise',
+      remaining: 8,
+      resetAt: null,
+      total: 10,
+      used: 2,
+    });
+  });
 });
