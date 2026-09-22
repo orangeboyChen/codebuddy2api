@@ -65,12 +65,14 @@ export const mapChatStreamToResponsesEventStream = (
   emitServerToolLifecycle = true,
   providedOutputIndexAllocator?: () => number,
   rejectErrorPayloads = false,
+  /** See `mapChatResponseToResponsesPayload`: the announced `created_at`. */
+  announcedCreatedAt?: number,
 ): Response => {
   if (!upstreamResponse.ok || !upstreamResponse.body) {
     return upstreamResponse;
   }
 
-  const createdAt = Math.floor(Date.now() / 1000);
+  const createdAt = announcedCreatedAt ?? Math.floor(Date.now() / 1000);
   const serverToolItems =
     providedServerToolItems ??
     getServerToolExecutions(upstreamResponse).map((execution, outputIndex) => {

@@ -229,6 +229,32 @@ describe('responses output conformance', () => {
     });
   });
 
+  it('forwards and echoes a request that forbids parallel tool calls', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        makeJsonResponse(weatherCallPayload()) as unknown as Response,
+      );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'what is the weather?',
+      model: 'glm-5.1',
+      parallel_tool_calls: false,
+      tools: [weatherTool()],
+    });
+    const payload = await response.json();
+
+    // Carried upstream, so the model is asked for one call at a time rather
+    // than being free to batch them behind a setting the client never set.
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as JsonRecord;
+    expect(upstreamBody.parallel_tool_calls).toBe(false);
+    // And reported back as what the client asked for, not as a default.
+    expect(payload.parallel_tool_calls).toBe(false);
+    expectResponsesObject(payload);
+  });
+
   it('interleaves a provider-executed search with the prose around it', async () => {
     await enableSearch();
     let calls = 0;
@@ -389,6 +415,14 @@ describe('responses output conformance', () => {
 
   it('announces the lifecycle of a streamed server-side search', async () => {
     await enableSearch();
+    // Clocked forward on every read, so a replay that stamped its own creation
+    // time would not land in the same second as the announcement it follows.
+    let clock = 1_700_000_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      clock += 5_000;
+
+      return clock;
+    });
     let calls = 0;
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -485,5 +519,10 @@ describe('responses output conformance', () => {
       'message',
     ]);
     expect(String(output[1].id)).toBe([...lifecycleItemIds][0]);
+    // The turn ran after the response was announced, so the replay could
+    // easily stamp a second, later creation time onto the same id.
+    expect((completed.response as JsonRecord).created_at).toBe(
+      (events[0].response as JsonRecord).created_at,
+    );
   });
 });

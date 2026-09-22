@@ -133,7 +133,7 @@ export const buildResponsesRequestEcho = (
   error: null,
   incomplete_details: null,
   instructions: defaults.instructions ?? null,
-  parallel_tool_calls: true,
+  parallel_tool_calls: defaults.parallel_tool_calls ?? true,
   tool_choice: defaults.tool_choice ?? 'auto',
   tools: defaults.tools ?? [],
 });
@@ -150,6 +150,13 @@ export const mapChatResponseToResponsesPayload = async (
   imageExecutions: ImageGenerationExecution[] = [],
   pinnedResponseId?: string,
   segments?: ServerToolSegment[],
+  /**
+   * The `created_at` the response was already announced under, when it was.
+   * A server-tool turn announces the response, then runs; without this the
+   * replay stamps the time it finished, and one response id carries two
+   * creation times.
+   */
+  announcedCreatedAt?: number,
 ): Promise<Record<string, unknown>> => {
   const responseId = pinnedResponseId ?? createResponseId();
   const choices = Array.isArray(upstreamPayload.choices)
@@ -162,7 +169,7 @@ export const mapChatResponseToResponsesPayload = async (
     ? firstChoice.message.tool_calls
     : [];
   const outputText = stringifyContent(firstChoice.message?.content);
-  const createdAt = Math.floor(Date.now() / 1000);
+  const createdAt = announcedCreatedAt ?? Math.floor(Date.now() / 1000);
   // What the model said before it reached for a search, ahead of the searches
   // themselves — the order it was written in. Only the closing hop's prose and
   // reasoning live in `upstreamPayload`, so without this a Responses client
@@ -312,7 +319,9 @@ export const mapChatResponseToResponsesPayload = async (
     id: responseId,
     object: 'response',
     created_at: createdAt,
-    completed_at: createdAt,
+    // When it finished, which is not when it was announced: a turn that ran
+    // a search spent time in between.
+    completed_at: Math.floor(Date.now() / 1000),
     status: 'completed',
     model,
     output,
@@ -368,6 +377,7 @@ export const mapChatResponseToResponsesStream = async (
   pinnedResponseId?: string,
   segments?: ServerToolSegment[],
   emitOpeningEvents = true,
+  announcedCreatedAt?: number,
 ): Promise<Response> => {
   const payload = await mapChatResponseToResponsesPayload(
     proxyContext.accessKeyId,
@@ -381,6 +391,7 @@ export const mapChatResponseToResponsesStream = async (
     imageExecutions,
     pinnedResponseId,
     segments,
+    announcedCreatedAt,
   );
   // The mapper creates and persists the session id, so the stream has to reuse
   // it: advertising a different one would leave a client unable to continue the

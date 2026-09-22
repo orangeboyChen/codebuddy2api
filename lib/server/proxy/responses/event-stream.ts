@@ -92,6 +92,9 @@ export const createResponsesEventStream = async (
       ),
       rewrite ? rewrite.tools : translatedTools,
     ),
+    // Carried through, not assumed: the chat upstream honours it, so a client
+    // that forbids parallel calls gets one tool call at a time.
+    parallel_tool_calls: defaults.parallel_tool_calls,
   };
 
   /**
@@ -347,6 +350,7 @@ export const createResponsesEventStream = async (
               true,
               allocateOutputIndex,
               true,
+              createdAt,
             )
           : mapChatResponseToResponsesStream(
               (await response.json()) as Record<string, unknown>,
@@ -366,6 +370,7 @@ export const createResponsesEventStream = async (
               // Already announced above: the replay must not emit a
               // second `response.created` under the same id.
               false,
+              createdAt,
             ));
         const reader = mappedResponse.body!.getReader();
         activeReader = reader;

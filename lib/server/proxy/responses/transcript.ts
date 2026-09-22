@@ -337,6 +337,10 @@ export const prepareTranscript = async (
       body.tool_choice ??
       resolvedPreviousSession?.defaults.tool_choice ??
       undefined,
+    parallel_tool_calls:
+      body.parallel_tool_calls ??
+      resolvedPreviousSession?.defaults.parallel_tool_calls ??
+      undefined,
   };
 
   if (body.messages?.length) {

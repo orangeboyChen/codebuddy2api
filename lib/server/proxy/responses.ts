@@ -211,6 +211,9 @@ export const handleResponsesRequest = async (
         ),
         rewrite ? rewrite.tools : translatedTools,
       ),
+      // Carried through, not assumed: the chat upstream honours it, so a client
+      // that forbids parallel calls gets one tool call at a time.
+      parallel_tool_calls: prepared.defaults.parallel_tool_calls,
     };
 
     /**
