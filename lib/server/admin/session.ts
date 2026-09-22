@@ -11,6 +11,7 @@ import {
 } from '@simplewebauthn/server';
 
 import { readStorageJsonResult, writeStorageJson } from '../storage';
+import { getForwardedHeaderValue } from '../shared/http';
 
 import { getActiveConfig } from '../domain/config';
 import type { UsageRange } from '../domain/usage';
@@ -38,12 +39,13 @@ const MAX_ADMIN_SESSIONS = 50;
 /** Key length every stored password hash was derived with. Part of the stored
  * format, so it must not change. */
 const PASSWORD_HASH_KEY_LENGTH = 64;
-/** Failed sign-ins allowed per username and source before throttling. */
+/** Failed sign-ins allowed for one username before throttling. */
 const ADMIN_LOGIN_MAX_FAILURES = 10;
+/** Ceiling on tracked buckets, so sprayed usernames cannot grow the map. */
+const ADMIN_LOGIN_THROTTLE_MAX_KEYS = 10_000;
 const ADMIN_LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const FORWARDED_PROTO_HEADER = 'x-forwarded-proto';
 const FORWARDED_HOST_HEADER = 'x-forwarded-host';
-const FORWARDED_FOR_HEADER = 'x-forwarded-for';
 let adminAuthMutationQueue: Promise<void> = Promise.resolve();
 
 type RequestLike = Request | NextRequest;
@@ -315,27 +317,15 @@ const isForwardedHeadersTrusted = async (): Promise<boolean> => {
  * value and comparing the whole header to `https` fails — the first entry is
  * the one the original client sent.
  */
-const getForwardedHeaderValue = (
-  request: RequestLike,
-  headerName: string,
-): string | null => {
-  const raw = request.headers.get(headerName);
-
-  if (!raw) {
-    return null;
-  }
-
-  const first = raw.split(',')[0]?.trim() ?? '';
-
-  return first || null;
-};
-
 const resolveRequestProtocol = (
   request: RequestLike,
   trustForwardedHeaders: boolean,
 ): string => {
   if (trustForwardedHeaders) {
-    const forwarded = getForwardedHeaderValue(request, FORWARDED_PROTO_HEADER);
+    const forwarded = getForwardedHeaderValue(
+      request.headers,
+      FORWARDED_PROTO_HEADER,
+    );
 
     if (forwarded) {
       return forwarded.toLowerCase();
@@ -350,7 +340,10 @@ const resolveRequestHost = (
   trustForwardedHeaders: boolean,
 ): string => {
   if (trustForwardedHeaders) {
-    const forwarded = getForwardedHeaderValue(request, FORWARDED_HOST_HEADER);
+    const forwarded = getForwardedHeaderValue(
+      request.headers,
+      FORWARDED_HOST_HEADER,
+    );
 
     if (forwarded) {
       return forwarded;
@@ -547,14 +540,25 @@ const appendAdminSession = (
     return;
   }
 
-  state.sessions = state.sessions
-    .slice()
-    .sort((left, right) => {
-      return (
-        new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
-      );
-    })
-    .slice(state.sessions.length - MAX_ADMIN_SESSIONS);
+  // The session being appended is never a candidate for eviction. Instances
+  // sharing one database do not share a clock: a new session stamped by a
+  // lagging instance can sort oldest and would be dropped, handing back a
+  // cookie for a session that was never stored.
+  const previous = state.sessions.slice(0, -1);
+  const keep = MAX_ADMIN_SESSIONS - 1;
+
+  state.sessions = [
+    ...previous
+      .slice()
+      .sort((left, right) => {
+        return (
+          new Date(left.createdAt).getTime() -
+          new Date(right.createdAt).getTime()
+        );
+      })
+      .slice(Math.max(0, previous.length - keep)),
+    session,
+  ];
 };
 
 const getValidSessionRecord = async (
@@ -899,6 +903,22 @@ export const setupAdminPassword = async (
     );
   }
 
+  // Checked before the password is hashed and before any write. This endpoint
+  // has to stay open for first-run setup, so a completed deployment would
+  // otherwise let any caller force a full read-modify-write of the auth
+  // document — and a scrypt — on every request, and every one of those writes
+  // can also undo a concurrent rotation by writing back its own stale snapshot.
+  if (pruneExpiredState(await loadAdminAuthStateAsync()).enabled) {
+    return Response.json(
+      {
+        error: {
+          message: 'Admin account is already configured',
+        },
+      },
+      { status: 409 },
+    );
+  }
+
   const nextPassword = await createPasswordHash(normalized);
   const { session, token } = createAdminSession();
 
@@ -947,27 +967,26 @@ export const setupAdminPassword = async (
 };
 
 /**
- * The source address a failed sign-in is charged to.
+ * The bucket a failed sign-in is charged to.
  *
- * `X-Forwarded-For` only means anything when the proxy in front of us is the
- * one writing it, so an untrusted deployment shares a single bucket instead of
- * letting a client pick — and escape — its own.
+ * Deliberately keyed on the username alone. A client address is not usable
+ * here: `X-Forwarded-For` is attacker-controlled whenever the request reached
+ * us without a proxy we control, so charging failures to it lets a caller
+ * mint a fresh budget per request and guess passwords without limit. The
+ * username is the one part of the credential pair the caller cannot vary
+ * without changing what it is attacking.
+ *
+ * The trade-off is that someone who knows the username can keep it locked out
+ * of password sign-in. That is the same exposure a per-address limit has, minus
+ * the bypass. The mitigation is to register a passkey: that path is separate and
+ * stays available.
  */
-const getLoginThrottleSource = (
-  request: RequestLike,
-  trustForwardedHeaders: boolean,
-): string => {
-  if (!trustForwardedHeaders) {
-    return 'unknown';
-  }
-
-  const forwardedFor = getForwardedHeaderValue(request, FORWARDED_FOR_HEADER);
-
-  if (forwardedFor) {
-    return forwardedFor;
-  }
-
-  return request.headers.get('x-real-ip')?.trim() || 'unknown';
+const getLoginThrottleKey = (username: string): string => {
+  // Hashed so the key has a fixed, short footprint: the username arrives from
+  // an unauthenticated request body and is never length-checked on this path.
+  return createHash('sha256')
+    .update(username.trim().toLowerCase())
+    .digest('hex');
 };
 
 const getAdminLoginThrottles = (): Map<string, AdminLoginThrottle> => {
@@ -998,11 +1017,27 @@ const recordAdminLoginFailure = (key: string): void => {
   const now = Date.now();
   const throttles = getAdminLoginThrottles();
 
-  // Expired counters are swept on write so a spray of usernames cannot grow the
-  // map without bound.
+  // Expired counters are swept on write so the map does not keep growing once
+  // an attacker stops sending.
   for (const [entryKey, entry] of throttles) {
     if (now - entry.firstFailureAt >= ADMIN_LOGIN_FAILURE_WINDOW_MS) {
       throttles.delete(entryKey);
+    }
+  }
+
+  // A caller can spray distinct usernames faster than entries expire, so the
+  // map needs a hard ceiling as well: drop the oldest windows until it fits.
+  if (throttles.size >= ADMIN_LOGIN_THROTTLE_MAX_KEYS && !throttles.has(key)) {
+    const overflow = throttles.size - ADMIN_LOGIN_THROTTLE_MAX_KEYS + 1;
+    let removed = 0;
+
+    for (const entryKey of throttles.keys()) {
+      if (removed >= overflow) {
+        break;
+      }
+
+      throttles.delete(entryKey);
+      removed += 1;
     }
   }
 
@@ -1029,12 +1064,9 @@ export const loginWithAdminPassword = async (
     password === undefined ? DEFAULT_ADMIN_USER_NAME : usernameOrPassword;
   const resolvedPassword = password ?? usernameOrPassword;
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
-  const throttleKey = `${username.trim().toLowerCase()}|${getLoginThrottleSource(
-    request,
-    await isForwardedHeadersTrusted(),
-  )}`;
+  const throttleKey = getLoginThrottleKey(username);
 
-  // Checked before the password is hashed: once a source is over the limit,
+  // Checked before the password is hashed: once a username is over the limit,
   // further guesses cost nothing on our side either.
   if (isAdminLoginThrottled(throttleKey)) {
     return Response.json(
@@ -1075,13 +1107,59 @@ export const loginWithAdminPassword = async (
     );
   }
 
-  clearAdminLoginFailures(throttleKey);
-
+  // The record the password was just verified against. The mutation below
+  // refuses to mint a session if the stored record is no longer this one.
+  const verified = state.password;
   const { session, token } = createAdminSession();
 
-  await mutateAdminAuthState((current) => {
+  // Re-checked inside the serialized mutation. scrypt yields, so a rotation
+  // can land between the check above and here, and that rotation drops every
+  // other session — a sign-in verified against the now stale snapshot must not
+  // be allowed to mint one that outlives it.
+  //
+  // Compared by record rather than re-hashed on purpose: an await inside the
+  // mutation stretches the gap between its read and its write, and across
+  // instances that gap is a lost update that silently undoes the rotation.
+  const accepted = await mutateAdminAuthState((current) => {
+    if (!current.enabled || !current.password) {
+      return false;
+    }
+
+    if (current.username !== username.trim()) {
+      return false;
+    }
+
+    if (
+      current.password.hash !== verified.hash ||
+      current.password.salt !== verified.salt
+    ) {
+      return false;
+    }
+
     appendAdminSession(current, session);
+
+    return {
+      passkeyCount: current.passkeys.length,
+      username: current.username,
+    };
   });
+
+  if (!accepted) {
+    // Only reachable when the rotation above landed mid-sign-in. The caller
+    // presented the correct credential, so this is not a failure and must not
+    // be counted against the throttle — otherwise enough near-misses with the
+    // rotation would lock the admin out of their own fresh password.
+    return Response.json(
+      {
+        error: {
+          message: 'Credentials changed during sign-in, try again',
+        },
+      },
+      { status: 401 },
+    );
+  }
+
+  clearAdminLoginFailures(throttleKey);
 
   return attachSessionCookie(
     request,
@@ -1091,9 +1169,9 @@ export const loginWithAdminPassword = async (
         accountConfigured: true,
         authEnabled: true,
         authenticated: true,
-        passkeyCount: state.passkeys.length,
+        passkeyCount: accepted.passkeyCount,
         passwordConfigured: true,
-        username: state.username,
+        username: accepted.username,
       },
     }),
     token,
@@ -1146,10 +1224,31 @@ export const changeAdminPassword = async (
 
   const sessionTokenHash = hashSessionToken(sessionToken);
   const nextPasswordHash = await createPasswordHash(normalizedNextPassword);
-  const updated = await mutateAdminAuthState(async (state) => {
+  const currentState = pruneExpiredState(await loadAdminAuthStateAsync());
+
+  // Verified outside the mutation, for the same reason the sign-in path does
+  // it: an await inside the mutator widens the gap between its read and its
+  // write, and across instances that gap silently undoes concurrent changes.
+  if (
+    currentState.password &&
+    !(await verifyPasswordHash(currentPassword, currentState.password))
+  ) {
+    return Response.json(
+      { error: { message: 'Current password is invalid' } },
+      { status: 401 },
+    );
+  }
+
+  const verified = currentState.password;
+  const updated = await mutateAdminAuthState((state) => {
+    // Refuse if the stored record is no longer the one just verified: a
+    // concurrent rotation would otherwise be overwritten by this snapshot.
     if (
-      state.password &&
-      !(await verifyPasswordHash(currentPassword, state.password))
+      Boolean(state.password) !== Boolean(verified) ||
+      (state.password &&
+        verified &&
+        (state.password.hash !== verified.hash ||
+          state.password.salt !== verified.salt))
     ) {
       return false;
     }

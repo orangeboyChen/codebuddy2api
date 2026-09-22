@@ -110,10 +110,12 @@ const hashToken = (token: string): string => {
   return createHash('sha256').update(token).digest('hex');
 };
 
+const SETUP_PASSWORD = 'correct horse battery staple';
+
 const setupAdmin = async (): Promise<string> => {
   const response = await setupAdminPassword(
     makeRequest('/admin-api/auth/setup'),
-    'correct horse battery staple',
+    SETUP_PASSWORD,
   );
 
   return getCookieHeader(response);
@@ -235,7 +237,18 @@ describe('admin session hardening', () => {
     }
   });
 
-  it('throttles repeated failed sign-ins per username and source', async () => {
+  /**
+   * Buckets are keyed on the username alone: `X-Forwarded-For` is supplied by
+   * the client whenever no proxy we control is in front of us, so charging
+   * failures to it lets a caller hand itself a fresh budget per request.
+   */
+  const throttleKeyFor = (username: string): string => {
+    return createHash('sha256')
+      .update(username.trim().toLowerCase())
+      .digest('hex');
+  };
+
+  it('throttles repeated failed sign-ins for one username', async () => {
     await setupAdmin();
 
     for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -258,14 +271,73 @@ describe('admin session hardening', () => {
     await expect(throttled.json()).resolves.toMatchObject({
       error: { code: 'admin_login_rate_limited' },
     });
+  });
 
-    // Another source address still has its own budget.
-    const otherSource = await loginWithAdminPassword(
-      makeRequest('/admin-api/auth/session', { forwardedFor: '203.0.113.10' }),
+  it('does not hand out a fresh budget to a spoofed forwarded address', async () => {
+    await setupAdmin();
+
+    // The regression this guards: a per-address bucket lets an attacker rotate
+    // `X-Forwarded-For` and guess passwords without limit, because the header
+    // is attacker-controlled on a directly exposed instance.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const response = await loginWithAdminPassword(
+        makeRequest('/admin-api/auth/session', {
+          forwardedFor: `203.0.113.${attempt}`,
+        }),
+        'wrong-password',
+      );
+
+      expect(response.status).toBe(401);
+    }
+
+    const spoofed = await loginWithAdminPassword(
+      makeRequest('/admin-api/auth/session', { forwardedFor: '198.51.100.1' }),
       'correct horse battery staple',
     );
 
-    expect(otherSource.status).toBe(200);
+    expect(spoofed.status).toBe(429);
+
+    // Spoofing a real-IP header must not help either.
+    const spoofedRealIp = await loginWithAdminPassword(
+      makeRequest('/admin-api/auth/session', { realIp: '198.51.100.2' }),
+      'correct horse battery staple',
+    );
+
+    expect(spoofedRealIp.status).toBe(429);
+  });
+
+  it('gives each username its own budget', async () => {
+    await setupAdmin();
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await loginWithAdminPassword(
+        makeRequest('/admin-api/auth/session'),
+        'admin',
+        'wrong-password',
+      );
+    }
+
+    expect(
+      (
+        await loginWithAdminPassword(
+          makeRequest('/admin-api/auth/session'),
+          'admin',
+          SETUP_PASSWORD,
+        )
+      ).status,
+    ).toBe(429);
+
+    // A different username is a separate bucket: it is still evaluated (401)
+    // rather than being caught by the exhausted one (429).
+    expect(
+      (
+        await loginWithAdminPassword(
+          makeRequest('/admin-api/auth/session'),
+          'someone-else',
+          'wrong-password',
+        )
+      ).status,
+    ).toBe(401);
   });
 
   it('clears the throttle counter after a successful sign-in', async () => {
@@ -292,7 +364,7 @@ describe('admin session hardening', () => {
           makeRequest('/admin-api/auth/session', {
             forwardedFor: '198.51.100.7',
           }),
-          'correct horse battery staple',
+          SETUP_PASSWORD,
         )
       ).status,
     ).toBe(200);
@@ -308,7 +380,7 @@ describe('admin session hardening', () => {
           makeRequest('/admin-api/auth/session', {
             forwardedFor: '198.51.100.7',
           }),
-          'correct horse battery staple',
+          SETUP_PASSWORD,
         )
       ).status,
     ).toBe(200);
@@ -321,15 +393,13 @@ describe('admin session hardening', () => {
 
     try {
       await loginWithAdminPassword(
-        makeRequest('/admin-api/auth/session', {
-          forwardedFor: '203.0.113.9',
-        }),
+        makeRequest('/admin-api/auth/session'),
+        'admin',
         'wrong-password',
       );
       await loginWithAdminPassword(
-        makeRequest('/admin-api/auth/session', {
-          forwardedFor: '198.51.100.7',
-        }),
+        makeRequest('/admin-api/auth/session'),
+        'other-admin',
         'wrong-password',
       );
       expect(getThrottleMap()?.size).toBe(2);
@@ -337,20 +407,19 @@ describe('admin session hardening', () => {
       const later = start + 16 * 60 * 1000;
       nowSpy.mockReturnValue(later);
 
-      // The expired counter for the address that comes back is dropped when it
-      // is checked; the one for the other address is swept when this failure is
-      // recorded, so the map cannot grow forever.
+      // The expired counter for the username that comes back is dropped when
+      // it is checked; the other is swept when this failure is recorded, so
+      // the map cannot keep growing once an attacker stops sending.
       await loginWithAdminPassword(
-        makeRequest('/admin-api/auth/session', {
-          forwardedFor: '203.0.113.9',
-        }),
+        makeRequest('/admin-api/auth/session'),
+        'admin',
         'wrong-password',
       );
 
       const throttles = getThrottleMap();
       expect(throttles?.size).toBe(1);
-      expect(throttles?.has('admin|198.51.100.7')).toBe(false);
-      expect(throttles?.get('admin|203.0.113.9')).toEqual({
+      expect(throttles?.has(throttleKeyFor('other-admin'))).toBe(false);
+      expect(throttles?.get(throttleKeyFor('admin'))).toEqual({
         failures: 1,
         firstFailureAt: later,
       });
@@ -359,38 +428,39 @@ describe('admin session hardening', () => {
     }
   });
 
-  it('falls back to x-real-ip, and to one bucket when no proxy is trusted', async () => {
+  it('bounds the throttle map when usernames are sprayed', async () => {
     await setupAdmin();
+    const throttles = getThrottleMap();
+    const now = Date.now();
 
+    // Filled the way an attacker spraying usernames would end up filling it,
+    // but without paying for ten thousand real sign-in attempts: each of those
+    // reads the auth document, which is slow enough to flake the suite.
+    for (let index = 0; index < 10_000; index += 1) {
+      throttles?.set(`spray-${index}`, { failures: 1, firstFailureAt: now });
+    }
+
+    expect(throttles?.size).toBe(10_000);
+
+    // One more failure has to fit without growing the map, and the username
+    // being attacked must be the one that survives.
     await loginWithAdminPassword(
-      makeRequest('/admin-api/auth/session', { realIp: '203.0.113.11' }),
+      makeRequest('/admin-api/auth/session'),
+      'admin',
       'wrong-password',
     );
-    expect(getThrottleMap()?.has('admin|203.0.113.11')).toBe(true);
 
-    process.env.CODEBUDDY_ADMIN_TRUST_PROXY = 'false';
-
-    try {
-      // Without a trusted proxy a client-supplied address is not a separate
-      // bucket, otherwise it could hand itself a fresh budget every attempt.
-      await loginWithAdminPassword(
-        makeRequest('/admin-api/auth/session', {
-          forwardedFor: '203.0.113.12',
-        }),
-        'wrong-password',
-      );
-
-      expect(getThrottleMap()?.has('admin|203.0.113.12')).toBe(false);
-      expect(getThrottleMap()?.get('admin|unknown')?.failures).toBe(1);
-    } finally {
-      delete process.env.CODEBUDDY_ADMIN_TRUST_PROXY;
-    }
+    expect(throttles?.size).toBe(10_000);
+    expect(throttles?.has(throttleKeyFor('admin'))).toBe(true);
   });
 
   it('caps stored sessions and drops the oldest ones', async () => {
     await setupAdmin();
     const state = await readState();
-    const base = Date.now() - 60 * 60 * 1000;
+    // Ahead of this instance's clock on purpose: instances sharing a database
+    // do not share a clock, and a session stamped by a lagging instance must
+    // not be the one evicted.
+    const base = Date.now() + 60 * 60 * 1000;
     const fabricated: StoredSession[] = Array.from(
       { length: 60 },
       (_, index) => {
