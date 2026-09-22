@@ -75,7 +75,9 @@ Switching an existing `file` deployment to a database backend imports only confi
 ## Security Notes
 
 - **`/v1/*` is unauthenticated until an access key exists.** With no access key stored, inference requests are allowed through by design so a fresh instance needs no setup. Create an access key in the console before exposing the port beyond localhost.
-- **Adding `CODEBUDDY_STORAGE_ENCRYPTION_KEY` later does not hide existing data.** Each document keeps the mode it was written with, so data written before the key existed stays readable; only new writes are encrypted. Set it anyway, and back the key up — losing it locks everything written afterwards.
+- **At-rest encryption needs a database backend.** The `file` backend stores credentials and access keys as plain JSON with `0600` permissions and ignores `CODEBUDDY_STORAGE_ENCRYPTION_KEY` entirely, so setting the key on a `file` deployment changes nothing. Move to `sqlite` or `pg` to get encryption — those backends refuse to start without the key.
+- **Back up the passphrase _and_ the database.** Decrypting a document needs the `CODEBUDDY_STORAGE_ENCRYPTION_KEY` **and** the `storage-crypto/kdf-salt` row stored alongside it. A partial restore — passphrase without the database, or a namespace-by-namespace export that skips that row — leaves every encrypted credential and access key unreadable even with the right passphrase.
+- **Do not roll back after the first write on a database backend.** Documents written by this version use `aes-256-gcm:v2`, which older releases cannot decrypt; they fall back to the wrong key and fail on every credential and access key. The admin console still loads because admin auth is not encrypted, so a rollback looks healthy while `/v1/*` is broken. Roll forward, or restore the pre-upgrade database backup.
 
 ## Documentation
 

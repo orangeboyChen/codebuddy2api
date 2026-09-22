@@ -37,10 +37,13 @@ services:
       # documents written before the key was set stay readable as plain-json.
       # CODEBUDDY_STORAGE_ENCRYPTION_KEY: '<long random secret>'
       #
-      # Container-side directories, stated explicitly so the app no longer
-      # depends on how compose resolves relative bind-mount paths.
-      CODEBUDDY_STORAGE_FILE_DIR: '/app/.codebuddy_data'
-      CODEBUDDY_CREDENTIALS_DIR: '/app/.codebuddy_creds'
+      # Container-side directories, if you want them stated explicitly. Left
+      # commented for the same reason as the backend above: an `environment`
+      # entry wins over ../.env, and these two are documented knobs that an
+      # existing deployment may already have set there. The values below match
+      # the defaults, so enabling them changes nothing on a default install.
+      # CODEBUDDY_STORAGE_FILE_DIR: '/app/.codebuddy_data'
+      # CODEBUDDY_CREDENTIALS_DIR: '/app/.codebuddy_creds'
     volumes:
       # Host paths are relative to this file's directory (deploy/), so ../ is
       # the repository root. Do not change these to ./ — that relocates the

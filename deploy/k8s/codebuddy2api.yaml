@@ -47,8 +47,13 @@ type: Opaque
 # key, so it is inert until you switch to sqlite/pg, where it is required.
 # Leaving the placeholder in place means a publicly known key, so replace it (or
 # drop this Secret and the secretKeyRef env entry) before running in production.
+# Deliberately empty. Committing a placeholder that everyone can read is worse
+# than committing nothing: with `optional: true` below the variable arrives
+# empty, which the code treats as unset (it trims the value), and a database
+# backend then refuses to start with a clear error instead of quietly
+# encrypting with a published key.
 stringData:
-  CODEBUDDY_STORAGE_ENCRYPTION_KEY: 'REPLACE_WITH_A_LONG_RANDOM_SECRET'
+  CODEBUDDY_STORAGE_ENCRYPTION_KEY: ''
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
