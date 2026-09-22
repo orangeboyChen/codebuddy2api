@@ -1547,7 +1547,7 @@ describe('anthropic messages api', () => {
     expect(userMessages[userMessages.length - 1].content).toBe('real message');
   });
 
-  it('passes thinking config to upstream body', async () => {
+  it('sends an Anthropic thinking block as an upstream effort', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeJsonResponse({
         choices: [{ message: { content: 'ok' } }],
@@ -1566,12 +1566,77 @@ describe('anthropic messages api', () => {
 
     const upstreamBody = JSON.parse(
       String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
-    ) as { thinking: Record<string, unknown> };
+    ) as { reasoning_effort?: string; thinking?: Record<string, unknown> };
 
-    expect(upstreamBody.thinking).toEqual({
-      type: 'enabled',
-      budget_tokens: 10000,
+    // The upstream takes a named effort, not an Anthropic `thinking` block, and
+    // a 10K budget is deeper than the medium cut point.
+    expect(upstreamBody.reasoning_effort).toBe('high');
+    expect(upstreamBody.thinking).toBeUndefined();
+  });
+
+  it('sends the thinking effort the model advertises', async () => {
+    const credential = await addCredential({
+      bearer_token: 'anthropic-effort-token',
+      supported_models_detail: JSON.stringify([
+        {
+          id: 'glm-5.3',
+          supportedEfforts: ['low', 'medium', 'high'],
+          supportsReasoning: true,
+        },
+        { id: 'glm-5.3-lite', supportsReasoning: false },
+      ]),
+      user_id: 'anthropic-effort@example.com',
     });
+    const accessKey = await createAccessKey({
+      credentialFilenames: [credential.filename],
+      name: 'Anthropic Effort Key',
+    });
+    const request = makeNextRequest('http://localhost/v1/messages', {
+      headers: { authorization: `Bearer ${accessKey.secret}` },
+      method: 'POST',
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(request, {
+      model: 'glm-5.3',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Think' }],
+      thinking: { type: 'enabled', budget_tokens: 10_000 },
+    });
+    await handleMessagesRequest(request, {
+      model: 'glm-5.3',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Think' }],
+      reasoning_effort: 'xhigh',
+    });
+    await handleMessagesRequest(request, {
+      model: 'glm-5.3-lite',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Think' }],
+      thinking: { type: 'enabled', budget_tokens: 10_000 },
+    });
+
+    const bodies = fetchMock.mock.calls.map(
+      (call) =>
+        JSON.parse(String((call[1] as RequestInit).body)) as Record<
+          string,
+          unknown
+        >,
+    );
+
+    // Claude Code speaks Anthropic budget_tokens; the model answers to a named
+    // level, and only to the ones it advertises.
+    expect(bodies[0]?.reasoning_effort).toBe('high');
+    expect(bodies[0]).not.toHaveProperty('thinking');
+    expect(bodies[1]?.reasoning_effort).toBe('high');
+
+    // A model upstream describes as unable to reason gets no effort at all.
+    expect(bodies[2]?.reasoning_effort).toBeUndefined();
+    expect(bodies[2]).not.toHaveProperty('thinking');
   });
 
   it('handles non-object tool_choice passthrough', async () => {
