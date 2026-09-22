@@ -1,7 +1,6 @@
 'use client';
 
 import { ConfigProvider, ThemeProvider } from '@lobehub/ui';
-import { motion } from 'motion/react';
 import {
   useEffect,
   useState,
@@ -10,6 +9,7 @@ import {
 } from 'react';
 
 import { themeChangeEventName, type ThemeMode } from '@/lib/theme';
+import { configProviderMotion } from '@/lib/client/motion';
 
 interface LobeUiProviderProps {
   children: ReactNode;
@@ -59,7 +59,7 @@ const LobeUiProvider = ({ children, initialTheme }: LobeUiProviderProps) => {
   }, []);
 
   return (
-    <ConfigProvider motion={motion}>
+    <ConfigProvider motion={configProviderMotion}>
       {mounted ? (
         <ThemeProvider
           appearance={appearance}

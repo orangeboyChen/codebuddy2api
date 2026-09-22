@@ -2,7 +2,6 @@
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
-import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
 
 import Dashboard, {
@@ -14,10 +13,11 @@ import { getMessages } from '@/lib/i18n/messages';
 import enUS from '@/messages/en-US.json';
 import jaJP from '@/messages/ja-JP.json';
 import zhCN from '@/messages/zh-CN.json';
+import { configProviderMotion } from '@/lib/client/motion';
 
 const renderWithMessages = (children: React.ReactNode) => {
   return render(
-    <ConfigProvider motion={motion}>
+    <ConfigProvider motion={configProviderMotion}>
       <NextIntlClientProvider locale="en-US" messages={getMessages('en-US')}>
         {children}
       </NextIntlClientProvider>

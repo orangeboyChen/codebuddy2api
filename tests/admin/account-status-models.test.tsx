@@ -2,7 +2,6 @@
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
-import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
 
 import AccountStatus, {
@@ -11,6 +10,7 @@ import AccountStatus, {
 import type { CredentialSummary } from '@/app/credentials/credentials';
 import type { AppLocale } from '@/lib/i18n/routing';
 import { type AppMessages, getMessages } from '@/lib/i18n/messages';
+import { configProviderMotion } from '@/lib/client/motion';
 
 const credential = (): CredentialSummary => ({
   auto_checkin_enabled: false,
@@ -59,7 +59,7 @@ const renderView = (
   messages: AppMessages | undefined = undefined,
 ) =>
   render(
-    <ConfigProvider motion={motion}>
+    <ConfigProvider motion={configProviderMotion}>
       <NextIntlClientProvider
         locale={locale}
         messages={messages ?? getMessages(locale)}
@@ -471,7 +471,7 @@ describe('account status refresh', () => {
 
   const renderAccounts = () =>
     render(
-      <ConfigProvider motion={motion}>
+      <ConfigProvider motion={configProviderMotion}>
         <NextIntlClientProvider locale="zh-CN" messages={getMessages('zh-CN')}>
           <AccountStatus
             credentials={accounts()}
