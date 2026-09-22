@@ -161,7 +161,10 @@ const settingsPlaceholders: Record<string, string> = {
  * entries in the config; the server hides the web search label when no search
  * backend is configured, so the UI only ever sees it when it is usable.
  */
-const BOOLEAN_SETTING_KEYS = new Set(['CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED']);
+const BOOLEAN_SETTING_KEYS = new Set([
+  'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED',
+  'CODEBUDDY_ADMIN_TRUST_PROXY',
+]);
 
 /**
  * Maps a setting key to its helper text.

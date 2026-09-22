@@ -26,6 +26,7 @@ import {
 export interface RuntimeConfig {
   CODEBUDDY_API_ENDPOINT: string;
   CODEBUDDY_ADMIN_PASSKEY_RP_ID: string;
+  CODEBUDDY_ADMIN_TRUST_PROXY: boolean;
   CODEBUDDY_AUTH_MODE: 'auto' | 'token';
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa' | 'internal' | 'public';
   CODEBUDDY_LOG_LEVEL: string;
@@ -87,6 +88,7 @@ type PersistedConfigFile = Partial<RuntimeConfig>;
 const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_API_ENDPOINT: 'https://copilot.tencent.com',
   CODEBUDDY_ADMIN_PASSKEY_RP_ID: '',
+  CODEBUDDY_ADMIN_TRUST_PROXY: true,
   CODEBUDDY_AUTH_MODE: 'auto',
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa',
   CODEBUDDY_LOG_LEVEL: 'INFO',
@@ -115,6 +117,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
   'en-US': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy API endpoint',
     CODEBUDDY_ADMIN_PASSKEY_RP_ID: 'Admin passkey RP ID / domain',
+    CODEBUDDY_ADMIN_TRUST_PROXY: 'Trust X-Forwarded-* headers from a proxy',
     CODEBUDDY_AUTH_MODE: 'Authentication mode (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: 'Network environment (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'Log level',
@@ -137,6 +140,8 @@ const SETTING_LABELS_BY_LOCALE: Record<
   'ja-JP': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy API エンドポイント',
     CODEBUDDY_ADMIN_PASSKEY_RP_ID: '管理者 passkey RP ID / ドメイン',
+    CODEBUDDY_ADMIN_TRUST_PROXY:
+      'プロキシからの X-Forwarded-* ヘッダーを信頼する',
     CODEBUDDY_AUTH_MODE: '認証モード (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: 'ネットワーク環境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: 'ログレベル',
@@ -159,6 +164,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
   'zh-CN': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方 API 端点',
     CODEBUDDY_ADMIN_PASSKEY_RP_ID: '管理员 Passkey RP ID / 域名',
+    CODEBUDDY_ADMIN_TRUST_PROXY: '信任来自反向代理的 X-Forwarded-* 头',
     CODEBUDDY_AUTH_MODE: '认证模式 (auto/token)',
     CODEBUDDY_INTERNET_ENVIRONMENT: '网络环境 (internal/ioa/public)',
     CODEBUDDY_LOG_LEVEL: '日志级别',
@@ -281,6 +287,11 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
       'CODEBUDDY_ADMIN_PASSKEY_RP_ID',
       persisted.CODEBUDDY_ADMIN_PASSKEY_RP_ID ??
         process.env.CODEBUDDY_ADMIN_PASSKEY_RP_ID,
+    ),
+    CODEBUDDY_ADMIN_TRUST_PROXY: normalizeValue(
+      'CODEBUDDY_ADMIN_TRUST_PROXY',
+      persisted.CODEBUDDY_ADMIN_TRUST_PROXY ??
+        process.env.CODEBUDDY_ADMIN_TRUST_PROXY,
     ),
     CODEBUDDY_AUTH_MODE: normalizeValue(
       'CODEBUDDY_AUTH_MODE',

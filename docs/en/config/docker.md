@@ -50,3 +50,4 @@ After migration, set `CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES=false` and remove th
 | `CODEBUDDY_INTERNET_ENVIRONMENT`        | Network environment                                              | `internal` / `ioa` / `public`                    |
 | `CODEBUDDY_LOG_LEVEL`                   | Server log level                                                 | `INFO`                                           |
 | `CODEBUDDY_ADMIN_PASSKEY_RP_ID`         | Admin passkey hostname                                           | `example.com`                                    |
+| `CODEBUDDY_ADMIN_TRUST_PROXY`           | Trust `X-Forwarded-*` headers from a reverse proxy               | `true` / `false`                                 |
