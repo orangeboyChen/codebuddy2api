@@ -7,8 +7,7 @@ import {
   systemLocalePreference,
 } from '@/lib/i18n/routing';
 import { resolvedThemeCookieName, themeCookieName } from '@/lib/theme';
-import { getForwardedHeaderValue, getJsonBody } from '@/lib/server/shared/http';
-import { getActiveConfig } from '@/lib/server/domain/config';
+import { getJsonBody, resolveRequestOrigin } from '@/lib/server/shared/http';
 
 const maxAge = 60 * 60 * 24 * 365;
 
@@ -16,11 +15,10 @@ const getCookieOptions = async (request: Request) => {
   // Same rule as the admin session cookie: trust the forwarded header only when
   // this deployment says a proxy is allowed to set it, and take the first entry
   // of a comma-separated list rather than the whole header.
-  const config = await getActiveConfig();
-  const forwarded =
-    config.CODEBUDDY_ADMIN_TRUST_PROXY &&
-    getForwardedHeaderValue(request.headers, 'x-forwarded-proto');
-  const protocol = forwarded || new URL(request.url).protocol.replace(':', '');
+  const { protocol } = await resolveRequestOrigin(request.headers, {
+    host: 'localhost',
+    protocol: new URL(request.url).protocol.replace(':', ''),
+  });
 
   return {
     httpOnly: true,

@@ -14,7 +14,7 @@ import {
   resolveAppLocale,
   systemLocalePreference,
 } from '@/lib/i18n/routing';
-import { getForwardedHeaderValue } from '@/lib/server/shared/http';
+import { resolveRequestOrigin } from '@/lib/server/shared/http';
 import { parseThemeMode, themeCookieName } from '@/lib/theme';
 
 export const dynamic = 'force-dynamic';
@@ -28,12 +28,10 @@ export const AdminPage = async ({
 }) => {
   const cookieStore = await cookies();
   const headerStore = await headers();
-  const protocol =
-    getForwardedHeaderValue(headerStore, 'x-forwarded-proto') ?? 'http';
-  const host =
-    getForwardedHeaderValue(headerStore, 'x-forwarded-host') ??
-    headerStore.get('host') ??
-    'localhost';
+  const { protocol, host } = await resolveRequestOrigin(headerStore, {
+    host: 'localhost',
+    protocol: 'http',
+  });
   const cookieHeader = headerStore.get('cookie') ?? '';
   const request = new Request(`${protocol}://${host}/`, {
     headers: cookieHeader ? { cookie: cookieHeader } : {},

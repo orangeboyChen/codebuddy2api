@@ -41,11 +41,22 @@ export interface InitialDataRequest {
 const buildApiEndpoint = async () => {
   const headerStore = await headers();
   const protocol =
-    getForwardedHeaderValue(headerStore, 'x-forwarded-proto') ?? 'http';
+    getForwardedHeaderValue(headerStore, 'x-forwarded-proto')?.toLowerCase() ??
+    'http';
   const host =
     getForwardedHeaderValue(headerStore, 'x-forwarded-host') ??
-    headerStore.get('host') ??
+    headerStore.get('host')?.trim() ??
     'localhost';
+
+  // This is a display value shown in the console, so it deliberately does not
+  // consult CODEBUDDY_ADMIN_TRUST_PROXY: that would add a storage read to
+  // every tab render. It still has to survive a hostile header, since these
+  // are client input and an unparseable host would throw out of the render.
+  try {
+    new URL(`${protocol}://${host}/v1`);
+  } catch {
+    return 'http://localhost/v1';
+  }
 
   return `${protocol}://${host}/v1`;
 };
