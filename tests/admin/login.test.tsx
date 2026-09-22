@@ -2,10 +2,12 @@
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
+import { Provider } from 'jotai';
 import { NextIntlClientProvider } from 'next-intl';
 
 import LoginClient from '@/app/login/login-client';
 import type { AdminLoginMessages } from '@/lib/i18n/messages';
+import type { ThemeMode } from '@/lib/theme';
 import { getMessages } from '@/lib/i18n/messages';
 import { configProviderMotion } from '@/lib/client/motion';
 
@@ -71,6 +73,65 @@ const loginTranslations: AdminLoginMessages = {
   waitingForPasskey: 'Waiting for a saved passkey...',
 };
 
+const stubColorScheme = (prefersDark: boolean) => {
+  const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  const mediaQuery = {
+    addEventListener: (
+      type: string,
+      listener: (event: MediaQueryListEvent) => void,
+    ) => {
+      if (type === 'change') {
+        listeners.add(listener);
+      }
+    },
+    matches: prefersDark,
+    removeEventListener: (
+      type: string,
+      listener: (event: MediaQueryListEvent) => void,
+    ) => {
+      if (type === 'change') {
+        listeners.delete(listener);
+      }
+    },
+  };
+
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn(() => mediaQuery),
+  );
+
+  return {
+    setPrefersDark: (next: boolean) => {
+      mediaQuery.matches = next;
+      listeners.forEach((listener) => {
+        listener({ matches: next } as MediaQueryListEvent);
+      });
+    },
+  };
+};
+
+const renderLogin = (initialTheme?: ThemeMode) => {
+  return render(
+    <Provider>
+      <ConfigProvider motion={configProviderMotion}>
+        <NextIntlClientProvider locale="zh-CN" messages={getMessages('zh-CN')}>
+          <LoginClient
+            initialSession={{
+              accountConfigured: true,
+              authenticated: false,
+              passkeyCount: 0,
+              passwordConfigured: true,
+            }}
+            initialTheme={initialTheme}
+            locale="zh-CN"
+            translations={loginTranslations}
+          />
+        </NextIntlClientProvider>
+      </ConfigProvider>
+    </Provider>,
+  );
+};
+
 describe('LoginClient', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -82,6 +143,10 @@ describe('LoginClient', () => {
   it('creates the first admin password and redirects', async () => {
     vi.mocked(browserSupportsWebAuthnAutofill).mockResolvedValue(false);
     globalThis.fetch = vi.fn(async (input) => {
+      if (input === '/admin-api/preferences') {
+        return makeJsonResponse({ success: true });
+      }
+
       if (input === '/admin-api/auth/setup') {
         return makeJsonResponse({
           session: {
@@ -132,6 +197,10 @@ describe('LoginClient', () => {
   it('logs in with password for an existing account', async () => {
     vi.mocked(browserSupportsWebAuthnAutofill).mockResolvedValue(false);
     globalThis.fetch = vi.fn(async (input) => {
+      if (input === '/admin-api/preferences') {
+        return makeJsonResponse({ success: true });
+      }
+
       if (input === '/admin-api/auth/session') {
         return makeJsonResponse({
           session: {
@@ -193,6 +262,10 @@ describe('LoginClient', () => {
     } as Awaited<ReturnType<typeof startAuthentication>>);
 
     globalThis.fetch = vi.fn(async (input) => {
+      if (input === '/admin-api/preferences') {
+        return makeJsonResponse({ success: true });
+      }
+
       if (input === '/admin-api/auth/passkeys/authentication/options') {
         return makeJsonResponse({
           options: {
@@ -241,6 +314,93 @@ describe('LoginClient', () => {
         }),
       );
       expect(window.location.assign).toHaveBeenCalledWith('/');
+    });
+  });
+
+  describe('theme parity with the console', () => {
+    const originalMatchMedia = window.matchMedia;
+
+    afterEach(() => {
+      vi.stubGlobal('matchMedia', originalMatchMedia);
+      document.documentElement.classList.remove('dark');
+      document.body.classList.remove('dark');
+      document.documentElement.style.colorScheme = '';
+    });
+
+    it('resolves the system theme on mount instead of trusting the stale cookie', async () => {
+      vi.mocked(browserSupportsWebAuthnAutofill).mockResolvedValue(false);
+      globalThis.fetch = vi.fn(async (input) => {
+        if (input === '/admin-api/preferences') {
+          return makeJsonResponse({ success: true });
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      }) as typeof fetch;
+      stubColorScheme(true);
+
+      renderLogin();
+
+      await waitFor(() => {
+        expect(document.documentElement.classList.contains('dark')).toBe(true);
+      });
+      expect(document.body.classList.contains('dark')).toBe(true);
+      expect(document.documentElement.style.colorScheme).toBe('dark');
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        '/admin-api/preferences',
+        expect.objectContaining({
+          body: JSON.stringify({ resolvedTheme: 'dark', theme: 'system' }),
+        }),
+      );
+    });
+
+    it('follows the OS colour scheme while the login screen is open', async () => {
+      vi.mocked(browserSupportsWebAuthnAutofill).mockResolvedValue(false);
+      globalThis.fetch = vi.fn(async (input) => {
+        if (input === '/admin-api/preferences') {
+          return makeJsonResponse({ success: true });
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      }) as typeof fetch;
+      const colorScheme = stubColorScheme(false);
+
+      renderLogin();
+
+      await waitFor(() => {
+        expect(document.documentElement.classList.contains('dark')).toBe(false);
+      });
+
+      colorScheme.setPrefersDark(true);
+
+      await waitFor(() => {
+        expect(document.documentElement.classList.contains('dark')).toBe(true);
+      });
+      expect(document.body.classList.contains('dark')).toBe(true);
+    });
+
+    it('keeps an explicit light theme even when the OS prefers dark', async () => {
+      vi.mocked(browserSupportsWebAuthnAutofill).mockResolvedValue(false);
+      globalThis.fetch = vi.fn(async (input) => {
+        if (input === '/admin-api/preferences') {
+          return makeJsonResponse({ success: true });
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      }) as typeof fetch;
+      stubColorScheme(true);
+
+      renderLogin('light');
+
+      await waitFor(() => {
+        expect(globalThis.fetch).toHaveBeenCalledWith(
+          '/admin-api/preferences',
+          expect.objectContaining({
+            body: JSON.stringify({ resolvedTheme: 'light', theme: 'light' }),
+          }),
+        );
+      });
+      expect(document.documentElement.classList.contains('dark')).toBe(false);
+      expect(document.documentElement.style.colorScheme).toBe('light');
     });
   });
 });

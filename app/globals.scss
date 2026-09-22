@@ -1220,9 +1220,12 @@ textarea {
   }
 }
 
+/* Matches `.console-workspace` so signing in never repaints the page. */
 .login-page {
   min-height: 100vh;
   padding: 24px;
+  background: var(--lobe-color-bg-layout);
+  color: var(--lobe-color-text);
 }
 
 .login-header {
