@@ -288,7 +288,13 @@ const getCookieValue = (request: RequestLike, name: string): string | null => {
     const [rawName, ...rest] = piece.trim().split('=');
 
     if (rawName === name) {
-      return decodeURIComponent(rest.join('='));
+      try {
+        return decodeURIComponent(rest.join('='));
+      } catch {
+        // A malformed percent-escape is a broken cookie, not a broken request:
+        // it must not take the whole page down for whoever sent it.
+        return rest.join('=');
+      }
     }
   }
 
@@ -1188,6 +1194,17 @@ export const changeAdminPassword = async (
 
   if (authError) {
     return authError;
+  }
+
+  // `getAdminSessionErrorResponse` deliberately lets everything through before
+  // an admin account exists, so that first-run setup is reachable. Rotation is
+  // not: otherwise an unauthenticated caller could rewrite the password record
+  // of a deployment that has not finished setup.
+  if (!(await hasAdminAccountAsync())) {
+    return Response.json(
+      { error: { message: 'Admin account is not configured' } },
+      { status: 409 },
+    );
   }
 
   const normalizedNextPassword = nextPassword.trim();

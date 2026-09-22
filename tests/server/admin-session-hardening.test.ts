@@ -483,13 +483,25 @@ describe('admin session hardening', () => {
 
     const response = await loginWithAdminPassword(
       makeRequest('/admin-api/auth/session'),
-      'correct horse battery staple',
+      SETUP_PASSWORD,
     );
 
     expect(response.status).toBe(200);
+    const issuedCookie = getCookieHeader(response);
 
     const nextState = await readState();
     expect(nextState.sessions).toHaveLength(50);
+
+    // The assertion this case exists for: the session just handed out must be
+    // the one that survives. Every fabricated session is stamped ahead of this
+    // instance's clock, so an implementation that evicts purely by createdAt
+    // drops the newest sign-in while still passing the length and token-59
+    // checks below.
+    expect(
+      await isAdminSessionAuthenticated(
+        makeRequest('/admin-api/settings', { cookie: issuedCookie }),
+      ),
+    ).toBe(true);
     expect(
       await isAdminSessionAuthenticated(
         makeRequest('/admin-api/settings', {
