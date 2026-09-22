@@ -228,8 +228,18 @@ describe('storage backends', () => {
     );
 
     const ensureSchema = vi.fn(async () => undefined);
+    // The salt has to survive its own insert-if-absent, otherwise the
+    // backend degrades to the legacy derivation and every assertion below
+    // that expects the scrypt mode fails.
+    const saltDocuments = new Map<string, Record<string, unknown>>();
     const getDocument = vi.fn(
-      async (): Promise<Record<string, unknown> | null> => null,
+      async (
+        namespace: string,
+        key: string,
+      ): Promise<Record<string, unknown> | null> =>
+        namespace === 'storage-crypto'
+          ? (saltDocuments.get(key) ?? null)
+          : null,
     );
     const listDocuments = vi.fn(async (namespace: string) => {
       if (namespace === 'credentials') {
@@ -257,6 +267,13 @@ describe('storage backends', () => {
       return [];
     });
     const putDocument = vi.fn(async (_input: unknown) => undefined);
+    const putDocumentIfAbsent = vi.fn(
+      async (input: Record<string, unknown>) => {
+        if (input.namespace === 'storage-crypto') {
+          saltDocuments.set(input.key as string, { payload: input.payload });
+        }
+      },
+    );
     const deleteDocument = vi.fn(async () => undefined);
     const appendUsageEvents = vi.fn(async () => undefined);
     const listUsageEvents = vi.fn(async () => []);
@@ -280,6 +297,7 @@ describe('storage backends', () => {
         public listDocuments = listDocuments;
         public listUsageEvents = listUsageEvents;
         public putDocument = putDocument;
+        public putDocumentIfAbsent = putDocumentIfAbsent;
         public trimDebugLogs = trimDebugLogs;
         public trimUsageEvents = trimUsageEvents;
       },
@@ -391,8 +409,11 @@ describe('storage backends', () => {
       value: null,
     });
 
+    // An unrecognised mode names itself and its document instead of falling
+    // through to the legacy derivation, which would surface as an opaque
+    // authentication-tag failure and invite a passphrase rotation.
     await expect(storage.listStorageJson('credentials')).rejects.toThrow(
-      'Invalid authentication tag length',
+      'Unsupported storage encryption mode: unknown for credentials/cred-a.json',
     );
 
     process.env.CODEBUDDY_STORAGE_ENCRYPTION_KEY = 'storage-secret';

@@ -96,6 +96,7 @@ interface MockAdapterHooks {
     key: string,
   ) => Promise<Record<string, unknown> | null>;
   putDocument?: (input: Record<string, unknown>) => Promise<void>;
+  putDocumentIfAbsent?: (input: Record<string, unknown>) => Promise<void>;
 }
 
 const installPgAdapterMock = (
@@ -103,6 +104,7 @@ const installPgAdapterMock = (
 ): {
   getDocument: ReturnType<typeof vi.fn>;
   putDocument: ReturnType<typeof vi.fn>;
+  putDocumentIfAbsent: ReturnType<typeof vi.fn>;
 } => {
   const getDocument = vi.fn(
     async (
@@ -113,6 +115,9 @@ const installPgAdapterMock = (
   );
   const putDocument = vi.fn(async (input: Record<string, unknown>) => {
     await hooks.putDocument?.(input);
+  });
+  const putDocumentIfAbsent = vi.fn(async (input: Record<string, unknown>) => {
+    await hooks.putDocumentIfAbsent?.(input);
   });
   const noop = vi.fn(async () => undefined);
 
@@ -129,12 +134,13 @@ const installPgAdapterMock = (
       public listDocuments = vi.fn(async () => []);
       public listUsageEvents = vi.fn(async () => []);
       public putDocument = putDocument;
+      public putDocumentIfAbsent = putDocumentIfAbsent;
       public trimDebugLogs = noop;
       public trimUsageEvents = noop;
     },
   }));
 
-  return { getDocument, putDocument };
+  return { getDocument, putDocument, putDocumentIfAbsent };
 };
 
 const configurePgStorage = (passphrase: string): void => {
@@ -336,7 +342,7 @@ describe('storage encryption KDF upgrade', () => {
     configurePgStorage(LEGACY_PASSPHRASE);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { getDocument, putDocument } = installPgAdapterMock({
-      putDocument: async (input) => {
+      putDocumentIfAbsent: async (input) => {
         if (input.namespace === 'storage-crypto') {
           throw new Error('read-only storage');
         }
@@ -408,7 +414,7 @@ describe('storage encryption KDF upgrade', () => {
   it('reads a salt stored as a serialized JSON payload', async () => {
     configurePgStorage(LEGACY_PASSPHRASE);
     const salt = crypto.randomBytes(16).toString('base64');
-    const { putDocument } = installPgAdapterMock({
+    const { putDocument, putDocumentIfAbsent } = installPgAdapterMock({
       getDocument: async (namespace) =>
         namespace === 'storage-crypto'
           ? { payload: JSON.stringify({ salt }) }
@@ -430,17 +436,37 @@ describe('storage encryption KDF upgrade', () => {
         scryptKey(LEGACY_PASSPHRASE, Buffer.from(salt, 'base64')),
       ),
     ).toEqual({ bearer_token: 'token' });
-    // An already persisted salt is never overwritten.
+    // An already persisted salt is never rewritten through either path.
     expect(lastPutFor(putDocument, 'storage-crypto')).toBeNull();
+    expect(lastPutFor(putDocumentIfAbsent, 'storage-crypto')).toBeNull();
   });
 
+  /**
+   * Writes a credential while the salt row holds `storedPayload`, which may be
+   * unusable. The adapter behaves like a real table: a persisted row survives,
+   * `putDocumentIfAbsent` is a no-op against it, and `putDocument` replaces it.
+   */
   const writeWithStoredSaltDocument = async (
     storedPayload: unknown,
-  ): Promise<Record<string, unknown> | null> => {
+  ): Promise<{
+    credentialWrite: Record<string, unknown> | null;
+    storedSalt: () => unknown;
+  }> => {
     configurePgStorage(LEGACY_PASSPHRASE);
+    let saltRow: Record<string, unknown> = { payload: storedPayload };
     const { putDocument } = installPgAdapterMock({
       getDocument: async (namespace) =>
-        namespace === 'storage-crypto' ? { payload: storedPayload } : null,
+        namespace === 'storage-crypto' ? saltRow : null,
+      putDocument: async (input) => {
+        if (input.namespace === 'storage-crypto') {
+          saltRow = { payload: input.payload };
+        }
+      },
+      putDocumentIfAbsent: async (input) => {
+        if (input.namespace === 'storage-crypto') {
+          saltRow = { payload: input.payload };
+        }
+      },
     });
 
     const storage = await import('@/lib/server/storage');
@@ -450,38 +476,91 @@ describe('storage encryption KDF upgrade', () => {
       bearer_token: 'token',
     });
 
-    return lastPutFor(putDocument, 'storage-crypto');
+    return {
+      credentialWrite: lastPutFor(putDocument, 'credentials'),
+      storedSalt: () =>
+        (saltRow.payload as { salt?: unknown } | undefined)?.salt,
+    };
   };
 
-  const expectSaltRegenerated = (
-    saltWrite: Record<string, unknown> | null,
+  /**
+   * A corrupt salt row has to be repaired, not merely complained about: if the
+   * unusable value survives, every later write silently falls back to the weak
+   * derivation for the lifetime of the deployment.
+   */
+  const expectSaltRepaired = (
+    result: Awaited<ReturnType<typeof writeWithStoredSaltDocument>>,
   ): void => {
-    expect(saltWrite?.key).toBe('kdf-salt');
-    expect(saltWrite?.encryptionMode).toBeNull();
-    const regenerated = (saltWrite?.payload as { salt?: unknown } | undefined)
-      ?.salt;
-    expect(regenerated).toEqual(expect.any(String));
-    expect(Buffer.from(regenerated as string, 'base64')).toHaveLength(16);
+    const salt = result.storedSalt();
+    expect(salt).toEqual(expect.any(String));
+    expect(Buffer.from(salt as string, 'base64')).toHaveLength(16);
+    // The effective mode is the real assertion — "we tried to write a salt" is
+    // not the same as "the next document is actually protected".
+    expect(result.credentialWrite?.encryptionMode).toBe('aes-256-gcm:v2');
+    expect(
+      decryptWithKey(
+        result.credentialWrite?.encryptedPayload as string,
+        scryptKey(LEGACY_PASSPHRASE, Buffer.from(salt as string, 'base64')),
+      ),
+    ).toEqual({ bearer_token: 'token' });
   };
 
-  it('regenerates the salt when the stored one has the wrong length', async () => {
-    const saltWrite = await writeWithStoredSaltDocument({
-      salt: 'not-a-16-byte-salt',
+  it('repairs the salt when the stored one has the wrong length', async () => {
+    expectSaltRepaired(
+      await writeWithStoredSaltDocument({ salt: 'not-a-16-byte-salt' }),
+    );
+  });
+
+  it('repairs the salt when the stored document is not JSON', async () => {
+    expectSaltRepaired(await writeWithStoredSaltDocument('not-json'));
+  });
+
+  it('repairs the salt when the stored document has no salt', async () => {
+    expectSaltRepaired(await writeWithStoredSaltDocument({}));
+  });
+
+  it('repairs a salt that decodes to 16 bytes but is not canonical base64', async () => {
+    // `Buffer.from` drops invalid characters, so a corrupted value can still
+    // decode to the right length. Accepting it would make the corruption
+    // permanent, because an insert-if-absent could never replace it.
+    const corrupt = 'AAAAAAAAAAAAAAAAAAAAAA';
+    const result = await writeWithStoredSaltDocument({ salt: corrupt });
+
+    // The assertion that actually discriminates: a length-only check would
+    // accept the corrupt value as-is and never repair it.
+    expect(result.storedSalt()).not.toBe(corrupt);
+    expect(
+      Buffer.from(result.storedSalt() as string, 'base64').toString('base64'),
+    ).toBe(result.storedSalt());
+    expectSaltRepaired(result);
+  });
+
+  it('falls back to the legacy mode when the salt cannot be repaired', async () => {
+    configurePgStorage(LEGACY_PASSPHRASE);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { putDocument } = installPgAdapterMock({
+      getDocument: async (namespace) =>
+        namespace === 'storage-crypto' ? { payload: { salt: 'broken' } } : null,
+      putDocument: async (input) => {
+        if (input.namespace === 'storage-crypto') {
+          throw new Error('read-only storage');
+        }
+      },
     });
 
-    expectSaltRegenerated(saltWrite);
-  });
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+    await storage.ensureStorageReady();
+    await storage.writeStorageJson('credentials', 'cred.json', {
+      bearer_token: 'token',
+    });
 
-  it('regenerates the salt when the stored document is not JSON', async () => {
-    const saltWrite = await writeWithStoredSaltDocument('not-json');
-
-    expectSaltRegenerated(saltWrite);
-  });
-
-  it('regenerates the salt when the stored document has no salt', async () => {
-    const saltWrite = await writeWithStoredSaltDocument({});
-
-    expectSaltRegenerated(saltWrite);
+    // Unrepairable, so this write degrades rather than failing...
+    expect(lastPutFor(putDocument, 'credentials')?.encryptionMode).toBe(
+      'aes-256-gcm',
+    );
+    // ...but it says so, instead of downgrading silently forever.
+    expect(warn).toHaveBeenCalled();
   });
 
   it('throws a descriptive error when a v2 document is read without its salt', async () => {

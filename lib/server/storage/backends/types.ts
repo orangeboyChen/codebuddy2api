@@ -32,6 +32,19 @@ export interface DatabaseStorageAdapter {
     namespace: string;
     payload: unknown;
   }): Promise<void>;
+  /**
+   * Writes the document only when no row exists for its namespace and key.
+   * Used where concurrent writers must agree on one value: an upsert would
+   * let the last writer win while the loser keeps using the value it
+   * generated, which is how two instances end up disagreeing on a key.
+   */
+  putDocumentIfAbsent(input: {
+    encryptedPayload: string | null;
+    encryptionMode: string | null;
+    key: string;
+    namespace: string;
+    payload: unknown;
+  }): Promise<void>;
   trimDebugLogs(maxEntries: number): Promise<void>;
   trimUsageEvents(before: Date): Promise<void>;
 }
