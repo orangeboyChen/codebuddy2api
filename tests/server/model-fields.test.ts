@@ -378,12 +378,15 @@ describe('pruneInactivePromotions', () => {
   });
 
   it('keeps a promotion whose window is open', () => {
+    // Both bounds sit far from today: `normalizeModelFields` reads the real
+    // clock, so a window dated anywhere near it turns this into a time bomb —
+    // which is exactly how it failed the day after it was written.
     const model = normalizeModelFields({
       id: 'running',
       promotion: {
-        endsAt: '2026-09-22T00:00:00.000Z',
+        endsAt: '2099-01-01T00:00:00.000Z',
         label: '进行中',
-        startsAt: '2026-09-20T00:00:00.000Z',
+        startsAt: '2020-01-01T00:00:00.000Z',
       },
     })!;
 
