@@ -37,6 +37,14 @@ Hy 系列模型（`hy3` 等）只接受 `reasoning_effort` 的 `no_think` / `low
 避免用两种词表重复表达同一件事、也避免上游因收到不认识的结构而报错。默认关闭，即原样转发、不做任何
 转换。也可以通过环境变量 `CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED` 预设（`true` / `false`）。
 
+### 按模型对齐思考档位
+
+与上面的开关无关，请求中指定的思考档位还会与上游目录声明该模型支持的档位做一次对齐。
+`/v1/messages` 与 `/v1/responses` 会把客户端使用的任意写法——Anthropic 的 `thinking`、
+`reasoning_effort` 或 `reasoning.effort`——归到同一档位阶梯上，然后发送该模型声明的最接近
+档位，并保留模型自己的拼写。上游声明完全不支持推理的模型不会收到任何思考字段；目录中不存在
+的模型则原样转发。
+
 ## 服务器工具
 
 Anthropic 客户端把搜索和抓取声明为服务端工具（`web_search_20260209`、

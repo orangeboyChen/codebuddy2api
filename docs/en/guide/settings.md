@@ -47,6 +47,16 @@ would still be rejected by the upstream this conversion exists to satisfy. The
 setting defaults to off, which forwards requests unchanged. Seed it before the
 console is opened with `CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED` (`true` / `false`).
 
+### Thinking effort per model
+
+Separately from the setting above, a request that names a thinking level is
+checked against the efforts the upstream catalog says the model accepts. Both
+`/v1/messages` and `/v1/responses` read whatever vocabulary the client used —
+Anthropic `thinking`, `reasoning_effort` or `reasoning.effort` — onto one ladder
+and send the nearest level the model advertises, in the model's own spelling. A
+model upstream describes as unable to reason receives no thinking field at all,
+and one the catalog does not describe is forwarded unchanged.
+
 ## Server tools
 
 Anthropic clients declare search and fetch as server-side tools

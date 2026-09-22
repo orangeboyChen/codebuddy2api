@@ -452,9 +452,15 @@ export const buildChatRequestBody = async (
   };
 
   // Pass through thinking/reasoning config so upstream models that support
-  // extended thinking can honor it.
+  // extended thinking can honor it. Both vocabularies are carried because the
+  // client may speak either one, and `buildUpstreamBody` reduces them to the
+  // single effort the model advertises.
   if (body.thinking) {
     result.thinking = body.thinking;
+  }
+
+  if (typeof body.reasoning_effort === 'string' && body.reasoning_effort) {
+    result.reasoning_effort = body.reasoning_effort;
   }
 
   return result;

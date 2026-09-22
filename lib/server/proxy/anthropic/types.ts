@@ -63,6 +63,12 @@ export interface AnthropicMessagesRequestBody {
   tools?: AnthropicTool[];
   tool_choice?: unknown;
   thinking?: AnthropicThinkingConfig;
+  /**
+   * Not an Anthropic field. Clients that speak the OpenAI vocabulary send their
+   * thinking depth here instead of as a `thinking` block, and dropping it would
+   * leave the request with no thinking depth at all.
+   */
+  reasoning_effort?: string;
   metadata?: Record<string, unknown>;
 }
 

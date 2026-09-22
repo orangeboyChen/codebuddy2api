@@ -3,6 +3,7 @@ import type { NextRequest } from 'next/server';
 import { getCodeBuddyApiEndpoint, getDefaultModel } from '../../domain/config';
 import { getCredentialSupportedModels } from '../../domain/credentials';
 import { resolveHyChatThinking } from '../../shared/hy-thought-depth';
+import { resolveModelChatThinking } from '../../shared/thinking-effort';
 import { getRequestHeaderMap } from '../../shared/http';
 import { getCredentialValue } from './context';
 import {
@@ -248,7 +249,18 @@ export const buildUpstreamBody = async (
       ? body.model
       : (credentialModels[0] ?? (await getDefaultModel()));
 
+  // The Hy conversion runs first: it speaks a vocabulary no client does, so
+  // what it produces — not what arrived — is what the model's advertised
+  // efforts have to be checked against.
   const hyThinking = await resolveHyChatThinking(model, body);
+  const thinking = resolveModelChatThinking(
+    context.auth.credentialData,
+    model,
+    {
+      reasoning_effort: hyThinking.reasoningEffort,
+      thinking: hyThinking.thinking,
+    },
+  );
 
   return {
     model,
@@ -266,7 +278,7 @@ export const buildUpstreamBody = async (
     tools: body.tools,
     tool_choice: body.tool_choice,
     parallel_tool_calls: body.parallel_tool_calls,
-    thinking: hyThinking.thinking,
-    reasoning_effort: hyThinking.reasoningEffort,
+    thinking: thinking.thinking,
+    reasoning_effort: thinking.reasoningEffort,
   };
 };

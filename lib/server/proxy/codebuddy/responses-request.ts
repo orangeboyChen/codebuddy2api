@@ -1,5 +1,7 @@
+import type { CredentialData } from '../../domain/credentials';
 import { stringifyContent } from '../../shared/content';
 import { resolveHyResponsesReasoning } from '../../shared/hy-thought-depth';
+import { resolveModelResponsesReasoning } from '../../shared/thinking-effort';
 import type { ChatRequestBody } from './types';
 
 export const isImageContentPart = (part: unknown): boolean => {
@@ -187,10 +189,20 @@ export const translateChatThinkingToResponses = (
  */
 export const resolveHyResponsesBody = async (
   body: Record<string, unknown>,
+  credentialData?: CredentialData | null,
 ): Promise<Record<string, unknown>> => {
-  const reasoning = await resolveHyResponsesReasoning(
-    typeof body.model === 'string' ? body.model : undefined,
-    body.reasoning as Record<string, unknown> | undefined,
+  const model = typeof body.model === 'string' ? body.model : undefined;
+
+  // The Hy conversion runs first: it speaks a vocabulary no client does, so
+  // what it produces — not what arrived — is what the model's advertised
+  // efforts have to be checked against.
+  const reasoning = resolveModelResponsesReasoning(
+    credentialData,
+    model,
+    await resolveHyResponsesReasoning(
+      model,
+      body.reasoning as Record<string, unknown> | undefined,
+    ),
   );
 
   return { ...body, reasoning };
@@ -198,11 +210,12 @@ export const resolveHyResponsesBody = async (
 
 export const normalizeResponsesUpstreamBody = async (
   body: Record<string, unknown>,
+  credentialData?: CredentialData | null,
 ): Promise<Record<string, unknown>> => {
   const { messages, ...rest } = body;
 
   if (rest.input !== undefined || !Array.isArray(messages)) {
-    return resolveHyResponsesBody(rest);
+    return resolveHyResponsesBody(rest, credentialData);
   }
 
   const systemInstructions = messages
@@ -238,11 +251,14 @@ export const normalizeResponsesUpstreamBody = async (
     .filter(Boolean)
     .join('\n\n');
 
-  return resolveHyResponsesBody({
-    ...rest,
-    ...(instructions ? { instructions } : {}),
-    input,
-  });
+  return resolveHyResponsesBody(
+    {
+      ...rest,
+      ...(instructions ? { instructions } : {}),
+      input,
+    },
+    credentialData,
+  );
 };
 
 export const buildResponsesBodyFromChat = async (
