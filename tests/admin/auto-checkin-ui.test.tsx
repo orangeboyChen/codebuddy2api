@@ -2,12 +2,12 @@
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
-import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
 
 import AccountStatus from '@/app/account-status/account-status';
 import type { CredentialSummary } from '@/app/credentials/credentials';
 import { getMessages } from '@/lib/i18n/messages';
+import { configProviderMotion } from '@/lib/client/motion';
 
 const makeJsonResponse = (payload: unknown, status = 200) =>
   new Response(JSON.stringify(payload), {
@@ -61,7 +61,7 @@ const snapshot = (filename: string) => ({
 
 const renderView = (credentials: CredentialSummary[]) =>
   render(
-    <ConfigProvider motion={motion}>
+    <ConfigProvider motion={configProviderMotion}>
       <NextIntlClientProvider locale="zh-CN" messages={getMessages('zh-CN')}>
         <AccountStatus
           credentials={credentials}

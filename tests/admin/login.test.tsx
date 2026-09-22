@@ -2,12 +2,12 @@
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
-import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
 
 import LoginClient from '@/app/login/login-client';
 import type { AdminLoginMessages } from '@/lib/i18n/messages';
 import { getMessages } from '@/lib/i18n/messages';
+import { configProviderMotion } from '@/lib/client/motion';
 
 vi.mock('@simplewebauthn/browser', () => ({
   browserSupportsWebAuthnAutofill: vi.fn(),
@@ -28,7 +28,7 @@ const makeJsonResponse = (payload: unknown, status = 200) => {
 
 const renderWithMessages = (children: React.ReactNode) => {
   return render(
-    <ConfigProvider motion={motion}>
+    <ConfigProvider motion={configProviderMotion}>
       <NextIntlClientProvider locale="zh-CN" messages={getMessages('zh-CN')}>
         {children}
       </NextIntlClientProvider>

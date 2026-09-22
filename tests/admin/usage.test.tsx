@@ -2,12 +2,12 @@
 
 import { render, screen } from '@testing-library/react';
 import { ConfigProvider } from '@lobehub/ui';
-import { motion } from 'motion/react';
 import { NextIntlClientProvider } from 'next-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 import Usage, { UsageProvider } from '@/app/usage/usage';
 import { getMessages } from '@/lib/i18n/messages';
+import { configProviderMotion } from '@/lib/client/motion';
 
 const renderUsage = () => {
   Object.defineProperty(window, 'localStorage', {
@@ -30,7 +30,7 @@ const renderUsage = () => {
   });
 
   return render(
-    <ConfigProvider motion={motion}>
+    <ConfigProvider motion={configProviderMotion}>
       <NextIntlClientProvider locale="en-US" messages={getMessages('en-US')}>
         <UsageProvider
           value={{
