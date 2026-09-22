@@ -143,6 +143,30 @@ export const readJsonBodyOrErrorResponse = async <T>(
   return result;
 };
 
+/**
+ * Reads a forwarded header such as `x-forwarded-proto` or `x-forwarded-host`.
+ *
+ * Each proxy in a chain appends to these headers, so the value reaching us is
+ * a comma-separated list whose first entry is the one the original client sent.
+ * Reading the header whole is never right: `"https, http"` is not a protocol,
+ * and `"example.com, proxy.internal"` is not a host — feeding either to
+ * `new URL()` or `new Request()` throws and takes the page down with it.
+ */
+export const getForwardedHeaderValue = (
+  headers: Headers,
+  name: string,
+): string | null => {
+  const raw = headers.get(name);
+
+  if (!raw) {
+    return null;
+  }
+
+  const first = raw.split(',')[0]?.trim() ?? '';
+
+  return first || null;
+};
+
 export const getRequestHeaderMap = (
   headers: Headers,
 ): Record<string, string> => {

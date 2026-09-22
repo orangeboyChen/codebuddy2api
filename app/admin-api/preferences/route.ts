@@ -7,14 +7,20 @@ import {
   systemLocalePreference,
 } from '@/lib/i18n/routing';
 import { resolvedThemeCookieName, themeCookieName } from '@/lib/theme';
-import { getJsonBody } from '@/lib/server/shared/http';
+import { getForwardedHeaderValue, getJsonBody } from '@/lib/server/shared/http';
+import { getActiveConfig } from '@/lib/server/domain/config';
 
 const maxAge = 60 * 60 * 24 * 365;
 
-const getCookieOptions = (request: Request) => {
-  const protocol =
-    request.headers.get('x-forwarded-proto') ??
-    new URL(request.url).protocol.replace(':', '');
+const getCookieOptions = async (request: Request) => {
+  // Same rule as the admin session cookie: trust the forwarded header only when
+  // this deployment says a proxy is allowed to set it, and take the first entry
+  // of a comma-separated list rather than the whole header.
+  const config = await getActiveConfig();
+  const forwarded =
+    config.CODEBUDDY_ADMIN_TRUST_PROXY &&
+    getForwardedHeaderValue(request.headers, 'x-forwarded-proto');
+  const protocol = forwarded || new URL(request.url).protocol.replace(':', '');
 
   return {
     httpOnly: true,
@@ -35,7 +41,7 @@ export const POST = async (request: Request): Promise<Response> => {
     theme?: unknown;
   }>(request);
   const response = NextResponse.json({ success: true });
-  const cookieOptions = getCookieOptions(request);
+  const cookieOptions = await getCookieOptions(request);
 
   if (typeof body.localePreference === 'string') {
     const localePreference = body.localePreference;

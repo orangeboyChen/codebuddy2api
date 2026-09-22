@@ -23,6 +23,7 @@ import {
 import { getModelsForCredentials } from '@/lib/server/proxy/codebuddy';
 import { getDebugSettings, listDebugLogs } from '@/lib/server/domain/debug';
 import { getUsageAnalytics } from '@/lib/server/domain/usage';
+import { getForwardedHeaderValue } from '@/lib/server/shared/http';
 import type { AppLocale } from '@/lib/i18n/routing';
 
 const defaultUsageRequest: UsageFiltersState = {
@@ -39,9 +40,10 @@ export interface InitialDataRequest {
 
 const buildApiEndpoint = async () => {
   const headerStore = await headers();
-  const protocol = headerStore.get('x-forwarded-proto') ?? 'http';
+  const protocol =
+    getForwardedHeaderValue(headerStore, 'x-forwarded-proto') ?? 'http';
   const host =
-    headerStore.get('x-forwarded-host') ??
+    getForwardedHeaderValue(headerStore, 'x-forwarded-host') ??
     headerStore.get('host') ??
     'localhost';
 
