@@ -12,7 +12,10 @@ import {
 import type { ProxyContext } from '../codebuddy';
 
 import { storeResponseSession } from './session';
-import { buildResponsesWebSearchCallItem } from './payload';
+import {
+  buildResponsesRequestEcho,
+  buildResponsesWebSearchCallItem,
+} from './payload';
 import {
   createMessageId,
   createResponseId,
@@ -62,11 +65,14 @@ export const mapChatStreamToResponsesEventStream = (
   emitServerToolLifecycle = true,
   providedOutputIndexAllocator?: () => number,
   rejectErrorPayloads = false,
+  /** See `mapChatResponseToResponsesPayload`: the announced `created_at`. */
+  announcedCreatedAt?: number,
 ): Response => {
   if (!upstreamResponse.ok || !upstreamResponse.body) {
     return upstreamResponse;
   }
 
+  const createdAt = announcedCreatedAt ?? Math.floor(Date.now() / 1000);
   const serverToolItems =
     providedServerToolItems ??
     getServerToolExecutions(upstreamResponse).map((execution, outputIndex) => {
@@ -200,10 +206,12 @@ export const mapChatStreamToResponsesEventStream = (
           response: {
             id: responseId,
             object: 'response',
-            created_at: Math.floor(Date.now() / 1000),
+            created_at: createdAt,
             model,
             output: [],
             status: 'in_progress',
+            metadata: defaults.metadata ?? {},
+            ...buildResponsesRequestEcho(defaults),
           },
         });
         enqueueEvent({
@@ -400,9 +408,14 @@ export const mapChatStreamToResponsesEventStream = (
               type: 'response.completed',
               response: {
                 id: responseId,
+                object: 'response',
+                created_at: createdAt,
+                completed_at: Math.floor(Date.now() / 1000),
                 status: 'completed',
+                model,
                 output_text: outputText,
                 previous_response_id: previousResponseId,
+                metadata: defaults.metadata ?? {},
                 usage: mapChatUsageToResponses(latestUsage),
                 output: [
                   ...serverToolItems.map(({ completed, outputIndex }) => ({
@@ -443,6 +456,7 @@ export const mapChatStreamToResponsesEventStream = (
                 ]
                   .sort((left, right) => left.outputIndex - right.outputIndex)
                   .map(({ item }) => item),
+                ...buildResponsesRequestEcho(defaults),
               },
             });
             controller.enqueue(encodeDoneFrame());

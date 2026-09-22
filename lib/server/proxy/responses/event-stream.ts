@@ -18,6 +18,7 @@ import {
 import { proxyChatCompletions, type ProxyContext } from '../codebuddy';
 import { executeImageGenerationLoop } from '../image-generation';
 import {
+  buildResponsesRequestEcho,
   buildResponsesWebSearchCallItem,
   mapChatResponseToResponsesStream,
 } from './payload';
@@ -91,6 +92,9 @@ export const createResponsesEventStream = async (
       ),
       rewrite ? rewrite.tools : translatedTools,
     ),
+    // Carried through, not assumed: the chat upstream honours it, so a client
+    // that forbids parallel calls gets one tool call at a time.
+    parallel_tool_calls: defaults.parallel_tool_calls,
   };
 
   /**
@@ -240,6 +244,8 @@ export const createResponsesEventStream = async (
       };
     });
 
+  const createdAt = Math.floor(Date.now() / 1000);
+
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
       const enqueueEvent = (
@@ -262,10 +268,12 @@ export const createResponsesEventStream = async (
         response: {
           id: responseId,
           object: 'response',
-          created_at: Math.floor(Date.now() / 1000),
+          created_at: createdAt,
           model,
           output: [],
           status: 'in_progress',
+          metadata: defaults.metadata ?? {},
+          ...buildResponsesRequestEcho(defaults),
         },
       });
       enqueueEvent({
@@ -342,6 +350,7 @@ export const createResponsesEventStream = async (
               true,
               allocateOutputIndex,
               true,
+              createdAt,
             )
           : mapChatResponseToResponsesStream(
               (await response.json()) as Record<string, unknown>,
@@ -361,6 +370,7 @@ export const createResponsesEventStream = async (
               // Already announced above: the replay must not emit a
               // second `response.created` under the same id.
               false,
+              createdAt,
             ));
         const reader = mappedResponse.body!.getReader();
         activeReader = reader;
