@@ -1201,9 +1201,12 @@ export const changeAdminPassword = async (
   // not: otherwise an unauthenticated caller could rewrite the password record
   // of a deployment that has not finished setup.
   if (!(await hasAdminAccountAsync())) {
+    // 401 rather than 409: with no admin account there is no session to hold,
+    // so from the caller's side this is simply "not authenticated", which is
+    // also what this endpoint answered before.
     return Response.json(
-      { error: { message: 'Admin account is not configured' } },
-      { status: 409 },
+      { error: { message: 'Admin session required' } },
+      { status: 401 },
     );
   }
 
