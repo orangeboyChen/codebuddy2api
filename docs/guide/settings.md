@@ -6,47 +6,37 @@
 
 填写或选择以下项目后点击「保存」：
 
-| 页面字段                        | 说明                                                  |
-| ------------------------------- | ----------------------------------------------------- |
-| CodeBuddy 官方 API 端点         | 上游地址，默认 `https://copilot.tencent.com`          |
-| 管理员 Passkey RP ID / 域名     | WebAuthn 使用的 hostname，不要填写协议或端口          |
-| 认证模式（auto/token）          | 上游认证方式                                          |
-| 网络环境（internal/ioa/public） | 上游网络环境                                          |
-| 日志级别                        | 选择 `DEBUG`、`INFO`、`WARNING` 或 `ERROR`            |
-| API 超时时间,首个 token(分钟)   | 首个 delta 迟迟不返回时中断请求；默认 `5`             |
-| WebSearch 后端                  | `web_search` 使用的搜索引擎，单选；详见下文           |
-| WebFetch 后端                   | `web_fetch` 使用的后端，多选、按顺序尝试；详见下文    |
-| 为 Hy 系列模型转换思想深度      | 把下游思考参数转为上游的 `reasoning_effort`；默认关闭 |
+| 页面字段                        | 说明                                               |
+| ------------------------------- | -------------------------------------------------- |
+| CodeBuddy 官方 API 端点         | 上游地址，默认 `https://copilot.tencent.com`       |
+| 管理员 Passkey RP ID / 域名     | WebAuthn 使用的 hostname，不要填写协议或端口       |
+| 认证模式（auto/token）          | 上游认证方式                                       |
+| 网络环境（internal/ioa/public） | 上游网络环境                                       |
+| 日志级别                        | 选择 `DEBUG`、`INFO`、`WARNING` 或 `ERROR`         |
+| API 超时时间,首个 token(分钟)   | 首个 delta 迟迟不返回时中断请求；默认 `5`          |
+| WebSearch 后端                  | `web_search` 使用的搜索引擎，单选；详见下文        |
+| WebFetch 后端                   | `web_fetch` 使用的后端，多选、按顺序尝试；详见下文 |
 
 API 超时时间从发起请求开始计时，直到上游返回第一个 delta，因此它限制的是「迟迟没有开始输出」的等待
 时间。一旦开始输出，即使回答较长也会允许其完成。支持小数分钟，取值范围 `0.1`~`1440`。也可以在打开
 控制台之前通过环境变量 `CODEBUDDY_API_TIMEOUT_MINUTES` 预设该值。
 
-Hy 系列模型（`hy3` 等）只接受 `reasoning_effort` 的 `no_think` / `low` / `high` 三档，而下游客户端
-并不使用这套词表：Claude Code 发送 Anthropic `thinking`，Codex 发送 Responses `reasoning.effort`。
-开启后，本服务会把两者转换到 Hy 的词表：
+### 思考档位
 
-| 下游取值                                     | 转换结果   |
-| -------------------------------------------- | ---------- |
-| `thinking.type: disabled`、`minimal`、`none` | `no_think` |
-| `budget_tokens` ≤ 8K、`low`、`medium`        | `low`      |
-| `budget_tokens` > 8K、`high`、`xhigh`、`max` | `high`     |
+每个客户端用自己的词表表达思考深度：Claude Code 发 Anthropic `thinking`，Codex 发 Responses
+`reasoning.effort`，Chat 客户端发 `reasoning_effort`。上游只接受一个档位值，因此 `/v1/messages`
+与 `/v1/responses` 会把请求归到同一条阶梯（`off` → `low` → `medium` → `high` → `xhigh`）上，
+再发送一个档位：
 
-模型名以 `hy` 开头即视为 Hy 模型（忽略大小写），因此 `hy3`、`hy3-ioa`、以及未来的 `hy4` 都会生效；
-`hunyuan-*` 是另一个前缀、属于不同产品线，不会被匹配。转换成功后，原始的 `thinking` 字段会被移除，
-避免用两种词表重复表达同一件事、也避免上游因收到不认识的结构而报错。默认关闭，即原样转发、不做任何
-转换。也可以通过环境变量 `CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED` 预设（`true` / `false`）。
+- 目录中有描述的模型：取它声明的最接近档位，并保留模型自己的拼写。例如 `hy3-x` 声明了
+  `low` 与 `high`，那么 `xhigh` 和 `medium` 都会落到 `high`。
+- 目录中没有描述的模型：把阶梯映射到上游自己使用的取值——`low`、`medium`、`high`、`max`。
+  `xhigh` 不在其中，会落到 `high`。
+- 上游声明完全不支持推理的模型：不发送任何思考字段。
 
-### 按模型对齐思考档位
-
-与上面的开关无关，请求中指定的思考档位还会与上游目录声明该模型支持的档位做一次对齐。
-`/v1/messages` 与 `/v1/responses` 会把客户端使用的任意写法——Anthropic 的 `thinking`、
-`reasoning_effort` 或 `reasoning.effort`——归到同一档位阶梯上，然后发送该模型声明的最接近
-档位，并保留模型自己的拼写。上游声明完全不支持推理的模型不会收到任何思考字段；目录中不存在
-的模型则原样转发。
-
-上面的 Hy 转换仍然先执行、也仍然值得开启：目录完全没有描述的 Hy 模型只有它能覆盖，
-按模型的对齐只是拿它产出的档位与模型声明做一次校验。
+思考无法关闭：所有声明了档位的模型都带 `canDisableThinking: false`，因此「不思考」的请求会落到
+可选的最浅档位，而不是上游并不接受的「none」。Anthropic 的 `thinking` 字段在被读取之后会被移除，
+避免用两种词表重复表达同一件事；但代理读不懂的词表会原样转发。
 
 ## 服务器工具
 

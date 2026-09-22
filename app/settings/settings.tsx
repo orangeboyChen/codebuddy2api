@@ -1,7 +1,7 @@
 'use client';
 
 import { Block, Flexbox, Input, TextArea } from '@lobehub/ui';
-import { Button, Select, Switch } from '@lobehub/ui/base-ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import { Table } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { atom } from 'jotai';
@@ -157,13 +157,6 @@ const settingsPlaceholders: Record<string, string> = {
 };
 
 /**
- * Settings rendered as a switch instead of a text input. These are the boolean
- * entries in the config; the server hides the web search label when no search
- * backend is configured, so the UI only ever sees it when it is usable.
- */
-const BOOLEAN_SETTING_KEYS = new Set(['CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED']);
-
-/**
  * Maps a setting key to its helper text.
  *
  * A lookup table rather than the chained ternary it replaced: four keys already
@@ -178,7 +171,6 @@ const settingHint = (
     CODEBUDDY_API_TIMEOUT_MINUTES: 'apiTimeoutHint',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'webSearchBackendHint',
     CODEBUDDY_WEB_FETCH_BACKEND: 'webFetchBackendHint',
-    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'hyThoughtDepthHint',
     CODEBUDDY_SEARXNG_URL: 'searxngUrlHint',
     CODEBUDDY_BROWSERABLE_URL: 'browserableUrlHint',
     CODEBUDDY_JINA_API_KEY: 'jinaKeyHint',
@@ -186,10 +178,6 @@ const settingHint = (
   const key = hints[settingKey];
 
   return key ? translations(`settingsPanel.${key}`) : undefined;
-};
-
-const isTruthySetting = (value: SettingsValue): boolean => {
-  return value === true || value === 'true' || value === '1';
 };
 
 const SettingField = ({
@@ -209,27 +197,6 @@ const SettingField = ({
   settingKey: string;
   value: SettingsValue;
 }) => {
-  if (BOOLEAN_SETTING_KEYS.has(settingKey)) {
-    return (
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <label
-            className="block whitespace-normal break-words font-medium text-text-light dark:text-text-dark"
-            htmlFor={settingKey}
-          >
-            {label}
-          </label>
-          {hint ? <div className="text-sm text-secondary">{hint}</div> : null}
-        </div>
-        <Switch
-          checked={isTruthySetting(value)}
-          id={settingKey}
-          onChange={(checked) => onChange(checked ? 'true' : 'false')}
-        />
-      </div>
-    );
-  }
-
   return (
     <div className="mb-4">
       <label

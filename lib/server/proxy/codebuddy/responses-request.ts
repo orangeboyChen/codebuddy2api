@@ -1,7 +1,6 @@
 import type { CredentialData } from '../../domain/credentials';
 import { stringifyContent } from '../../shared/content';
-import { resolveHyResponsesReasoning } from '../../shared/hy-thought-depth';
-import { resolveModelResponsesReasoning } from '../../shared/thinking-effort';
+import { resolveResponsesReasoning } from '../../shared/thinking-effort';
 import type { ChatRequestBody } from './types';
 
 export const isImageContentPart = (part: unknown): boolean => {
@@ -154,8 +153,15 @@ export const translateChatThinkingToResponses = (
   thinking: Record<string, unknown> | undefined,
   reasoningEffort: string | undefined,
 ): Record<string, unknown> | undefined => {
+  // The chat body has already had its thinking read onto a single effort by the
+  // time it reaches the upstream, so this branch is the normal one. `summary`
+  // travels with every effort: the Anthropic route reads the reasoning summary
+  // back out of the Responses stream, and without it a thinking request would
+  // return no thinking at all.
   if (!thinking)
-    return reasoningEffort ? { effort: reasoningEffort } : undefined;
+    return reasoningEffort
+      ? { effort: reasoningEffort, summary: 'auto' }
+      : undefined;
 
   if (thinking.type === 'disabled') return { effort: 'none' };
   if (thinking.type !== 'adaptive' && thinking.type !== 'enabled') {
@@ -187,22 +193,19 @@ export const translateChatThinkingToResponses = (
  * not accept, so the effort is rewritten onto the Hy vocabulary before the body
  * is forwarded.
  */
-export const resolveHyResponsesBody = async (
+export const resolveResponsesBody = async (
   body: Record<string, unknown>,
   credentialData?: CredentialData | null,
 ): Promise<Record<string, unknown>> => {
   const model = typeof body.model === 'string' ? body.model : undefined;
 
-  // The Hy conversion runs first: it speaks a vocabulary no client does, so
-  // what it produces — not what arrived — is what the model's advertised
-  // efforts have to be checked against.
-  const reasoning = resolveModelResponsesReasoning(
+  // Codex speaks Responses `reasoning.effort`, which is a finer-grained ladder
+  // than the upstream takes, so it is read onto the efforts the model
+  // advertises.
+  const reasoning = resolveResponsesReasoning(
     credentialData,
     model,
-    await resolveHyResponsesReasoning(
-      model,
-      body.reasoning as Record<string, unknown> | undefined,
-    ),
+    body.reasoning as Record<string, unknown> | undefined,
   );
 
   return { ...body, reasoning };
@@ -215,7 +218,7 @@ export const normalizeResponsesUpstreamBody = async (
   const { messages, ...rest } = body;
 
   if (rest.input !== undefined || !Array.isArray(messages)) {
-    return resolveHyResponsesBody(rest, credentialData);
+    return resolveResponsesBody(rest, credentialData);
   }
 
   const systemInstructions = messages
@@ -251,7 +254,7 @@ export const normalizeResponsesUpstreamBody = async (
     .filter(Boolean)
     .join('\n\n');
 
-  return resolveHyResponsesBody(
+  return resolveResponsesBody(
     {
       ...rest,
       ...(instructions ? { instructions } : {}),
@@ -361,9 +364,12 @@ export const buildResponsesBodyFromChat = async (
     ];
   });
   const text = translateChatResponseFormatToResponses(body.response_format);
-  const reasoning = await resolveHyResponsesReasoning(
-    body.model,
-    translateChatThinkingToResponses(body.thinking, body.reasoning_effort),
+  // The chat body has already been through `buildUpstreamBody`, so its
+  // thinking is a single effort by the time it gets here; this only has to
+  // restate it in the Responses shape.
+  const reasoning = translateChatThinkingToResponses(
+    body.thinking,
+    body.reasoning_effort,
   );
 
   return {

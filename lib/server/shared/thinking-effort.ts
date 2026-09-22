@@ -4,34 +4,32 @@ import {
 } from '../domain/credentials';
 
 /**
- * Model-aware thinking resolution.
+ * Thinking resolution for every client vocabulary.
  *
- * Every client asks for a thinking depth in its own vocabulary:
+ * Claude Code sends Anthropic `thinking: { type, budget_tokens }`, Codex sends
+ * Responses `reasoning: { effort }`, and Chat clients send `reasoning_effort`.
+ * None of those reaches the upstream intact: it takes a single effort value,
+ * and the `/v3/config` catalog reports which ones each model accepts as
+ * `reasoning.supportedEfforts`.
  *
- * - Claude Code sends Anthropic `thinking: { type, budget_tokens }`.
- * - Codex sends Responses `reasoning: { effort }`, where `effort` is one of
- *   `minimal`/`low`/`medium`/`high`/`xhigh`.
- * - Plain Chat clients send `reasoning_effort` in the OpenAI vocabulary.
- * - Hy-series models answer to `no_think`/`low`/`high` instead.
+ * So a request is read onto one ladder and then sent in one of two ways:
  *
- * The upstream catalog (`/v3/config`) reports the efforts each model actually
- * accepts as `reasoning.supportedEfforts`. Forwarding a level the model does
- * not offer makes the upstream reject the request or silently ignore the
- * intent, so the requested level is read onto one ladder and then snapped onto
- * the nearest level the model advertises. The value sent is always one of the
- * model's own strings, never a spelling invented here.
+ * - A model that advertises its efforts gets the nearest one, in its own
+ *   spelling — a level it does not offer is rejected or ignored upstream.
+ * - A model the catalog does not describe gets the ladder level mapped onto the
+ *   vocabulary the upstream uses for its own models.
  *
- * Anything the catalog does not describe is forwarded untouched: an unknown
- * model, or one that advertises no efforts, is a gap in what upstream told us
- * rather than a licence to rewrite the request.
+ * Either way the Anthropic `thinking` block is dropped once it has been read:
+ * leaving it beside the effort would ask for the same thing twice, in two
+ * vocabularies, and the block itself is not a shape the upstream accepts.
  */
 
 /**
  * The ladder every vocabulary is read onto, from no thinking to the deepest.
  *
- * `no_think` is the Hy spelling of `off` and `max` is a synonym clients use for
- * the deepest level, so both sit on an existing rung rather than extending the
- * ladder with a level no upstream accepts.
+ * `no_think` is a spelling a client may use for "off" and `max` is a synonym
+ * for the deepest level, so both sit on an existing rung rather than extending
+ * the ladder with a level nothing accepts.
  */
 const EFFORT_RANKS: Record<string, number> = {
   max: 5,
@@ -46,10 +44,35 @@ const EFFORT_RANKS: Record<string, number> = {
 };
 
 /**
+ * The effort sent for a model the catalog does not describe.
+ *
+ * These are the values the upstream uses for its own models: `low`, `medium`
+ * and `high` as the effort it applies by default, and `max` on the models that
+ * advertise a list. Anything off that vocabulary is mapped onto it rather than
+ * forwarded, because an effort upstream does not know is ignored and the caller
+ * silently gets the default instead of the depth it asked for.
+ *
+ * `xhigh` becomes `high` and the thinking-off levels become `low`: the upstream
+ * models that advertise efforts all declare `canDisableThinking: false`, so
+ * there is no way to ask for less thinking than `low`.
+ */
+const UPSTREAM_EFFORT_BY_LEVEL: Record<string, string> = {
+  high: 'high',
+  low: 'low',
+  max: 'max',
+  medium: 'medium',
+  minimal: 'low',
+  no_think: 'low',
+  none: 'low',
+  off: 'low',
+  xhigh: 'high',
+};
+
+/**
  * Anthropic `budget_tokens` is a raw token budget, not a level, so it is
  * bucketed against the output sizes the levels correspond to. The cut points
- * match the ones the Chat → Responses translator already uses, so a client that
- * reaches the upstream over either protocol lands on the same level.
+ * match the ones the Chat → Responses translator uses, so a client that reaches
+ * the upstream over either protocol lands on the same level.
  */
 const MINIMAL_THINKING_BUDGET = 2_048;
 const MEDIUM_THINKING_BUDGET = 8_192;
@@ -119,13 +142,30 @@ export const anthropicThinkingToEffort = (
 };
 
 /**
+ * The effort to send for a model the catalog does not describe.
+ *
+ * Yields `undefined` for a level this ladder does not know, so a request in a
+ * vocabulary the proxy cannot read is forwarded as it arrived rather than being
+ * rewritten onto a level picked at random.
+ */
+export const toUpstreamEffort = (level: unknown): string | undefined => {
+  const normalized = normalizeEffort(level);
+
+  if (!normalized) return undefined;
+
+  const effort = UPSTREAM_EFFORT_BY_LEVEL[normalized];
+
+  return typeof effort === 'string' ? effort : undefined;
+};
+
+/**
  * Snaps a requested level onto the nearest one the model advertises.
  *
  * An exact match is returned in the model's own spelling. Otherwise the closest
  * rung wins, and a tie goes to the deeper level: the caller asked for thinking,
  * and the shallower neighbour would silently under-deliver it. A level this
- * ladder does not know is left to the caller — guessing at its depth would move
- * a request the proxy cannot read onto a level the model may not accept.
+ * ladder does not know yields `undefined`, so the caller falls back to the
+ * upstream vocabulary instead of guessing at its depth.
  */
 export const pickSupportedEffort = (
   requested: unknown,
@@ -209,17 +249,12 @@ export const findModelThinkingCapabilities = (
 /**
  * Resolves the thinking fields to send upstream for a Chat request.
  *
- * A model upstream describes as unable to reason at all gets both fields
- * dropped: forwarding either would send a shape the upstream rejects or
- * ignores. Otherwise the requested level — the chat effort when the client sent
- * one, else the level its Anthropic `thinking` block asks for — is snapped onto
- * the model's advertised efforts and returned as `reasoning_effort`.
- *
- * `thinking` is dropped once it has been translated, for the same reason the Hy
- * conversion drops it: leaving the Anthropic block beside the converted effort
- * would ask twice, in two vocabularies, for the same thing.
+ * The requested level is the chat effort when the client sent one, and other-
+ * wise the level its Anthropic `thinking` block asks for. A model upstream
+ * describes as unable to reason gets both fields dropped, since forwarding
+ * either would ask for reasoning it cannot do.
  */
-export const resolveModelChatThinking = (
+export const resolveChatThinking = (
   credentialData: CredentialData | null | undefined,
   model: string | undefined,
   body: {
@@ -236,9 +271,7 @@ export const resolveModelChatThinking = (
   };
   const capabilities = findModelThinkingCapabilities(credentialData, model);
 
-  if (!capabilities) return fallback;
-
-  if (capabilities.supportsReasoning === false) {
+  if (capabilities?.supportsReasoning === false) {
     return { reasoningEffort: undefined, thinking: undefined };
   }
 
@@ -248,20 +281,21 @@ export const resolveModelChatThinking = (
 
   if (!requested) return fallback;
 
-  const effort = pickSupportedEffort(requested, capabilities.supportedEfforts);
+  const effort =
+    pickSupportedEffort(requested, capabilities?.supportedEfforts) ??
+    toUpstreamEffort(requested);
 
   return effort ? { reasoningEffort: effort, thinking: undefined } : fallback;
 };
 
 /**
- * Resolves the `reasoning` object to send upstream for a Responses request,
- * snapping the requested effort onto the level the model advertises.
+ * Resolves the `reasoning` object to send upstream for a Responses request.
  *
  * A model upstream describes as unable to reason gets the whole object dropped,
  * matching the Chat path: keeping a `summary` would still ask for reasoning the
  * model does not do.
  */
-export const resolveModelResponsesReasoning = (
+export const resolveResponsesReasoning = (
   credentialData: CredentialData | null | undefined,
   model: string | undefined,
   reasoning: Record<string, unknown> | undefined,
@@ -270,17 +304,15 @@ export const resolveModelResponsesReasoning = (
 
   const capabilities = findModelThinkingCapabilities(credentialData, model);
 
-  if (!capabilities) return reasoning;
+  if (capabilities?.supportsReasoning === false) return undefined;
 
-  // Every field of a `reasoning` object is a request for reasoning — `summary`
-  // asks the upstream to summarize thinking it is not going to do — so the whole
-  // object goes rather than just the effort.
-  if (capabilities.supportsReasoning === false) return undefined;
+  const requested = normalizeEffort(reasoning.effort);
 
-  const effort = pickSupportedEffort(
-    reasoning.effort,
-    capabilities.supportedEfforts,
-  );
+  if (!requested) return reasoning;
+
+  const effort =
+    pickSupportedEffort(requested, capabilities?.supportedEfforts) ??
+    toUpstreamEffort(requested);
 
   return effort ? { ...reasoning, effort } : reasoning;
 };

@@ -1547,7 +1547,7 @@ describe('anthropic messages api', () => {
     expect(userMessages[userMessages.length - 1].content).toBe('real message');
   });
 
-  it('passes thinking config to upstream body', async () => {
+  it('sends an Anthropic thinking block as an upstream effort', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeJsonResponse({
         choices: [{ message: { content: 'ok' } }],
@@ -1566,12 +1566,12 @@ describe('anthropic messages api', () => {
 
     const upstreamBody = JSON.parse(
       String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
-    ) as { thinking: Record<string, unknown> };
+    ) as { reasoning_effort?: string; thinking?: Record<string, unknown> };
 
-    expect(upstreamBody.thinking).toEqual({
-      type: 'enabled',
-      budget_tokens: 10000,
-    });
+    // The upstream takes a named effort, not an Anthropic `thinking` block, and
+    // a 10K budget is deeper than the medium cut point.
+    expect(upstreamBody.reasoning_effort).toBe('high');
+    expect(upstreamBody.thinking).toBeUndefined();
   });
 
   it('sends the thinking effort the model advertises', async () => {

@@ -4,17 +4,16 @@ Settings controls service parameters, credential models, usage data, and console
 
 ## Service settings
 
-| Field                                     | Purpose                                                                                    |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| CodeBuddy API endpoint                    | Upstream URL; default `https://copilot.tencent.com`                                        |
-| Admin passkey RP ID / domain              | WebAuthn hostname only; do not include scheme or port                                      |
-| Authentication mode (auto/token)          | Upstream authentication method                                                             |
-| Network environment (internal/ioa/public) | Upstream network environment                                                               |
-| Log level                                 | Choose `DEBUG`, `INFO`, `WARNING`, or `ERROR`                                              |
-| API timeout, first token (minutes)        | Abort a request that produces no first delta in time; default `5`                          |
-| Web search backend                        | Which engine runs `web_search`; one choice. See below.                                     |
-| Web fetch backend                         | Which backends fetch a page; several choices, tried in order. See below.                   |
-| Translate thought depth for Hy models     | Convert downstream thinking parameters into the upstream `reasoning_effort`; default `off` |
+| Field                                     | Purpose                                                                  |
+| ----------------------------------------- | ------------------------------------------------------------------------ |
+| CodeBuddy API endpoint                    | Upstream URL; default `https://copilot.tencent.com`                      |
+| Admin passkey RP ID / domain              | WebAuthn hostname only; do not include scheme or port                    |
+| Authentication mode (auto/token)          | Upstream authentication method                                           |
+| Network environment (internal/ioa/public) | Upstream network environment                                             |
+| Log level                                 | Choose `DEBUG`, `INFO`, `WARNING`, or `ERROR`                            |
+| API timeout, first token (minutes)        | Abort a request that produces no first delta in time; default `5`        |
+| Web search backend                        | Which engine runs `web_search`; one choice. See below.                   |
+| Web fetch backend                         | Which backends fetch a page; several choices, tried in order. See below. |
 
 Click **Save** after changing a field.
 
@@ -25,41 +24,28 @@ it takes. Fractional minutes are accepted, clamped to `0.1`–`1440`. Set the
 equivalent `CODEBUDDY_API_TIMEOUT_MINUTES` environment variable to seed the
 value before the console is ever opened.
 
-Hy-series models (`hy3` and friends) accept only three `reasoning_effort` values
-— `no_think`, `low` and `high` — and no downstream client speaks that
-vocabulary: Claude Code sends Anthropic `thinking`, while Codex sends Responses
-`reasoning.effort`. Enabling the setting converts both onto the Hy vocabulary:
+### Thinking effort
 
-| Downstream value                             | Converted to |
-| -------------------------------------------- | ------------ |
-| `thinking.type: disabled`, `minimal`, `none` | `no_think`   |
-| `budget_tokens` ≤ 8K, `low`, `medium`        | `low`        |
-| `budget_tokens` > 8K, `high`, `xhigh`, `max` | `high`       |
+Every client asks for a thinking depth in its own vocabulary: Claude Code sends
+Anthropic `thinking`, Codex sends Responses `reasoning.effort`, and Chat clients
+send `reasoning_effort`. The upstream takes a single effort value instead, so
+`/v1/messages` and `/v1/responses` read whatever arrived onto one ladder — from
+`off` through `low`, `medium` and `high` up to `xhigh` — and send one effort:
 
-Any model id starting with `hy` counts as a Hy model, case-insensitively, so
-`hy3` and `hy3-ioa` match today and a future `hy4` is covered without a code
-change. `hunyuan-*` is a different prefix and a separate product line, so it
-does not match.
+- A model the catalog describes gets the nearest level it advertises, in its own
+  spelling. `hy3-x` advertises `low` and `high`, so `xhigh` becomes `high` and
+  `medium` becomes `high` too.
+- A model the catalog does not describe gets the ladder level mapped onto the
+  values the upstream uses for its own models — `low`, `medium`, `high`, `max`.
+  `xhigh` is not one of them and becomes `high`.
+- A model upstream describes as unable to reason gets no thinking field at all.
 
-Once translated, the original `thinking` block is dropped: leaving it alongside
-the converted effort would ask for the same thing twice in two vocabularies, and
-would still be rejected by the upstream this conversion exists to satisfy. The
-setting defaults to off, which forwards requests unchanged. Seed it before the
-console is opened with `CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED` (`true` / `false`).
-
-### Thinking effort per model
-
-Separately from the setting above, a request that names a thinking level is
-checked against the efforts the upstream catalog says the model accepts. Both
-`/v1/messages` and `/v1/responses` read whatever vocabulary the client used —
-Anthropic `thinking`, `reasoning_effort` or `reasoning.effort` — onto one ladder
-and send the nearest level the model advertises, in the model's own spelling. A
-model upstream describes as unable to reason receives no thinking field at all,
-and one the catalog does not describe is forwarded unchanged.
-
-The Hy conversion above still runs first and is still worth enabling: it covers
-Hy models the catalog does not describe at all, and the per-model check only
-validates the level it produced against what the model advertises.
+Thinking cannot be switched off: every model that advertises efforts declares
+`canDisableThinking: false`, so a request for no thinking lands on the
+shallowest effort on offer rather than on a "none" the upstream does not accept.
+An Anthropic `thinking` block is dropped once it has been read — leaving it
+beside the effort would ask for the same thing twice, in two vocabularies — but
+a request in a vocabulary the proxy cannot read is forwarded untouched.
 
 ## Server tools
 

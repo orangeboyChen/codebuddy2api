@@ -2,8 +2,7 @@ import type { NextRequest } from 'next/server';
 
 import { getCodeBuddyApiEndpoint, getDefaultModel } from '../../domain/config';
 import { getCredentialSupportedModels } from '../../domain/credentials';
-import { resolveHyChatThinking } from '../../shared/hy-thought-depth';
-import { resolveModelChatThinking } from '../../shared/thinking-effort';
+import { resolveChatThinking } from '../../shared/thinking-effort';
 import { getRequestHeaderMap } from '../../shared/http';
 import { getCredentialValue } from './context';
 import {
@@ -249,17 +248,13 @@ export const buildUpstreamBody = async (
       ? body.model
       : (credentialModels[0] ?? (await getDefaultModel()));
 
-  // The Hy conversion runs first: it speaks a vocabulary no client does, so
-  // what it produces — not what arrived — is what the model's advertised
-  // efforts have to be checked against.
-  const hyThinking = await resolveHyChatThinking(model, body);
-  const thinking = resolveModelChatThinking(
+  // Claude Code speaks Anthropic `thinking` and Chat clients speak
+  // `reasoning_effort`; upstream takes one effort, so both are read onto the
+  // ladder the model advertises.
+  const thinking = resolveChatThinking(
     context.auth.credentialData,
     model,
-    {
-      reasoning_effort: hyThinking.reasoningEffort,
-      thinking: hyThinking.thinking,
-    },
+    body,
   );
 
   return {
