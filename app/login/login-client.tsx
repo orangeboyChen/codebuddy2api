@@ -17,11 +17,9 @@ import {
   type LocalePreference,
   parseLocalePreference,
 } from '@/lib/i18n/routing';
-import { themeChangeEventName, type ThemeMode } from '@/lib/theme';
-import {
-  saveLocalePreference,
-  saveThemePreference,
-} from '@/lib/client/preferences';
+import type { ThemeMode } from '@/lib/theme';
+import { saveLocalePreference } from '@/lib/client/preferences';
+import { useThemeAppearance } from '@/lib/client/theme';
 
 interface SessionSummary {
   accountConfigured: boolean;
@@ -72,6 +70,7 @@ const LoginClient = ({
   const [password, setPassword] = useState('');
   useHydrateAtoms([[themeAtom, initialTheme]]);
   const [theme, setTheme] = useAtom(themeAtom);
+  useThemeAppearance(theme);
   const [username, setUsername] = useState('');
   const [error, setError] = useState('');
   const [isPasskeyPending, setIsPasskeyPending] = useState(false);
@@ -97,22 +96,6 @@ const LoginClient = ({
     void saveLocalePreference(nextLocale as LocalePreference).finally(() => {
       window.location.reload();
     });
-  };
-
-  const changeTheme = (nextTheme: ThemeMode) => {
-    const isDark =
-      nextTheme === 'dark' ||
-      (nextTheme === 'system' &&
-        window.matchMedia('(prefers-color-scheme: dark)').matches);
-    setTheme(nextTheme);
-    document.documentElement.classList.toggle('dark', isDark);
-    document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
-    window.dispatchEvent(
-      new CustomEvent(themeChangeEventName, {
-        detail: isDark ? 'dark' : 'light',
-      }),
-    );
-    void saveThemePreference(nextTheme, isDark ? 'dark' : 'light');
   };
 
   const applySuccess = useCallback((nextSession?: SessionSummary) => {
@@ -277,7 +260,7 @@ const LoginClient = ({
         className="login-header"
         localePreference={localePreference}
         onLocaleChange={changeLocale}
-        onThemeChange={changeTheme}
+        onThemeChange={setTheme}
         theme={theme}
       />
       <Block
