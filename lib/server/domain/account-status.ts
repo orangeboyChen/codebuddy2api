@@ -188,8 +188,14 @@ const toResetAt = (value: unknown): string | null => {
 
 const toEnterpriseCredits = (payload: unknown): EnterpriseCredits | null => {
   const usage = asRecord(unwrapEnterpriseUsage(payload));
-  const total = usage ? toNumber(usage.limitNum) : null;
-  if (!usage || total === null) return null;
+  if (!usage) return null;
+  // Number(null) and Number('') are both 0, so an unavailable limit would
+  // read as a real zero quota - and a negative remainder once credit is
+  // subtracted - instead of handing the card back to the package list.
+  const limit = usage.limitNum;
+  if (limit === null || limit === undefined || limit === '') return null;
+  const total = toNumber(limit);
+  if (total === null) return null;
   const used = toNumber(usage.credit) ?? 0;
   return {
     remaining: total - used,
@@ -201,7 +207,15 @@ const toEnterpriseCredits = (payload: unknown): EnterpriseCredits | null => {
 
 const toPlanName = (payload: unknown): string | null =>
   String(
-    findValue(payload, ['plan', 'planName', 'userType', 'PackageName']) ?? '',
+    findValue(payload, [
+      'plan',
+      'planName',
+      'userType',
+      'PackageName',
+      'editionName',
+      'enterpriseName',
+      'packageName',
+    ]) ?? '',
   ) || null;
 
 const normalizeQuotaPayload = (payload: unknown): unknown => {
