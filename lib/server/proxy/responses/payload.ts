@@ -114,6 +114,30 @@ const buildUrlCitationAnnotations = (
   return annotations;
 };
 
+/**
+ * The Response fields that echo the request instead of describing output.
+ *
+ * The Responses API marks every one of them required on the response object,
+ * so a client that reads `tool_choice` or `instructions` off what it was
+ * handed — or that checks `error` before reading `output` — finds `undefined`
+ * when they are left out.
+ *
+ * `temperature` and `top_p` are deliberately absent: the proxy never samples,
+ * so any number it put there would be invented, and a client that echoed the
+ * value back on the next turn would be asking for sampling this deployment
+ * does not do.
+ */
+export const buildResponsesRequestEcho = (
+  defaults: ResponseSessionDefaults,
+): Record<string, unknown> => ({
+  error: null,
+  incomplete_details: null,
+  instructions: defaults.instructions ?? null,
+  parallel_tool_calls: true,
+  tool_choice: defaults.tool_choice ?? 'auto',
+  tools: defaults.tools ?? [],
+});
+
 export const mapChatResponseToResponsesPayload = async (
   accessKeyId: string | null,
   credentialFilename: string | null,
@@ -288,6 +312,7 @@ export const mapChatResponseToResponsesPayload = async (
     id: responseId,
     object: 'response',
     created_at: createdAt,
+    completed_at: createdAt,
     status: 'completed',
     model,
     output,
@@ -295,6 +320,7 @@ export const mapChatResponseToResponsesPayload = async (
     usage: mapChatUsageToResponses(upstreamPayload.usage),
     metadata: defaults.metadata ?? {},
     previous_response_id: previousResponseId,
+    ...buildResponsesRequestEcho(defaults),
   };
 };
 
@@ -437,7 +463,14 @@ export const mapChatResponseToResponsesStream = async (
     ...(emitOpeningEvents
       ? [
           {
-            response: { ...payload, output: [], status: 'in_progress' },
+            response: {
+              ...payload,
+              // `completed_at` is only set once the response is completed, and
+              // this frame is the announcement that it is not.
+              completed_at: null,
+              output: [],
+              status: 'in_progress',
+            },
             type: 'response.created',
           },
           {

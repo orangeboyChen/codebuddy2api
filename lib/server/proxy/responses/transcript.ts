@@ -408,7 +408,7 @@ export const mapChatUsageToResponses = (
   if (!usage || typeof usage !== 'object') {
     return {
       input_tokens: 0,
-      input_tokens_details: { cached_tokens: 0 },
+      input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
       output_tokens: 0,
       output_tokens_details: { reasoning_tokens: 0 },
       total_tokens: 0,
@@ -462,7 +462,14 @@ export const mapChatUsageToResponses = (
 
   return {
     input_tokens: inputTokens,
-    input_tokens_details: { cached_tokens: cachedTokens },
+    // `cache_write_tokens` is the Responses spelling of the chat protocol's
+    // cache-creation count, and the spec requires it alongside
+    // `cached_tokens` — without it a client reading the breakdown off the
+    // usage object sees `undefined` where it expects a number.
+    input_tokens_details: {
+      cached_tokens: cachedTokens,
+      cache_write_tokens: cacheCreationTokens,
+    },
     output_tokens: outputTokens,
     output_tokens_details: { reasoning_tokens: reasoningTokens },
     total_tokens:

@@ -18,6 +18,7 @@ import {
 import { proxyChatCompletions, type ProxyContext } from '../codebuddy';
 import { executeImageGenerationLoop } from '../image-generation';
 import {
+  buildResponsesRequestEcho,
   buildResponsesWebSearchCallItem,
   mapChatResponseToResponsesStream,
 } from './payload';
@@ -240,6 +241,8 @@ export const createResponsesEventStream = async (
       };
     });
 
+  const createdAt = Math.floor(Date.now() / 1000);
+
   const stream = new ReadableStream<Uint8Array>({
     start: (controller) => {
       const enqueueEvent = (
@@ -262,10 +265,12 @@ export const createResponsesEventStream = async (
         response: {
           id: responseId,
           object: 'response',
-          created_at: Math.floor(Date.now() / 1000),
+          created_at: createdAt,
           model,
           output: [],
           status: 'in_progress',
+          metadata: defaults.metadata ?? {},
+          ...buildResponsesRequestEcho(defaults),
         },
       });
       enqueueEvent({

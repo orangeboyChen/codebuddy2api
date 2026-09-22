@@ -364,7 +364,10 @@ describe('Responses memory bounds', () => {
 
     expect(payload.usage).toEqual({
       input_tokens: 281734,
-      input_tokens_details: { cached_tokens: 281408 },
+      input_tokens_details: {
+        cache_write_tokens: 0,
+        cached_tokens: 281408,
+      },
       output_tokens: 506,
       output_tokens_details: { reasoning_tokens: 12 },
       total_tokens: 282240,
@@ -410,7 +413,7 @@ describe('Responses memory bounds', () => {
 
     expect(payload.usage).toEqual({
       input_tokens: 0,
-      input_tokens_details: { cached_tokens: 0 },
+      input_tokens_details: { cache_write_tokens: 0, cached_tokens: 0 },
       output_tokens: 0,
       output_tokens_details: { reasoning_tokens: 0 },
       total_tokens: 0,
@@ -442,7 +445,7 @@ describe('Responses memory bounds', () => {
     // added again when computing the fallback total.
     expect(payload.usage).toEqual({
       input_tokens: 10,
-      input_tokens_details: { cached_tokens: 0 },
+      input_tokens_details: { cache_write_tokens: 2, cached_tokens: 0 },
       output_tokens: 3,
       output_tokens_details: { reasoning_tokens: 0 },
       total_tokens: 13,
@@ -474,7 +477,10 @@ describe('Responses memory bounds', () => {
     // tokens never exceed the reported input total.
     expect(payload.usage).toEqual({
       input_tokens: 281734,
-      input_tokens_details: { cached_tokens: 281408 },
+      input_tokens_details: {
+        cache_write_tokens: 0,
+        cached_tokens: 281408,
+      },
       output_tokens: 506,
       output_tokens_details: { reasoning_tokens: 0 },
       total_tokens: 282240,
