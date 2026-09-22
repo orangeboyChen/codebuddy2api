@@ -388,12 +388,29 @@ describe('responses event stream', () => {
 
     await reader.cancel();
     releaseUpstream();
-    // Long enough for the abandoned turn to come back and be dropped.
-    await new Promise((resolve) => setTimeout(resolve, 20));
 
-    // Nothing more arrives, and the stream is closed rather than errored: a
-    // hang-up is the client's choice, not a failure of the turn.
-    await expect(reader.read()).resolves.toMatchObject({ done: true });
+    // Poll rather than sleeping a fixed interval: the abandoned turn still has
+    // to be awaited before the stream closes, and a fixed wait is exactly the
+    // kind of guess that goes flaky on a loaded CI runner.
+    let settled = false;
+
+    for (let attempt = 0; attempt < 100 && !settled; attempt += 1) {
+      const next = await Promise.race([
+        reader.read(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 10)),
+      ]);
+
+      if (next === null) {
+        continue;
+      }
+
+      // Nothing more arrives, and the stream is closed rather than errored: a
+      // hang-up is the client's choice, not a failure of the turn.
+      expect(next).toMatchObject({ done: true });
+      settled = true;
+    }
+
+    expect(settled).toBe(true);
   });
 
   it('drives an image generation through the server-tool turn', async () => {
