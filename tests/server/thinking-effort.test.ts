@@ -270,13 +270,14 @@ describe('resolveModelResponsesReasoning', () => {
     ).toEqual({ effort: 'high', summary: 'auto' });
   });
 
-  it('drops the effort for a model that cannot reason', () => {
+  it('drops the whole reasoning object for a model that cannot reason', () => {
+    // `summary` is itself a request for reasoning, so it cannot stay behind.
     expect(
       resolveModelResponsesReasoning(glmCatalog, 'glm-5.3-lite', {
         effort: 'high',
         summary: 'auto',
       }),
-    ).toEqual({ summary: 'auto' });
+    ).toBeUndefined();
 
     expect(
       resolveModelResponsesReasoning(glmCatalog, 'glm-5.3-lite', {

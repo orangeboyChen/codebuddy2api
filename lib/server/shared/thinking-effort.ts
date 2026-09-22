@@ -253,22 +253,13 @@ export const resolveModelChatThinking = (
   return effort ? { reasoningEffort: effort, thinking: undefined } : fallback;
 };
 
-/** A `reasoning` object with its `effort` removed, or `undefined` if emptied. */
-const withoutEffort = (
-  reasoning: Record<string, unknown>,
-): Record<string, unknown> | undefined => {
-  const rest: Record<string, unknown> = {};
-
-  for (const [key, value] of Object.entries(reasoning)) {
-    if (key !== 'effort') rest[key] = value;
-  }
-
-  return Object.keys(rest).length ? rest : undefined;
-};
-
 /**
  * Resolves the `reasoning` object to send upstream for a Responses request,
  * snapping the requested effort onto the level the model advertises.
+ *
+ * A model upstream describes as unable to reason gets the whole object dropped,
+ * matching the Chat path: keeping a `summary` would still ask for reasoning the
+ * model does not do.
  */
 export const resolveModelResponsesReasoning = (
   credentialData: CredentialData | null | undefined,
@@ -281,7 +272,10 @@ export const resolveModelResponsesReasoning = (
 
   if (!capabilities) return reasoning;
 
-  if (capabilities.supportsReasoning === false) return withoutEffort(reasoning);
+  // Every field of a `reasoning` object is a request for reasoning — `summary`
+  // asks the upstream to summarize thinking it is not going to do — so the whole
+  // object goes rather than just the effort.
+  if (capabilities.supportsReasoning === false) return undefined;
 
   const effort = pickSupportedEffort(
     reasoning.effort,

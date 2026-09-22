@@ -57,6 +57,10 @@ and send the nearest level the model advertises, in the model's own spelling. A
 model upstream describes as unable to reason receives no thinking field at all,
 and one the catalog does not describe is forwarded unchanged.
 
+The Hy conversion above still runs first and is still worth enabling: it covers
+Hy models the catalog does not describe at all, and the per-model check only
+validates the level it produced against what the model advertises.
+
 ## Server tools
 
 Anthropic clients declare search and fetch as server-side tools
