@@ -57,6 +57,28 @@ const toNumber = (value: unknown): number | null => {
   return Number.isFinite(number) ? number : null;
 };
 
+interface EnterpriseCredits {
+  remaining: number;
+  resetAt: string | null;
+  total: number;
+  used: number;
+}
+
+const getEnterpriseId = (credential: CredentialRecord): string =>
+  String(
+    credential.data.enterprise_id ?? credential.data.enterpriseId ?? '',
+  ).trim();
+
+/** Upstream answers 404/405 where a meter endpoint is not deployed. */
+const isNotFoundOrMethodMismatch = (error: unknown): boolean =>
+  error instanceof Error &&
+  (error.message.endsWith('returned 404') ||
+    error.message.endsWith('returned 405'));
+
+const ENTERPRISE_USAGE_PATH = '/v2/billing/meter/get-enterprise-user-usage';
+const ENTERPRISE_USAGE_FALLBACK_PATH =
+  '/billing/meter/get-enterprise-user-usage';
+
 const fetchJson = async (
   credential: CredentialRecord,
   path: string,
@@ -75,9 +97,7 @@ const fetchJson = async (
   const userId = String(
     credential.data.user_id ?? credential.data.user_info?.email ?? '',
   ).trim();
-  const enterpriseId = String(
-    credential.data.enterprise_id ?? credential.data.enterpriseId ?? '',
-  ).trim();
+  const enterpriseId = getEnterpriseId(credential);
   const tenantId = String(
     credential.data.tenant_id ?? credential.data.tenantId ?? enterpriseId,
   ).trim();
@@ -118,11 +138,7 @@ const fetchCheckinStatus = async (
       {},
     );
   } catch (error) {
-    if (
-      !(error instanceof Error) ||
-      (!error.message.endsWith('returned 404') &&
-        !error.message.endsWith('returned 405'))
-    ) {
+    if (!isNotFoundOrMethodMismatch(error)) {
       throw error;
     }
     return fetchJson(
@@ -133,6 +149,60 @@ const fetchCheckinStatus = async (
     );
   }
 };
+
+/**
+ * An enterprise seat draws on the tenant meter, not on a package list, so the
+ * personal resource query returns nothing usable for it. The desktop client
+ * reads this endpoint instead; without it an enterprise card shows no credits.
+ */
+const fetchEnterpriseUsage = async (
+  credential: CredentialRecord,
+): Promise<unknown> => {
+  try {
+    return await fetchJson(credential, ENTERPRISE_USAGE_PATH, 'POST', {});
+  } catch (error) {
+    if (!isNotFoundOrMethodMismatch(error)) {
+      throw error;
+    }
+    return fetchJson(credential, ENTERPRISE_USAGE_FALLBACK_PATH, 'POST', {});
+  }
+};
+
+/** The tenant meter answers `data.data || data || payload`. */
+const unwrapEnterpriseUsage = (payload: unknown): unknown => {
+  const record = asRecord(payload);
+  if (!record) return payload;
+  const data = record.data;
+  if (data === undefined || data === null) return payload;
+  return asRecord(data)?.data ?? data;
+};
+
+const toResetAt = (value: unknown): string | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  return value === undefined || value === null || value === ''
+    ? null
+    : String(value);
+};
+
+const toEnterpriseCredits = (payload: unknown): EnterpriseCredits | null => {
+  const usage = asRecord(unwrapEnterpriseUsage(payload));
+  const total = usage ? toNumber(usage.limitNum) : null;
+  if (!usage || total === null) return null;
+  const used = toNumber(usage.credit) ?? 0;
+  return {
+    remaining: total - used,
+    resetAt: toResetAt(usage.cycleResetTime),
+    total,
+    used,
+  };
+};
+
+const toPlanName = (payload: unknown): string | null =>
+  String(
+    findValue(payload, ['plan', 'planName', 'userType', 'PackageName']) ?? '',
+  ) || null;
 
 const normalizeQuotaPayload = (payload: unknown): unknown => {
   const accounts = findValue(payload, ['Accounts']);
@@ -289,29 +359,54 @@ const loadAccountStatus = async (
   let checkinPayload: unknown;
   let models: DiscoveredModel[] = [];
 
-  try {
-    const now = new Date();
-    const formatDate = (value: Date) =>
-      value.toISOString().slice(0, 19).replace('T', ' ');
-    creditsPayload = await fetchJson(
-      credential,
-      '/v2/billing/meter/get-user-resource',
-      'POST',
-      {
-        PageNumber: 1,
-        PageSize: 100,
-        ProductCode: 'p_tcaca',
-        Status: [0, 3],
-        PackageEndTimeRangeBegin: formatDate(now),
-        PackageEndTimeRangeEnd: formatDate(
-          new Date(now.getTime() + 365 * 101 * 24 * 60 * 60 * 1000),
-        ),
-      },
-    );
-  } catch (error) {
-    errors.push(
-      error instanceof Error ? error.message : 'Credits query failed',
-    );
+  let enterpriseUsage: {
+    credits: EnterpriseCredits;
+    payload: unknown;
+  } | null = null;
+
+  if (getEnterpriseId(credential)) {
+    try {
+      const payload = await fetchEnterpriseUsage(credential);
+      const credits = toEnterpriseCredits(payload);
+      if (credits) {
+        enterpriseUsage = { credits, payload };
+      }
+    } catch (error) {
+      errors.push(
+        error instanceof Error
+          ? error.message
+          : 'Enterprise usage query failed',
+      );
+    }
+  }
+
+  // A tenant meter that answers with no limit is not an answer: fall back to
+  // the personal resource query rather than reporting an empty card.
+  if (!enterpriseUsage) {
+    try {
+      const now = new Date();
+      const formatDate = (value: Date) =>
+        value.toISOString().slice(0, 19).replace('T', ' ');
+      creditsPayload = await fetchJson(
+        credential,
+        '/v2/billing/meter/get-user-resource',
+        'POST',
+        {
+          PageNumber: 1,
+          PageSize: 100,
+          ProductCode: 'p_tcaca',
+          Status: [0, 3],
+          PackageEndTimeRangeBegin: formatDate(now),
+          PackageEndTimeRangeEnd: formatDate(
+            new Date(now.getTime() + 365 * 101 * 24 * 60 * 60 * 1000),
+          ),
+        },
+      );
+    } catch (error) {
+      errors.push(
+        error instanceof Error ? error.message : 'Credits query failed',
+      );
+    }
   }
   try {
     checkinPayload = await fetchCheckinStatus(credential);
@@ -356,46 +451,43 @@ const loadAccountStatus = async (
       claimed,
       message: typeof claimedValue === 'string' ? claimedValue : null,
     },
-    credits: {
-      total: toNumber(
-        findValue(normalizeQuotaPayload(creditsPayload), [
-          'total',
-          'total_size',
-          'quota',
-          'TotalDosage',
-        ]),
-      ),
-      used: toNumber(
-        findValue(normalizeQuotaPayload(creditsPayload), [
-          'used',
-          'total_used',
-        ]),
-      ),
-      remaining: toNumber(
-        findValue(normalizeQuotaPayload(creditsPayload), [
-          'remaining',
-          'total_remain',
-        ]),
-      ),
-      plan:
-        String(
-          findValue(creditsPayload, [
-            'plan',
-            'planName',
-            'userType',
-            'PackageName',
-          ]) ?? '',
-        ) || null,
-      resetAt:
-        String(
-          findValue(creditsPayload, [
-            'resetAt',
-            'reset_at',
-            'resetTime',
-            'CycleEndTime',
-          ]) ?? '',
-        ) || null,
-    },
+    credits: enterpriseUsage
+      ? {
+          ...enterpriseUsage.credits,
+          plan: toPlanName(enterpriseUsage.payload),
+        }
+      : {
+          total: toNumber(
+            findValue(normalizeQuotaPayload(creditsPayload), [
+              'total',
+              'total_size',
+              'quota',
+              'TotalDosage',
+            ]),
+          ),
+          used: toNumber(
+            findValue(normalizeQuotaPayload(creditsPayload), [
+              'used',
+              'total_used',
+            ]),
+          ),
+          remaining: toNumber(
+            findValue(normalizeQuotaPayload(creditsPayload), [
+              'remaining',
+              'total_remain',
+            ]),
+          ),
+          plan: toPlanName(creditsPayload),
+          resetAt:
+            String(
+              findValue(creditsPayload, [
+                'resetAt',
+                'reset_at',
+                'resetTime',
+                'CycleEndTime',
+              ]) ?? '',
+            ) || null,
+        },
     error: errors.length ? errors.join('; ') : null,
     filename: credential.filename,
     models,
