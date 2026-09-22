@@ -1,4 +1,4 @@
-import crypto from 'node:crypto';
+import crypto, { createHash, timingSafeEqual } from 'node:crypto';
 
 import { readStorageJsonResult, writeStorageJson } from '../storage';
 
@@ -258,6 +258,21 @@ export const findAccessKeyById = async (
   );
 };
 
+// Access key secrets stay plaintext in storage because admins can reveal them
+// later, so only the comparison is hardened here. Hashing both sides first
+// yields fixed-length digests, which avoids leaking the secret length and keeps
+// timingSafeEqual usable without an explicit length check.
+const hashSecretForComparison = (secret: string): Buffer => {
+  return createHash('sha256').update(secret).digest();
+};
+
+const secretsMatch = (candidate: string, stored: string): boolean => {
+  return timingSafeEqual(
+    hashSecretForComparison(candidate),
+    hashSecretForComparison(stored),
+  );
+};
+
 export const findAccessKeyBySecret = async (
   secret: string,
 ): Promise<AccessKeyRecord | null> => {
@@ -266,8 +281,8 @@ export const findAccessKeyBySecret = async (
   }
 
   return (
-    (await readAccessKeyStore()).accessKeys.find(
-      (item) => item.secret === secret,
+    (await readAccessKeyStore()).accessKeys.find((item) =>
+      secretsMatch(secret, item.secret),
     ) ?? null
   );
 };

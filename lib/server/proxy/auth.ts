@@ -103,46 +103,6 @@ export const getClientAuthErrorResponse = (
   })();
 };
 
-export const getAdminAuthErrorResponse = (
-  request: NextRequest,
-): Promise<Response | null> => {
-  return (async () => {
-    const storeError = await getAccessKeyStoreErrorResponse();
-
-    if (storeError) {
-      return storeError;
-    }
-
-    if (!(await hasAccessKeys())) {
-      return null;
-    }
-
-    const token = extractAccessKeyToken(request);
-
-    if (!token) {
-      return Response.json(
-        { error: { message: 'x-api-key or Authorization header is required' } },
-        { status: 401 },
-      );
-    }
-
-    if (!(await findAccessKeyBySecret(token))) {
-      return Response.json(
-        { error: { message: 'Invalid access key' } },
-        { status: 403 },
-      );
-    }
-
-    return null;
-  })();
-};
-
-export const getAuthErrorResponse = (
-  request: NextRequest,
-): Promise<Response | null> => {
-  return getClientAuthErrorResponse(request);
-};
-
 export const getAnthropicAuthErrorResponse = (
   request: NextRequest,
 ): Promise<Response | null> => {
