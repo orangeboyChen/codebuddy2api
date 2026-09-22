@@ -70,6 +70,13 @@ curl http://127.0.0.1:8001/v1/chat/completions \
 
 Database backends require `CODEBUDDY_STORAGE_ENCRYPTION_KEY`. Set `DATABASE_URL` for PostgreSQL or `CODEBUDDY_STORAGE_SQLITE_PATH` for SQLite.
 
+Switching an existing `file` deployment to a database backend imports only config, admin auth, access keys, debug settings, and credentials. Usage events and debug traces are left behind, so export what you need from the console before switching.
+
+## Security Notes
+
+- **`/v1/*` is unauthenticated until an access key exists.** With no access key stored, inference requests are allowed through by design so a fresh instance needs no setup. Create an access key in the console before exposing the port beyond localhost.
+- **Adding `CODEBUDDY_STORAGE_ENCRYPTION_KEY` later does not hide existing data.** Each document keeps the mode it was written with, so data written before the key existed stays readable; only new writes are encrypted. Set it anyway, and back the key up — losing it locks everything written afterwards.
+
 ## Documentation
 
 [Read the documentation](https://orangeboychen.github.io/codebuddy2api/)
