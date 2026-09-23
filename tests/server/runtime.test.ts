@@ -210,6 +210,23 @@ describe('server runtime', () => {
       'example.com',
     );
     expect(savedPayload.settings.CODEBUDDY_ADMIN_TRUST_PROXY).toBe(false);
+
+    // The same setting as a real boolean and as a number: both reach the
+    // coercion, and only an explicit truthy value may turn it back on.
+    for (const [sent, expected] of [
+      [true, true],
+      [0, false],
+    ] as const) {
+      const response = await AdminSettingsRoute.POST(
+        makeJsonRequest('http://localhost/admin-api/settings', {
+          settings: { CODEBUDDY_ADMIN_TRUST_PROXY: sent },
+        }),
+      );
+
+      expect((await response.json()).settings.CODEBUDDY_ADMIN_TRUST_PROXY).toBe(
+        expected,
+      );
+    }
     expect(fs.existsSync(path.join(tempDataDir, 'runtime.json'))).toBe(true);
 
     const addResponse = await AdminCredentialsRoute.POST(
