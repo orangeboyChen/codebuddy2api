@@ -229,6 +229,25 @@ const normalizeValue = <K extends keyof RuntimeConfig>(
     return String(value) as RuntimeConfig[K];
   }
 
+  // A boolean setting reaches here as a string whenever it comes from the
+  // environment or from the console's form payload. Coercing it matters: left
+  // as-is, the string "false" is truthy and the setting could never be turned
+  // off. Only "true" and "1" read as true, so an unrecognised value fails
+  // closed onto the safer of the two readings rather than guessing.
+  if (typeof fallback === 'boolean') {
+    if (typeof value === 'boolean') {
+      return value as RuntimeConfig[K];
+    }
+
+    if (typeof value === 'number') {
+      return (value !== 0) as RuntimeConfig[K];
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+
+    return (normalized === 'true' || normalized === '1') as RuntimeConfig[K];
+  }
+
   return value as RuntimeConfig[K];
 };
 

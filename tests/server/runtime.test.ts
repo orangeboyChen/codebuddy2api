@@ -189,11 +189,18 @@ describe('server runtime', () => {
       'Passkey RP ID',
     );
 
+    // Boolean settings arrive as strings from both the environment and the
+    // console form. Without coercion the string "false" is truthy, so the
+    // setting could never be turned off — which is why this is asserted here
+    // rather than left to the type.
+    expect(settingsBefore.settings.CODEBUDDY_ADMIN_TRUST_PROXY).toBe(true);
+
     const saveResponse = await AdminSettingsRoute.POST(
       makeJsonRequest('http://localhost/admin-api/settings', {
         settings: {
           CODEBUDDY_ADMIN_PASSKEY_RP_ID: 'example.com',
           CODEBUDDY_AUTH_MODE: 'token',
+          CODEBUDDY_ADMIN_TRUST_PROXY: 'false',
         },
       }),
     );
@@ -202,6 +209,7 @@ describe('server runtime', () => {
     expect(savedPayload.settings.CODEBUDDY_ADMIN_PASSKEY_RP_ID).toBe(
       'example.com',
     );
+    expect(savedPayload.settings.CODEBUDDY_ADMIN_TRUST_PROXY).toBe(false);
     expect(fs.existsSync(path.join(tempDataDir, 'runtime.json'))).toBe(true);
 
     const addResponse = await AdminCredentialsRoute.POST(
