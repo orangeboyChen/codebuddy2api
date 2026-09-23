@@ -600,15 +600,13 @@ const parseKdfSaltDocument = (payload: unknown): Buffer | null => {
 
   const buffer = Buffer.from(salt, 'base64');
 
-  if (buffer.length !== KDF_SALT_BYTES) {
-    return null;
-  }
-
-  // `Buffer.from` decodes base64 permissively and silently drops invalid
-  // characters, so a corrupted value can still come out 16 bytes long. Require
-  // the canonical encoding instead, otherwise such a value is accepted as a
-  // salt that no repair can ever replace.
-  return buffer.toString('base64') === salt ? buffer : null;
+  // Deliberately lenient about spelling — missing padding, stray whitespace.
+  // `Buffer.from` recovers the same bytes either way, and those bytes are what
+  // every existing v2 document was encrypted with. Rejecting a decodable salt
+  // would send it through repair, replacing bytes that still work and making
+  // every credential and access key written with them unreadable. Only a value
+  // that cannot produce a salt at all is unusable.
+  return buffer.length === KDF_SALT_BYTES ? buffer : null;
 };
 
 class FileStorageBackend implements StorageBackend {
@@ -871,33 +869,17 @@ class DatabaseStorageBackend implements StorageBackend {
         return resolved;
       }
 
-      // Only repair a row we actually found and could not parse. When the row
-      // was missing at first read, the insert above may still be in flight on
-      // another instance; upserting now would overwrite the salt that instance
-      // is about to read back, and the two would derive different keys. In that
-      // case fall through to the legacy derivation and settle on the next
-      // write.
-      if (!existing) {
-        return null;
-      }
-
-      // The stored value is one this code cannot produce, so v2 ciphertext
-      // written with it is already unreadable. Replacing it cannot lose
-      // anything that is still decryptable.
-      await this.adapter.putDocument({
-        encryptedPayload: null,
-        encryptionMode: null,
-        key: KDF_SALT_KEY,
-        namespace: KDF_SALT_NAMESPACE,
-        payload: { salt: candidate.toString('base64') },
-      });
-
-      const repaired = await this.adapter.getDocument(
-        KDF_SALT_NAMESPACE,
-        KDF_SALT_KEY,
-      );
-
-      return parseKdfSaltDocument(repaired?.payload ?? null);
+      // No repair pass on purpose. Replacing an existing row needs a
+      // compare-and-swap the adapters do not offer: two replicas hitting the
+      // same unusable value would each upsert their own candidate, each read
+      // their own back, and each keep deriving with a different key — the exact
+      // divergence insert-if-absent exists to prevent. An unusable row also
+      // cannot have come from this code, which only ever writes a canonical
+      // salt, so there is nothing to recover that a rewrite would not risk.
+      //
+      // Fall through to the legacy derivation instead, loudly enough that the
+      // deployment notices.
+      return null;
     } catch {
       return null;
     }

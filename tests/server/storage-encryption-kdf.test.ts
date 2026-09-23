@@ -450,20 +450,24 @@ describe('storage encryption KDF upgrade', () => {
     storedPayload: unknown,
   ): Promise<{
     credentialWrite: Record<string, unknown> | null;
-    storedSalt: () => unknown;
+    saltUpserts: number;
+    storedPayload: () => unknown;
   }> => {
     configurePgStorage(LEGACY_PASSPHRASE);
     let saltRow: Record<string, unknown> = { payload: storedPayload };
+    let upserts = 0;
     const { putDocument } = installPgAdapterMock({
       getDocument: async (namespace) =>
         namespace === 'storage-crypto' ? saltRow : null,
       putDocument: async (input) => {
         if (input.namespace === 'storage-crypto') {
           saltRow = { payload: input.payload };
+          upserts += 1;
         }
       },
+      // Faithful to the real adapter: a no-op once the row exists.
       putDocumentIfAbsent: async (input) => {
-        if (input.namespace === 'storage-crypto') {
+        if (input.namespace === 'storage-crypto' && saltRow === null) {
           saltRow = { payload: input.payload };
         }
       },
@@ -478,64 +482,65 @@ describe('storage encryption KDF upgrade', () => {
 
     return {
       credentialWrite: lastPutFor(putDocument, 'credentials'),
-      storedSalt: () =>
-        (saltRow.payload as { salt?: unknown } | undefined)?.salt,
+      // An existing salt row must never be replaced: two replicas would each
+      // keep the candidate they wrote and derive different keys.
+      saltUpserts: upserts,
+      storedPayload: () => saltRow.payload,
     };
   };
 
   /**
-   * A corrupt salt row has to be repaired, not merely complained about: if the
-   * unusable value survives, every later write silently falls back to the weak
-   * derivation for the lifetime of the deployment.
+   * An unusable salt row is never rewritten, so the write degrades to the legacy
+   * derivation — which still encrypts, only with the old weak key.
    */
-  const expectSaltRepaired = (
-    result: Awaited<ReturnType<typeof writeWithStoredSaltDocument>>,
-  ): void => {
-    const salt = result.storedSalt();
-    expect(salt).toEqual(expect.any(String));
-    expect(Buffer.from(salt as string, 'base64')).toHaveLength(16);
-    // The effective mode is the real assertion — "we tried to write a salt" is
-    // not the same as "the next document is actually protected".
+  const expectLegacyFallback = async (
+    storedPayload: unknown,
+  ): Promise<void> => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await writeWithStoredSaltDocument(storedPayload);
+
+    expect(result.credentialWrite?.encryptionMode).toBe('aes-256-gcm');
+    // The stored value is untouched: rewriting it is what would make two
+    // replicas disagree, and what could destroy a salt that still decrypts.
+    expect(result.storedPayload()).toEqual(storedPayload);
+    expect(result.saltUpserts).toBe(0);
+    // Degrading silently forever would be worse than the weak key.
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  };
+
+  it('falls back to the legacy mode when the stored salt has the wrong length', async () => {
+    await expectLegacyFallback({ salt: 'not-a-16-byte-salt' });
+  });
+
+  it('falls back to the legacy mode when the stored document is not JSON', async () => {
+    await expectLegacyFallback('not-json');
+  });
+
+  it('falls back to the legacy mode when the stored document has no salt', async () => {
+    await expectLegacyFallback({});
+  });
+
+  it('keeps a salt whose spelling is not canonical base64', async () => {
+    // The regression this guards: `Buffer.from` recovers the same 16 bytes from
+    // a value with missing padding or stray whitespace, and those bytes are the
+    // key every existing v2 document was written with. Treating such a value as
+    // corrupt and replacing it would make all of them unreadable.
+    const loose = `${crypto.randomBytes(16).toString('base64')}==`;
+    const result = await writeWithStoredSaltDocument({ salt: loose });
+
+    // Reused, not replaced.
+    expect((result.storedPayload() as { salt?: unknown }).salt).toBe(loose);
     expect(result.credentialWrite?.encryptionMode).toBe('aes-256-gcm:v2');
     expect(
       decryptWithKey(
         result.credentialWrite?.encryptedPayload as string,
-        scryptKey(LEGACY_PASSPHRASE, Buffer.from(salt as string, 'base64')),
+        scryptKey(LEGACY_PASSPHRASE, Buffer.from(loose, 'base64')),
       ),
     ).toEqual({ bearer_token: 'token' });
-  };
-
-  it('repairs the salt when the stored one has the wrong length', async () => {
-    expectSaltRepaired(
-      await writeWithStoredSaltDocument({ salt: 'not-a-16-byte-salt' }),
-    );
   });
 
-  it('repairs the salt when the stored document is not JSON', async () => {
-    expectSaltRepaired(await writeWithStoredSaltDocument('not-json'));
-  });
-
-  it('repairs the salt when the stored document has no salt', async () => {
-    expectSaltRepaired(await writeWithStoredSaltDocument({}));
-  });
-
-  it('repairs a salt that decodes to 16 bytes but is not canonical base64', async () => {
-    // `Buffer.from` drops invalid characters, so a corrupted value can still
-    // decode to the right length. Accepting it would make the corruption
-    // permanent, because an insert-if-absent could never replace it.
-    const corrupt = 'AAAAAAAAAAAAAAAAAAAAAA';
-    const result = await writeWithStoredSaltDocument({ salt: corrupt });
-
-    // The assertion that actually discriminates: a length-only check would
-    // accept the corrupt value as-is and never repair it.
-    expect(result.storedSalt()).not.toBe(corrupt);
-    expect(
-      Buffer.from(result.storedSalt() as string, 'base64').toString('base64'),
-    ).toBe(result.storedSalt());
-    expectSaltRepaired(result);
-  });
-
-  it('falls back to the legacy mode when the salt cannot be repaired', async () => {
+  it('falls back to the legacy mode when the salt cannot be persisted', async () => {
     configurePgStorage(LEGACY_PASSPHRASE);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { putDocument } = installPgAdapterMock({
