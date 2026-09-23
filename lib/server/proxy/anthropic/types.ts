@@ -43,6 +43,12 @@ export interface AnthropicTool {
   description?: string;
   input_schema: Record<string, unknown>;
   type?: string;
+  // Server-declared tools (web_search / web_fetch) carry extra configuration
+  // that `mapAnthropicToolsToChat` forwards verbatim to the upstream.
+  allowed_domains?: string[];
+  blocked_domains?: string[];
+  max_uses?: number;
+  user_location?: Record<string, unknown>;
 }
 
 export interface AnthropicThinkingConfig {

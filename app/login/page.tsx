@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation';
 import LoginClient from './login-client';
 import { getAdminSessionSummary } from '@/lib/server/admin/session';
 import { getMessages } from '@/lib/i18n/messages';
+import { resolveRequestOrigin } from '@/lib/server/shared/http';
 import {
   localeCookieName,
   localePreferenceCookieName,
@@ -29,11 +30,10 @@ const LoginPage = async () => {
       ? (headerStore.get('accept-language') ?? undefined)
       : localePreference,
   );
-  const protocol = headerStore.get('x-forwarded-proto') ?? 'http';
-  const host =
-    headerStore.get('x-forwarded-host') ??
-    headerStore.get('host') ??
-    'localhost';
+  const { protocol, host } = await resolveRequestOrigin(headerStore, {
+    host: 'localhost',
+    protocol: 'http',
+  });
   const cookieHeader = headerStore.get('cookie') ?? '';
   const request = new Request(`${protocol}://${host}/login`, {
     headers: cookieHeader ? { cookie: cookieHeader } : {},

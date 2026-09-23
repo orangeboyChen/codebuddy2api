@@ -143,6 +143,76 @@ export const readJsonBodyOrErrorResponse = async <T>(
   return result;
 };
 
+/**
+ * Reads a forwarded header such as `x-forwarded-proto` or `x-forwarded-host`.
+ *
+ * Each proxy in a chain appends to these headers, so the value reaching us is
+ * a comma-separated list whose first entry is the one the original client sent.
+ * Reading the header whole is never right: `"https, http"` is not a protocol,
+ * and `"example.com, proxy.internal"` is not a host — feeding either to
+ * `new URL()` or `new Request()` throws and takes the page down with it.
+ */
+export const getForwardedHeaderValue = (
+  headers: Headers,
+  name: string,
+): string | null => {
+  const raw = headers.get(name);
+
+  if (!raw) {
+    return null;
+  }
+
+  const first = raw.split(',')[0]?.trim() ?? '';
+
+  return first || null;
+};
+
+/**
+ * Resolves the origin a request should be treated as coming from.
+ *
+ * Two things make this more than a header lookup. The forwarded headers are a
+ * comma-separated chain, and they are only meaningful when the deployment says
+ * a proxy in front of us is allowed to write them. They are also arbitrary
+ * client input on a directly exposed instance, and feeding that straight into
+ * `new URL()` throws — a caller could otherwise take every admin page down
+ * with a single malformed `X-Forwarded-Host`.
+ */
+export const resolveRequestOrigin = async (
+  headers: Headers,
+  fallback: { host: string; protocol: string },
+): Promise<{ host: string; protocol: string }> => {
+  let trustForwarded = true;
+
+  try {
+    const { getActiveConfig } = await import('../domain/config');
+    trustForwarded = (await getActiveConfig()).CODEBUDDY_ADMIN_TRUST_PROXY;
+  } catch {
+    // Storage is unavailable; keep the documented default rather than adding
+    // a second failure mode to a page that is already degraded.
+  }
+
+  const protocol = trustForwarded
+    ? getForwardedHeaderValue(headers, 'x-forwarded-proto')?.toLowerCase()
+    : null;
+  const host = trustForwarded
+    ? getForwardedHeaderValue(headers, 'x-forwarded-host')
+    : null;
+  const candidate = {
+    host: host ?? headers.get('host')?.trim() ?? fallback.host,
+    protocol: protocol ?? fallback.protocol,
+  };
+
+  // Anything that is not a parseable origin falls back, instead of throwing
+  // out of the page render.
+  try {
+    new URL(`${candidate.protocol}://${candidate.host}/`);
+  } catch {
+    return fallback;
+  }
+
+  return candidate;
+};
+
 export const getRequestHeaderMap = (
   headers: Headers,
 ): Record<string, string> => {

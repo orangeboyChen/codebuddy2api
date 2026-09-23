@@ -8,7 +8,48 @@ services:
       HOSTNAME: 0.0.0.0
       PORT: '8001'
       NEXT_TELEMETRY_DISABLED: '1'
+      # Storage backend. `file` is the code default, so it is left unset here on
+      # purpose: keys under `environment` win over the ../.env env_file below,
+      # and pinning `file` would silently override a backend someone set there.
+      # Uncomment to pin it explicitly.
+      # CODEBUDDY_STORAGE_BACKEND: 'file'
+      # Single-instance sqlite alternative:
+      #   CODEBUDDY_STORAGE_BACKEND: 'sqlite'
+      #   CODEBUDDY_STORAGE_SQLITE_PATH: '/app/.codebuddy_data/storage.sqlite'
+      #   CODEBUDDY_STORAGE_ENCRYPTION_KEY: '<long random secret>'
+      #   CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES: 'false'  # set after migration
+      # Multi-instance pg alternative:
+      #   CODEBUDDY_STORAGE_BACKEND: 'pg'
+      #   CODEBUDDY_STORAGE_PG_URL: 'postgres://user:password@your-postgres-host:5432/codebuddy2api'
+      # No database service is defined here — point this at your own server, or
+      # add one plus a network, before copying it.
+      #   CODEBUDDY_STORAGE_ENCRYPTION_KEY: '<long random secret>'
+      #   CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES: 'false'  # set after migration
+      # Both database backends refuse to start without an encryption key.
+      #
+      # Migrating from file to sqlite/pg: the one-shot legacy import only
+      # carries config, admin auth, access keys, debug settings and credentials.
+      # Usage events and debug traces are NOT imported, so export anything you
+      # need from the console first, then flip the backend.
+      #
+      # Required by the sqlite/pg backends above (they refuse to start without
+      # it). The file backend stores plain JSON with 0600 permissions and does
+      # NOT use this key, so it is inert unless you switch backends. It is also
+      # safe to add later: the encryption mode is stored per document, so
+      # documents written before the key was set stay readable as plain-json.
+      # CODEBUDDY_STORAGE_ENCRYPTION_KEY: '<long random secret>'
+      #
+      # Container-side directories, if you want them stated explicitly. Left
+      # commented for the same reason as the backend above: an `environment`
+      # entry wins over ../.env, and these two are documented knobs that an
+      # existing deployment may already have set there. The values below match
+      # the defaults, so enabling them changes nothing on a default install.
+      # CODEBUDDY_STORAGE_FILE_DIR: '/app/.codebuddy_data'
+      # CODEBUDDY_CREDENTIALS_DIR: '/app/.codebuddy_creds'
     volumes:
+      # Host paths are relative to this file's directory (deploy/), so ../ is
+      # the repository root. Do not change these to ./ — that relocates the
+      # data directory and existing deployments would come up looking empty.
       - ../.codebuddy_data:/app/.codebuddy_data
       - ../.codebuddy_creds:/app/.codebuddy_creds
     env_file:

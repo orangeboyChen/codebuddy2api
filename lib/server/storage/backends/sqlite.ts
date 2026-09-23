@@ -251,6 +251,27 @@ export class DrizzleSqliteDatabaseStorageAdapter implements DatabaseStorageAdapt
       });
   }
 
+  public async putDocumentIfAbsent(input: {
+    encryptedPayload: string | null;
+    encryptionMode: string | null;
+    key: string;
+    namespace: string;
+    payload: unknown;
+  }): Promise<void> {
+    await this.db
+      .insert(documents)
+      .values({
+        documentKey: input.key,
+        encryptedPayload: input.encryptedPayload,
+        encryptionMode: input.encryptionMode,
+        namespace: input.namespace,
+        payload: input.payload,
+      })
+      .onConflictDoNothing({
+        target: [documents.namespace, documents.documentKey],
+      });
+  }
+
   public async deleteDocument(namespace: string, key: string): Promise<void> {
     await this.db
       .delete(documents)

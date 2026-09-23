@@ -11,6 +11,49 @@ data:
   CODEBUDDY_AUTH_MODE: 'auto'
   CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa'
   CODEBUDDY_LOG_LEVEL: 'INFO'
+  # `file` is already the code default; it is spelled out here so an upgrade can
+  # never swap the backend under an existing deployment and make its data look
+  # lost. Unlike docker-compose.yml there is no env_file here, so pinning it
+  # cannot override anything.
+  #
+  # For multiple replicas switch to `pg` (or `sqlite` for a single replica):
+  #   CODEBUDDY_STORAGE_BACKEND: 'pg'
+  #   CODEBUDDY_STORAGE_PG_URL: 'postgres://user:password@db:5432/codebuddy2api'
+  # Database backends require CODEBUDDY_STORAGE_ENCRYPTION_KEY and refuse to
+  # start without it; `file` does not support more than one replica.
+  #
+  # Migrating from file: the one-shot legacy import only carries config, admin
+  # auth, access keys, debug settings and credentials. Usage events and debug
+  # traces are NOT imported, so export anything you need from the console
+  # first, then flip the backend.
+  CODEBUDDY_STORAGE_BACKEND: 'file'
+  # Container-side directories matching the volumeMounts below.
+  CODEBUDDY_STORAGE_FILE_DIR: '/app/.codebuddy_data'
+  CODEBUDDY_CREDENTIALS_DIR: '/app/.codebuddy_creds'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: codebuddy2api-secrets
+type: Opaque
+# Placeholder only — never commit a real key. Generate the Secret locally so the
+# value never lands in version control:
+#   kubectl create secret generic codebuddy2api-secrets \
+#     --from-literal=CODEBUDDY_STORAGE_ENCRYPTION_KEY="$(openssl rand -base64 48)" \
+#     --dry-run=client -o yaml | kubectl apply -f -
+# Or apply this manifest and then replace the placeholder:
+#   kubectl edit secret codebuddy2api-secrets
+# The file backend stores plain JSON with 0600 permissions and does NOT use this
+# key, so it is inert until you switch to sqlite/pg, where it is required.
+# Leaving the placeholder in place means a publicly known key, so replace it (or
+# drop this Secret and the secretKeyRef env entry) before running in production.
+# Deliberately empty. Committing a placeholder that everyone can read is worse
+# than committing nothing: with `optional: true` below the variable arrives
+# empty, which the code treats as unset (it trims the value), and a database
+# backend then refuses to start with a clear error instead of quietly
+# encrypting with a published key.
+stringData:
+  CODEBUDDY_STORAGE_ENCRYPTION_KEY: ''
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -39,6 +82,8 @@ kind: Deployment
 metadata:
   name: codebuddy2api
 spec:
+  # Keep this at 1: the `file` backend is single-instance. Raise it only after
+  # switching CODEBUDDY_STORAGE_BACKEND to pg.
   replicas: 1
   selector:
     matchLabels:
@@ -57,6 +102,16 @@ spec:
           envFrom:
             - configMapRef:
                 name: codebuddy2api-env
+          env:
+            - name: CODEBUDDY_STORAGE_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codebuddy2api-secrets
+                  key: CODEBUDDY_STORAGE_ENCRYPTION_KEY
+                  # Optional so the pod still starts without the Secret: the
+                  # `file` backend works unencrypted. sqlite/pg fail fast with
+                  # "CODEBUDDY_STORAGE_ENCRYPTION_KEY is required".
+                  optional: true
           readinessProbe:
             httpGet:
               path: /health

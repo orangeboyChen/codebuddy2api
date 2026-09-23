@@ -1,9 +1,4 @@
-import {
-  createHash,
-  randomBytes,
-  scryptSync,
-  timingSafeEqual,
-} from 'node:crypto';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 
 import type { NextRequest } from 'next/server';
 import {
@@ -16,6 +11,7 @@ import {
 } from '@simplewebauthn/server';
 
 import { readStorageJsonResult, writeStorageJson } from '../storage';
+import { getForwardedHeaderValue } from '../shared/http';
 
 import { getActiveConfig } from '../domain/config';
 import type { UsageRange } from '../domain/usage';
@@ -29,9 +25,44 @@ const PASSWORD_MIN_LENGTH = 8;
 const ADMIN_RP_NAME = 'CodeBuddy2API Admin';
 const ADMIN_USER_ID = 'codebuddy-admin';
 const DEFAULT_ADMIN_USER_NAME = 'admin';
+/**
+ * How stale `lastUsedAt` may be before a request refreshes it. Touching the
+ * stored session on every single request would rewrite the whole admin
+ * document constantly, which loses concurrent writes when several instances
+ * share one database; a minute of slack still tells an idle session from an
+ * active one.
+ */
+const ADMIN_SESSION_TOUCH_INTERVAL_MS = 60 * 1000;
+/** Ceiling on stored sessions, so repeated sign-ins cannot grow the document
+ * without bound: past it the oldest sessions are dropped. */
+const MAX_ADMIN_SESSIONS = 50;
+/** Key length every stored password hash was derived with. Part of the stored
+ * format, so it must not change. */
+const PASSWORD_HASH_KEY_LENGTH = 64;
+/** Failed sign-ins allowed for one username before throttling. */
+const ADMIN_LOGIN_MAX_FAILURES = 10;
+/** Ceiling on tracked buckets, so sprayed usernames cannot grow the map. */
+const ADMIN_LOGIN_THROTTLE_MAX_KEYS = 10_000;
+const ADMIN_LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const FORWARDED_PROTO_HEADER = 'x-forwarded-proto';
+const FORWARDED_HOST_HEADER = 'x-forwarded-host';
 let adminAuthMutationQueue: Promise<void> = Promise.resolve();
 
 type RequestLike = Request | NextRequest;
+
+interface AdminLoginThrottle {
+  failures: number;
+  firstFailureAt: number;
+}
+
+/**
+ * Failed sign-in counters live on `globalThis` so they survive the module
+ * reloads a dev server performs; a lockout that reset on reload would not slow
+ * an attacker down at all.
+ */
+const globalAdminLoginState = globalThis as typeof globalThis & {
+  __codebuddy2apiAdminLoginThrottle__?: Map<string, AdminLoginThrottle>;
+};
 
 interface StoredPasswordRecord {
   hash: string;
@@ -165,12 +196,44 @@ const saveAdminAuthState = async (state: AdminAuthState): Promise<void> => {
   await writeStorageJson(ADMIN_AUTH_NAMESPACE, ADMIN_AUTH_KEY, state);
 };
 
-const createPasswordHash = (password: string, salt?: string) => {
+/**
+ * scrypt off the event loop.
+ *
+ * The cost, block size and parallelization stay at Node's defaults and the key
+ * length stays at 64 bytes because those parameters are part of every stored
+ * hash: changing any of them would invalidate existing admin passwords. Only
+ * the blocking call is replaced, and it produces byte-identical output.
+ */
+const scryptAsync = (
+  password: string,
+  salt: string,
+  keyLength: number,
+): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, keyLength, (error, derivedKey) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(derivedKey);
+    });
+  });
+};
+
+const createPasswordHash = async (
+  password: string,
+  salt?: string,
+): Promise<{ hash: string; salt: string }> => {
   const resolvedSalt = salt ?? randomBytes(16).toString('hex');
-  const hash = scryptSync(password, resolvedSalt, 64).toString('hex');
+  const derived = await scryptAsync(
+    password,
+    resolvedSalt,
+    PASSWORD_HASH_KEY_LENGTH,
+  );
 
   return {
-    hash,
+    hash: derived.toString('hex'),
     salt: resolvedSalt,
   };
 };
@@ -185,15 +248,15 @@ const normalizeUsername = (username: string): string | null => {
   return normalized;
 };
 
-const verifyPasswordHash = (
+const verifyPasswordHash = async (
   password: string,
   stored: StoredPasswordRecord | null,
-): boolean => {
+): Promise<boolean> => {
   if (!stored) {
     return false;
   }
 
-  const candidate = createPasswordHash(password, stored.salt);
+  const candidate = await createPasswordHash(password, stored.salt);
   const storedBuffer = Buffer.from(stored.hash, 'hex');
   const candidateBuffer = Buffer.from(candidate.hash, 'hex');
 
@@ -225,39 +288,101 @@ const getCookieValue = (request: RequestLike, name: string): string | null => {
     const [rawName, ...rest] = piece.trim().split('=');
 
     if (rawName === name) {
-      return decodeURIComponent(rest.join('='));
+      try {
+        return decodeURIComponent(rest.join('='));
+      } catch {
+        // A malformed percent-escape is a broken cookie, not a broken request:
+        // it must not take the whole page down for whoever sent it.
+        return rest.join('=');
+      }
     }
   }
 
   return null;
 };
 
-const getRequestProtocol = (request: RequestLike): string => {
-  return (
-    request.headers.get('x-forwarded-proto') ??
-    new URL(request.url).protocol.replace(':', '') ??
-    'http'
+/**
+ * Whether `X-Forwarded-*` headers may be trusted.
+ *
+ * Most deployments sit behind a reverse proxy that terminates TLS, so trusting
+ * them stays the default: read the wrong way, the admin session cookie loses
+ * `Secure` and WebAuthn rejects its own origin. Turning the flag off is the
+ * opt-in for a directly exposed server, where those headers are client
+ * controlled and must not decide the origin.
+ */
+const isForwardedHeadersTrusted = async (): Promise<boolean> => {
+  const config = await getActiveConfig();
+
+  return config.CODEBUDDY_ADMIN_TRUST_PROXY;
+};
+
+/**
+ * The leftmost value of a comma-separated forwarded header.
+ *
+ * Every proxy hop appends, so `X-Forwarded-Proto: https, http` is a normal
+ * value and comparing the whole header to `https` fails — the first entry is
+ * the one the original client sent.
+ */
+const resolveRequestProtocol = (
+  request: RequestLike,
+  trustForwardedHeaders: boolean,
+): string => {
+  if (trustForwardedHeaders) {
+    const forwarded = getForwardedHeaderValue(
+      request.headers,
+      FORWARDED_PROTO_HEADER,
+    );
+
+    if (forwarded) {
+      return forwarded.toLowerCase();
+    }
+  }
+
+  return new URL(request.url).protocol.replace(':', '');
+};
+
+const resolveRequestHost = (
+  request: RequestLike,
+  trustForwardedHeaders: boolean,
+): string => {
+  if (trustForwardedHeaders) {
+    const forwarded = getForwardedHeaderValue(
+      request.headers,
+      FORWARDED_HOST_HEADER,
+    );
+
+    if (forwarded) {
+      return forwarded;
+    }
+
+    const host = request.headers.get('host')?.trim();
+
+    if (host) {
+      return host;
+    }
+  }
+
+  return new URL(request.url).host;
+};
+
+const resolveRequestHostname = (
+  request: RequestLike,
+  trustForwardedHeaders: boolean,
+): string => {
+  return resolveRequestHost(request, trustForwardedHeaders).replace(
+    /:\d+$/,
+    '',
   );
 };
 
-const getRequestHost = (request: RequestLike): string => {
-  return (
-    request.headers.get('x-forwarded-host') ??
-    request.headers.get('host') ??
-    new URL(request.url).host
-  );
-};
-
-const getRequestHostname = (request: RequestLike): string => {
-  return getRequestHost(request).replace(/:\d+$/, '');
-};
-
-const buildCookieString = (
+const buildCookieString = async (
   request: RequestLike,
   value: string,
   maxAgeSeconds: number,
-): string => {
-  const secure = getRequestProtocol(request) === 'https';
+): Promise<string> => {
+  const secure =
+    resolveRequestProtocol(request, await isForwardedHeadersTrusted()) ===
+    'https';
 
   return [
     `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(value)}`,
@@ -291,7 +416,19 @@ const mutateAdminAuthState = async <T>(
   return enqueueAdminAuthMutation(async () => {
     const state = pruneExpiredState(await loadAdminAuthStateAsync());
     const result = await mutator(state);
-    await saveAdminAuthState(state);
+
+    // A mutator that returns `false` declined, so there is nothing to persist —
+    // and writing anyway would push this snapshot back over the document. That
+    // write is not free: it costs a full read-modify-write on unauthenticated
+    // paths, and across instances it silently undoes whatever another instance
+    // committed in the meantime (a login, a rotation, a passkey).
+    //
+    // Only an explicit `false` counts. `null` is a legitimate result for
+    // mutators that just looked something up, and those still prune.
+    if (result !== false) {
+      await saveAdminAuthState(state);
+    }
+
     return result;
   });
 };
@@ -316,23 +453,23 @@ const createAdminSession = () => {
   };
 };
 
-const attachSessionCookie = (
+const attachSessionCookie = async (
   request: RequestLike,
   response: Response,
   token: string,
-): Response => {
+): Promise<Response> => {
   response.headers.set(
     'Set-Cookie',
-    buildCookieString(request, token, ADMIN_SESSION_TTL_SECONDS),
+    await buildCookieString(request, token, ADMIN_SESSION_TTL_SECONDS),
   );
   return response;
 };
 
-const attachLogoutCookie = (
+const attachLogoutCookie = async (
   request: RequestLike,
   response: Response,
-): Response => {
-  response.headers.set('Set-Cookie', buildCookieString(request, '', 0));
+): Promise<Response> => {
+  response.headers.set('Set-Cookie', await buildCookieString(request, '', 0));
   return response;
 };
 
@@ -393,27 +530,92 @@ const normalizeUsagePreferences = (
   };
 };
 
-const getValidSessionRecord = (
+const findSessionByTokenHash = (
+  state: AdminAuthState,
+  tokenHash: string,
+): StoredSessionRecord | null => {
+  return (
+    state.sessions.find((entry) => {
+      return entry.tokenHash === tokenHash;
+    }) ?? null
+  );
+};
+
+/**
+ * Adds a session and drops the oldest ones when the cap is exceeded.
+ *
+ * Sessions are only pruned when they expire, so repeated sign-ins would
+ * otherwise grow the stored document without limit; keeping the newest
+ * `MAX_ADMIN_SESSIONS` bounds it while leaving the current sign-in in place.
+ */
+const appendAdminSession = (
+  state: AdminAuthState,
+  session: StoredSessionRecord,
+): void => {
+  state.sessions.push(session);
+
+  if (state.sessions.length <= MAX_ADMIN_SESSIONS) {
+    return;
+  }
+
+  // The session being appended is never a candidate for eviction. Instances
+  // sharing one database do not share a clock: a new session stamped by a
+  // lagging instance can sort oldest and would be dropped, handing back a
+  // cookie for a session that was never stored.
+  const previous = state.sessions.slice(0, -1);
+  const keep = MAX_ADMIN_SESSIONS - 1;
+
+  state.sessions = [
+    ...previous
+      .slice()
+      .sort((left, right) => {
+        return (
+          new Date(left.createdAt).getTime() -
+          new Date(right.createdAt).getTime()
+        );
+      })
+      .slice(Math.max(0, previous.length - keep)),
+    session,
+  ];
+};
+
+const getValidSessionRecord = async (
   request: RequestLike,
 ): Promise<StoredSessionRecord | null> => {
   const token = getSessionToken(request);
 
   if (!token) {
-    return Promise.resolve(null);
+    return null;
   }
 
   const tokenHash = hashSessionToken(token);
-  return mutateAdminAuthState((state) => {
-    let matched: StoredSessionRecord | null = null;
-    matched =
-      state.sessions.find((entry) => {
-        return entry.tokenHash === tokenHash;
-      }) ?? null;
+  const state = pruneExpiredState(await loadAdminAuthStateAsync());
+  const matched = findSessionByTokenHash(state, tokenHash);
 
-    if (matched) {
-      matched.lastUsedAt = new Date().toISOString();
-    }
+  if (!matched) {
+    return null;
+  }
+
+  // Recognising a session needs no write, and rewriting the whole document on
+  // every admin request loses concurrent updates when the storage is shared.
+  // Only a `lastUsedAt` older than the touch interval is refreshed.
+  const lastUsedAt = new Date(matched.lastUsedAt).getTime();
+
+  if (
+    Number.isFinite(lastUsedAt) &&
+    Date.now() - lastUsedAt < ADMIN_SESSION_TOUCH_INTERVAL_MS
+  ) {
     return matched;
+  }
+
+  return mutateAdminAuthState((current) => {
+    const target = findSessionByTokenHash(current, tokenHash);
+
+    if (target) {
+      target.lastUsedAt = new Date().toISOString();
+    }
+
+    return target;
   });
 };
 
@@ -458,29 +660,37 @@ const consumePendingChallenge = async (
   });
 };
 
-const getWebAuthnOrigin = (request: RequestLike): string => {
-  return `${getRequestProtocol(request)}://${getRequestHost(request)}`;
+const getWebAuthnOrigin = async (request: RequestLike): Promise<string> => {
+  const trustForwardedHeaders = await isForwardedHeadersTrusted();
+
+  return `${resolveRequestProtocol(
+    request,
+    trustForwardedHeaders,
+  )}://${resolveRequestHost(request, trustForwardedHeaders)}`;
 };
 
 const getWebAuthnRpId = async (request: RequestLike): Promise<string> => {
   const config = await getActiveConfig();
-  const configured = String(
-    (config as unknown as Record<string, unknown>)
-      .CODEBUDDY_ADMIN_PASSKEY_RP_ID ?? '',
-  ).trim();
+  const configured = config.CODEBUDDY_ADMIN_PASSKEY_RP_ID.trim();
 
   if (configured) {
     return configured;
   }
 
-  return getRequestHostname(request);
+  return resolveRequestHostname(request, config.CODEBUDDY_ADMIN_TRUST_PROXY);
 };
 
-const canRegisterAdminPasskeys = (request: RequestLike): boolean => {
-  const hostname = getRequestHostname(request).toLowerCase();
+const canRegisterAdminPasskeys = async (
+  request: RequestLike,
+): Promise<boolean> => {
+  const trustForwardedHeaders = await isForwardedHeadersTrusted();
+  const hostname = resolveRequestHostname(
+    request,
+    trustForwardedHeaders,
+  ).toLowerCase();
 
   return (
-    getRequestProtocol(request) === 'https' ||
+    resolveRequestProtocol(request, trustForwardedHeaders) === 'https' ||
     hostname === 'localhost' ||
     hostname.endsWith('.localhost') ||
     hostname === '127.0.0.1' ||
@@ -518,10 +728,6 @@ const getPasskeyDescriptor = (entry: StoredPasskeyRecord) => {
     transports: entry.transports,
     type: 'public-key' as const,
   };
-};
-
-export const hasAdminAccount = (): boolean => {
-  throw new Error('Use hasAdminAccountAsync');
 };
 
 export const hasAdminAccountAsync = async (): Promise<boolean> => {
@@ -715,7 +921,23 @@ export const setupAdminPassword = async (
     );
   }
 
-  const nextPassword = createPasswordHash(normalized);
+  // Checked before the password is hashed and before any write. This endpoint
+  // has to stay open for first-run setup, so a completed deployment would
+  // otherwise let any caller force a full read-modify-write of the auth
+  // document — and a scrypt — on every request, and every one of those writes
+  // can also undo a concurrent rotation by writing back its own stale snapshot.
+  if (pruneExpiredState(await loadAdminAuthStateAsync()).enabled) {
+    return Response.json(
+      {
+        error: {
+          message: 'Admin account is already configured',
+        },
+      },
+      { status: 409 },
+    );
+  }
+
+  const nextPassword = await createPasswordHash(normalized);
   const { session, token } = createAdminSession();
 
   const configured = await mutateAdminAuthState((state) => {
@@ -730,7 +952,7 @@ export const setupAdminPassword = async (
       updatedAt: new Date().toISOString(),
     };
     state.username = normalizedUsername;
-    state.sessions.push(session);
+    appendAdminSession(state, session);
     return true;
   });
 
@@ -762,6 +984,95 @@ export const setupAdminPassword = async (
   );
 };
 
+/**
+ * The bucket a failed sign-in is charged to.
+ *
+ * Deliberately keyed on the username alone. A client address is not usable
+ * here: `X-Forwarded-For` is attacker-controlled whenever the request reached
+ * us without a proxy we control, so charging failures to it lets a caller
+ * mint a fresh budget per request and guess passwords without limit. The
+ * username is the one part of the credential pair the caller cannot vary
+ * without changing what it is attacking.
+ *
+ * The trade-off is that someone who knows the username can keep it locked out
+ * of password sign-in. That is the same exposure a per-address limit has, minus
+ * the bypass. The mitigation is to register a passkey: that path is separate and
+ * stays available.
+ */
+const getLoginThrottleKey = (username: string): string => {
+  // Hashed so the key has a fixed, short footprint: the username arrives from
+  // an unauthenticated request body and is never length-checked on this path.
+  return createHash('sha256')
+    .update(username.trim().toLowerCase())
+    .digest('hex');
+};
+
+const getAdminLoginThrottles = (): Map<string, AdminLoginThrottle> => {
+  if (!globalAdminLoginState.__codebuddy2apiAdminLoginThrottle__) {
+    globalAdminLoginState.__codebuddy2apiAdminLoginThrottle__ = new Map();
+  }
+
+  return globalAdminLoginState.__codebuddy2apiAdminLoginThrottle__;
+};
+
+const isAdminLoginThrottled = (key: string): boolean => {
+  const throttles = getAdminLoginThrottles();
+  const entry = throttles.get(key);
+
+  if (!entry) {
+    return false;
+  }
+
+  if (Date.now() - entry.firstFailureAt >= ADMIN_LOGIN_FAILURE_WINDOW_MS) {
+    throttles.delete(key);
+    return false;
+  }
+
+  return entry.failures >= ADMIN_LOGIN_MAX_FAILURES;
+};
+
+const recordAdminLoginFailure = (key: string): void => {
+  const now = Date.now();
+  const throttles = getAdminLoginThrottles();
+
+  // Expired counters are swept on write so the map does not keep growing once
+  // an attacker stops sending.
+  for (const [entryKey, entry] of throttles) {
+    if (now - entry.firstFailureAt >= ADMIN_LOGIN_FAILURE_WINDOW_MS) {
+      throttles.delete(entryKey);
+    }
+  }
+
+  // A caller can spray distinct usernames faster than entries expire, so the
+  // map needs a hard ceiling as well: drop the oldest windows until it fits.
+  if (throttles.size >= ADMIN_LOGIN_THROTTLE_MAX_KEYS && !throttles.has(key)) {
+    const overflow = throttles.size - ADMIN_LOGIN_THROTTLE_MAX_KEYS + 1;
+    let removed = 0;
+
+    for (const entryKey of throttles.keys()) {
+      if (removed >= overflow) {
+        break;
+      }
+
+      throttles.delete(entryKey);
+      removed += 1;
+    }
+  }
+
+  const entry = throttles.get(key);
+
+  if (!entry) {
+    throttles.set(key, { failures: 1, firstFailureAt: now });
+    return;
+  }
+
+  entry.failures += 1;
+};
+
+const clearAdminLoginFailures = (key: string): void => {
+  getAdminLoginThrottles().delete(key);
+};
+
 export const loginWithAdminPassword = async (
   request: RequestLike,
   usernameOrPassword: string,
@@ -771,6 +1082,21 @@ export const loginWithAdminPassword = async (
     password === undefined ? DEFAULT_ADMIN_USER_NAME : usernameOrPassword;
   const resolvedPassword = password ?? usernameOrPassword;
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
+  const throttleKey = getLoginThrottleKey(username);
+
+  // Checked before the password is hashed: once a username is over the limit,
+  // further guesses cost nothing on our side either.
+  if (isAdminLoginThrottled(throttleKey)) {
+    return Response.json(
+      {
+        error: {
+          code: 'admin_login_rate_limited',
+          message: 'Too many failed sign-in attempts, try again later',
+        },
+      },
+      { status: 429 },
+    );
+  }
 
   if (!state.enabled || !state.password) {
     return Response.json(
@@ -785,8 +1111,10 @@ export const loginWithAdminPassword = async (
 
   if (
     username.trim() !== state.username ||
-    !verifyPasswordHash(resolvedPassword, state.password)
+    !(await verifyPasswordHash(resolvedPassword, state.password))
   ) {
+    recordAdminLoginFailure(throttleKey);
+
     return Response.json(
       {
         error: {
@@ -797,11 +1125,59 @@ export const loginWithAdminPassword = async (
     );
   }
 
+  // The record the password was just verified against. The mutation below
+  // refuses to mint a session if the stored record is no longer this one.
+  const verified = state.password;
   const { session, token } = createAdminSession();
 
-  await mutateAdminAuthState((current) => {
-    current.sessions.push(session);
+  // Re-checked inside the serialized mutation. scrypt yields, so a rotation
+  // can land between the check above and here, and that rotation drops every
+  // other session — a sign-in verified against the now stale snapshot must not
+  // be allowed to mint one that outlives it.
+  //
+  // Compared by record rather than re-hashed on purpose: an await inside the
+  // mutation stretches the gap between its read and its write, and across
+  // instances that gap is a lost update that silently undoes the rotation.
+  const accepted = await mutateAdminAuthState((current) => {
+    if (!current.enabled || !current.password) {
+      return false;
+    }
+
+    if (current.username !== username.trim()) {
+      return false;
+    }
+
+    if (
+      current.password.hash !== verified.hash ||
+      current.password.salt !== verified.salt
+    ) {
+      return false;
+    }
+
+    appendAdminSession(current, session);
+
+    return {
+      passkeyCount: current.passkeys.length,
+      username: current.username,
+    };
   });
+
+  if (!accepted) {
+    // Only reachable when the rotation above landed mid-sign-in. The caller
+    // presented the correct credential, so this is not a failure and must not
+    // be counted against the throttle — otherwise enough near-misses with the
+    // rotation would lock the admin out of their own fresh password.
+    return Response.json(
+      {
+        error: {
+          message: 'Credentials changed during sign-in, try again',
+        },
+      },
+      { status: 401 },
+    );
+  }
+
+  clearAdminLoginFailures(throttleKey);
 
   return attachSessionCookie(
     request,
@@ -811,9 +1187,9 @@ export const loginWithAdminPassword = async (
         accountConfigured: true,
         authEnabled: true,
         authenticated: true,
-        passkeyCount: state.passkeys.length,
+        passkeyCount: accepted.passkeyCount,
         passwordConfigured: true,
-        username: state.username,
+        username: accepted.username,
       },
     }),
     token,
@@ -830,6 +1206,20 @@ export const changeAdminPassword = async (
 
   if (authError) {
     return authError;
+  }
+
+  // `getAdminSessionErrorResponse` deliberately lets everything through before
+  // an admin account exists, so that first-run setup is reachable. Rotation is
+  // not: otherwise an unauthenticated caller could rewrite the password record
+  // of a deployment that has not finished setup.
+  if (!(await hasAdminAccountAsync())) {
+    // 401 rather than 409: with no admin account there is no session to hold,
+    // so from the caller's side this is simply "not authenticated", which is
+    // also what this endpoint answered before.
+    return Response.json(
+      { error: { message: 'Admin session required' } },
+      { status: 401 },
+    );
   }
 
   const normalizedNextPassword = nextPassword.trim();
@@ -865,11 +1255,32 @@ export const changeAdminPassword = async (
   }
 
   const sessionTokenHash = hashSessionToken(sessionToken);
-  const nextPasswordHash = createPasswordHash(normalizedNextPassword);
+  const nextPasswordHash = await createPasswordHash(normalizedNextPassword);
+  const currentState = pruneExpiredState(await loadAdminAuthStateAsync());
+
+  // Verified outside the mutation, for the same reason the sign-in path does
+  // it: an await inside the mutator widens the gap between its read and its
+  // write, and across instances that gap silently undoes concurrent changes.
+  if (
+    currentState.password &&
+    !(await verifyPasswordHash(currentPassword, currentState.password))
+  ) {
+    return Response.json(
+      { error: { message: 'Current password is invalid' } },
+      { status: 401 },
+    );
+  }
+
+  const verified = currentState.password;
   const updated = await mutateAdminAuthState((state) => {
+    // Refuse if the stored record is no longer the one just verified: a
+    // concurrent rotation would otherwise be overwritten by this snapshot.
     if (
-      state.password &&
-      !verifyPasswordHash(currentPassword, state.password)
+      Boolean(state.password) !== Boolean(verified) ||
+      (state.password &&
+        verified &&
+        (state.password.hash !== verified.hash ||
+          state.password.salt !== verified.salt))
     ) {
       return false;
     }
@@ -952,7 +1363,7 @@ export const beginAdminPasskeyRegistration = async (
     return authError;
   }
 
-  if (!canRegisterAdminPasskeys(request)) {
+  if (!(await canRegisterAdminPasskeys(request))) {
     return Response.json(
       {
         error: {
@@ -999,7 +1410,7 @@ export const finishAdminPasskeyRegistration = async (
     return authError;
   }
 
-  if (!canRegisterAdminPasskeys(request)) {
+  if (!(await canRegisterAdminPasskeys(request))) {
     return Response.json(
       {
         error: {
@@ -1028,7 +1439,7 @@ export const finishAdminPasskeyRegistration = async (
   try {
     verification = await verifyRegistrationResponse({
       expectedChallenge,
-      expectedOrigin: getWebAuthnOrigin(request),
+      expectedOrigin: await getWebAuthnOrigin(request),
       expectedRPID: await getWebAuthnRpId(request),
       requireUserVerification: false,
       response: responseBody as unknown as RegistrationResponseJSON,
@@ -1159,7 +1570,7 @@ export const finishAdminPasskeyAuthentication = async (
         transports: passkey.transports,
       },
       expectedChallenge,
-      expectedOrigin: getWebAuthnOrigin(request),
+      expectedOrigin: await getWebAuthnOrigin(request),
       expectedRPID: await getWebAuthnRpId(request),
       requireUserVerification: false,
       response: responseBody as unknown as AuthenticationResponseJSON,
@@ -1192,7 +1603,7 @@ export const finishAdminPasskeyAuthentication = async (
   const { session, token } = createAdminSession();
 
   await mutateAdminAuthState((current) => {
-    current.sessions.push(session);
+    appendAdminSession(current, session);
     current.passkeys = current.passkeys.map((entry) => {
       if (entry.id !== passkey.id) {
         return entry;

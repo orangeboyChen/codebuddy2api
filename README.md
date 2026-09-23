@@ -70,6 +70,15 @@ curl http://127.0.0.1:8001/v1/chat/completions \
 
 Database backends require `CODEBUDDY_STORAGE_ENCRYPTION_KEY`. Set `DATABASE_URL` for PostgreSQL or `CODEBUDDY_STORAGE_SQLITE_PATH` for SQLite.
 
+Switching an existing `file` deployment to a database backend imports only config, admin auth, access keys, debug settings, and credentials. Usage events and debug traces are left behind, so export what you need from the console before switching.
+
+## Security Notes
+
+- **`/v1/*` is unauthenticated until an access key exists.** With no access key stored, inference requests are allowed through by design so a fresh instance needs no setup. Create an access key in the console before exposing the port beyond localhost.
+- **At-rest encryption needs a database backend.** The `file` backend stores credentials and access keys as plain JSON with `0600` permissions and ignores `CODEBUDDY_STORAGE_ENCRYPTION_KEY` entirely, so setting the key on a `file` deployment changes nothing. Move to `sqlite` or `pg` to get encryption — those backends refuse to start without the key.
+- **Back up the passphrase _and_ the database.** Decrypting a document needs the `CODEBUDDY_STORAGE_ENCRYPTION_KEY` **and** the `storage-crypto/kdf-salt` row stored alongside it. A partial restore — passphrase without the database, or a namespace-by-namespace export that skips that row — leaves every encrypted credential and access key unreadable even with the right passphrase.
+- **Do not roll back after the first write on a database backend.** Documents written by this version use `aes-256-gcm:v2`, which older releases cannot decrypt; they fall back to the wrong key and fail on every credential and access key. The admin console still loads because admin auth is not encrypted, so a rollback looks healthy while `/v1/*` is broken. Roll forward, or restore the pre-upgrade database backup.
+
 ## Documentation
 
 [Read the documentation](https://orangeboychen.github.io/codebuddy2api/)

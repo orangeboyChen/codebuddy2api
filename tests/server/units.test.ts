@@ -16,8 +16,6 @@ import {
   updateAccessKey,
 } from '@/lib/server/domain/access-keys';
 import {
-  getAdminAuthErrorResponse,
-  getAuthErrorResponse,
   getAnthropicAuthErrorResponse,
   getClientAuthErrorResponse,
   resolveRequestAccessKey,
@@ -269,7 +267,7 @@ describe('server units', () => {
     ).toBe(401);
     expect(
       (
-        await getAuthErrorResponse(
+        await getClientAuthErrorResponse(
           makeNextRequest('http://localhost/test', {
             headers: { authorization: 'Bearer nope' },
           }),
@@ -280,13 +278,6 @@ describe('server units', () => {
       await getClientAuthErrorResponse(
         makeNextRequest('http://localhost/test', {
           headers: { authorization: `Bearer ${created.secret} trailing` },
-        }),
-      ),
-    ).toBeNull();
-    expect(
-      await getAuthErrorResponse(
-        makeNextRequest('http://localhost/test', {
-          headers: { 'x-api-key': created.secret },
         }),
       ),
     ).toBeNull();
@@ -317,15 +308,8 @@ describe('server units', () => {
       ),
     ).toBeNull();
     expect(
-      await getAdminAuthErrorResponse(
-        makeNextRequest('http://localhost/admin', {
-          headers: { authorization: `Bearer ${created.secret}` },
-        }),
-      ),
-    ).toBeNull();
-    expect(
       (
-        await getAdminAuthErrorResponse(
+        await getClientAuthErrorResponse(
           makeNextRequest('http://localhost/admin', {
             headers: { authorization: 'Bearer wrong-secret' },
           }),
@@ -374,13 +358,6 @@ describe('server units', () => {
           'Access key storage is unreadable. Fix access-keys.json first.',
       },
     });
-
-    const adminError = await getAdminAuthErrorResponse(
-      makeNextRequest('http://localhost/admin', {
-        headers: { authorization: 'Bearer any-token' },
-      }),
-    );
-    expect(adminError?.status).toBe(503);
 
     const anthropicError = await getAnthropicAuthErrorResponse(
       makeNextRequest('http://localhost/v1/messages', {

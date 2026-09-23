@@ -99,6 +99,13 @@ const settingsSelectOptions: Record<
     { label: 'WARNING', value: 'WARNING' },
     { label: 'ERROR', value: 'ERROR' },
   ],
+  // A closed set rather than a text field: this one is boolean, and a stray
+  // "yes" or "on" would be read as false — silently turning a security setting
+  // the wrong way.
+  CODEBUDDY_ADMIN_TRUST_PROXY: [
+    { label: 'true', value: 'true' },
+    { label: 'false', value: 'false' },
+  ],
 };
 
 /**

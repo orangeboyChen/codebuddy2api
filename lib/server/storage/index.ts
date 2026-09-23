@@ -362,53 +362,143 @@ const listCredentialFiles = (): string[] => {
     .sort((left, right) => left.localeCompare(right));
 };
 
-const createEncryptionKey = (): Buffer | null => {
-  const source = process.env[STORAGE_ENCRYPTION_KEY_ENV]?.trim();
+/**
+ * Encryption modes are persisted in the `encryption_mode` column, so the mode
+ * string is the migration contract: a document written by an older release
+ * must keep decrypting after this upgrade.
+ *
+ * - `plain-json`: no key configured, the payload is stored as JSON text.
+ * - `aes-256-gcm`: legacy mode, key derived with a single unsalted SHA-256.
+ *   Kept forever so already encrypted documents stay readable.
+ * - `aes-256-gcm:v2`: key derived with scrypt and a per-deployment salt.
+ */
+export const STORAGE_ENCRYPTION_MODES = {
+  legacy: 'aes-256-gcm',
+  plain: 'plain-json',
+  scrypt: 'aes-256-gcm:v2',
+} as const;
 
-  if (!source) {
-    return null;
+/**
+ * The salt lives in a dedicated, non-sensitive namespace. `putJson` only
+ * encrypts `credentials`, `responses` and `access-keys/store`, so this
+ * namespace is never routed through `encryptPayload`. On top of that the salt
+ * is read and written through the raw adapter instead of `putJson`, so there
+ * is no path back into `encryptPayload` at all: persisting the salt can never
+ * recurse into the encryption it feeds.
+ */
+const KDF_SALT_NAMESPACE = 'storage-crypto';
+const KDF_SALT_KEY = 'kdf-salt';
+
+/**
+ * Namespaces that hold documents encrypted at rest. One list, so anything that
+ * has to reason about encrypted data cannot drift from the write path.
+ */
+const ENCRYPTED_NAMESPACES = [
+  'credentials',
+  'responses',
+  'access-keys',
+] as const;
+
+/**
+ * `access-keys` holds more than the key store, and only the store is secret.
+ */
+const isSensitiveDocument = (namespace: string, key: string): boolean => {
+  if (namespace === 'access-keys') {
+    return key === 'store';
   }
 
-  return crypto.createHash('sha256').update(source).digest();
+  return (ENCRYPTED_NAMESPACES as readonly string[]).includes(namespace);
+};
+const KDF_SALT_BYTES = 16;
+const SCRYPT_KEY_BYTES = 32;
+const SCRYPT_OPTIONS = {
+  N: 16384,
+  r: 8,
+  p: 1,
+  maxmem: 64 * 1024 * 1024,
 };
 
-const encryptPayload = (
-  value: unknown,
-): { ciphertext: string; mode: string } => {
-  const key = createEncryptionKey();
+/**
+ * Resolves the KDF salt for the active backend, or `null` when the salt can
+ * neither be read nor persisted (read-only storage, backend failure, ...).
+ * Callers fall back to the legacy derivation instead of failing the request.
+ */
+type KdfSaltResolver = () => Promise<Buffer | null>;
 
-  if (!key) {
-    return {
-      ciphertext: JSON.stringify(value),
-      mode: 'plain-json',
-    };
+const derivedKeyCache = new Map<string, Buffer>();
+let kdfFallbackWarned = false;
+
+const getEncryptionPassphrase = (): string | null => {
+  const source = process.env[STORAGE_ENCRYPTION_KEY_ENV]?.trim();
+
+  return source ? source : null;
+};
+
+const deriveLegacyKey = (passphrase: string): Buffer => {
+  // Legacy deployments hash the passphrase once, with neither salt nor work
+  // factor. Preserved verbatim so existing ciphertext keeps decrypting.
+  return crypto.createHash('sha256').update(passphrase).digest();
+};
+
+const deriveScryptKey = (passphrase: string, salt: Buffer): Buffer => {
+  // The cache key mixes passphrase and salt, so rotating either one derives a
+  // fresh key. It is hashed so the cache never stores the raw passphrase.
+  const cacheKey = crypto
+    .createHash('sha256')
+    .update(passphrase)
+    .update(':')
+    .update(salt)
+    .digest('hex');
+  const cached = derivedKeyCache.get(cacheKey);
+
+  if (cached) {
+    return cached;
   }
 
+  const key = crypto.scryptSync(
+    passphrase,
+    salt,
+    SCRYPT_KEY_BYTES,
+    SCRYPT_OPTIONS,
+  );
+
+  derivedKeyCache.set(cacheKey, key);
+
+  return key;
+};
+
+const warnKdfFallback = (): void => {
+  if (kdfFallbackWarned) {
+    return;
+  }
+
+  kdfFallbackWarned = true;
+  console.warn(
+    '[CodeBuddy2API] Unable to resolve the storage KDF salt; falling back to the legacy aes-256-gcm key derivation',
+  );
+};
+
+const encryptWithKey = (
+  value: unknown,
+  key: Buffer,
+  mode: string,
+): { ciphertext: string; mode: string } => {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const plaintext = Buffer.from(JSON.stringify(value), 'utf8');
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
 
+  // TODO: bind namespace + key into the GCM additionalAuthenticatedData. That
+  // would stop ciphertext from being moved between documents, but it also
+  // breaks decryption whenever a document is renamed, so it is not wired up.
   return {
     ciphertext: Buffer.concat([iv, tag, ciphertext]).toString('base64'),
-    mode: 'aes-256-gcm',
+    mode,
   };
 };
 
-const decryptPayload = <T>(ciphertext: string, mode: string): T => {
-  if (mode === 'plain-json') {
-    return JSON.parse(ciphertext) as T;
-  }
-
-  const key = createEncryptionKey();
-
-  if (!key) {
-    throw new Error(
-      'Encrypted storage requires CODEBUDDY_STORAGE_ENCRYPTION_KEY',
-    );
-  }
-
+const decryptWithKey = <T>(ciphertext: string, key: Buffer): T => {
   const buffer = Buffer.from(ciphertext, 'base64');
   const iv = buffer.subarray(0, 12);
   const tag = buffer.subarray(12, 28);
@@ -421,6 +511,123 @@ const decryptPayload = <T>(ciphertext: string, mode: string): T => {
   ]).toString('utf8');
 
   return JSON.parse(plaintext) as T;
+};
+
+const encryptPayload = async (
+  value: unknown,
+  resolveSalt: KdfSaltResolver,
+): Promise<{ ciphertext: string; mode: string }> => {
+  const passphrase = getEncryptionPassphrase();
+
+  if (!passphrase) {
+    return {
+      ciphertext: JSON.stringify(value),
+      mode: STORAGE_ENCRYPTION_MODES.plain,
+    };
+  }
+
+  const salt = await resolveSalt();
+
+  if (!salt) {
+    warnKdfFallback();
+
+    return encryptWithKey(
+      value,
+      deriveLegacyKey(passphrase),
+      STORAGE_ENCRYPTION_MODES.legacy,
+    );
+  }
+
+  return encryptWithKey(
+    value,
+    deriveScryptKey(passphrase, salt),
+    STORAGE_ENCRYPTION_MODES.scrypt,
+  );
+};
+
+const decryptPayload = async <T>(
+  ciphertext: string,
+  mode: string,
+  resolveSalt: KdfSaltResolver,
+  location: { key: string; namespace: string } = {
+    key: 'unknown',
+    namespace: 'unknown',
+  },
+): Promise<T> => {
+  const { key: keyHint, namespace: namespaceHint } = location;
+  if (mode === STORAGE_ENCRYPTION_MODES.plain) {
+    return JSON.parse(ciphertext) as T;
+  }
+
+  const passphrase = getEncryptionPassphrase();
+
+  if (!passphrase) {
+    throw new Error(
+      'Encrypted storage requires CODEBUDDY_STORAGE_ENCRYPTION_KEY',
+    );
+  }
+
+  if (
+    mode !== STORAGE_ENCRYPTION_MODES.scrypt &&
+    mode !== STORAGE_ENCRYPTION_MODES.legacy
+  ) {
+    // Falling through to the legacy derivation would surface as an
+    // authentication-tag failure with no hint of the real cause, and the
+    // obvious response to that — rotating the passphrase — destroys every
+    // document that still decrypts.
+    throw new Error(
+      `Unsupported storage encryption mode: ${mode} for ${namespaceHint}/${keyHint}`,
+    );
+  }
+
+  if (mode === STORAGE_ENCRYPTION_MODES.legacy) {
+    // Pre-upgrade ciphertext keeps the original unsalted SHA-256 derivation so
+    // existing documents stay readable.
+    return decryptWithKey<T>(ciphertext, deriveLegacyKey(passphrase));
+  }
+
+  const salt = await resolveSalt();
+
+  if (!salt) {
+    throw new Error(
+      `Encrypted storage requires the ${KDF_SALT_NAMESPACE}/${KDF_SALT_KEY} document to decrypt ${STORAGE_ENCRYPTION_MODES.scrypt} payloads`,
+    );
+  }
+
+  return decryptWithKey<T>(ciphertext, deriveScryptKey(passphrase, salt));
+};
+
+const parseJsonRecord = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+};
+
+const parseKdfSaltDocument = (payload: unknown): Buffer | null => {
+  const record =
+    typeof payload === 'string' ? parseJsonRecord(payload) : payload;
+
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+
+  const salt = (record as { salt?: unknown }).salt;
+
+  if (typeof salt !== 'string') {
+    return null;
+  }
+
+  const buffer = Buffer.from(salt, 'base64');
+
+  // Deliberately lenient about spelling — missing padding, stray whitespace.
+  // `Buffer.from` recovers the same bytes either way, and those bytes are what
+  // every existing v2 document was encrypted with. Rejecting a decodable salt
+  // would send it through repair, replacing bytes that still work and making
+  // every credential and access key written with them unreadable. Only a value
+  // that cannot produce a salt at all is unusable.
+  return buffer.length === KDF_SALT_BYTES ? buffer : null;
 };
 
 class FileStorageBackend implements StorageBackend {
@@ -503,6 +710,8 @@ class SqliteDatabaseFactory implements DatabaseBackendFactory {
 class DatabaseStorageBackend implements StorageBackend {
   private adapter: DatabaseStorageAdapter;
 
+  private kdfSalt: Promise<Buffer | null> | null = null;
+
   public constructor(factory: DatabaseBackendFactory) {
     this.adapter = factory.createAdapter();
   }
@@ -529,7 +738,12 @@ class DatabaseStorageBackend implements StorageBackend {
     }
 
     if (row.encryptedPayload && row.encryptionMode) {
-      return decryptPayload<T>(row.encryptedPayload, row.encryptionMode);
+      return decryptPayload<T>(
+        row.encryptedPayload,
+        row.encryptionMode,
+        this.resolveKdfSalt,
+        { key, namespace },
+      );
     }
 
     if (typeof row.payload !== 'string') {
@@ -542,15 +756,22 @@ class DatabaseStorageBackend implements StorageBackend {
   public async listJson<T>(namespace: string): Promise<Array<JsonDocument<T>>> {
     const rows = await this.adapter.listDocuments(namespace);
 
-    return rows.map((row) => ({
-      key: row.key,
-      value:
-        row.encryptedPayload && row.encryptionMode
-          ? decryptPayload<T>(row.encryptedPayload, row.encryptionMode)
-          : typeof row.payload === 'string'
-            ? (JSON.parse(row.payload) as T)
-            : (row.payload as T),
-    }));
+    return Promise.all(
+      rows.map(async (row) => ({
+        key: row.key,
+        value:
+          row.encryptedPayload && row.encryptionMode
+            ? await decryptPayload<T>(
+                row.encryptedPayload,
+                row.encryptionMode,
+                this.resolveKdfSalt,
+                { key: row.key, namespace },
+              )
+            : typeof row.payload === 'string'
+              ? (JSON.parse(row.payload) as T)
+              : (row.payload as T),
+      })),
+    );
   }
 
   public async putJson<T>(
@@ -558,13 +779,8 @@ class DatabaseStorageBackend implements StorageBackend {
     key: string,
     value: T,
   ): Promise<void> {
-    const sensitive =
-      namespace === 'credentials' ||
-      namespace === 'responses' ||
-      (namespace === 'access-keys' && key === 'store');
-
-    if (sensitive) {
-      const encrypted = encryptPayload(value);
+    if (isSensitiveDocument(namespace, key)) {
+      const encrypted = await encryptPayload(value, this.resolveKdfSalt);
       await this.adapter.putDocument({
         encryptedPayload: encrypted.ciphertext,
         encryptionMode: encrypted.mode,
@@ -619,6 +835,124 @@ class DatabaseStorageBackend implements StorageBackend {
   public trimDebugLogs(maxEntries: number): Promise<void> {
     return this.adapter.trimDebugLogs(maxEntries);
   }
+
+  /**
+   * Reads the per-deployment KDF salt, creating and persisting one when the
+   * deployment has never written it. Never rejects: it returns `null` when
+   * the salt can neither be read nor stored, which lets encryption fall back
+   * to the legacy derivation rather than failing the write.
+   *
+   * Creation has to be atomic across instances. Two instances that start at
+   * the same time would otherwise both generate a salt, upsert it, and then
+   * keep deriving with their own value; whichever upsert lost would leave
+   * ciphertext that no other instance, and no later restart, can decrypt.
+   */
+  /**
+   * Reports a missing salt row that existing scrypt documents depend on.
+   *
+   * The failure it names is otherwise invisible: those documents fail with an
+   * authentication-tag error that looks like a wrong passphrase, and the
+   * natural response — rotating the passphrase — destroys the legacy documents
+   * that still work.
+   */
+  private async warnIfScryptDocumentsExistWithoutSalt(): Promise<void> {
+    try {
+      for (const namespace of ENCRYPTED_NAMESPACES) {
+        const rows = await this.adapter.listDocuments(namespace);
+        const stale = rows.some(
+          (row) => row.encryptionMode === STORAGE_ENCRYPTION_MODES.scrypt,
+        );
+
+        if (stale) {
+          console.error(
+            `[CodeBuddy2API] No ${KDF_SALT_NAMESPACE}/${KDF_SALT_KEY} document, but ${namespace} already holds ${STORAGE_ENCRYPTION_MODES.scrypt} data. ` +
+              'Those documents cannot be decrypted without the original salt: restore the database, do not rotate the encryption key.',
+          );
+          return;
+        }
+      }
+    } catch {
+      // A failed check must not block the write; the fallback still applies.
+    }
+  }
+
+  private async loadOrCreateKdfSalt(): Promise<Buffer | null> {
+    try {
+      const existing = await this.adapter.getDocument(
+        KDF_SALT_NAMESPACE,
+        KDF_SALT_KEY,
+      );
+      const stored = parseKdfSaltDocument(existing?.payload ?? null);
+
+      if (stored) {
+        return stored;
+      }
+
+      const candidate = crypto.randomBytes(KDF_SALT_BYTES);
+
+      // A missing row is not always a fresh deployment. If scrypt documents
+      // already exist, the row was lost — deleted, or missing from a restore
+      // that only carried some namespaces — and everything written so far
+      // becomes unreadable the moment a new salt is adopted. Say so before the
+      // write, while the backup that still has the row can help.
+      if (!existing) {
+        await this.warnIfScryptDocumentsExistWithoutSalt();
+      }
+
+      // Insert-if-absent rather than upsert: the first writer owns the salt
+      // and every later writer silently keeps it.
+      await this.adapter.putDocumentIfAbsent({
+        encryptedPayload: null,
+        encryptionMode: null,
+        key: KDF_SALT_KEY,
+        namespace: KDF_SALT_NAMESPACE,
+        payload: { salt: candidate.toString('base64') },
+      });
+
+      // Read back instead of trusting `candidate`. Losing the race still has
+      // to yield the winner's salt, and the stored value is the only one the
+      // rest of the deployment will ever see.
+      const authoritative = await this.adapter.getDocument(
+        KDF_SALT_NAMESPACE,
+        KDF_SALT_KEY,
+      );
+
+      const resolved = parseKdfSaltDocument(authoritative?.payload ?? null);
+
+      if (resolved) {
+        return resolved;
+      }
+
+      // No repair pass on purpose. Replacing an existing row needs a
+      // compare-and-swap the adapters do not offer: two replicas hitting the
+      // same unusable value would each upsert their own candidate, each read
+      // their own back, and each keep deriving with a different key — the exact
+      // divergence insert-if-absent exists to prevent. An unusable row also
+      // cannot have come from this code, which only ever writes a canonical
+      // salt, so there is nothing to recover that a rewrite would not risk.
+      //
+      // Fall through to the legacy derivation instead, loudly enough that the
+      // deployment notices.
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveKdfSalt = async (): Promise<Buffer | null> => {
+    this.kdfSalt ??= this.loadOrCreateKdfSalt();
+
+    const salt = await this.kdfSalt;
+
+    // A failed resolution is dropped so the next write retries instead of
+    // pinning the process to the weak legacy derivation after one transient
+    // storage error.
+    if (!salt) {
+      this.kdfSalt = null;
+    }
+
+    return salt;
+  };
 
   private async importLegacyDocument(
     namespace: string,

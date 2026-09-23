@@ -48,3 +48,6 @@ test-results/
 # OS / editor files
 .DS_Store
 .idea/
+
+# Local debug scratch directories
+.tmp-*/

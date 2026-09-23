@@ -23,6 +23,7 @@ import {
 import { getModelsForCredentials } from '@/lib/server/proxy/codebuddy';
 import { getDebugSettings, listDebugLogs } from '@/lib/server/domain/debug';
 import { getUsageAnalytics } from '@/lib/server/domain/usage';
+import { getForwardedHeaderValue } from '@/lib/server/shared/http';
 import type { AppLocale } from '@/lib/i18n/routing';
 
 const defaultUsageRequest: UsageFiltersState = {
@@ -39,11 +40,23 @@ export interface InitialDataRequest {
 
 const buildApiEndpoint = async () => {
   const headerStore = await headers();
-  const protocol = headerStore.get('x-forwarded-proto') ?? 'http';
+  const protocol =
+    getForwardedHeaderValue(headerStore, 'x-forwarded-proto')?.toLowerCase() ??
+    'http';
   const host =
-    headerStore.get('x-forwarded-host') ??
-    headerStore.get('host') ??
+    getForwardedHeaderValue(headerStore, 'x-forwarded-host') ??
+    headerStore.get('host')?.trim() ??
     'localhost';
+
+  // This is a display value shown in the console, so it deliberately does not
+  // consult CODEBUDDY_ADMIN_TRUST_PROXY: that would add a storage read to
+  // every tab render. It still has to survive a hostile header, since these
+  // are client input and an unparseable host would throw out of the render.
+  try {
+    new URL(`${protocol}://${host}/v1`);
+  } catch {
+    return 'http://localhost/v1';
+  }
 
   return `${protocol}://${host}/v1`;
 };

@@ -4,7 +4,7 @@
 
 - Use English conventional commits, for example `feat: reorganize source layout`.
 - Do not commit until `bun run lint`, `bun run format:check`, `bun run typecheck`, `bun run test:coverage`, and `bun run build` all pass.
-- Unit test coverage must stay at or above 90%; do not commit code below the enforced coverage threshold.
+- Unit test coverage must stay at or above the enforced thresholds; see [Coverage Thresholds](#coverage-thresholds). Do not commit code below them.
 
 ## Code Style
 
@@ -21,8 +21,8 @@
 - Run `bun run lint`.
 - Run `bun run format:check`.
 - Run `bun run typecheck`.
-- Treat unit test coverage below 90% as a blocking failure.
-- Run `bun run test:coverage` and confirm the reported coverage stays at or above 90%.
+- Treat unit test coverage below the enforced thresholds as a blocking failure.
+- Run `bun run test:coverage` and confirm lines, statements, and functions are at or above 90% and branches at or above 70%.
 - Run `bun run build`.
 
 ## Verification Before PR
@@ -41,3 +41,19 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## Coverage Thresholds
+
+`vitest.config.ts` enforces the project-wide gate that `bun run test:coverage` runs:
+
+- `lines`, `statements`, and `functions`: 90%
+- `branches`: 70%
+
+`bun run test:patch-branches` enforces a separate, stricter gate for a PR: **changed** branch
+coverage must be at least 90% (`scripts/check-patch-branches.ts`). Codecov's `patch` status
+compares the uploaded `coverage/lcov.info` against the PR base commit and is the source of truth
+for that patch gate.
+
+Read the branch number from the project gate (70%), not the patch gate (90%) — they measure
+different things, and a project branch percentage in the high 80s is passing, not failing.
+Never lower either threshold to get a build through.

@@ -1,13 +1,48 @@
+# Version control and editor metadata
 .git
 .idea
 .venv
 .ruff_cache
+.vscode
+
+# Python build artifacts, kept from the original Python-era layout
 __pycache__/
 */__pycache__/
 *.pyc
+
+# Build output and dependencies; node_modules is installed inside the image
 .next
-coverage
 node_modules
 dist
 build
+
+# Test and coverage artifacts
+coverage
+test-results/
+playwright-report/
+test-report.junit.xml
+*.tsbuildinfo
 tsconfig.tsbuildinfo
+
+# VitePress documentation sources; never needed by the app image
+docs/
+
+# Local scratch directories
+.tmp-*
+
+# Assistant and agent working directories
+.agents/
+.claude/
+.acceptances/
+
+# CI configuration
+.github/
+
+# Local runtime data. Baking these into an image would ship credentials.
+# `.env` belongs in the same category: it is the usual home for
+# CODEBUDDY_STORAGE_ENCRYPTION_KEY, and copying it in publishes that key.
+.env
+.env.local
+.env.*.local
+.codebuddy_data/
+.codebuddy_creds/

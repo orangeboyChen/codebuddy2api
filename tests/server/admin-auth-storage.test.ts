@@ -11,7 +11,6 @@ import {
   finishAdminPasskeyRegistration,
   getAdminSessionErrorResponse,
   getAdminSessionSummary,
-  hasAdminAccount,
   hasAdminAccountAsync,
   hasAdminPassword,
   isAdminSessionAuthenticated,
@@ -89,9 +88,7 @@ describe('admin auth and storage', () => {
     cleanupTempState();
   });
 
-  it('throws on legacy sync helper and manages password session lifecycle', async () => {
-    expect(() => hasAdminAccount()).toThrow('Use hasAdminAccountAsync');
-
+  it('manages the password session lifecycle', async () => {
     expect(await hasAdminAccountAsync()).toBe(false);
     expect(await hasAdminPassword()).toBe(false);
     expect(await listAdminPasskeys()).toEqual([]);
