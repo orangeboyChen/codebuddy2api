@@ -44,32 +44,7 @@ export interface RuntimeConfig {
   CODEBUDDY_BROWSERABLE_URL: string;
   CODEBUDDY_BROWSERABLE_API_KEY: string;
   CODEBUDDY_JINA_API_KEY: string;
-  CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: boolean;
 }
-
-/**
- * Hy-series models take their thinking depth as `reasoning_effort` with the
- * values `no_think` / `low` / `high` — a vocabulary no downstream client
- * speaks. Claude Code sends Anthropic `thinking`, Codex sends Responses
- * `reasoning.effort`. When this is on, those are translated onto the Hy
- * vocabulary; when off, requests are forwarded exactly as they arrive.
- */
-
-/**
- * Every model id starting with `hy` is a Hy-series model and takes the
- * `reasoning_effort` vocabulary, so matching is a single case-insensitive
- * prefix test rather than an enumeration of known ids: the upstream decides
- * which models exist, and new `hy*` releases should be covered without a code
- * change. `hunyuan-*` is a different prefix and a separate product line, so it
- * is not affected.
- */
-export const HY_MODEL_PREFIX = 'hy';
-
-export const isHyModel = (model: string | undefined | null): boolean => {
-  if (typeof model !== 'string') return false;
-
-  return model.trim().toLowerCase().startsWith(HY_MODEL_PREFIX);
-};
 
 /**
  * Budget for a proxied request to produce its first delta, in minutes. It is
@@ -106,7 +81,6 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   CODEBUDDY_BROWSERABLE_URL: '',
   CODEBUDDY_BROWSERABLE_API_KEY: '',
   CODEBUDDY_JINA_API_KEY: '',
-  CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: false,
 };
 let configMutationQueue: Promise<void> = Promise.resolve();
 
@@ -135,7 +109,6 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_BROWSERABLE_URL: 'Browserable address',
     CODEBUDDY_BROWSERABLE_API_KEY: 'Browserable API key (optional)',
     CODEBUDDY_JINA_API_KEY: 'Jina Reader API key (optional)',
-    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'Translate thought depth for Hy models',
   },
   'ja-JP': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy API エンドポイント',
@@ -159,7 +132,6 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_BROWSERABLE_URL: 'Browserable のアドレス',
     CODEBUDDY_BROWSERABLE_API_KEY: 'Browserable API キー(任意)',
     CODEBUDDY_JINA_API_KEY: 'Jina Reader API キー(任意)',
-    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: 'Hy モデルの思考深度を変換する',
   },
   'zh-CN': {
     CODEBUDDY_API_ENDPOINT: 'CodeBuddy 官方 API 端点',
@@ -182,7 +154,6 @@ const SETTING_LABELS_BY_LOCALE: Record<
     CODEBUDDY_BROWSERABLE_URL: 'Browserable 地址',
     CODEBUDDY_BROWSERABLE_API_KEY: 'Browserable API Key(可选)',
     CODEBUDDY_JINA_API_KEY: 'Jina Reader API Key(可选)',
-    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: '为 Hy 系列模型转换思想深度',
   },
 };
 
@@ -256,20 +227,6 @@ const normalizeValue = <K extends keyof RuntimeConfig>(
 
   if (typeof fallback === 'string') {
     return String(value) as RuntimeConfig[K];
-  }
-
-  if (typeof fallback === 'boolean') {
-    if (typeof value === 'boolean') {
-      return value as RuntimeConfig[K];
-    }
-
-    if (typeof value === 'number') {
-      return (value !== 0) as RuntimeConfig[K];
-    }
-
-    const normalized = String(value).trim().toLowerCase();
-
-    return (normalized === 'true' || normalized === '1') as RuntimeConfig[K];
   }
 
   return value as RuntimeConfig[K];
@@ -371,11 +328,6 @@ export const getActiveConfig = async (): Promise<RuntimeConfig> => {
       'CODEBUDDY_JINA_API_KEY',
       persisted.CODEBUDDY_JINA_API_KEY ?? process.env.CODEBUDDY_JINA_API_KEY,
     ),
-    CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED: normalizeValue(
-      'CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED',
-      persisted.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED ??
-        process.env.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED,
-    ),
   };
 };
 
@@ -449,17 +401,6 @@ export const getApiFirstDeltaTimeoutMs = async (): Promise<number> => {
   const config = await getActiveConfig();
 
   return config.CODEBUDDY_API_TIMEOUT_MINUTES * MINUTE_MS;
-};
-
-/**
- * Whether downstream thinking parameters should be translated onto the Hy
- * vocabulary. Resolved per request so toggling the setting in the console takes
- * effect immediately.
- */
-export const getHyThoughtDepthEnabled = async (): Promise<boolean> => {
-  const config = await getActiveConfig();
-
-  return config.CODEBUDDY_HY_THOUGHT_DEPTH_ENABLED;
 };
 
 export const getCodeBuddyApiEndpoint = async (): Promise<string> => {

@@ -62,12 +62,9 @@ import {
 import { type TabKey } from '@/app/page-data';
 import { themeAtom, type ThemeMode } from '@/app/page-state';
 import { AdminHeader } from '@/app/header';
-import { themeChangeEventName } from '@/lib/theme';
 import { type LocalePreference } from '@/lib/i18n/routing';
-import {
-  saveLocalePreference,
-  saveThemePreference,
-} from '@/lib/client/preferences';
+import { saveLocalePreference } from '@/lib/client/preferences';
+import { useThemeAppearance } from '@/lib/client/theme';
 
 const tabs: Array<{
   icon: typeof LayoutDashboard;
@@ -340,6 +337,7 @@ const AdminPageLayoutContent = ({
   ]);
 
   const [theme, setTheme] = useAtom(themeAtom);
+  useThemeAppearance(theme);
   const [dashboard, setDashboard] = useAtom(dashboardStateAtom);
   const [credentials, setCredentials] = useAtom(credentialsStateAtom);
   const [debug, setDebug] = useAtom(debugStateAtom);
@@ -1578,38 +1576,6 @@ const AdminPageLayoutContent = ({
       void loadDebug();
     }
   }, [activeTab, debug.loading, loadDebug]);
-
-  useEffect(() => {
-    const applyTheme = () => {
-      const isDark =
-        theme === 'dark' ||
-        (theme === 'system' &&
-          window.matchMedia('(prefers-color-scheme: dark)').matches);
-
-      document.documentElement.classList.toggle('dark', isDark);
-      document.body.classList.toggle('dark', isDark);
-      document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
-      window.dispatchEvent(
-        new CustomEvent(themeChangeEventName, {
-          detail: isDark ? 'dark' : 'light',
-        }),
-      );
-      void saveThemePreference(theme, isDark ? 'dark' : 'light');
-    };
-
-    applyTheme();
-
-    if (theme !== 'system') {
-      return;
-    }
-
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    mediaQuery.addEventListener('change', applyTheme);
-
-    return () => {
-      mediaQuery.removeEventListener('change', applyTheme);
-    };
-  }, [theme]);
 
   const changeLocale = (nextLocale: string) => {
     void saveLocalePreference(nextLocale as LocalePreference).finally(() => {

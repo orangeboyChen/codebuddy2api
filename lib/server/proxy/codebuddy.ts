@@ -300,7 +300,10 @@ export const proxyResponsesUpstream = async (
       ));
     setDebugTraceCredential(debugTrace, resolvedContext.credentialFilename);
     const upstreamBody = {
-      ...(await normalizeResponsesUpstreamBody(body)),
+      ...(await normalizeResponsesUpstreamBody(
+        body,
+        resolvedContext.auth.credentialData,
+      )),
       model:
         typeof body.model === 'string' && body.model.trim()
           ? body.model

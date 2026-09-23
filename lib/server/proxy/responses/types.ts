@@ -64,13 +64,20 @@ export interface ResponsesRequestBody {
   thinking?: Record<string, unknown>;
   tools?: Array<{ type?: string; name?: string } & Record<string, unknown>>;
   tool_choice?: unknown;
+  /**
+   * Whether the model may call more than one tool in a turn. Forwarded rather
+   * than assumed: a client that forbids parallel calls is relying on the tool
+   * calls arriving one at a time, so reporting it back as `true` while letting
+   * the model batch them would be answering a question it never asked.
+   */
+  parallel_tool_calls?: boolean;
   max_output_tokens?: number;
   previous_response_id?: string;
 }
 
 export type ResponseSessionDefaults = Pick<
   ResponsesRequestBody,
-  'instructions' | 'metadata' | 'tools' | 'tool_choice'
+  'instructions' | 'metadata' | 'parallel_tool_calls' | 'tool_choice' | 'tools'
 >;
 
 export interface ResponseSession {
