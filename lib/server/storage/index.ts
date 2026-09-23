@@ -388,6 +388,27 @@ export const STORAGE_ENCRYPTION_MODES = {
  */
 const KDF_SALT_NAMESPACE = 'storage-crypto';
 const KDF_SALT_KEY = 'kdf-salt';
+
+/**
+ * Namespaces that hold documents encrypted at rest. One list, so anything that
+ * has to reason about encrypted data cannot drift from the write path.
+ */
+const ENCRYPTED_NAMESPACES = [
+  'credentials',
+  'responses',
+  'access-keys',
+] as const;
+
+/**
+ * `access-keys` holds more than the key store, and only the store is secret.
+ */
+const isSensitiveDocument = (namespace: string, key: string): boolean => {
+  if (namespace === 'access-keys') {
+    return key === 'store';
+  }
+
+  return (ENCRYPTED_NAMESPACES as readonly string[]).includes(namespace);
+};
 const KDF_SALT_BYTES = 16;
 const SCRYPT_KEY_BYTES = 32;
 const SCRYPT_OPTIONS = {
@@ -758,12 +779,7 @@ class DatabaseStorageBackend implements StorageBackend {
     key: string,
     value: T,
   ): Promise<void> {
-    const sensitive =
-      namespace === 'credentials' ||
-      namespace === 'responses' ||
-      (namespace === 'access-keys' && key === 'store');
-
-    if (sensitive) {
+    if (isSensitiveDocument(namespace, key)) {
       const encrypted = await encryptPayload(value, this.resolveKdfSalt);
       await this.adapter.putDocument({
         encryptedPayload: encrypted.ciphertext,
@@ -831,6 +847,35 @@ class DatabaseStorageBackend implements StorageBackend {
    * keep deriving with their own value; whichever upsert lost would leave
    * ciphertext that no other instance, and no later restart, can decrypt.
    */
+  /**
+   * Reports a missing salt row that existing scrypt documents depend on.
+   *
+   * The failure it names is otherwise invisible: those documents fail with an
+   * authentication-tag error that looks like a wrong passphrase, and the
+   * natural response — rotating the passphrase — destroys the legacy documents
+   * that still work.
+   */
+  private async warnIfScryptDocumentsExistWithoutSalt(): Promise<void> {
+    try {
+      for (const namespace of ENCRYPTED_NAMESPACES) {
+        const rows = await this.adapter.listDocuments(namespace);
+        const stale = rows.some(
+          (row) => row.encryptionMode === STORAGE_ENCRYPTION_MODES.scrypt,
+        );
+
+        if (stale) {
+          console.error(
+            `[CodeBuddy2API] No ${KDF_SALT_NAMESPACE}/${KDF_SALT_KEY} document, but ${namespace} already holds ${STORAGE_ENCRYPTION_MODES.scrypt} data. ` +
+              'Those documents cannot be decrypted without the original salt: restore the database, do not rotate the encryption key.',
+          );
+          return;
+        }
+      }
+    } catch {
+      // A failed check must not block the write; the fallback still applies.
+    }
+  }
+
   private async loadOrCreateKdfSalt(): Promise<Buffer | null> {
     try {
       const existing = await this.adapter.getDocument(
@@ -844,6 +889,15 @@ class DatabaseStorageBackend implements StorageBackend {
       }
 
       const candidate = crypto.randomBytes(KDF_SALT_BYTES);
+
+      // A missing row is not always a fresh deployment. If scrypt documents
+      // already exist, the row was lost — deleted, or missing from a restore
+      // that only carried some namespaces — and everything written so far
+      // becomes unreadable the moment a new salt is adopted. Say so before the
+      // write, while the backup that still has the row can help.
+      if (!existing) {
+        await this.warnIfScryptDocumentsExistWithoutSalt();
+      }
 
       // Insert-if-absent rather than upsert: the first writer owns the salt
       // and every later writer silently keeps it.

@@ -39,5 +39,10 @@ docs/
 .github/
 
 # Local runtime data. Baking these into an image would ship credentials.
+# `.env` belongs in the same category: it is the usual home for
+# CODEBUDDY_STORAGE_ENCRYPTION_KEY, and copying it in publishes that key.
+.env
+.env.local
+.env.*.local
 .codebuddy_data/
 .codebuddy_creds/

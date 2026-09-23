@@ -20,7 +20,9 @@ services:
       #   CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES: 'false'  # set after migration
       # Multi-instance pg alternative:
       #   CODEBUDDY_STORAGE_BACKEND: 'pg'
-      #   CODEBUDDY_STORAGE_PG_URL: 'postgres://user:password@db:5432/codebuddy2api'
+      #   CODEBUDDY_STORAGE_PG_URL: 'postgres://user:password@your-postgres-host:5432/codebuddy2api'
+      # No database service is defined here — point this at your own server, or
+      # add one plus a network, before copying it.
       #   CODEBUDDY_STORAGE_ENCRYPTION_KEY: '<long random secret>'
       #   CODEBUDDY_STORAGE_IMPORT_LEGACY_FILES: 'false'  # set after migration
       # Both database backends refuse to start without an encryption key.

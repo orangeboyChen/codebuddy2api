@@ -97,6 +97,7 @@ interface MockAdapterHooks {
   ) => Promise<Record<string, unknown> | null>;
   putDocument?: (input: Record<string, unknown>) => Promise<void>;
   putDocumentIfAbsent?: (input: Record<string, unknown>) => Promise<void>;
+  listDocuments?: (namespace: string) => Promise<Record<string, unknown>[]>;
 }
 
 const installPgAdapterMock = (
@@ -131,7 +132,10 @@ const installPgAdapterMock = (
       public ensureSchema = noop;
       public getDocument = getDocument;
       public listDebugLogs = vi.fn(async () => []);
-      public listDocuments = vi.fn(async () => []);
+      public listDocuments = vi.fn(
+        async (namespace: string): Promise<Record<string, unknown>[]> =>
+          (await hooks.listDocuments?.(namespace)) ?? [],
+      );
       public listUsageEvents = vi.fn(async () => []);
       public putDocument = putDocument;
       public putDocumentIfAbsent = putDocumentIfAbsent;
@@ -383,6 +387,132 @@ describe('storage encryption KDF upgrade', () => {
     );
     expect(warn).toHaveBeenCalledTimes(1);
     expect(getDocument).toHaveBeenCalledWith('storage-crypto', 'kdf-salt');
+  });
+
+  it('retries the salt after a transient failure instead of staying degraded', async () => {
+    // The cache is dropped when a resolution fails, so one transient storage
+    // error cannot pin the process to the weak derivation for its lifetime.
+    configurePgStorage(LEGACY_PASSPHRASE);
+    let reads = 0;
+    const error = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { putDocument } = installPgAdapterMock({
+      getDocument: async (namespace) => {
+        if (namespace !== 'storage-crypto') {
+          return null;
+        }
+
+        reads += 1;
+        // First resolution fails outright; the next one finds a real salt.
+        if (reads === 1) {
+          throw new Error('storage unavailable');
+        }
+
+        return { payload: { salt: crypto.randomBytes(16).toString('base64') } };
+      },
+    });
+
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+    await storage.ensureStorageReady();
+
+    await storage.writeStorageJson('credentials', 'first.json', {
+      bearer_token: 'one',
+    });
+    await storage.writeStorageJson('credentials', 'second.json', {
+      bearer_token: 'two',
+    });
+
+    // Degraded for the write that could not read, then back on the strong path.
+    expect(lastPutFor(putDocument, 'credentials')?.encryptionMode).toBe(
+      'aes-256-gcm:v2',
+    );
+    expect(warn).toHaveBeenCalled();
+    error.mockRestore();
+    warn.mockRestore();
+  });
+
+  it('reports a missing salt row when scrypt documents already exist', async () => {
+    // The failure this names: without the row, every existing v2 document is
+    // already unreadable, and adopting a fresh salt silently makes that
+    // permanent. It has to be said before the write, not discovered later as an
+    // authentication-tag error that looks like a wrong passphrase.
+    configurePgStorage(LEGACY_PASSPHRASE);
+    const error = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const { putDocument } = installPgAdapterMock({
+      getDocument: async () => null,
+      listDocuments: async (namespace: string) =>
+        namespace === 'credentials'
+          ? [
+              {
+                encryptedPayload: 'x',
+                encryptionMode: 'aes-256-gcm:v2',
+                key: 'old.json',
+                payload: null,
+              },
+            ]
+          : [],
+    });
+
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+    await storage.ensureStorageReady();
+    await storage.writeStorageJson('credentials', 'cred.json', {
+      bearer_token: 'token',
+    });
+
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('storage-crypto/kdf-salt'),
+    );
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('do not rotate the encryption key'),
+    );
+    // The write still goes through: refusing would break credential refresh.
+    expect(lastPutFor(putDocument, 'credentials')).not.toBeNull();
+    error.mockRestore();
+  });
+
+  it('does not report a missing salt row on a genuinely fresh deployment', async () => {
+    configurePgStorage(LEGACY_PASSPHRASE);
+    const error = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    installPgAdapterMock({
+      getDocument: async () => null,
+      listDocuments: async () => [],
+    });
+
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+    await storage.ensureStorageReady();
+    await storage.writeStorageJson('credentials', 'cred.json', {
+      bearer_token: 'token',
+    });
+
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('keeps admin auth out of the encrypted namespaces', async () => {
+    // The rollback note in README depends on this: admin auth is stored in the
+    // clear, so an older release can still load the console after an upgrade.
+    // Encrypting it would turn a rollback into a locked-out console.
+    configurePgStorage(LEGACY_PASSPHRASE);
+    const { putDocument } = installPgAdapterMock({});
+
+    const storage = await import('@/lib/server/storage');
+    storage.resetStorageRuntime();
+    await storage.ensureStorageReady();
+    await storage.writeStorageJson('admin-auth', 'state', { enabled: false });
+
+    const written = lastPutFor(putDocument, 'admin-auth');
+    expect(written?.encryptionMode).toBeNull();
+    expect(written?.encryptedPayload).toBeNull();
+    expect(written?.payload).toEqual({ enabled: false });
   });
 
   it('falls back to the legacy mode when the salt cannot be read', async () => {

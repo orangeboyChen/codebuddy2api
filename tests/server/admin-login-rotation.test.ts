@@ -102,14 +102,10 @@ describe('admin sign-in during a password rotation', () => {
     );
 
     expect(response.status).toBe(401);
-    // The mutation still persists the pruned state, but it must not carry a
-    // session: the whole point of the race is a session minted with the
-    // previous password.
-    const lastWrite = mocks.writeStorageJson.mock.calls.at(-1) as
-      unknown[] | undefined;
-    const written = lastWrite?.[2] as { sessions: unknown[] } | undefined;
-
-    expect(written?.sessions).toHaveLength(0);
+    // A declined sign-in must not touch the document at all. Writing the stale
+    // snapshot back is a full read-modify-write on an unauthenticated path,
+    // and across instances it undoes whatever committed in between.
+    expect(mocks.writeStorageJson).not.toHaveBeenCalled();
   });
 
   it('still accepts the password when nothing rotated', async () => {

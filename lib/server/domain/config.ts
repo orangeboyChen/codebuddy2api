@@ -387,7 +387,13 @@ export const updateSettings = async (
   nextSettings: Partial<Record<keyof RuntimeConfig, unknown>>,
 ): Promise<RuntimeConfig> => {
   return enqueueConfigMutation(async () => {
-    const current = await getActiveConfig();
+    // Merged onto what is already persisted, not onto the effective config.
+    // Starting from `getActiveConfig()` would copy every value that came from
+    // the environment into runtime.json, where it then outranks that same
+    // environment variable forever — the operator could no longer change it
+    // without also editing the database. For a security setting specifically
+    // meant to be overridable in an emergency, that is a trap.
+    const persisted = await loadPersistedConfig();
     const normalizedUpdates = (
       Object.keys(DEFAULT_CONFIG) as Array<keyof RuntimeConfig>
     ).reduce<Partial<RuntimeConfig>>((result, key) => {
@@ -401,11 +407,14 @@ export const updateSettings = async (
       };
     }, {});
     const merged: RuntimeConfig = {
-      ...current,
+      ...(await getActiveConfig()),
       ...normalizedUpdates,
     };
 
-    await writeStorageJson('config', 'runtime', merged);
+    await writeStorageJson('config', 'runtime', {
+      ...persisted,
+      ...normalizedUpdates,
+    });
 
     return merged;
   });

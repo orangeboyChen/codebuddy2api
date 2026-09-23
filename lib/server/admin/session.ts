@@ -416,7 +416,19 @@ const mutateAdminAuthState = async <T>(
   return enqueueAdminAuthMutation(async () => {
     const state = pruneExpiredState(await loadAdminAuthStateAsync());
     const result = await mutator(state);
-    await saveAdminAuthState(state);
+
+    // A mutator that returns `false` declined, so there is nothing to persist —
+    // and writing anyway would push this snapshot back over the document. That
+    // write is not free: it costs a full read-modify-write on unauthenticated
+    // paths, and across instances it silently undoes whatever another instance
+    // committed in the meantime (a login, a rotation, a passkey).
+    //
+    // Only an explicit `false` counts. `null` is a legitimate result for
+    // mutators that just looked something up, and those still prune.
+    if (result !== false) {
+      await saveAdminAuthState(state);
+    }
+
     return result;
   });
 };
