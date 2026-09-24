@@ -399,6 +399,38 @@ describe('anthropic messages api', () => {
     });
   });
 
+  it('keeps a trailing system message inside messages a system message upstream', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'Hi' },
+          {
+            role: 'system',
+            content: [{ type: 'text', text: 'Answer in one sentence.' }],
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ content: unknown; role: string }> };
+
+    expect(upstreamBody.messages).toEqual([
+      { role: 'user', content: 'Hi' },
+      { role: 'system', content: 'Answer in one sentence.' },
+    ]);
+  });
+
   it('keeps text separators when an Anthropic block uses cache control', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
