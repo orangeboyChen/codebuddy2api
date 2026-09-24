@@ -120,8 +120,16 @@ export const normalizeMessages = (
   firstMessageRoleToSystem: boolean,
   firstSystemMessageRoleToUser: boolean,
 ): OpenAIMessage[] => {
+  // An assistant turn that only asks for tools carries `tool_calls` and no
+  // `content` at all — the OpenAI schema allows it, and clients built on
+  // `omitzero`-style serialization (Go's openai-go SDK, for one) leave the key
+  // out entirely rather than sending `null`. Dropping it here would leave the
+  // matching `tool` result orphaned, which upstream rejects as a broken
+  // tool_calls/tool-result sequence.
   const filtered = messages.filter(
-    (item) => item.role && item.content !== undefined,
+    (item) =>
+      item.role &&
+      (item.content !== undefined || item.tool_calls !== undefined),
   );
 
   const firstSystemIndex = firstSystemMessageRoleToUser
