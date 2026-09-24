@@ -34,7 +34,12 @@ export interface AnthropicContentBlock {
 }
 
 export interface AnthropicMessage {
-  role: 'user' | 'assistant';
+  /**
+   * `system` is not part of the documented Messages schema, but clients send it
+   * inside `messages` anyway, so it is modelled here — see the role handling in
+   * `mapAnthropicContentToChat`.
+   */
+  role: 'user' | 'assistant' | 'system';
   content: string | AnthropicContentBlock[];
 }
 

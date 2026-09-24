@@ -280,6 +280,34 @@ describe('mapAnthropicContentToChat', () => {
     ]);
   });
 
+  it('keeps a system message that arrives inside messages a system message', () => {
+    expect(
+      mapAnthropicContentToChat(
+        [{ text: 'Answer in one sentence.', type: 'text' }],
+        'system',
+      ),
+    ).toEqual([{ content: 'Answer in one sentence.', role: 'system' }]);
+  });
+
+  it('keeps the tool result a system message carries', () => {
+    expect(
+      mapAnthropicContentToChat(
+        [
+          { text: 'Ground rules.', type: 'text' },
+          {
+            content: [{ text: 'plain result' }],
+            tool_use_id: 'toolu_1',
+            type: 'tool_result',
+          },
+        ],
+        'system',
+      ),
+    ).toEqual([
+      { content: 'plain result', role: 'tool', tool_call_id: 'toolu_1' },
+      { content: 'Ground rules.', role: 'system' },
+    ]);
+  });
+
   it('drops a message that was nothing but the client usage hint', () => {
     const hint =
       '<system-reminder>Token usage: 12 / 200000; 199988 remaining</system-reminder>';

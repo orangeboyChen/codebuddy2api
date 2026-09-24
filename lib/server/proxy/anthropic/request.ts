@@ -147,7 +147,7 @@ export const collectAnthropicNestedImages = (
 
 export const mapAnthropicContentToChat = (
   content: string | AnthropicContentBlock[],
-  role: 'user' | 'assistant',
+  role: 'user' | 'assistant' | 'system',
 ): ChatMessage[] => {
   if (typeof content === 'string') {
     const text = stripTokenUsageReminder(content);
@@ -176,7 +176,16 @@ export const mapAnthropicContentToChat = (
    * the reasoning alongside the text and tool calls it produced.
    */
   let pendingReasoning = '';
-  const flushAssistantMessage = (): void => {
+  /**
+   * Emits the turn's text, tool calls, and recovered reasoning as one message.
+   *
+   * The role is the one the client declared rather than a hardcoded
+   * `assistant`: a `system` message that arrives inside `messages` — which
+   * clients do send, even though the Anthropic schema only documents `user`
+   * and `assistant` — has to stay a `system` message upstream, or its
+   * instructions reach the model as if the model had said them.
+   */
+  const flushTurnMessage = (): void => {
     const content = mapContentPartsToChat(parts);
     const hasContent = typeof content === 'string' ? content.length > 0 : true;
 
@@ -185,7 +194,7 @@ export const mapAnthropicContentToChat = (
     }
 
     messages.push({
-      role: 'assistant',
+      role,
       content: hasContent ? content : null,
       ...(toolCalls.length ? { tool_calls: [...toolCalls] } : {}),
       // `reasoning` is the field the CodeBuddy chat upstream round-trips. It
@@ -242,7 +251,7 @@ export const mapAnthropicContentToChat = (
       };
 
       if (role === 'assistant') {
-        flushAssistantMessage();
+        flushTurnMessage();
         messages.push(resultMessage);
       } else {
         toolResults.push(resultMessage);
@@ -299,15 +308,19 @@ export const mapAnthropicContentToChat = (
     }
   }
 
+  // `tool` results travel before the turn they belong to, for every role: an
+  // `assistant` turn has already flushed them inline, and a `system` turn would
+  // otherwise drop them on the floor.
+  messages.push(...toolResults);
+
   if (role === 'user') {
-    messages.push(...toolResults);
     const content = mapContentPartsToChat(parts);
     const hasContent = typeof content === 'string' ? content.length > 0 : true;
     if (hasContent) {
       messages.push({ role: 'user', content });
     }
   } else {
-    flushAssistantMessage();
+    flushTurnMessage();
   }
 
   return messages;
