@@ -3,14 +3,22 @@ import path from 'node:path';
 
 const e2eRoot = path.join('.tmp-e2e', String(process.pid));
 
+/**
+ * The console as the desktop app opens it.
+ *
+ * Desktop mode is an environment variable the server reads when it boots, so
+ * this is a whole second Playwright run rather than a second project: the page
+ * under test is the same console, started the way the app starts it. It reuses
+ * the web server's port, which is why the two runs must not overlap.
+ */
 export default defineConfig({
-  testDir: './e2e',
-  // The desktop runs have their own configs: they need a server started as the
-  // app starts it, or no server at all.
-  testIgnore: ['**/desktop/**', '**/electron/**'],
+  testDir: './e2e/desktop',
   fullyParallel: false,
   workers: 1,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  reporter: [
+    ['list'],
+    ['html', { open: 'never', outputFolder: 'playwright-report-desktop' }],
+  ],
   use: {
     baseURL: 'http://127.0.0.1:8001',
     trace: 'retain-on-failure',
@@ -21,6 +29,9 @@ export default defineConfig({
       ...process.env,
       CODEBUDDY_API_ENDPOINT: 'http://127.0.0.1:65535',
       CODEBUDDY_CREDENTIALS_DIR: path.join(e2eRoot, '.codebuddy_creds'),
+      CODEBUDDY_DESKTOP: '1',
+      // Its own directory, so a port saved here cannot touch a real install.
+      CODEBUDDY_DESKTOP_USER_DATA_DIR: path.join(e2eRoot, 'desktop-user-data'),
       CODEBUDDY_STORAGE_FILE_DIR: path.join(e2eRoot, '.codebuddy_data'),
     },
     reuseExistingServer: false,

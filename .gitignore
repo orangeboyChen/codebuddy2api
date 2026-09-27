@@ -35,7 +35,10 @@ config/usage/
 .tmp-test-debug-usage-root/
 .tmp-test-runtime-root/
 .tmp-e2e/
+.tmp-e2e-electron/
 playwright-report/
+playwright-report-desktop/
+playwright-report-electron/
 test-results/
 
 # Credentials

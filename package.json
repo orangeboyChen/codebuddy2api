@@ -13,6 +13,8 @@
     "prepare": "husky",
     "build": "next build",
     "test:e2e": "playwright test",
+    "test:e2e:desktop": "playwright test -c playwright.desktop.config.ts",
+    "test:e2e:electron": "playwright test -c playwright.electron.config.ts",
     "start": "next start --hostname 0.0.0.0 --port 8001",
     "lint": "eslint . --ext .ts,.tsx --max-warnings=0",
     "format": "prettier --write .",
