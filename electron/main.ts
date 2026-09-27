@@ -80,6 +80,12 @@ const USAGE_POLL_MS = 60_000;
  * app has been closed and started again.
  */
 const DESKTOP_VERSION_COOKIE_TTL_SECONDS = 24 * 60 * 60;
+/**
+ * How long the console is given to load before the shell sends the window there
+ * again. Generous: a real first render is expected to beat it, so the second
+ * attempt is only ever reached by a load that has stopped making progress.
+ */
+const CONSOLE_LOAD_TIMEOUT_MS = 10_000;
 
 type GatewayStatus = 'failed' | 'running' | 'starting';
 
@@ -257,10 +263,27 @@ const loadConsole = async (
   consoleOrigin = new URL(url).origin;
   await shareDesktopVersion(consoleOrigin);
 
-  await window.loadURL(url).catch(() => {
-    // The window went away mid-load, or the backend is not answering: the
-    // console can be reopened from the menu bar item.
-  });
+  // Twice, because the first navigation of a cold app can stall: it neither
+  // finishes nor fails, and a window that never gets a first frame stays
+  // hidden, so the launch would leave nothing at all to look at. A second
+  // attempt is what gets it moving.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const outcome = await Promise.race([
+      window
+        .loadURL(url)
+        // The window went away mid-load, or the backend is not answering: the
+        // console can be reopened from the menu bar item.
+        .then(
+          () => 'loaded',
+          () => 'failed',
+        ),
+      delay(CONSOLE_LOAD_TIMEOUT_MS).then(() => 'stalled'),
+    ]);
+
+    if (outcome !== 'stalled') {
+      return;
+    }
+  }
 };
 
 const createMainWindow = (url: string): BrowserWindow => {
