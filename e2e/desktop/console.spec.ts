@@ -54,15 +54,21 @@ test.describe('Desktop console', () => {
     expect(payload.preferredPort).toBe(8123);
   });
 
-  test('names the app in About and no server of its own', async ({ page }) => {
-    await page.goto('/about');
+  test('names the build it is serving, and no longer has an About page', async ({
+    page,
+    request,
+  }) => {
+    // What the menu bar item asks a backend of its own: this console is the
+    // app's own gateway, so there is no second build to name.
+    const response = await request.get('/admin-api/version');
 
-    await expect(page.getByRole('button', { name: 'About' })).toBeVisible();
-    // There is no deployment behind this console but the app's own gateway, so
-    // there is no second version to report.
-    await expect(page.getByText('Server version')).toHaveCount(0);
-    await expect(
-      page.getByText('the gateway bundled into the app', { exact: false }),
-    ).toBeVisible();
+    expect(response.ok()).toBe(true);
+    expect(((await response.json()) as { version?: string }).version).toMatch(
+      /^\d+\.\d+\.\d+/,
+    );
+
+    // The versions live in the menu bar now, not in a tab.
+    await expect(page.getByRole('button', { name: 'About' })).toHaveCount(0);
+    expect((await page.goto('/about'))?.status()).toBe(404);
   });
 });

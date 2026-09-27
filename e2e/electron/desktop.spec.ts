@@ -89,12 +89,16 @@ test('asks which backend to use, then opens the console it starts', async () => 
 
   expect(consoleWindow.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/dashboard$/);
 
-  // The console knows which build opened it: the shell plants its version in a
-  // cookie, and the About tab reads it back.
+  // The console it opened is the app's own build: the gateway the shell starts
+  // is the app, and desktop mode answers the version API with no sign-in. This
+  // is the number the menu bar item names as the app version.
   const version = await app.evaluate(({ app }) => app.getVersion());
+  const response = await consoleWindow.request.get(
+    new URL('/admin-api/version', consoleWindow.url()).toString(),
+  );
 
-  await consoleWindow.goto(new URL('/about', consoleWindow.url()).toString());
-  await expect(consoleWindow.locator('body')).toContainText(`v${version}`);
+  expect(response.ok()).toBe(true);
+  expect(await response.json()).toEqual({ version });
 
   await app.close();
 });

@@ -16,13 +16,6 @@ export { normalizePort as normalizeDesktopPort };
 export const DESKTOP_MODE_ENV = 'CODEBUDDY_DESKTOP';
 export const DESKTOP_USER_DATA_ENV = 'CODEBUDDY_DESKTOP_USER_DATA_DIR';
 export const DESKTOP_SETTINGS_FILENAME = 'desktop-settings.json';
-/**
- * How the app tells the console it is inside the desktop build, and which one.
- * A cookie rather than a query parameter: it survives the redirect a remote
- * console makes to its sign-in page and back, and it stays scoped to the
- * origin it belongs to.
- */
-export const DESKTOP_VERSION_COOKIE = 'codebuddy2api-desktop-version';
 
 /**
  * Where the console the app shows comes from.

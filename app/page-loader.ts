@@ -184,10 +184,6 @@ export const getInitialData = async ({
         tab,
       };
     }
-    case 'about':
-      // The versions are read by the page itself: they come from a cookie the
-      // app sets and from the build that is serving it, not from storage.
-      return { tab };
     case 'debug':
       return { debug: await createDebugSnapshot(), tab };
     case 'settings': {

@@ -8,7 +8,6 @@ import type {
 import type { AdminDebugSnapshot } from '@/app/debug/debug';
 
 export type TabKey =
-  | 'about'
   | 'dashboard'
   | 'usage'
   | 'credentials'
@@ -60,17 +59,12 @@ export interface DebugTabInitialData {
   tab: 'debug';
 }
 
-export interface AboutTabInitialData {
-  tab: 'about';
-}
-
 export interface SettingsTabInitialData {
   settings: AdminSettingsSnapshot;
   tab: 'settings';
 }
 
 export type AdminConsoleInitialData =
-  | AboutTabInitialData
   | ApiTestInitialData
   | AccountStatusTabInitialData
   | CredentialsTabInitialData

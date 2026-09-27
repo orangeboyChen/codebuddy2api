@@ -28,8 +28,7 @@
       "accountStatus": "账号状态",
       "apiTest": "API 测试",
       "debug": "Debug",
-      "settings": "设置",
-      "about": "关于"
+      "settings": "设置"
     },
     "accountStatus": {
       "title": "账号状态",
@@ -559,14 +558,6 @@
       "storageHint": "桌面端固定使用 SQLite，数据保存在应用数据目录下的 data/storage.sqlite。这里没有其它后端可选：桌面端只服务于本机，没有需要共享数据库的第二个进程。",
       "storageLabel": "存储后端",
       "title": "桌面应用"
-    },
-    "aboutPanel": {
-      "desktopVersion": "桌面端版本",
-      "localHint": "控制台由应用内置的网关提供，与桌面端是同一个版本。",
-      "serverHint": "控制台来自你部署的服务端，它可能运行着不同的版本。",
-      "serverVersion": "服务端版本",
-      "title": "关于",
-      "unknown": "未知"
     }
   }
 }

@@ -28,8 +28,7 @@
       "accountStatus": "Account Status",
       "apiTest": "API Test",
       "debug": "Debug",
-      "settings": "Settings",
-      "about": "About"
+      "settings": "Settings"
     },
     "accountStatus": {
       "title": "Account Status",
@@ -559,14 +558,6 @@
       "storageHint": "The desktop app is fixed to SQLite, with data in data/storage.sqlite inside the app data directory. There is no other backend to pick: it serves this machine only, with no second process to share a database with.",
       "storageLabel": "Storage backend",
       "title": "Desktop app"
-    },
-    "aboutPanel": {
-      "desktopVersion": "Desktop version",
-      "localHint": "This console comes from the gateway bundled into the app, which is the same build as the desktop app.",
-      "serverHint": "This console comes from a deployment you run, which may be on a different version.",
-      "serverVersion": "Server version",
-      "title": "About",
-      "unknown": "Unknown"
     }
   }
 }

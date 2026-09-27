@@ -28,8 +28,7 @@
       "accountStatus": "アカウント状態",
       "apiTest": "API テスト",
       "debug": "Debug",
-      "settings": "設定",
-      "about": "アプリ情報"
+      "settings": "設定"
     },
     "accountStatus": {
       "title": "アカウント状態",
@@ -559,14 +558,6 @@
       "storageHint": "デスクトップアプリは SQLite 固定で、データはアプリデータディレクトリ内の data/storage.sqlite に保存されます。他のバックエンドは選べません。対象はこのマシンだけで、データベースを共有する別プロセスがないためです。",
       "storageLabel": "ストレージバックエンド",
       "title": "デスクトップアプリ"
-    },
-    "aboutPanel": {
-      "desktopVersion": "デスクトップ版のバージョン",
-      "localHint": "このコンソールはアプリに同梱されたゲートウェイが提供しています。デスクトップ版と同じビルドです。",
-      "serverHint": "このコンソールはあなたが運用しているデプロイが提供しています。バージョンが異なる場合があります。",
-      "serverVersion": "サーバーのバージョン",
-      "title": "このアプリについて",
-      "unknown": "不明"
     }
   }
 }

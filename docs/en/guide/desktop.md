@@ -34,9 +34,11 @@ On macOS a status item sits in the menu bar and shows today's token usage (input
 
 The menu speaks the language the console is showing.
 
-## Versions
+## Versions and updates
 
-The console's About tab shows the desktop version, and — when the backend is a deployment you run — that deployment's version, which may differ from the app's. With the bundled gateway there is no server version to show: that gateway is the app.
+The bottom of the menu lists the desktop version, and — when the backend is a deployment you run — that deployment's version, which may differ from the app's. With the bundled gateway there is no server version to list: that gateway is the app.
+
+Check for updates… in the same menu asks GitHub for the newest release. When there is one it asks before doing anything, then downloads the installer built for this machine and hands it to the system to open: a disk image to mount on macOS, a setup program on Windows, an AppImage on Linux. A release with no build for this computer opens the releases page instead so you can pick one yourself. Nothing is replaced in the background.
 
 ## Port
 
