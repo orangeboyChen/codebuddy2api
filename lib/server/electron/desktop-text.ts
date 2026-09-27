@@ -21,13 +21,19 @@ export interface DesktopText {
   copyAddress: string;
   invalidBackendUrl: string;
   openConsole: string;
+  openInBrowser: string;
   quit: string;
+  retry: string;
   save: string;
   serverVersion: string;
   statusFailed: string;
   statusRunning: string;
   statusStarting: string;
+  statusUnreachable: string;
   todayUsage: string;
+  unreachableBodyForeign: string;
+  unreachableBodyUnreachable: string;
+  unreachableTitle: string;
   updateAvailableBody: string;
   updateAvailableTitle: string;
   updateChecking: string;
@@ -49,7 +55,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
       'Runs the gateway bundled into the app on 127.0.0.1. Nothing leaves this computer, and no sign-in is needed.',
     backendRemote: 'A deployment I already run',
     backendRemoteHint:
-      'Opens that console instead of starting one here. It may ask you to sign in.',
+      'Shows this app’s own console with that deployment’s data, forwarded from there. It may ask you to sign in.',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: 'Cancel',
     changeBackend: 'Change backend…',
@@ -58,13 +64,21 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     copyAddress: 'Copy address',
     invalidBackendUrl: 'Enter an address starting with http:// or https://',
     openConsole: 'Open console',
+    openInBrowser: 'Open in browser',
     quit: 'Quit',
+    retry: 'Try again',
     save: 'Save',
     serverVersion: 'Server version {version}',
     statusFailed: 'Gateway failed to start',
     statusRunning: 'Running · {address}',
     statusStarting: 'Starting gateway…',
+    statusUnreachable: 'Deployment unreachable',
     todayUsage: 'Today {input} / {output}',
+    unreachableBodyForeign:
+      '{host} answered, but it is not a CodeBuddy2API deployment.',
+    unreachableBodyUnreachable:
+      '{host} did not answer. It may be offline, or the address may be wrong.',
+    unreachableTitle: 'Could not use this deployment',
     updateAvailableBody: 'Version {version} is available. You have {current}.',
     updateAvailableTitle: 'A new version is available',
     updateChecking: 'Checking for updates…',
@@ -85,7 +99,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
       'アプリに同梱されたゲートウェイを 127.0.0.1 で起動します。データはこのコンピュータから外に出ず、サインインも不要です。',
     backendRemote: 'すでに運用しているデプロイ',
     backendRemoteHint:
-      'ここでゲートウェイを起動せず、そのコンソールを開きます。サインインを求められる場合があります。',
+      'ここで起動せず、このアプリのコンソールにそのデプロイのデータを表示します。サインインを求められる場合があります。',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: 'キャンセル',
     changeBackend: 'バックエンドを変更…',
@@ -95,13 +109,21 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     invalidBackendUrl:
       'http:// または https:// で始まるアドレスを入力してください',
     openConsole: 'コンソールを開く',
+    openInBrowser: 'ブラウザで開く',
     quit: '終了',
+    retry: '再試行',
     save: '保存',
     serverVersion: 'サーバーバージョン {version}',
     statusFailed: 'ゲートウェイの起動に失敗しました',
     statusRunning: '動作中 · {address}',
     statusStarting: 'ゲートウェイを起動しています…',
+    statusUnreachable: 'デプロイに到達できません',
     todayUsage: '本日の消費 {input} / {output}',
+    unreachableBodyForeign:
+      '{host} は応答しましたが、CodeBuddy2API のデプロイではありません。',
+    unreachableBodyUnreachable:
+      '{host} は応答しませんでした。オフラインか、アドレスが違う可能性があります。',
+    unreachableTitle: 'このデプロイを利用できません',
     updateAvailableBody:
       'バージョン {version} が利用できます。現在は {current} です。',
     updateAvailableTitle: '新しいバージョンがあります',
@@ -123,7 +145,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
       '在 127.0.0.1 上运行应用内置的网关。数据不会离开这台电脑，也不需要登录。',
     backendRemote: '我自己部署的服务',
     backendRemoteHint:
-      '不再在本机启动网关，而是直接打开那个控制台。它可能会要求登录。',
+      '在本机显示应用自带的控制台，数据从该服务转发而来。它可能会要求登录。',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: '取消',
     changeBackend: '切换后端…',
@@ -132,13 +154,19 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     copyAddress: '复制地址',
     invalidBackendUrl: '请输入以 http:// 或 https:// 开头的地址',
     openConsole: '打开控制台',
+    openInBrowser: '在浏览器中打开',
     quit: '退出',
+    retry: '重试',
     save: '保存',
     serverVersion: '服务端版本 {version}',
     statusFailed: '网关启动失败',
     statusRunning: '运行中 · {address}',
     statusStarting: '正在启动网关…',
+    statusUnreachable: '无法访问该服务',
     todayUsage: '今日消耗 {input} / {output}',
+    unreachableBodyForeign: '{host} 有响应，但它不是 CodeBuddy2API 的部署。',
+    unreachableBodyUnreachable: '{host} 没有响应。它可能离线，或地址不对。',
+    unreachableTitle: '无法使用这个服务',
     updateAvailableBody: '新版本 {version} 可用，当前为 {current}。',
     updateAvailableTitle: '有新版本可用',
     updateChecking: '正在检查更新…',
@@ -188,20 +216,22 @@ export const fillText = (
 ): string => fill(template, values);
 
 /**
- * The status line under the menu bar item. The address is whichever backend is
- * in use: `127.0.0.1:8001` for the bundled gateway, the host of a deployment
- * the user already runs for a remote one.
+ * The status line under the menu bar item. The address is the loopback one the
+ * bundled gateway is on, which is where the console is served from whether a
+ * deployment is configured or not.
  */
 export const statusText = (
   text: DesktopText,
-  status: 'failed' | 'running' | 'starting',
+  status: 'failed' | 'running' | 'starting' | 'unreachable',
   address: string,
 ): string =>
   status === 'running'
     ? fill(text.statusRunning, { address })
     : status === 'failed'
       ? text.statusFailed
-      : text.statusStarting;
+      : status === 'unreachable'
+        ? text.statusUnreachable
+        : text.statusStarting;
 
 /**
  * Token counts compacted for a menu bar, where `1_234_567` is unreadable and

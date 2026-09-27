@@ -10,6 +10,10 @@ import { contextBridge, ipcRenderer } from 'electron';
  */
 contextBridge.exposeInMainWorld('desktop', {
   getInfo: (): Promise<unknown> => ipcRenderer.invoke('desktop:info'),
+  openInBrowser: (): Promise<void> =>
+    ipcRenderer.invoke('desktop:open-in-browser'),
+  retryBackend: (): Promise<void> =>
+    ipcRenderer.invoke('desktop:retry-backend'),
   setBackend: (backend: unknown): Promise<void> =>
     ipcRenderer.invoke('desktop:set-backend', backend),
 });

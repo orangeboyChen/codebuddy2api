@@ -1,246 +1,46 @@
 <!doctype html>
 <!--
   The window that asks which backend to use, shown on a first launch and from
-  the menu bar item.
+  the menu bar item — and, when the deployment the user named does not answer,
+  the window that says so.
 
-  It is a plain bundled page — no framework, no bundler, no network: it has to
-  work before there is a gateway to serve anything, and it only ever talks to
-  the main process through the preload bridge.
+  It is a bundled page: `scripts/build-desktop.ts` compiles `backend.tsx` into
+  the `backend.js` sitting next to this file, so React and @lobehub/ui are on
+  disk and nothing is fetched. The window only ever talks to the main process,
+  through the preload bridge.
 -->
-<html lang="en">
+<html class="dark" lang="en">
   <head>
     <meta charset="utf-8" />
+    <!--
+      `script-src 'self'` covers `backend.js` next to this file: a page loaded
+      from `file://` has no other origin to name, and `'unsafe-inline'` is what
+      the bundled CSS-in-JS needs to insert its own style elements.
+    -->
     <meta
-      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'none'"
       http-equiv="Content-Security-Policy"
     />
     <meta content="width=device-width, initial-scale=1" name="viewport" />
     <title>CodeBuddy2API</title>
     <style>
+      /*
+        The `dark` class is what the console's own theme provider reads, so the
+        window lands on the console's dark theme; the background is here so it
+        is dark in the moment before React paints.
+      */
       :root {
         color-scheme: dark;
       }
 
-      * {
-        box-sizing: border-box;
-      }
-
       body {
-        background: #16161a;
-        color: #e8e8ed;
-        font-family:
-          -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans',
-          'Noto Sans CJK SC', 'Hiragino Sans', sans-serif;
-        font-size: 13px;
-        line-height: 1.5;
+        background: #111318;
         margin: 0;
-        padding: 24px;
-      }
-
-      h1 {
-        font-size: 15px;
-        font-weight: 600;
-        margin: 0 0 16px;
-      }
-
-      .option {
-        align-items: flex-start;
-        background: #1f1f26;
-        border: 1px solid #2e2e38;
-        border-radius: 8px;
-        cursor: pointer;
-        display: flex;
-        gap: 10px;
-        margin-bottom: 8px;
-        padding: 12px;
-      }
-
-      .option:focus-within,
-      .option:hover {
-        border-color: #4a4a5a;
-      }
-
-      .option input {
-        margin: 3px 0 0;
-      }
-
-      .option strong {
-        display: block;
-        font-weight: 600;
-      }
-
-      .option small {
-        color: #9a9aa8;
-        display: block;
-        margin-top: 2px;
-      }
-
-      #url {
-        background: #101014;
-        border: 1px solid #2e2e38;
-        border-radius: 8px;
-        color: inherit;
-        font: inherit;
-        margin-bottom: 8px;
-        padding: 9px 11px;
-        width: 100%;
-      }
-
-      #url:disabled {
-        opacity: 0.45;
-      }
-
-      #url:focus {
-        border-color: #4a4a5a;
-        outline: none;
-      }
-
-      #error {
-        color: #ff8f8f;
-        margin: 0 0 8px;
-        min-height: 1.5em;
-      }
-
-      .actions {
-        display: flex;
-        gap: 8px;
-        justify-content: flex-end;
-      }
-
-      button {
-        background: #2b2b34;
-        border: 1px solid #3a3a46;
-        border-radius: 8px;
-        color: inherit;
-        cursor: pointer;
-        font: inherit;
-        padding: 8px 16px;
-      }
-
-      button:hover {
-        background: #34343f;
-      }
-
-      button.primary {
-        background: #3d63dd;
-        border-color: #3d63dd;
-        color: #fff;
-        font-weight: 600;
-      }
-
-      button.primary:hover {
-        background: #4a70ea;
       }
     </style>
   </head>
   <body>
-    <h1 id="title"></h1>
-    <form id="form">
-      <label class="option">
-        <input checked name="mode" type="radio" value="local" />
-        <span>
-          <strong id="local-label"></strong>
-          <small id="local-hint"></small>
-        </span>
-      </label>
-      <label class="option">
-        <input name="mode" type="radio" value="remote" />
-        <span>
-          <strong id="remote-label"></strong>
-          <small id="remote-hint"></small>
-        </span>
-      </label>
-      <input
-        autocomplete="off"
-        disabled
-        id="url"
-        spellcheck="false"
-        type="text"
-      />
-      <p aria-live="polite" id="error"></p>
-      <div class="actions">
-        <button id="cancel" type="button"></button>
-        <button class="primary" id="save" type="submit"></button>
-      </div>
-    </form>
-    <script>
-      (() => {
-        const byId = (id) => document.getElementById(id);
-        const fields = {
-          cancel: byId('cancel'),
-          error: byId('error'),
-          form: byId('form'),
-          localHint: byId('local-hint'),
-          localLabel: byId('local-label'),
-          remoteHint: byId('remote-hint'),
-          remoteLabel: byId('remote-label'),
-          save: byId('save'),
-          title: byId('title'),
-          url: byId('url'),
-        };
-
-        // The main process owns the strings: it knows which locale the console
-        // is showing, and this page has no way to find out on its own.
-        window.desktop.getInfo().then(({ backend, text }) => {
-          fields.title.textContent = text.chooseBackend;
-          fields.localLabel.textContent = text.backendLocal;
-          fields.localHint.textContent = text.backendLocalHint;
-          fields.remoteLabel.textContent = text.backendRemote;
-          fields.remoteHint.textContent = text.backendRemoteHint;
-          fields.url.placeholder = text.backendUrlPlaceholder;
-          fields.save.textContent = text.save;
-          fields.cancel.textContent = text.cancel;
-          fields.error.dataset.invalid = text.invalidBackendUrl;
-
-          if (backend.mode === 'remote') {
-            fields.url.value = backend.url;
-            fields.form.elements.mode.value = 'remote';
-          }
-
-          fields.url.disabled = fields.form.elements.mode.value !== 'remote';
-        });
-
-        fields.form.addEventListener('change', () => {
-          fields.error.textContent = '';
-          fields.url.disabled = fields.form.elements.mode.value !== 'remote';
-
-          if (!fields.url.disabled) {
-            fields.url.focus();
-          }
-        });
-
-        fields.cancel.addEventListener('click', () => {
-          // Closing without answering leaves the app on the backend it was
-          // already using — or on the local gateway, on a first launch.
-          window.close();
-        });
-
-        fields.form.addEventListener('submit', (event) => {
-          event.preventDefault();
-
-          if (fields.form.elements.mode.value !== 'remote') {
-            window.desktop.setBackend({ mode: 'local' });
-
-            return;
-          }
-
-          const value = fields.url.value.trim();
-
-          try {
-            const parsed = new URL(value);
-
-            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-              throw new Error();
-            }
-
-            window.desktop.setBackend({ mode: 'remote', url: parsed.href });
-          } catch {
-            // Same check the main process makes; shown here so the field can be
-            // fixed instead of the choice silently falling back to local.
-            fields.error.textContent = fields.error.dataset.invalid;
-          }
-        });
-      })();
-    </script>
+    <div id="root"></div>
+    <script src="backend.js"></script>
   </body>
 </html>
