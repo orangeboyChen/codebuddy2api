@@ -7,6 +7,10 @@ import AdminPageLayout from '@/app/page-shell';
 import type { TabKey } from '@/app/page-data';
 import { getInitialData } from '@/app/page-loader';
 import { getAdminSessionSummary } from '@/lib/server/admin/session';
+import {
+  fetchUpstreamSessionSummary,
+  resolveAdminUpstream,
+} from '@/lib/server/admin/upstream';
 import { isDesktopMode } from '@/lib/server/electron/settings';
 import {
   localeCookieName,
@@ -37,12 +41,17 @@ export const AdminPage = async ({
   const request = new Request(`${protocol}://${host}/`, {
     headers: cookieHeader ? { cookie: cookieHeader } : {},
   });
-  const session = await getAdminSessionSummary(request);
-  // A desktop install has nothing to sign in to: see `consoleAuthRequired`.
-  const desktop = isDesktopMode();
-  const sessionAuthenticated = session.authenticated;
+  // Whose password applies: a desktop install serving its own data has none,
+  // but one showing a deployment's data is that deployment's console, and the
+  // deployment is reachable from a network.
+  const upstream = resolveAdminUpstream();
+  const session = upstream
+    ? await fetchUpstreamSessionSummary({ cookie: cookieHeader, upstream })
+    : await getAdminSessionSummary(request);
+  const desktop = isDesktopMode() && !upstream;
+  const sessionAuthenticated = session?.authenticated ?? false;
 
-  if (!desktop && session.accountConfigured && !sessionAuthenticated) {
+  if (!desktop && session?.accountConfigured && !sessionAuthenticated) {
     redirect('/login');
   }
 
@@ -58,11 +67,18 @@ export const AdminPage = async ({
 
   return (
     <AdminPageLayout
-      initialData={await getInitialData({
-        locale,
-        tab: initialTab,
-        usagePreferences: session.usagePreferences,
-      })}
+      // Nothing to load here for a deployment's data: the pages are this
+      // build's, and the numbers are the deployment's, fetched by the console
+      // itself through `/admin-api`, which is forwarded.
+      initialData={
+        upstream
+          ? undefined
+          : await getInitialData({
+              locale,
+              tab: initialTab,
+              usagePreferences: session?.usagePreferences,
+            })
+      }
       initialLocalePreference={localePreference}
       showLogout={!desktop && sessionAuthenticated}
       initialTab={initialTab}

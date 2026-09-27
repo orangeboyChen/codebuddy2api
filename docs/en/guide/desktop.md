@@ -4,7 +4,7 @@ Every release ships Electron desktop builds alongside the Docker image: macOS (A
 
 ## What it is
 
-The desktop app is an Electron window plus a backend for the console, and there are two to pick from: the gateway bundled into the same installer, or a deployment you already run.
+The desktop app is an Electron window plus a backend for the console. What the window renders is always the copy bundled into the installer; the backend only decides where the data comes from — the gateway bundled into the same installer, or a deployment you already run.
 
 - With the local backend, the main process starts the gateway — the same Next.js standalone server the Docker image runs — waits for `/health` to answer, and then opens the console window.
 - The gateway listens on `127.0.0.1` only; it is never exposed to the LAN.
@@ -18,15 +18,18 @@ The desktop app is an Electron window plus a backend for the console, and there 
 A first launch asks which backend to use, and the menu bar item's menu can change it later with Change backend…:
 
 - **This machine**: starts the gateway bundled into the installer, keeps the data on this machine, and asks for no sign-in. This is the default.
-- **A deployment I already run**: an `http://` or `https://` address. The app then starts no gateway of its own and opens that console instead — which may ask you to sign in. That deployment handles the sign-in; the desktop app stores no password of yours.
+- **A deployment I already run**: an `http://` or `https://` address. The app still starts its own gateway to render the console, and forwards `/admin-api/*` and `/v1/*` to that deployment — so what appears in the window is always the console this app shipped, never a page that deployment answered with. The address is probed at `/health` first, to confirm it really is a CodeBuddy2API deployment; when it is not, a window says which it was (nothing answered, or something that is not this app) and offers to try again, to change the backend, or to open it in the browser. That deployment handles the sign-in; the desktop app stores no password of yours.
+- With the network down, or the address wrong, the app does not open an empty window: it opens that window, saying why.
 
-With a remote backend the menu shows its address instead of a port, Copy address copies it, and the port setting — which belongs to the local gateway — disappears from the settings page.
+With a remote backend the menu names its address in the Backend row; Copy address copies the local console's address, which works as an API endpoint too because `/v1/*` is forwarded. The port setting — which belongs to the local gateway — disappears from the settings page.
 
 ## Sign-in
 
 A desktop install has no admin password. The gateway listens on `127.0.0.1` only, so a password would only lock you out of a console nobody else can reach — the trade-off is that any process on this machine can open it, which makes it a personal-device install.
 
 Only a self-hosted deployment needs an admin password; `/admin-api/auth/setup` answers 404 in the desktop app.
+
+With a deployment as the backend, the sign-in page and the password are that deployment's. Passkey sign-in cannot work from the desktop app: the browser only issues a credential for the origin it is on, `127.0.0.1`, which does not match the rpId the deployment was configured with. Sign in with the password, or open the deployment in a browser.
 
 ## Menu bar status
 

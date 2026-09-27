@@ -53,6 +53,10 @@ import {
   type DesktopUsage,
 } from '../lib/server/electron/usage';
 import {
+  probeDeployment,
+  type DeploymentProbe,
+} from '../lib/server/electron/deployment';
+import {
   RELEASES_PAGE_URL,
   checkForUpdate,
   type ReleaseAsset,
@@ -96,7 +100,10 @@ const CONSOLE_LOAD_TIMEOUT_MS = 10_000;
  */
 const INSTALLER_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 
-type GatewayStatus = 'failed' | 'running' | 'starting';
+type GatewayStatus = 'failed' | 'running' | 'starting' | 'unreachable';
+
+/** What the window that asks about the backend can be asking. */
+type BackendScreen = 'choose' | 'unreachable';
 
 interface Cookie {
   name: string;
@@ -116,14 +123,15 @@ let quitting = false;
 /** The gateway being started: its child exists, its handle does not yet. */
 let pendingStart: Promise<GatewayHandle> | null = null;
 /**
- * The origin the console is served from. It is not fixed: the gateway moves to
- * a new port when the port setting changes, and the backend can be switched to
- * a deployment the user already runs.
+ * The origin the console is served from, which is the bundled gateway's: the
+ * pages are this app's own whether a deployment is configured or not. It still
+ * moves — the gateway takes a new port when the port setting changes.
  */
 let consoleOrigin = '';
 /**
- * Where the console comes from: the gateway bundled into the app, or a
- * deployment the user already runs. Everything else follows from it.
+ * Where the console's data comes from: the gateway bundled into the app, or a
+ * deployment the user already runs, which the gateway forwards to. Everything
+ * else follows from it.
  */
 let backend: DesktopBackend = { mode: 'local' };
 /** Today's token counts, once a backend has answered. */
@@ -135,6 +143,14 @@ let usageLoaded = false;
  * is the app, and for a deployment that has not answered yet.
  */
 let serverVersion: string | null = null;
+/**
+ * Why the deployment the user named could not be used. Kept so the window that
+ * reports it can say which it was: nothing answered, or something that is not
+ * this app.
+ */
+let lastProbe: DeploymentProbe | null = null;
+/** What the window that asks about the backend is currently asking. */
+let backendScreen: BackendScreen = 'choose';
 /** What an update check is doing, which the menu item reports. */
 let updateState: 'checking' | 'downloading' | 'idle' = 'idle';
 /** The locale the console is showing — the menu bar item speaks it too. */
@@ -173,20 +189,16 @@ const sameSettings = (a: DesktopSettings, b: DesktopSettings): boolean =>
 /**
  * The address the console is served from, or an empty string while there is
  * none — a gateway that has not started yet.
+ *
+ * Always the bundled gateway's, a deployment configured or not: what the window
+ * shows is this app's own console, and only the data behind `/admin-api` comes
+ * from the deployment.
  */
-const consoleBaseUrl = (): string =>
-  backend.mode === 'remote' ? backend.url : (gateway?.url ?? '');
+const consoleBaseUrl = (): string => gateway?.url ?? '';
 
-/**
- * What to call the backend in the menu: the loopback port the gateway is on, or
- * the host of a deployment the user named.
- */
+/** The loopback address the bundled gateway is on, or `…` until it is up. */
 const backendAddress = (): string =>
-  backend.mode === 'remote'
-    ? new URL(backend.url).host
-    : gateway
-      ? `127.0.0.1:${gateway.port}`
-      : '…';
+  gateway ? `127.0.0.1:${gateway.port}` : '…';
 
 const backendLabel = (): string =>
   backend.mode === 'remote' ? new URL(backend.url).host : text().backendLocal;
@@ -330,20 +342,6 @@ const createMainWindow = (url: string): BrowserWindow => {
 };
 
 /**
- * Opens the console on whichever backend is in use — the dashboard, since a
- * backend switch is a fresh start rather than a page reload.
- */
-const openConsole = async (baseUrl: string): Promise<void> => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    await loadConsole(mainWindow, `${baseUrl}/dashboard`);
-
-    return;
-  }
-
-  mainWindow = createMainWindow(`${baseUrl}/dashboard`);
-};
-
-/**
  * The one console window the app ever opens.
  *
  * Every path that could open the console — a second launch, the dock icon, the
@@ -377,6 +375,14 @@ const showMainWindow = (): void => {
 
   if (baseUrl) {
     mainWindow = createMainWindow(`${baseUrl}/dashboard`);
+
+    return;
+  }
+
+  // No console to open, because the deployment that would fill it never
+  // answered: the window that says so is the one to bring back.
+  if (status === 'unreachable') {
+    openBackendWindow({ screen: 'unreachable' });
   }
 };
 
@@ -494,7 +500,10 @@ const createTray = (): void => {
   refreshTray();
 };
 
-const launchGateway = async (port: number): Promise<GatewayHandle> => {
+const launchGateway = async (
+  port: number,
+  upstream: string | null,
+): Promise<GatewayHandle> => {
   const paths = resolveDesktopPaths(userDataDir);
 
   ensureDesktopDirectories(paths);
@@ -504,6 +513,9 @@ const launchGateway = async (port: number): Promise<GatewayHandle> => {
       encryptionKey: ensureDesktopEncryptionKey(paths.keyFile),
       paths,
       port,
+      // The console is served here either way; with a deployment named, this
+      // only tells it where to forward `/admin-api` and `/v1`.
+      upstream,
     }),
     gatewayDir: resolveGatewayDir({
       appPath: app.getAppPath(),
@@ -541,11 +553,14 @@ const scheduleRestart = (): void => {
  * Starts a fresh gateway on the port now saved in the desktop settings and
  * sends the open window to its new address. Reached when the console saves a
  * port, and reused for the first launch.
+ *
+ * The gateway runs either way: it is what serves the console. A deployment only
+ * decides where the data behind it comes from, so it is asked first — a console
+ * pointed at a deployment that is not there would otherwise come up quiet and
+ * empty, and look like the app's own failure.
  */
 const restartGateway = async (): Promise<void> => {
-  // A remote backend is a deployment someone else runs: there is no gateway
-  // here to restart, and `openConsole` is what follows a switch to it.
-  if (backend.mode !== 'local' || quitting) {
+  if (quitting) {
     return;
   }
 
@@ -558,6 +573,28 @@ const restartGateway = async (): Promise<void> => {
   restarting = true;
   status = 'starting';
   refreshTray();
+
+  const startedFor = backend;
+  const upstream = backend.mode === 'remote' ? backend.url : null;
+
+  if (upstream) {
+    lastProbe = await probeDeployment({ url: upstream });
+
+    if (lastProbe.kind !== 'ready') {
+      restarting = false;
+      gateway?.stop();
+      gateway = null;
+      status = 'unreachable';
+      refreshTray();
+      // The console has nothing to show yet, so the window that names the
+      // deployment is the one to put in front of the user.
+      openBackendWindow({ screen: 'unreachable' });
+
+      return;
+    }
+  } else {
+    lastProbe = null;
+  }
 
   try {
     // The gateway that is running still holds its port, so probing before
@@ -576,14 +613,14 @@ const restartGateway = async (): Promise<void> => {
       preferred: resolveDesktopPreferredPort(userDataDir, process.env),
     });
 
-    pendingStart = launchGateway(port);
+    pendingStart = launchGateway(port, upstream);
     gateway = await pendingStart;
     pendingStart = null;
 
     // The port probe and the health check take seconds, and the backend can
-    // become remote meanwhile — give this gateway back instead of steering the
-    // console to an address the app has already walked away from.
-    if (quitting || backend.mode !== 'local') {
+    // change meanwhile — give this gateway back instead of steering the console
+    // to a build started for a backend the app has already walked away from.
+    if (quitting || !sameBackend(backend, startedFor)) {
       gateway.stop();
       gateway = null;
 
@@ -861,6 +898,10 @@ const runUpdateCheck = async (): Promise<void> => {
  * `persist` is set when the choice came from the window that asks: the settings
  * file is then the record of the choice, and the watcher leaves that write
  * alone.
+ *
+ * Every switch goes through the bundled gateway, a deployment named or not: the
+ * console is this app's own build, and the deployment only supplies the data
+ * behind it.
  */
 const applyBackend = async (
   next: DesktopBackend,
@@ -889,26 +930,50 @@ const applyBackend = async (
   backend = chosen;
   todayUsage = null;
   usageLoaded = false;
+  serverVersion = null;
   refreshTray();
 
-  if (backend.mode === 'local') {
-    await restartGateway();
+  await restartGateway();
 
-    if (status === 'running') {
-      showMainWindow();
-    }
+  if (status === 'running') {
+    showMainWindow();
 
     return;
   }
 
-  // No gateway of ours to run: the deployment the user named *is* the console.
-  gateway?.stop();
-  gateway = null;
-  status = 'running';
-  refreshTray();
+  // A deployment that did not answer: the window saying so is already up, and
+  // there is nothing to ask it for numbers.
+  if (status === 'unreachable') {
+    return;
+  }
 
-  await openConsole(backend.url);
-  void refreshUsage();
+  // Nothing to serve and no window to show: quit, unless the menu bar item can
+  // report what went wrong.
+  if (!tray) {
+    app.quit();
+  }
+};
+
+/**
+ * Why the deployment in the settings could not be used, for the window that
+ * reports it: which host, and which of the two ways it failed.
+ */
+const unreachableInfo = (): { host: string; message: string } | null => {
+  if (!lastProbe || lastProbe.kind === 'ready' || backend.mode !== 'remote') {
+    return null;
+  }
+
+  const host = new URL(backend.url).host;
+
+  return {
+    host,
+    message: fillText(
+      lastProbe.kind === 'foreign'
+        ? text().unreachableBodyForeign
+        : text().unreachableBodyUnreachable,
+      { host },
+    ),
+  };
 };
 
 /**
@@ -916,13 +981,23 @@ const applyBackend = async (
  *
  * It is a bundled page rather than a console page: it has to work before there
  * is a gateway to serve one, and it is the only thing in the app that can
- * change a setting the gateway reads to start.
+ * change a setting the gateway reads to start. It is also where a deployment
+ * that could not be reached is reported — a console of the app's own would have
+ * nothing to show for it.
  */
-const openBackendWindow = (): void => {
+const openBackendWindow = ({
+  screen = 'choose',
+}: { screen?: BackendScreen } = {}): void => {
   if (backendWindow) {
     if (backendWindow.isDestroyed()) {
       backendWindow = null;
     } else {
+      // Asking something else already: send it to what matters now.
+      if (backendScreen !== screen) {
+        backendScreen = screen;
+        void backendWindow.loadFile(path.join(bundleDir(), 'backend.html'));
+      }
+
       backendWindow.focus();
 
       return;
@@ -955,6 +1030,7 @@ const openBackendWindow = (): void => {
   });
 
   backendWindow = window;
+  backendScreen = screen;
 
   void window.loadFile(path.join(bundleDir(), 'backend.html'));
 };
@@ -998,21 +1074,19 @@ const watchDesktopSettings = (): void => {
 };
 
 const startBackend = async (): Promise<void> => {
-  if (backend.mode === 'remote') {
-    status = 'running';
-    refreshTray();
-
-    await openConsole(backend.url);
-    void refreshUsage();
-
-    return;
-  }
-
+  // A deployment configured or not, this starts the gateway that serves the
+  // console; the deployment only decides where its data comes from.
   await restartGateway();
 
   if (status === 'running') {
     showMainWindow();
 
+    return;
+  }
+
+  // A deployment that did not answer has a window of its own already, saying so
+  // and offering the way out of it.
+  if (status === 'unreachable') {
     return;
   }
 
@@ -1054,7 +1128,9 @@ const bootstrap = async (): Promise<void> => {
 ipcMain.handle('desktop:info', () => ({
   backend,
   locale,
+  screen: backendScreen,
   text: text(),
+  unreachable: unreachableInfo(),
 }));
 
 ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
@@ -1064,6 +1140,32 @@ ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
   // what counts as a backend.
   void applyBackend(normalizeDesktopBackend(next), { persist: true });
   window?.close();
+});
+
+/**
+ * Asks the deployment again, for the window that reported it unreachable: a
+ * deployment that was merely cold, or a network that came back, is fixed by
+ * asking once more rather than by retyping the address.
+ */
+ipcMain.handle('desktop:retry-backend', () => {
+  const window = backendWindow;
+
+  void (async () => {
+    await restartGateway();
+
+    // Answered this time: the question goes away and the console comes up.
+    if (status === 'running') {
+      window?.close();
+      showMainWindow();
+    }
+  })();
+});
+
+/** The deployment itself, in the system browser: the app's window is not one. */
+ipcMain.handle('desktop:open-in-browser', () => {
+  if (backend.mode === 'remote') {
+    openExternally(backend.url);
+  }
 });
 
 // A second launch would only ever start a second gateway on a second port, so

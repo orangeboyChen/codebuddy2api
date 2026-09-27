@@ -1,6 +1,7 @@
 import { spawn as spawnProcess } from 'node:child_process';
 import path from 'node:path';
 
+import { ADMIN_UPSTREAM_ENV } from '../admin/upstream';
 import { DESKTOP_MODE_ENV, DESKTOP_USER_DATA_ENV } from './settings';
 import type { DesktopPaths } from './paths';
 
@@ -52,6 +53,11 @@ export interface GatewayEnvOptions {
   encryptionKey: string;
   paths: GatewayEnvPaths;
   port: number;
+  /**
+   * The deployment whose data the console shows. Null — the usual case — when
+   * this install serves its own.
+   */
+  upstream?: string | null;
 }
 
 export interface StartGatewayOptions {
@@ -137,6 +143,16 @@ export const buildGatewayEnv = (
   // here would put the desktop data somewhere the console cannot explain.
   delete env.CODEBUDDY_STORAGE_PG_URL;
   delete env.DATABASE_URL;
+
+  // Only the data comes from a deployment, never the console: the pages stay
+  // this build's, and `/admin-api` and `/v1` are forwarded. Dropped rather than
+  // emptied when there is none, so a stale value in the parent environment
+  // cannot turn a local install into someone else's console.
+  if (options.upstream) {
+    env[ADMIN_UPSTREAM_ENV] = options.upstream;
+  } else {
+    delete env[ADMIN_UPSTREAM_ENV];
+  }
 
   return env;
 };
