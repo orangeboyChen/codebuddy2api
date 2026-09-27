@@ -2,6 +2,13 @@ import { defineConfig, devices } from '@playwright/test';
 import path from 'node:path';
 
 const e2eRoot = path.join('.tmp-e2e', String(process.pid));
+/**
+ * Overridable because `8001` is the port a local `bun run dev` or a Docker
+ * deployment is already on, and Playwright cannot tell its own server from one
+ * that was there first — with the port taken, it would happily run these tests
+ * against somebody else's build.
+ */
+const port = process.env.E2E_DESKTOP_PORT ?? '8001';
 
 /**
  * The console as the desktop app opens it.
@@ -20,11 +27,11 @@ export default defineConfig({
     ['html', { open: 'never', outputFolder: 'playwright-report-desktop' }],
   ],
   use: {
-    baseURL: 'http://127.0.0.1:8001',
+    baseURL: `http://127.0.0.1:${port}`,
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'bun run dev -- --hostname 127.0.0.1 --port 8001',
+    command: `bun run dev -- --hostname 127.0.0.1 --port ${port}`,
     env: {
       ...process.env,
       CODEBUDDY_API_ENDPOINT: 'http://127.0.0.1:65535',
@@ -36,7 +43,7 @@ export default defineConfig({
     },
     reuseExistingServer: false,
     timeout: 120_000,
-    url: 'http://127.0.0.1:8001/health',
+    url: `http://127.0.0.1:${port}/health`,
   },
   projects: [
     {
