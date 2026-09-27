@@ -52,12 +52,14 @@ const loginTranslations: AdminLoginMessages = {
   description: 'Sign in with the admin password or a passkey.',
   descriptionLogin: 'Use the existing admin password or a registered passkey.',
   descriptionSetup: 'Create the first admin password.',
+  deploymentPasskeyHint: 'Passkeys saved for {host} cannot be used here.',
   errorPasskeyFailed: 'Passkey sign-in failed.',
   errorPasskeyUnavailable: 'Passkey sign-in is unavailable right now.',
   errorPasswordStatus: 'Use your admin password to continue.',
   headingLogin: 'Sign in to CodeBuddy2API',
   headingSetup: 'Set up the admin account',
   noPasskeysConfigured: 'No passkeys are configured.',
+  openDeployment: 'Open {host} in a browser',
   orLabel: 'or',
   passkeyAccepted: 'Passkey accepted. Redirecting...',
   passkeyHintLogin: 'after the first account is configured.',
@@ -137,6 +139,54 @@ describe('LoginClient', () => {
     vi.clearAllMocks();
     vi.stubGlobal('location', {
       assign: vi.fn(),
+    });
+  });
+
+  it('leaves a deployment’s passkeys to the deployment’s own page', async () => {
+    // Autofill is supported and the account has passkeys — neither is enough
+    // here: they are bound to the deployment's host, and this console is served
+    // from loopback.
+    vi.mocked(browserSupportsWebAuthnAutofill).mockResolvedValue(true);
+    globalThis.fetch = vi.fn(async (input) => {
+      if (input === '/admin-api/preferences') {
+        return makeJsonResponse({ success: true });
+      }
+
+      throw new Error(`Unexpected fetch: ${String(input)}`);
+    }) as typeof fetch;
+
+    renderWithMessages(
+      <LoginClient
+        deploymentUrl="https://codebuddy.example.com"
+        initialSession={{
+          accountConfigured: true,
+          authenticated: false,
+          passkeyCount: 1,
+          passwordConfigured: true,
+        }}
+        locale="zh-CN"
+        translations={loginTranslations}
+      />,
+    );
+
+    expect(
+      screen.queryByRole('button', { name: 'Continue with passkey' }),
+    ).toBeNull();
+    expect(
+      screen.getByText(
+        'Passkeys saved for codebuddy.example.com cannot be used here.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByRole('link', {
+          name: 'Open codebuddy.example.com in a browser',
+        })
+        .getAttribute('href'),
+    ).toBe('https://codebuddy.example.com');
+
+    await waitFor(() => {
+      expect(startAuthentication).not.toHaveBeenCalled();
     });
   });
 
@@ -305,6 +355,10 @@ describe('LoginClient', () => {
         translations={loginTranslations}
       />,
     );
+
+    // The button the deployment case does not get: this console is the
+    // deployment's own page, so a passkey saved for it can be used here.
+    expect(document.querySelector('#admin-passkey')).not.toBeNull();
 
     await waitFor(() => {
       expect(startAuthentication).toHaveBeenCalledWith(

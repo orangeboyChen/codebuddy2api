@@ -13,7 +13,10 @@ const SettingsPage = async () => {
 
   return (
     <AdminPage initialTab="settings">
-      <Settings desktop={isDesktopMode() && !upstream} />
+      <Settings
+        deploymentUrl={upstream ?? undefined}
+        desktop={isDesktopMode() && !upstream}
+      />
     </AdminPage>
   );
 };

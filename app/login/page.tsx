@@ -62,6 +62,10 @@ const LoginPage = async () => {
 
   return (
     <LoginClient
+      // Only set when this build is rendering a deployment: it is the address
+      // a passkey saved for the deployment would have to answer to, and the one
+      // to open in a browser instead.
+      deploymentUrl={upstream ?? undefined}
       initialSession={session}
       initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
       locale={locale}

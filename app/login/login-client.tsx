@@ -10,6 +10,7 @@ import { useAtom } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 
+import DeploymentPasskeyHint from '@/app/deployment-passkey-hint';
 import { themeAtom } from '@/app/page-state';
 import { AdminHeader } from '@/app/header';
 import type { AdminLoginMessages } from '@/lib/i18n/messages';
@@ -46,6 +47,13 @@ interface PasskeyOptionsResponse {
 }
 
 interface LoginClientProps {
+  /**
+   * The deployment this console is rendering, when it is rendering one.
+   *
+   * Its passkeys are bound to this address, not to the loopback address the
+   * console is served from, so they cannot be used here.
+   */
+  deploymentUrl?: string;
   initialTheme?: ThemeMode;
   initialSession: SessionSummary;
   locale: string;
@@ -60,6 +68,7 @@ const getErrorMessage = (payload: JsonResponse | PasskeyOptionsResponse) => {
 };
 
 const LoginClient = ({
+  deploymentUrl,
   initialSession,
   initialTheme = 'system',
   locale,
@@ -79,14 +88,16 @@ const LoginClient = ({
   const passkeyInFlightRef = useRef(false);
 
   const passwordMode = session.accountConfigured ? 'login' : 'setup';
-  const canUsePasskeys = session.passkeyCount > 0;
+  // Offering a passkey here would only ever fail: the ceremony belongs to the
+  // deployment's origin, and this page is served from loopback.
+  const canUsePasskeys = session.passkeyCount > 0 && !deploymentUrl;
   const passwordLabel =
     passwordMode === 'setup'
       ? translations.createPasswordLabel
       : translations.passwordLabel;
   const [status, setStatus] = useState(
     initialSession.accountConfigured
-      ? initialSession.passkeyCount > 0
+      ? canUsePasskeys
         ? translations.passwordSignInHint
         : ''
       : translations.createPasswordStatus,
@@ -234,7 +245,7 @@ const LoginClient = ({
         if (
           supported &&
           session.accountConfigured &&
-          session.passkeyCount > 0 &&
+          canUsePasskeys &&
           !autoAttemptedRef.current
         ) {
           autoAttemptedRef.current = true;
@@ -246,7 +257,7 @@ const LoginClient = ({
     return () => {
       disposed = true;
     };
-  }, [session.accountConfigured, session.passkeyCount, submitPasskey]);
+  }, [canUsePasskeys, session.accountConfigured, submitPasskey]);
 
   return (
     <Flexbox
@@ -353,6 +364,7 @@ const LoginClient = ({
           {canUsePasskeys ? (
             <Button
               disabled={isPasskeyPending}
+              id="admin-passkey"
               onClick={() => {
                 startTransition(() => {
                   void submitPasskey(false);
@@ -362,6 +374,13 @@ const LoginClient = ({
             >
               {translations.continueWithPasskey}
             </Button>
+          ) : null}
+          {deploymentUrl && session.passkeyCount > 0 ? (
+            <DeploymentPasskeyHint
+              deploymentUrl={deploymentUrl}
+              hint={translations.deploymentPasskeyHint}
+              openLabel={translations.openDeployment}
+            />
           ) : null}
         </Flexbox>
       </Block>
