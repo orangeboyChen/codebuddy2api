@@ -88,6 +88,13 @@ const USAGE_POLL_MS = 60_000;
  * attempt is only ever reached by a load that has stopped making progress.
  */
 const CONSOLE_LOAD_TIMEOUT_MS = 10_000;
+/**
+ * How long the installer download gets. Long enough for a slow connection and
+ * a disk image over a hundred megabytes; not unlimited, because a server that
+ * accepts the request and then stalls would otherwise leave the menu item
+ * saying "Downloading…" until the app is restarted.
+ */
+const INSTALLER_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 
 type GatewayStatus = 'failed' | 'running' | 'starting';
 
@@ -681,7 +688,9 @@ const updateMenuLabel = (): string =>
 /** The installer for a newer release, downloaded to a temporary file. */
 const downloadInstaller = async (asset: ReleaseAsset): Promise<string> => {
   const target = path.join(app.getPath('temp'), asset.name);
-  const response = await fetch(asset.url);
+  const response = await fetch(asset.url, {
+    signal: AbortSignal.timeout(INSTALLER_DOWNLOAD_TIMEOUT_MS),
+  });
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} downloading ${asset.name}`);
@@ -699,6 +708,49 @@ const downloadInstaller = async (asset: ReleaseAsset): Promise<string> => {
   }
 
   return target;
+};
+
+/**
+ * Puts a downloaded AppImage where the running one is.
+ *
+ * An AppImage is the program, so an update means replacing the file, not
+ * opening the download: opening it would run a second copy of the app, which
+ * finds the single-instance lock, quits, and hands the window straight back to
+ * the old build — and even without the lock the new file would sit in a
+ * temporary directory and be gone by the next reboot.
+ *
+ * The copy lands beside the running file and is renamed over it, so a failed
+ * download or a read-only directory leaves the installed AppImage as it was.
+ * Nothing to replace means nothing was started from an AppImage — a distro
+ * package, or an unpacked directory — and the caller says where the file went
+ * instead.
+ */
+const replaceAppImage = async (downloaded: string): Promise<boolean> => {
+  const current = process.env.APPIMAGE?.trim();
+
+  if (!current) {
+    return false;
+  }
+
+  const staged = `${current}.new`;
+
+  try {
+    await fs.promises.copyFile(downloaded, staged);
+    await fs.promises.rename(staged, current);
+    // Relaunched before it quits: the file it starts is the one just written.
+    app.relaunch();
+    app.exit(0);
+  } catch (error) {
+    await fs.promises.rm(staged, { force: true });
+    dialog.showErrorBox(
+      'CodeBuddy2API',
+      `${text().updateFailed}\n\n${describeError(error)}`,
+    );
+
+    return false;
+  }
+
+  return true;
 };
 
 /**
@@ -773,6 +825,18 @@ const runUpdateCheck = async (): Promise<void> => {
     refreshTray();
 
     const installer = await downloadInstaller(update.asset);
+
+    // A disk image mounts and a setup program runs, and both are what opening
+    // the file is for. An AppImage has to be put where the running one is
+    // instead, or the "Install" button installs nothing.
+    if (process.platform === 'linux' && installer.endsWith('.AppImage')) {
+      if (!(await replaceAppImage(installer))) {
+        shell.showItemInFolder(installer);
+      }
+
+      return;
+    }
+
     const notOpened = await shell.openPath(installer);
 
     // The download happened either way, so show where it went instead of
