@@ -10,6 +10,7 @@ import {
   verifyRegistrationResponse,
 } from '@simplewebauthn/server';
 
+import { ADMIN_SESSION_COOKIE } from './cookie';
 import { readStorageJsonResult, writeStorageJson } from '../storage';
 import { getForwardedHeaderValue } from '../shared/http';
 import { isDesktopMode } from '../electron/settings';
@@ -19,7 +20,6 @@ import type { UsageRange } from '../domain/usage';
 
 const ADMIN_AUTH_NAMESPACE = 'admin-auth';
 const ADMIN_AUTH_KEY = 'state';
-const ADMIN_SESSION_COOKIE = 'codebuddy_admin_session';
 const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 8;
 const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const PASSWORD_MIN_LENGTH = 8;

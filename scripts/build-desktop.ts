@@ -109,21 +109,28 @@ const bundleElectron = () => {
   fs.rmSync(appDir, { force: true, recursive: true });
   fs.mkdirSync(appDir, { recursive: true });
 
-  execFileSync(
-    bunBinary(),
-    [
-      'build',
-      path.join(root, 'electron', 'main.ts'),
-      '--outfile',
-      path.join(appDir, 'main.js'),
-      '--target',
-      'node',
-      // Electron itself is provided by the app binary, not by the bundle.
-      '--external',
-      'electron',
-    ],
-    { cwd: root, stdio: 'inherit' },
-  );
+  const bundle = (entry: string, outfile: string): void => {
+    execFileSync(
+      bunBinary(),
+      [
+        'build',
+        path.join(root, 'electron', entry),
+        '--outfile',
+        path.join(appDir, outfile),
+        '--target',
+        'node',
+        // Electron itself is provided by the app binary, not by the bundle.
+        '--external',
+        'electron',
+      ],
+      { cwd: root, stdio: 'inherit' },
+    );
+  };
+
+  bundle('main.ts', 'main.js');
+  // The window that picks a backend is a bundled page with a sandboxed
+  // preload, so it needs both halves next to the main process.
+  bundle('preload.ts', 'preload.js');
 
   const { author, description, version } = JSON.parse(
     fs.readFileSync(path.join(root, 'package.json'), 'utf8'),
@@ -149,6 +156,10 @@ const bundleElectron = () => {
   // cannot come from `electron/resources` — that directory is only electron-
   // builder's buildResources, which never reaches the packaged app.
   copyInto(path.join(resourcesDir, 'tray.png'), path.join(appDir, 'tray.png'));
+  copyInto(
+    path.join(root, 'electron', 'backend.html'),
+    path.join(appDir, 'backend.html'),
+  );
 
   console.log(`Electron main bundled at ${path.relative(root, appDir)}`);
 };

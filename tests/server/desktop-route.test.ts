@@ -151,7 +151,7 @@ describe('desktop admin route', () => {
       expect(payload.preferredPort).toBe(8123);
       expect(
         JSON.parse(fs.readFileSync(desktopSettingsPath(userDataDir), 'utf8')),
-      ).toEqual({ port: 8123 });
+      ).toEqual({ backend: { mode: 'local' }, port: 8123 });
     });
 
     it('saves the port into the trimmed user data directory', async () => {

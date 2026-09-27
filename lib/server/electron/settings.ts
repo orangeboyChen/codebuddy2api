@@ -16,10 +16,79 @@ export { normalizePort as normalizeDesktopPort };
 export const DESKTOP_MODE_ENV = 'CODEBUDDY_DESKTOP';
 export const DESKTOP_USER_DATA_ENV = 'CODEBUDDY_DESKTOP_USER_DATA_DIR';
 export const DESKTOP_SETTINGS_FILENAME = 'desktop-settings.json';
+/**
+ * How the app tells the console it is inside the desktop build, and which one.
+ * A cookie rather than a query parameter: it survives the redirect a remote
+ * console makes to its sign-in page and back, and it stays scoped to the
+ * origin it belongs to.
+ */
+export const DESKTOP_VERSION_COOKIE = 'codebuddy2api-desktop-version';
+
+/**
+ * Where the console the app shows comes from.
+ *
+ * `local` is the gateway bundled into the app — started by the main process on
+ * a loopback port, with its database inside `userData`. `remote` is a
+ * deployment the user already runs: the app then opens that console instead,
+ * and never starts a gateway of its own.
+ */
+export type DesktopBackend =
+  { mode: 'local' } | { mode: 'remote'; url: string };
 
 export interface DesktopSettings {
+  backend: DesktopBackend;
   port: number;
 }
+
+/**
+ * A backend address, or null when it is not one the app could open.
+ *
+ * http is allowed as well as https: a self-hosted deployment on a home network
+ * or behind a reverse proxy on the same machine is a normal thing to point the
+ * app at, and refusing it would only push people to a tunnel.
+ */
+const normalizeBackendUrl = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+
+    return parsed.href.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Falls back to the local gateway: an address the app cannot open is worse
+ * than one it never asked for, and a broken setting must not leave the app
+ * with nowhere to go.
+ */
+export const normalizeDesktopBackend = (value: unknown): DesktopBackend => {
+  const record =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as { mode?: unknown; url?: unknown })
+      : null;
+  // The mode is read rather than inferred from the address, so a stale or
+  // half-written setting cannot quietly switch the app to a backend the user
+  // did not ask for.
+  const url =
+    record?.mode === 'remote' ? normalizeBackendUrl(record.url) : null;
+
+  return url ? { mode: 'remote', url } : { mode: 'local' };
+};
 
 /**
  * The one desktop setting the console can change.
@@ -30,6 +99,7 @@ export interface DesktopSettings {
  * gateway.
  */
 export const defaultDesktopSettings = (): DesktopSettings => ({
+  backend: { mode: 'local' },
   port: DEFAULT_GATEWAY_PORT,
 });
 
@@ -43,9 +113,12 @@ export const readDesktopSettings = (userDataDir: string): DesktopSettings => {
   try {
     const parsed = JSON.parse(
       fs.readFileSync(desktopSettingsPath(userDataDir), 'utf8'),
-    ) as { port?: unknown };
+    ) as { backend?: unknown; port?: unknown };
 
-    return { port: normalizePort(parsed?.port) };
+    return {
+      backend: normalizeDesktopBackend(parsed?.backend),
+      port: normalizePort(parsed?.port),
+    };
   } catch {
     // A missing file is the normal case — the setting has never been changed —
     // and a damaged one is not worth failing a launch over.
@@ -58,6 +131,7 @@ export const writeDesktopSettings = (
   settings: DesktopSettings,
 ): DesktopSettings => {
   const next: DesktopSettings = {
+    backend: normalizeDesktopBackend(settings.backend),
     port: normalizePort(settings.port),
   };
 

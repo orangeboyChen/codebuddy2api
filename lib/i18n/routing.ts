@@ -1,4 +1,7 @@
+import { localeCookieName } from './cookie-names';
 import { defineRouting } from 'next-intl/routing';
+
+export { localeCookieName, localePreferenceCookieName } from './cookie-names';
 
 export const locales = ['zh-CN', 'en-US', 'ja-JP'] as const;
 
@@ -6,8 +9,6 @@ export type AppLocale = (typeof locales)[number];
 
 export const defaultLocale: AppLocale = 'zh-CN';
 
-export const localeCookieName = 'codebuddy2api-locale';
-export const localePreferenceCookieName = 'codebuddy2api-locale-preference';
 export const systemLocalePreference = 'system' as const;
 
 export type LocalePreference = AppLocale | typeof systemLocalePreference;

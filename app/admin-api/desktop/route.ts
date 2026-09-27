@@ -112,7 +112,12 @@ export const POST = async (request: Request): Promise<Response> => {
   }
 
   try {
-    writeDesktopSettings(desktopUserDataDir(), { port });
+    // Merged rather than replaced: the port is the one thing this console can
+    // change, and it is only reachable while the backend is the local gateway.
+    writeDesktopSettings(desktopUserDataDir(), {
+      ...readDesktopSettings(desktopUserDataDir()),
+      port,
+    });
   } catch (error) {
     // A read-only or missing `userData` directory is a real answer, not a
     // crash: the console shows it instead of a 500 page.

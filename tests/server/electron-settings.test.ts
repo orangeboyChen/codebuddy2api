@@ -5,10 +5,12 @@ import {
   defaultDesktopSettings,
   desktopSettingsPath,
   isDesktopMode,
+  normalizeDesktopBackend,
   normalizeDesktopPort,
   readDesktopSettings,
   resolveDesktopPreferredPort,
   writeDesktopSettings,
+  type DesktopBackend,
 } from '@/lib/server/electron/settings';
 import { DEFAULT_GATEWAY_PORT } from '@/lib/server/electron/ports';
 
@@ -25,9 +27,56 @@ const asEnv = (
   overrides: Record<string, string | undefined> = {},
 ): NodeJS.ProcessEnv => ({ NODE_ENV: 'test', ...overrides });
 
+describe('normalizeDesktopBackend', () => {
+  it.each([
+    {
+      value: { mode: 'remote', url: 'https://api.example.com' },
+      label: 'https',
+    },
+    {
+      value: { mode: 'remote', url: 'http://192.168.1.9:8001' },
+      label: 'plain http on the LAN',
+    },
+    {
+      value: { mode: 'remote', url: 'https://api.example.com/' },
+      label: 'a trailing slash',
+    },
+    {
+      value: { mode: 'remote', url: '  https://api.example.com/base  ' },
+      label: 'a sub-path',
+    },
+  ])('keeps $label', ({ value }) => {
+    expect(normalizeDesktopBackend(value)).toEqual({
+      mode: 'remote',
+      url: (value.url as string).trim().replace(/\/+$/, ''),
+    });
+  });
+
+  it.each([
+    { value: undefined, why: 'missing' },
+    { value: { mode: 'local' }, why: 'explicitly local' },
+    { value: { mode: 'remote' }, why: 'a remote without an address' },
+    { value: { mode: 'remote', url: '' }, why: 'an empty address' },
+    { value: { mode: 'remote', url: 'not a url' }, why: 'a malformed address' },
+    { value: { mode: 'remote', url: 'ftp://api.example.com' }, why: 'ftp' },
+    { value: { mode: 'remote', url: 'file:///etc/passwd' }, why: 'a file url' },
+    {
+      value: { mode: 'nonsense', url: 'https://api.example.com' },
+      why: 'an unknown mode',
+    },
+    { value: 'remote', why: 'not an object' },
+    { value: [], why: 'an array' },
+  ])('falls back to the local gateway on $why', ({ value }) => {
+    expect(normalizeDesktopBackend(value)).toEqual({ mode: 'local' });
+  });
+});
+
 describe('defaultDesktopSettings', () => {
   it('starts on the documented gateway port', () => {
-    expect(defaultDesktopSettings()).toEqual({ port: DEFAULT_GATEWAY_PORT });
+    expect(defaultDesktopSettings()).toEqual({
+      backend: { mode: 'local' },
+      port: DEFAULT_GATEWAY_PORT,
+    });
   });
 });
 
@@ -80,9 +129,7 @@ describe('readDesktopSettings', () => {
   afterEach(resetRoot);
 
   it('falls back to the default when nothing has been saved', () => {
-    expect(readDesktopSettings(userDataDir)).toEqual({
-      port: DEFAULT_GATEWAY_PORT,
-    });
+    expect(readDesktopSettings(userDataDir)).toEqual(defaultDesktopSettings());
   });
 
   it.each([
@@ -94,9 +141,7 @@ describe('readDesktopSettings', () => {
     fs.mkdirSync(userDataDir, { recursive: true });
     fs.writeFileSync(desktopSettingsPath(userDataDir), contents);
 
-    expect(readDesktopSettings(userDataDir)).toEqual({
-      port: DEFAULT_GATEWAY_PORT,
-    });
+    expect(readDesktopSettings(userDataDir)).toEqual(defaultDesktopSettings());
   });
 
   it('reads a saved port', () => {
@@ -106,7 +151,39 @@ describe('readDesktopSettings', () => {
       JSON.stringify({ port: 8123 }),
     );
 
-    expect(readDesktopSettings(userDataDir)).toEqual({ port: 8123 });
+    expect(readDesktopSettings(userDataDir)).toEqual({
+      backend: { mode: 'local' },
+      port: 8123,
+    });
+  });
+
+  it('reads a saved remote backend', () => {
+    fs.mkdirSync(userDataDir, { recursive: true });
+    fs.writeFileSync(
+      desktopSettingsPath(userDataDir),
+      JSON.stringify({
+        backend: { mode: 'remote', url: 'https://api.example.com' },
+      }),
+    );
+
+    expect(readDesktopSettings(userDataDir)).toEqual({
+      backend: { mode: 'remote', url: 'https://api.example.com' },
+      port: DEFAULT_GATEWAY_PORT,
+    });
+  });
+
+  it('ignores a backend it cannot open', () => {
+    fs.mkdirSync(userDataDir, { recursive: true });
+    fs.writeFileSync(
+      desktopSettingsPath(userDataDir),
+      JSON.stringify({
+        backend: { mode: 'remote', url: 'javascript:alert(1)' },
+      }),
+    );
+
+    expect(readDesktopSettings(userDataDir).backend).toEqual({
+      mode: 'local',
+    });
   });
 });
 
@@ -115,29 +192,46 @@ describe('writeDesktopSettings', () => {
   afterEach(resetRoot);
 
   it('round-trips through readDesktopSettings', () => {
-    expect(writeDesktopSettings(userDataDir, { port: 8123 })).toEqual({
-      port: 8123,
-    });
-    expect(readDesktopSettings(userDataDir)).toEqual({ port: 8123 });
+    expect(writeDesktopSettings(userDataDir, defaultDesktopSettings())).toEqual(
+      defaultDesktopSettings(),
+    );
+    expect(readDesktopSettings(userDataDir)).toEqual(defaultDesktopSettings());
   });
 
   it('creates the directory it writes into', () => {
-    writeDesktopSettings(nestedDir, { port: 8123 });
+    writeDesktopSettings(nestedDir, {
+      backend: { mode: 'local' },
+      port: 8123,
+    });
 
-    expect(readDesktopSettings(nestedDir)).toEqual({ port: 8123 });
+    expect(readDesktopSettings(nestedDir).port).toBe(8123);
+  });
+
+  it('keeps a remote backend it was handed', () => {
+    const backend: DesktopBackend = {
+      mode: 'remote',
+      url: 'https://api.example.com',
+    };
+
+    expect(writeDesktopSettings(userDataDir, { backend, port: 8123 })).toEqual({
+      backend,
+      port: 8123,
+    });
+    expect(readDesktopSettings(userDataDir).backend).toEqual(backend);
   });
 
   it('refuses to save an unusable port', () => {
-    expect(writeDesktopSettings(userDataDir, { port: 0 })).toEqual({
-      port: DEFAULT_GATEWAY_PORT,
-    });
-    expect(readDesktopSettings(userDataDir)).toEqual({
-      port: DEFAULT_GATEWAY_PORT,
-    });
+    expect(
+      writeDesktopSettings(userDataDir, {
+        backend: { mode: 'local' },
+        port: 0,
+      }),
+    ).toEqual(defaultDesktopSettings());
+    expect(readDesktopSettings(userDataDir)).toEqual(defaultDesktopSettings());
   });
 
   it('writes a file only the user can read', () => {
-    writeDesktopSettings(userDataDir, { port: 8123 });
+    writeDesktopSettings(userDataDir, defaultDesktopSettings());
 
     expect(fs.statSync(desktopSettingsPath(userDataDir)).mode & 0o777).toBe(
       0o600,
@@ -145,10 +239,10 @@ describe('writeDesktopSettings', () => {
   });
 
   it('writes json a human can edit', () => {
-    writeDesktopSettings(userDataDir, { port: 8123 });
+    writeDesktopSettings(userDataDir, defaultDesktopSettings());
 
     expect(fs.readFileSync(desktopSettingsPath(userDataDir), 'utf8')).toBe(
-      '{\n  "port": 8123\n}\n',
+      '{\n  "backend": {\n    "mode": "local"\n  },\n  "port": 8001\n}\n',
     );
   });
 });
