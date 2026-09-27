@@ -33,7 +33,12 @@ test.describe('Desktop console', () => {
   }) => {
     await page.goto('/settings');
 
-    await expect(page.getByText('Local port', { exact: true })).toBeVisible();
+    // Waited out rather than assumed: this is a dev server, and the first
+    // render of a route it has not compiled yet takes seconds on a runner that
+    // is slower than a laptop.
+    await expect(page.getByText('Local port', { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(page.getByText('Console security')).toHaveCount(0);
   });
 
