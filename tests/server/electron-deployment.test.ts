@@ -42,13 +42,16 @@ describe('probeDeployment', () => {
     );
   });
 
-  it('accepts a deployment whose storage is not healthy: it is still this app', async () => {
+  it('accepts a deployment that answers an error, when the error is its own', async () => {
+    // An unhealthy storage makes `/health` answer 503, still naming this app.
+    // Refusing it on the status alone would claim the address is not a
+    // deployment of this app — the one thing it certainly is.
     vi.stubGlobal(
       'fetch',
-      respondWith(async () => ({
-        service: 'codebuddy2api',
-        status: 'unhealthy',
-      })),
+      respondWith(
+        async () => ({ service: 'codebuddy2api', status: 'unhealthy' }),
+        { ok: false },
+      ),
     );
 
     await expect(
@@ -88,10 +91,12 @@ describe('probeDeployment', () => {
     ).resolves.toEqual({ kind: 'foreign' });
   });
 
-  it('refuses a host that answers with an error: a proxy, or a captive portal', async () => {
+  it('refuses a host that answers with an error and does not name itself', async () => {
     vi.stubGlobal(
       'fetch',
-      respondWith(async () => ({ service: 'codebuddy2api' }), { ok: false }),
+      respondWith(async () => ({ error: 'Service Unavailable' }), {
+        ok: false,
+      }),
     );
 
     await expect(

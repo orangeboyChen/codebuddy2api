@@ -249,6 +249,52 @@ export const forwardToUpstream = async ({
 };
 
 /**
+ * The accounts the deployment can see, and what they are worth.
+ *
+ * The one page that reads its data on the server rather than asking
+ * `/admin-api` from the browser: it is built from the credentials the backend
+ * owns, and a console showing a deployment's data reads those from the
+ * deployment — its own storage has none of them.
+ *
+ * Null when the deployment could not answer, so the page comes up empty rather
+ * than claiming there are no accounts at all.
+ */
+export const fetchUpstreamAccountStatus = async ({
+  cookie = '',
+  timeoutMs = UPSTREAM_HEADERS_TIMEOUT_MS,
+  upstream,
+}: {
+  cookie?: string;
+  timeoutMs?: number;
+  upstream: string;
+}): Promise<{ credentials: unknown[]; statuses: unknown[] } | null> => {
+  try {
+    const response = await fetch(`${upstream}/admin-api/account-status`, {
+      headers: cookie ? { cookie } : {},
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      credentials?: unknown;
+      statuses?: unknown;
+    };
+
+    return {
+      credentials: Array.isArray(payload.credentials)
+        ? payload.credentials
+        : [],
+      statuses: Array.isArray(payload.statuses) ? payload.statuses : [],
+    };
+  } catch {
+    return null;
+  }
+};
+
+/**
  * What the console is told when the deployment could not be asked.
  *
  * A sign-in form rather than a setup form: which one the deployment wants is

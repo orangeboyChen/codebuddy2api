@@ -53,17 +53,17 @@ export const probeDeployment = async ({
     return { kind: 'unreachable' };
   }
 
-  if (!response.ok) {
-    // A proxy or a captive portal answering for the host: not nothing, but not
-    // this app either.
-    return { kind: 'foreign' };
-  }
-
+  // Read before trusting the status: a deployment answers 503 from `/health`
+  // while its storage is unhealthy, and it is still this app — it says so in the
+  // payload. Rejecting it first would tell the user the address is not a
+  // deployment, which is the one thing it certainly is.
   try {
     return isThisService(await response.json())
       ? { kind: 'ready' }
       : { kind: 'foreign' };
   } catch {
+    // A proxy or a captive portal answering for the host: not nothing, but not
+    // this app either — and it never names itself.
     return { kind: 'foreign' };
   }
 };

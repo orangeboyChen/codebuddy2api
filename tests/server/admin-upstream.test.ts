@@ -1,6 +1,7 @@
 import {
   ADMIN_UPSTREAM_ENV,
   adminUpstreamEnabled,
+  fetchUpstreamAccountStatus,
   fetchUpstreamSessionSummary,
   forwardToUpstream,
   isProxiedPath,
@@ -426,5 +427,78 @@ describe('fetchUpstreamSessionSummary', () => {
     expect(unreachableSessionSummary()).toEqual(
       expect.objectContaining({ authenticated: false }),
     );
+  });
+});
+
+describe('fetchUpstreamAccountStatus', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const respond = (payload: unknown, ok = true): typeof fetch =>
+    vi.fn(async () => ({
+      json: async () => payload,
+      ok,
+    })) as unknown as typeof fetch;
+
+  it('asks the deployment for its accounts, with the session that reads them', async () => {
+    const fetchImpl = respond({
+      credentials: [{ filename: 'one.json' }],
+      statuses: [{ filename: 'one.json' }],
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await expect(
+      fetchUpstreamAccountStatus({
+        cookie: 'session=abc',
+        upstream: UPSTREAM,
+      }),
+    ).resolves.toEqual({
+      credentials: [{ filename: 'one.json' }],
+      statuses: [{ filename: 'one.json' }],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `${UPSTREAM}/admin-api/account-status`,
+      expect.objectContaining({ headers: { cookie: 'session=abc' } }),
+    );
+  });
+
+  it.each([
+    { payload: {}, why: 'an answer naming no accounts' },
+    {
+      payload: { credentials: 'one.json' },
+      why: 'accounts that are not a list',
+    },
+  ])('comes up empty on $why', async ({ payload }) => {
+    vi.stubGlobal('fetch', respond(payload));
+
+    await expect(
+      fetchUpstreamAccountStatus({ upstream: UPSTREAM }),
+    ).resolves.toEqual({ credentials: [], statuses: [] });
+  });
+
+  it('has nothing to show when the deployment refuses the question', async () => {
+    vi.stubGlobal(
+      'fetch',
+      respond({ credentials: [{ filename: 'one.json' }] }, false),
+    );
+
+    await expect(
+      fetchUpstreamAccountStatus({ upstream: UPSTREAM }),
+    ).resolves.toBeNull();
+  });
+
+  it('has nothing to show when the deployment cannot be asked', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('fetch failed');
+      }),
+    );
+
+    await expect(
+      fetchUpstreamAccountStatus({ upstream: UPSTREAM }),
+    ).resolves.toBeNull();
   });
 });
