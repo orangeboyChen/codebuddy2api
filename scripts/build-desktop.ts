@@ -40,13 +40,17 @@ const bunBinary = () => {
     : 'bun';
 };
 
-const builderBinary = () =>
-  path.join(
-    root,
-    'node_modules',
-    '.bin',
-    process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder',
-  );
+/**
+ * Runs a CLI out of `node_modules/.bin` through bun instead of executing its
+ * shim directly. On Windows that shim is a `.cmd`, which `execFile` cannot run
+ * without a shell, and bun resolves the shim itself on every platform.
+ */
+const runBin = (binary: string, args: string[]): void => {
+  execFileSync(bunBinary(), ['run', binary, '--', ...args], {
+    cwd: root,
+    stdio: 'inherit',
+  });
+};
 
 const requirePath = (target: string, hint: string) => {
   if (!fs.existsSync(target)) {
@@ -144,9 +148,7 @@ const bundleElectron = () => {
   // The menu bar icon is read from next to the bundled main process, so it
   // cannot come from `electron/resources` — that directory is only electron-
   // builder's buildResources, which never reaches the packaged app.
-  for (const icon of ['tray.png', 'tray@2x.png']) {
-    copyInto(path.join(resourcesDir, icon), path.join(appDir, icon));
-  }
+  copyInto(path.join(resourcesDir, 'tray.png'), path.join(appDir, 'tray.png'));
 
   console.log(`Electron main bundled at ${path.relative(root, appDir)}`);
 };
@@ -168,26 +170,15 @@ const readElectronVersion = () => {
 const rebuildNativeModules = () => {
   const { version } = readElectronVersion();
 
-  execFileSync(
-    path.join(
-      root,
-      'node_modules',
-      '.bin',
-      process.platform === 'win32'
-        ? 'electron-rebuild.cmd'
-        : 'electron-rebuild',
-    ),
-    [
-      '--version',
-      version,
-      '--module-dir',
-      gatewayDir,
-      '--only',
-      'better-sqlite3',
-      '--force',
-    ],
-    { cwd: root, stdio: 'inherit' },
-  );
+  runBin('electron-rebuild', [
+    '--version',
+    version,
+    '--module-dir',
+    gatewayDir,
+    '--only',
+    'better-sqlite3',
+    '--force',
+  ]);
 
   console.log(`Rebuilt native modules against Electron ${version}`);
 };
@@ -199,11 +190,13 @@ const packageDesktop = (forwarded: string[]) => {
   );
   fs.mkdirSync(resourcesDir, { recursive: true });
 
-  execFileSync(
-    builderBinary(),
-    ['--config', builderConfig, '--publish', 'never', ...forwarded],
-    { cwd: root, stdio: 'inherit' },
-  );
+  runBin('electron-builder', [
+    '--config',
+    builderConfig,
+    '--publish',
+    'never',
+    ...forwarded,
+  ]);
 };
 
 const { forwarded, prepareOnly } = parseArguments(process.argv.slice(2));

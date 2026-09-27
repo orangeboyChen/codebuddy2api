@@ -59,6 +59,12 @@ export interface StartGatewayOptions {
   gatewayDir: string;
   log?: (message: string) => void;
   nodePath: string;
+  /**
+   * Called when the gateway dies on its own — including long after it became
+   * healthy, which is a crash rather than a failed start. Not called when the
+   * app stopped it.
+   */
+  onUnexpectedExit?: (error: Error) => void;
   port: number;
   spawn?: GatewaySpawn;
   timeoutMs?: number;
@@ -206,6 +212,7 @@ export const startGateway = async (
   pipeToLog(child.stderr, log);
 
   let stopped = false;
+  let healthy = false;
   const stop = (): void => {
     if (stopped) {
       return;
@@ -215,20 +222,36 @@ export const startGateway = async (
     child.kill();
   };
 
+  // Only an exit after the gateway was healthy is worth reporting: a child
+  // that dies on the way up is already reported by the rejection below, and
+  // the app would otherwise show both dialogs.
+  const notifyExit = (error: Error): void => {
+    if (healthy && !stopped) {
+      options.onUnexpectedExit?.(error);
+    }
+  };
+
   const exited = new Promise<never>((_resolve, reject) => {
     child.on('error', (...args: unknown[]) => {
-      reject(
+      const error =
         args[0] instanceof Error
           ? args[0]
-          : new Error(`gateway process failed to start: ${String(args[0])}`),
-      );
+          : new Error(`gateway process failed to start: ${String(args[0])}`);
+
+      notifyExit(error);
+      reject(error);
     });
     child.on('exit', (...args: unknown[]) => {
       const [code] = args as [number | null];
 
-      reject(
-        new Error(`gateway process exited before it became healthy (${code})`),
-      );
+      const error = healthy
+        ? new Error(`gateway process exited with code ${code}`)
+        : new Error(
+            `gateway process exited before it became healthy (${code})`,
+          );
+
+      notifyExit(error);
+      reject(error);
     });
   });
 
@@ -238,16 +261,18 @@ export const startGateway = async (
   exited.catch(() => {});
 
   try {
-    const healthy = await Promise.race([
+    const healthyInTime = await Promise.race([
       waitForHealth({ timeoutMs: options.timeoutMs, url }),
       exited,
     ]);
 
-    if (!healthy) {
+    if (!healthyInTime) {
       throw new Error(
         `gateway did not become healthy within ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`,
       );
     }
+
+    healthy = true;
   } catch (error) {
     stop();
     throw error;

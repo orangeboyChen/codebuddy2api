@@ -1,6 +1,13 @@
 import { createServer } from 'node:net';
 
 export const DEFAULT_GATEWAY_PORT = 8001;
+/**
+ * Ports below this one need privileges a desktop app launched from Finder or
+ * the Start menu does not have, so accepting one would only ever produce a
+ * gateway that cannot bind it.
+ */
+export const MIN_PORT = 1024;
+export const MAX_PORT = 65_535;
 
 export type PortProbe = (port: number) => Promise<boolean>;
 
@@ -47,14 +54,47 @@ export const findAvailablePort = async (
   for (let offset = 0; offset < attempts; offset += 1) {
     const candidate = preferred + offset;
 
+    // Walking past the top of the range can only produce ports `listen`
+    // rejects outright, so the walk stops at the last real one.
+    if (candidate > MAX_PORT) {
+      break;
+    }
+
     if (await probe(candidate)) {
       return candidate;
     }
   }
 
   throw new Error(
-    `no free loopback port found in range ${preferred}-${preferred + attempts - 1}`,
+    `no free loopback port found in range ${preferred}-${Math.min(preferred + attempts - 1, MAX_PORT)}`,
   );
+};
+
+/**
+ * Reads a port out of a value that came from outside the app — an environment
+ * variable, a saved settings file, a request body — and falls back when it is
+ * not a whole number the gateway could actually bind.
+ *
+ * `parseInt` alone would read the leading digits of `1e3` or `80abc` and call
+ * them a port, so a string only counts when it is nothing but digits.
+ */
+export const normalizePort = (
+  value: unknown,
+  fallback: number = DEFAULT_GATEWAY_PORT,
+): number => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : /^\d{1,5}$/.test(trimmed)
+        ? Number.parseInt(trimmed, 10)
+        : Number.NaN;
+
+  if (!Number.isInteger(parsed) || parsed < MIN_PORT || parsed > MAX_PORT) {
+    return fallback;
+  }
+
+  return parsed;
 };
 
 /**
@@ -67,15 +107,5 @@ export const resolvePreferredPort = (
 ): number => {
   const raw = env.CODEBUDDY_DESKTOP_PORT?.trim();
 
-  if (!raw) {
-    return fallback;
-  }
-
-  const parsed = Number.parseInt(raw, 10);
-
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
-    return fallback;
-  }
-
-  return parsed;
+  return raw ? normalizePort(raw, fallback) : fallback;
 };

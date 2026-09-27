@@ -12,23 +12,27 @@ import {
 
 const createStream = () => {
   const listeners: Array<(chunk: string | Buffer) => void> = [];
+  let encoding: BufferEncoding | '' = '';
   const stream: GatewayStream = {
     on: (_event, listener) => {
       listeners.push(listener);
     },
-    setEncoding: () => undefined,
+    setEncoding: (value) => {
+      encoding = value;
+    },
   };
 
   return {
     emit: (chunk: string) => {
       listeners.forEach((listener) => listener(chunk));
     },
+    encoding: () => encoding,
     stream,
   };
 };
 
 const createChild = () => {
-  const handlers = new Map<string, Array<(args: unknown[]) => void>>();
+  const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
   const stdout = createStream();
   const stderr = createStream();
   let killCount = 0;
@@ -52,7 +56,7 @@ const createChild = () => {
   return {
     child,
     emit: (event: 'error' | 'exit', ...args: unknown[]) => {
-      (handlers.get(event) ?? []).forEach((listener) => listener(args));
+      (handlers.get(event) ?? []).forEach((listener) => listener(...args));
     },
     killCount: () => killCount,
     stderr,
@@ -122,6 +126,39 @@ describe('buildGatewayEnv', () => {
     });
 
     expect(env.CODEBUDDY_STORAGE_ENCRYPTION_KEY).toBe('from-env');
+  });
+
+  it('keeps storage paths that are already configured', () => {
+    const env = buildGatewayEnv({
+      baseEnv: asEnv({
+        CODEBUDDY_CREDENTIALS_DIR: '/elsewhere/credentials',
+        CODEBUDDY_STORAGE_FILE_DIR: '/elsewhere/data',
+        CODEBUDDY_STORAGE_SQLITE_PATH: '/elsewhere/storage.sqlite',
+      }),
+      encryptionKey: 'secret',
+      paths,
+      port: 8123,
+    });
+
+    expect(env.CODEBUDDY_STORAGE_FILE_DIR).toBe('/elsewhere/data');
+    expect(env.CODEBUDDY_CREDENTIALS_DIR).toBe('/elsewhere/credentials');
+    expect(env.CODEBUDDY_STORAGE_SQLITE_PATH).toBe('/elsewhere/storage.sqlite');
+  });
+
+  it('inherits the real environment when none is handed in', () => {
+    vi.stubEnv('CODEBUDDY_DESKTOP_TEST_INHERITED', '1');
+
+    try {
+      const env = buildGatewayEnv({
+        encryptionKey: 'secret',
+        paths,
+        port: 8123,
+      });
+
+      expect(env.CODEBUDDY_DESKTOP_TEST_INHERITED).toBe('1');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -206,6 +243,10 @@ describe('gateway defaults', () => {
         }),
       ).resolves.toBe(true);
       expect(fetchSpy).toHaveBeenCalledTimes(3);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'http://127.0.0.1:1/health',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
     } finally {
       fetchSpy.mockRestore();
     }
@@ -305,10 +346,32 @@ describe('startGateway', () => {
     });
 
     stdout.emit('ready\n');
-    stderr.emit('\n');
+    stderr.emit('boom\n');
 
-    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledTimes(2);
     expect(log).toHaveBeenCalledWith('ready');
+    expect(log).toHaveBeenCalledWith('boom');
+    expect(stdout.encoding()).toBe('utf8');
+    expect(stderr.encoding()).toBe('utf8');
+  });
+
+  it('drops the blank lines a stream arrives in', async () => {
+    const { child, stdout } = createChild();
+    const log = vi.fn();
+
+    await startGateway({
+      env: asEnv(),
+      gatewayDir: '/app/gateway',
+      log,
+      nodePath: '/Electron',
+      port: 8001,
+      spawn: () => child,
+      waitForHealth: async () => true,
+    });
+
+    stdout.emit('\n');
+
+    expect(log).not.toHaveBeenCalled();
   });
 
   it('stops the gateway when it never becomes healthy', async () => {
@@ -347,12 +410,15 @@ describe('startGateway', () => {
 
     emit('exit', 3);
 
-    await expect(pending).rejects.toThrow('exited before it became healthy');
+    await expect(pending).rejects.toThrow(
+      'gateway process exited before it became healthy (3)',
+    );
     expect(killCount()).toBe(1);
   });
 
-  it('rejects when the process cannot be spawned', async () => {
+  it('rejects with the error the process failure carried', async () => {
     const { child, emit } = createChild();
+    const failure = new Error('ENOENT');
     const pending = startGateway({
       env: asEnv(),
       gatewayDir: '/app/gateway',
@@ -362,9 +428,9 @@ describe('startGateway', () => {
       waitForHealth: () => new Promise<boolean>(() => undefined),
     });
 
-    emit('error', new Error('ENOENT'));
+    emit('error', failure);
 
-    await expect(pending).rejects.toThrow('ENOENT');
+    await expect(pending).rejects.toBe(failure);
   });
 
   it('rejects a non-error spawn failure', async () => {
@@ -381,6 +447,68 @@ describe('startGateway', () => {
     emit('error', 'spawn failed');
 
     await expect(pending).rejects.toThrow('spawn failed');
+  });
+
+  it('reports an exit long after the gateway became healthy', async () => {
+    const { child, emit } = createChild();
+    const onUnexpectedExit = vi.fn();
+    const handle = await startGateway({
+      env: asEnv(),
+      gatewayDir: '/app/gateway',
+      nodePath: '/Electron',
+      onUnexpectedExit,
+      port: 8001,
+      spawn: () => child,
+      waitForHealth: async () => true,
+    });
+
+    emit('exit', 9);
+    await Promise.resolve();
+
+    expect(onUnexpectedExit).toHaveBeenCalledTimes(1);
+    expect(
+      (onUnexpectedExit.mock.calls[0]?.[0] as Error | undefined)?.message,
+    ).toBe('gateway process exited with code 9');
+    expect(handle.port).toBe(8001);
+  });
+
+  it('does not report an exit the app asked for', async () => {
+    const { child, emit } = createChild();
+    const onUnexpectedExit = vi.fn();
+    const handle = await startGateway({
+      env: asEnv(),
+      gatewayDir: '/app/gateway',
+      nodePath: '/Electron',
+      onUnexpectedExit,
+      port: 8001,
+      spawn: () => child,
+      waitForHealth: async () => true,
+    });
+
+    handle.stop();
+    emit('exit', 0);
+    await Promise.resolve();
+
+    expect(onUnexpectedExit).not.toHaveBeenCalled();
+  });
+
+  it('leaves a failed start to the rejection it already produces', async () => {
+    const { child, emit } = createChild();
+    const onUnexpectedExit = vi.fn();
+    const pending = startGateway({
+      env: asEnv(),
+      gatewayDir: '/app/gateway',
+      nodePath: '/Electron',
+      onUnexpectedExit,
+      port: 8001,
+      spawn: () => child,
+      waitForHealth: () => new Promise<boolean>(() => undefined),
+    });
+
+    emit('error', new Error('EACCES'));
+
+    await expect(pending).rejects.toThrow('EACCES');
+    expect(onUnexpectedExit).not.toHaveBeenCalled();
   });
 
   it('kills the gateway once, however often it is stopped', async () => {

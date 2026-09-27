@@ -4,7 +4,13 @@ import { Block, Flexbox, Input } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
 import { Monitor, Save } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+/**
+ * How long to wait for the main process to bring the gateway back on the new
+ * port before reporting that it did not.
+ */
+const RESTART_TIMEOUT_MS = 15_000;
 
 interface DesktopState {
   desktop: boolean;
@@ -24,6 +30,7 @@ const Desktop = () => {
   const [port, setPort] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const restartTimer = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,6 +61,16 @@ const Desktop = () => {
     };
   }, []);
 
+  useEffect(
+    () => () => {
+      if (restartTimer.current !== null) {
+        window.clearTimeout(restartTimer.current);
+        restartTimer.current = null;
+      }
+    },
+    [],
+  );
+
   if (!state?.desktop) {
     return null;
   }
@@ -81,12 +98,16 @@ const Desktop = () => {
 
       setState(data);
 
-      // The main process restarts the gateway and reloads this window at its
-      // new address. Navigate anyway: if the gateway is slow to come back, the
-      // page the user is looking at is already the old one.
-      window.setTimeout(() => {
-        window.location.href = `http://127.0.0.1:${data.preferredPort}/dashboard`;
-      }, 4000);
+      // The main process watches the settings file, restarts the gateway and
+      // reloads this window at the address it ended up on — which takes this
+      // page, and this timer, down with it. If the timer survives, the restart
+      // did not happen: give the button back instead of leaving it spinning,
+      // and do not navigate on a guess about which port came up.
+      restartTimer.current = window.setTimeout(() => {
+        restartTimer.current = null;
+        setSaving(false);
+        setError(translations('restartFailed'));
+      }, RESTART_TIMEOUT_MS);
     } catch {
       setError(translations('saveFailed'));
       setSaving(false);

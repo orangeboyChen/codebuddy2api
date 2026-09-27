@@ -2,6 +2,7 @@ import { createServer } from 'node:net';
 
 import {
   DEFAULT_GATEWAY_PORT,
+  MAX_PORT,
   findAvailablePort,
   probePortFree,
   resolvePreferredPort,
@@ -74,6 +75,27 @@ describe('findAvailablePort', () => {
     ).rejects.toThrow('9000-9002');
     expect(probe).toHaveBeenCalledTimes(3);
   });
+
+  it('stops at the top of the port range', async () => {
+    const probe = vi.fn().mockResolvedValue(false);
+
+    await expect(
+      findAvailablePort({ attempts: 5, preferred: MAX_PORT - 1, probe }),
+    ).rejects.toThrow(`${MAX_PORT - 1}-${MAX_PORT}`);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('probes real sockets by default', async () => {
+    const taken = await listenOnce();
+
+    try {
+      await expect(
+        findAvailablePort({ attempts: 3, preferred: taken.port }),
+      ).resolves.toBe(taken.port + 1);
+    } finally {
+      taken.close();
+    }
+  });
 });
 
 // Next's generated environment types mark `NODE_ENV` as required.
@@ -93,12 +115,30 @@ describe('resolvePreferredPort', () => {
     ).toBe(9001);
   });
 
-  it.each(['', ' ', 'not-a-port', '0', '70000'])(
-    'ignores the invalid pin %j',
-    (value) => {
-      expect(
-        resolvePreferredPort(asEnv({ CODEBUDDY_DESKTOP_PORT: value })),
-      ).toBe(DEFAULT_GATEWAY_PORT);
-    },
-  );
+  it('honors a pinned port at the top of the range', () => {
+    expect(
+      resolvePreferredPort(asEnv({ CODEBUDDY_DESKTOP_PORT: '65535' })),
+    ).toBe(65_535);
+  });
+
+  it.each([
+    '',
+    ' ',
+    'not-a-port',
+    '0',
+    '80',
+    '70000',
+    '65536',
+    '9001.5',
+    '-1',
+    '9001abc',
+  ])('ignores the invalid pin %j', (value) => {
+    expect(resolvePreferredPort(asEnv({ CODEBUDDY_DESKTOP_PORT: value }))).toBe(
+      DEFAULT_GATEWAY_PORT,
+    );
+  });
+
+  it('keeps the fallback the caller asked for', () => {
+    expect(resolvePreferredPort(asEnv({}), 9000)).toBe(9000);
+  });
 });

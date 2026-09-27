@@ -1,14 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { DEFAULT_GATEWAY_PORT, resolvePreferredPort } from './ports';
+import {
+  DEFAULT_GATEWAY_PORT,
+  MAX_PORT,
+  MIN_PORT,
+  normalizePort,
+  resolvePreferredPort,
+} from './ports';
+
+export { MAX_PORT, MIN_PORT };
+/** The desktop name for the shared port parser in `ports`. */
+export { normalizePort as normalizeDesktopPort };
 
 export const DESKTOP_MODE_ENV = 'CODEBUDDY_DESKTOP';
 export const DESKTOP_USER_DATA_ENV = 'CODEBUDDY_DESKTOP_USER_DATA_DIR';
 export const DESKTOP_SETTINGS_FILENAME = 'desktop-settings.json';
-
-export const MIN_PORT = 1;
-export const MAX_PORT = 65_535;
 
 export interface DesktopSettings {
   port: number;
@@ -32,29 +39,13 @@ export const desktopSettingsPath = (userDataDir: string): string =>
 export const isDesktopMode = (env: NodeJS.ProcessEnv = process.env): boolean =>
   env[DESKTOP_MODE_ENV]?.trim() === '1';
 
-export const normalizeDesktopPort = (
-  value: unknown,
-  fallback: number = DEFAULT_GATEWAY_PORT,
-): number => {
-  const parsed =
-    typeof value === 'number'
-      ? value
-      : Number.parseInt(String(value ?? '').trim(), 10);
-
-  if (!Number.isInteger(parsed) || parsed < MIN_PORT || parsed > MAX_PORT) {
-    return fallback;
-  }
-
-  return parsed;
-};
-
 export const readDesktopSettings = (userDataDir: string): DesktopSettings => {
   try {
     const parsed = JSON.parse(
       fs.readFileSync(desktopSettingsPath(userDataDir), 'utf8'),
     ) as { port?: unknown };
 
-    return { port: normalizeDesktopPort(parsed?.port) };
+    return { port: normalizePort(parsed?.port) };
   } catch {
     // A missing file is the normal case — the setting has never been changed —
     // and a damaged one is not worth failing a launch over.
@@ -67,7 +58,7 @@ export const writeDesktopSettings = (
   settings: DesktopSettings,
 ): DesktopSettings => {
   const next: DesktopSettings = {
-    port: normalizeDesktopPort(settings.port),
+    port: normalizePort(settings.port),
   };
 
   fs.mkdirSync(userDataDir, { recursive: true });

@@ -549,8 +549,9 @@
       "usernameLabel": "Username"
     },
     "desktopPanel": {
-      "portHint": "The gateway is running on 127.0.0.1:{port}. Changing the port restarts it and reloads this page, which signs you in again; when the port is taken the app walks to the next free one.",
+      "portHint": "The gateway is running on 127.0.0.1:{port}. Changing the port restarts it and reloads this page at the new address; when the port is taken the app walks to the next free one.",
       "portLabel": "Local port",
+      "restartFailed": "The gateway did not restart. Check the port and try again — a saved port is used from the next launch on.",
       "restarting": "Restarting the gateway; the page moves to the new address in a moment…",
       "save": "Save and restart",
       "saveFailed": "Save failed",

@@ -17,7 +17,7 @@ On macOS a status item sits in the menu bar and shows the port it is running on 
 
 ## Port
 
-Change the port under Settings → Desktop app. Saving it restarts the gateway and takes the window to the new address, which signs you in again — a different port is a different origin. If the port is already taken the app moves to the next free one, and the menu bar shows the port actually in use.
+Change the port under Settings → Desktop app. Saving it restarts the gateway and takes the window to the new address. If the port is already taken the app moves to the next free one, and the menu bar shows the port actually in use.
 
 `CODEBUDDY_DESKTOP_PORT` still works for an install that has never saved a port; once one is saved in the console, the saved value wins.
 

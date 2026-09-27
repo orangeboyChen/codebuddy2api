@@ -35,7 +35,7 @@ describe('normalizeDesktopPort', () => {
   it.each([
     { value: '8001', expected: 8001 },
     { value: 8123, expected: 8123 },
-    { value: 1, expected: 1 },
+    { value: 1024, expected: 1024 },
     { value: 65_535, expected: 65_535 },
     { value: '  8100  ', expected: 8100 },
   ])('accepts $value', ({ value, expected }) => {
@@ -49,7 +49,14 @@ describe('normalizeDesktopPort', () => {
     { value: 'nope', why: 'not a number' },
     { value: 8123.5, why: 'not an integer' },
     { value: 0, why: 'below the range' },
+    { value: 80, why: 'a privileged port' },
+    { value: 1023, why: 'just below the range' },
     { value: 65_536, why: 'just above the range' },
+    { value: '1e3', why: 'exponent notation' },
+    { value: '80abc', why: 'trailing characters' },
+    { value: '８０８０', why: 'full width digits' },
+    { value: [8080], why: 'not a scalar' },
+    { value: true, why: 'a boolean' },
   ])('falls back on $why', ({ value }) => {
     expect(normalizeDesktopPort(value)).toBe(DEFAULT_GATEWAY_PORT);
     expect(normalizeDesktopPort(value, 9000)).toBe(9000);
@@ -127,6 +134,22 @@ describe('writeDesktopSettings', () => {
     expect(readDesktopSettings(userDataDir)).toEqual({
       port: DEFAULT_GATEWAY_PORT,
     });
+  });
+
+  it('writes a file only the user can read', () => {
+    writeDesktopSettings(userDataDir, { port: 8123 });
+
+    expect(fs.statSync(desktopSettingsPath(userDataDir)).mode & 0o777).toBe(
+      0o600,
+    );
+  });
+
+  it('writes json a human can edit', () => {
+    writeDesktopSettings(userDataDir, { port: 8123 });
+
+    expect(fs.readFileSync(desktopSettingsPath(userDataDir), 'utf8')).toBe(
+      '{\n  "port": 8123\n}\n',
+    );
   });
 });
 

@@ -35,6 +35,11 @@ const MIN_WINDOW_HEIGHT = 640;
 const MIN_WINDOW_WIDTH = 960;
 const TRAY_ICON_SIZE = 16;
 /**
+ * How long quitting waits for a gateway that is still starting. The wait is
+ * only ever about stopping the child cleanly, so it stays short.
+ */
+const QUIT_GRACE_MS = 2_000;
+/**
  * Long enough for the console's save request to finish before the gateway that
  * is answering it goes away.
  */
@@ -49,12 +54,86 @@ let status: GatewayStatus = 'starting';
 let userDataDir = '';
 let restartTimer: NodeJS.Timeout | null = null;
 let restarting = false;
+let quitting = false;
+/** The gateway being started: its child exists, its handle does not yet. */
+let pendingStart: Promise<GatewayHandle> | null = null;
+/**
+ * The origin the console is served from. It is not fixed: the gateway moves to
+ * a new port when the port setting changes, and the window follows it.
+ */
+let consoleOrigin = '';
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const delay = (ms: number): Promise<null> =>
+  new Promise((resolve) => {
+    setTimeout(() => {
+      resolve(null);
+    }, ms);
+  });
+
+/**
+ * Whether a navigation stays inside the console.
+ *
+ * Compared as a whole origin rather than by prefix, because `startsWith` would
+ * let `http://127.0.0.1:8001.evil.example` through, and against the *current*
+ * origin rather than the one the window was opened with, because the port
+ * changes underneath it.
+ */
+const isConsoleUrl = (target: string): boolean => {
+  try {
+    return new URL(target).origin === consoleOrigin;
+  } catch {
+    // Not even an absolute URL: nothing to allow.
+    return false;
+  }
+};
+
+/**
+ * Hands a link to the system browser. Anything that is not http(s) is dropped
+ * instead: this window is the admin console, and a `file:` or `javascript:`
+ * URL reaching the shell is never what the click meant.
+ */
+const openExternally = (target: string): void => {
+  try {
+    const parsed = new URL(target);
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return;
+    }
+
+    void shell.openExternal(parsed.href);
+  } catch {
+    // Unparseable target: nothing to open.
+  }
+};
+
+/**
+ * The address the window should be sent to after the gateway moved. It keeps
+ * the page the user was on — a port saved from Settings should not throw them
+ * back to the dashboard.
+ */
+const retargetUrl = (window: BrowserWindow, url: string): string => {
+  const current = window.webContents.getURL();
+
+  if (current) {
+    try {
+      const parsed = new URL(current);
+
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return `${url}${parsed.pathname}${parsed.search}${parsed.hash}`;
+      }
+    } catch {
+      // Unparseable: fall through to the console root.
+    }
+  }
+
+  return `${url}/dashboard`;
+};
+
 const createMainWindow = (url: string): BrowserWindow => {
-  const origin = new URL(url).origin;
+  consoleOrigin = new URL(url).origin;
   const window = new BrowserWindow({
     autoHideMenuBar: true,
     backgroundColor: '#16161a',
@@ -75,17 +154,17 @@ const createMainWindow = (url: string): BrowserWindow => {
   // Links to the upstream CodeBuddy console and to the docs must open in the
   // system browser: this window is the admin console, not a web browser.
   window.webContents.setWindowOpenHandler(({ url: target }) => {
-    void shell.openExternal(target);
+    openExternally(target);
 
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, target) => {
-    if (target.startsWith(origin)) {
+    if (isConsoleUrl(target)) {
       return;
     }
 
     event.preventDefault();
-    void shell.openExternal(target);
+    openExternally(target);
   });
 
   window.once('ready-to-show', () => {
@@ -109,13 +188,17 @@ const createMainWindow = (url: string): BrowserWindow => {
  */
 const showMainWindow = (): void => {
   if (mainWindow) {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore();
+    if (mainWindow.isDestroyed()) {
+      mainWindow = null;
+    } else {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+
+      mainWindow.focus();
+
+      return;
     }
-
-    mainWindow.focus();
-
-    return;
   }
 
   if (gateway) {
@@ -180,7 +263,14 @@ const createTray = (): void => {
     return;
   }
 
-  const icon = nativeImage.createFromPath(iconPath);
+  // The bytes are read here rather than handed to `createFromPath`, whose own
+  // file read does not go through `app.asar` — in a packaged app the icon sits
+  // inside the archive next to this bundle.
+  const icon = nativeImage.createFromBuffer(fs.readFileSync(iconPath));
+
+  if (icon.isEmpty()) {
+    return;
+  }
 
   // macOS draws menu bar icons from their alpha channel only, so the icon is
   // marked as a template instead of shipping a separate monochrome file.
@@ -219,6 +309,18 @@ const launchGateway = async (port: number): Promise<GatewayHandle> => {
       resourcesPath: process.resourcesPath,
     }),
     nodePath: process.execPath,
+    // The gateway can also die later — a crash, or a database that stops
+    // answering. Nothing restarts it then, but the menu bar must stop claiming
+    // it is running.
+    onUnexpectedExit: (error) => {
+      gateway = null;
+      status = 'failed';
+      refreshTray();
+      dialog.showErrorBox(
+        'CodeBuddy2API',
+        `The local gateway stopped unexpectedly.\n\n${describeError(error)}`,
+      );
+    },
     port,
   });
 };
@@ -240,6 +342,10 @@ const scheduleRestart = (): void => {
  * port, and reused for the first launch.
  */
 const restartGateway = async (): Promise<void> => {
+  if (quitting) {
+    return;
+  }
+
   if (restarting) {
     scheduleRestart();
 
@@ -251,20 +357,30 @@ const restartGateway = async (): Promise<void> => {
   refreshTray();
 
   try {
+    // The gateway that is running still holds its port, so probing before
+    // stopping it would reject the port the app is already on — the one just
+    // saved included — and settle on the next one instead. Release it first.
+    gateway?.stop();
+    gateway = null;
+
     const port = await findAvailablePort({
       preferred: resolveDesktopPreferredPort(userDataDir, process.env),
     });
 
-    gateway?.stop();
-    gateway = null;
-    gateway = await launchGateway(port);
+    pendingStart = launchGateway(port);
+    gateway = await pendingStart;
+    pendingStart = null;
+
+    if (quitting) {
+      gateway.stop();
+      gateway = null;
+
+      return;
+    }
+
+    consoleOrigin = new URL(gateway.url).origin;
     status = 'running';
     refreshTray();
-
-    // The console is served by the gateway, so it has to follow it.
-    if (mainWindow) {
-      await mainWindow.loadURL(`${gateway.url}/dashboard`);
-    }
   } catch (error) {
     gateway = null;
     status = 'failed';
@@ -275,6 +391,16 @@ const restartGateway = async (): Promise<void> => {
     );
   } finally {
     restarting = false;
+  }
+
+  // The console is served by the gateway, so it has to follow it. Kept out of
+  // the block above: a window that was closed while the gateway was starting
+  // makes this throw, and that must not mark a healthy gateway as failed.
+  if (gateway && mainWindow && !mainWindow.isDestroyed()) {
+    await mainWindow.loadURL(retargetUrl(mainWindow, gateway.url)).catch(() => {
+      // The window went away mid-reload; the console can be reopened from the
+      // menu bar item.
+    });
   }
 };
 
@@ -289,7 +415,9 @@ const restartGateway = async (): Promise<void> => {
 const watchDesktopSettings = (): void => {
   try {
     fs.watch(userDataDir, (_event, filename) => {
-      if (filename && filename !== DESKTOP_SETTINGS_FILENAME) {
+      // A nameless event is not evidence that the settings changed, and a
+      // restart reloads the console out from under whoever is reading it.
+      if (filename !== DESKTOP_SETTINGS_FILENAME) {
         return;
       }
 
@@ -342,8 +470,37 @@ if (!app.requestSingleInstanceLock()) {
     showMainWindow();
   });
 
-  app.on('before-quit', () => {
-    gateway?.stop();
+  app.on('before-quit', (event) => {
+    if (quitting) {
+      return;
+    }
+
+    quitting = true;
+    event.preventDefault();
+
+    void (async () => {
+      if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+      }
+
+      gateway?.stop();
+
+      // A gateway that is still starting has already spawned a child, but the
+      // handle that could stop it does not exist until it is healthy. Wait for
+      // it, briefly, so quitting mid-restart cannot leave a gateway behind
+      // holding the port the next launch wants.
+      if (pendingStart) {
+        const started = await Promise.race([
+          pendingStart.catch(() => null),
+          delay(QUIT_GRACE_MS),
+        ]);
+
+        started?.stop();
+      }
+
+      app.exit();
+    })();
   });
 
   void app.whenReady().then(async () => {

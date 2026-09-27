@@ -4,6 +4,19 @@ on:
   push:
     branches:
       - main
+  # The desktop job otherwise only ever builds Linux, so the macOS and Windows
+  # targets would first run at release time. Dispatch this by hand to dry-run
+  # another one of them.
+  workflow_dispatch:
+    inputs:
+      runs_on:
+        default: ubuntu-latest
+        description: Runner to build on
+        required: false
+      targets:
+        default: '--linux --x64'
+        description: electron-builder targets, for example "--win --x64"
+        required: false
 
 permissions:
   contents: read
@@ -81,7 +94,7 @@ jobs:
 
   desktop-build:
     name: Desktop Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on || 'ubuntu-latest' }}
     timeout-minutes: 45
 
     steps:
@@ -110,8 +123,8 @@ jobs:
       - name: Build Next.js app
         run: bun run build
 
-      - name: Build Linux desktop app
-        run: bun scripts/build-desktop.ts --linux --x64
+      - name: Build desktop app
+        run: bun scripts/build-desktop.ts ${{ inputs.targets || '--linux --x64' }}
 
   docker-build:
     name: Docker Build
