@@ -5,8 +5,9 @@ on:
     branches:
       - main
   # The desktop job otherwise only ever builds Linux, so the macOS and Windows
-  # targets would first run at release time. Dispatch this by hand to dry-run
-  # another one of them.
+  # targets would first run at release time. Dispatch this by hand to build
+  # another one of them, from any branch: the installer comes back as an
+  # artifact of the run.
   workflow_dispatch:
     inputs:
       runs_on:
@@ -125,6 +126,21 @@ jobs:
 
       - name: Build desktop app
         run: bun scripts/build-desktop.ts ${{ inputs.targets || '--linux --x64' }}
+
+      # A build nobody can open is only half a check — the installers are
+      # downloadable from the run. One day is enough to try one; the release
+      # workflow is where they are kept.
+      - name: Upload desktop builds
+        uses: actions/upload-artifact@v6
+        with:
+          if-no-files-found: error
+          name: desktop-${{ inputs.runs_on || 'ubuntu-latest' }}
+          path: |
+            build/desktop/*.dmg
+            build/desktop/*.exe
+            build/desktop/*.AppImage
+            build/desktop/*.deb
+          retention-days: 1
 
   docker-build:
     name: Docker Build
