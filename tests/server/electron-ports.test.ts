@@ -8,11 +8,13 @@ import {
   resolvePreferredPort,
 } from '@/lib/server/electron/ports';
 
-const listenOnce = async (): Promise<{ close: () => void; port: number }> => {
+const listenOnce = async (
+  host?: string,
+): Promise<{ close: () => void; port: number }> => {
   const server = createServer();
 
   await new Promise<void>((resolve) => {
-    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
+    server.listen({ host, port: 0 }, resolve);
   });
 
   const address = server.address();
@@ -31,7 +33,7 @@ const listenOnce = async (): Promise<{ close: () => void; port: number }> => {
 
 describe('probePortFree', () => {
   it('reports a busy port as taken and a closed one as free', async () => {
-    const listener = await listenOnce();
+    const listener = await listenOnce('127.0.0.1');
 
     await expect(probePortFree(listener.port)).resolves.toBe(false);
 
@@ -41,6 +43,17 @@ describe('probePortFree', () => {
     });
 
     await expect(probePortFree(listener.port)).resolves.toBe(true);
+  });
+
+  // A deployment that serves every interface — the Docker image, or `next
+  // start` — would otherwise be invisible to a loopback bind, which succeeds
+  // alongside it.
+  it('reports a port served through the wildcard address as taken', async () => {
+    const listener = await listenOnce();
+
+    await expect(probePortFree(listener.port)).resolves.toBe(false);
+
+    listener.close();
   });
 });
 

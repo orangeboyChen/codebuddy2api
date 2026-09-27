@@ -1,6 +1,11 @@
-import { createServer } from 'node:net';
+import { connect, createServer } from 'node:net';
 
 export const DEFAULT_GATEWAY_PORT = 8001;
+/**
+ * How long a connect probe waits before it calls a port taken. Anything that
+ * accepts is accepted at once, so this only ever catches a stalled connect.
+ */
+export const CONNECT_TIMEOUT_MS = 1_000;
 /**
  * Ports below this one need privileges a desktop app launched from Finder or
  * the Start menu does not have, so accepting one would only ever produce a
@@ -12,13 +17,46 @@ export const MAX_PORT = 65_535;
 export type PortProbe = (port: number) => Promise<boolean>;
 
 /**
- * Binds a loopback socket to check whether a port is free. The socket is
+ * Connects to see whether something is already serving a port.
+ *
+ * Not `listen`, and not on its own: with `SO_REUSEADDR` a loopback bind
+ * succeeds even while another process serves the same port through the wildcard
+ * address — a Docker deployment that already owns `8001`, say. Handing the
+ * gateway such a port would leave it unable to bind it, and worse, would let
+ * the health check be answered by whatever else is listening there: the app
+ * would report a gateway it does not own and open a console served by someone
+ * else's build.
+ */
+export const probePortServed = (port: number): Promise<boolean> =>
+  new Promise((resolve) => {
+    const socket = connect({ host: '127.0.0.1', port });
+
+    const done = (served: boolean): void => {
+      socket.destroy();
+      resolve(served);
+    };
+
+    // Nothing is listening: refused at once. Otherwise the connection is
+    // accepted, and a stalled one is a port to stay away from as well.
+    socket.setTimeout(CONNECT_TIMEOUT_MS, () => {
+      done(true);
+    });
+    socket.once('connect', () => {
+      done(true);
+    });
+    socket.once('error', () => {
+      done(false);
+    });
+  });
+
+/**
+ * Binds a loopback socket to check whether a port can be taken. The socket is
  * released immediately, so a concurrent listener can still grab the port
  * between this probe and the gateway binding it; `startGateway` reports that
  * as a failed startup instead of silently pointing the window at a gateway it
  * does not own.
  */
-export const probePortFree = (port: number): Promise<boolean> =>
+export const probePortBindable = (port: number): Promise<boolean> =>
   new Promise((resolve) => {
     const server = createServer();
 
@@ -32,6 +70,10 @@ export const probePortFree = (port: number): Promise<boolean> =>
     });
     server.listen({ host: '127.0.0.1', port });
   });
+
+/** Free means nothing serves it yet, and the app could bind it. */
+export const probePortFree = async (port: number): Promise<boolean> =>
+  !(await probePortServed(port)) && probePortBindable(port);
 
 export interface AvailablePortOptions {
   attempts?: number;
