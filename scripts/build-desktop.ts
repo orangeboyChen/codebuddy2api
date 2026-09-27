@@ -1,0 +1,210 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const root = process.cwd();
+const standaloneDir = path.join(root, '.next', 'standalone');
+// The gateway is nested one level deep on purpose: electron-builder always
+// skips the `node_modules` directory sitting at the root of an `extraResources`
+// source, so it has to be copied as `bundle/gateway` instead of `gateway`.
+const gatewayDir = path.join(root, 'build', 'bundle', 'gateway');
+// electron-builder packages the production dependencies of the app directory's
+// package.json, which here would mean the entire Next.js dependency tree. The
+// desktop app ships its own dependency-free manifest instead.
+const appDir = path.join(root, 'build', 'electron-app');
+const migrationsDir = path.join(root, 'lib', 'server', 'storage', 'migrations');
+const resourcesDir = path.join(root, 'electron', 'resources');
+const builderConfig = path.join(root, 'electron', 'electron-builder.yml');
+
+const parseArguments = (argv: string[]) => {
+  const forwarded: string[] = [];
+  let prepareOnly = false;
+
+  for (const argument of argv) {
+    if (argument === '--prepare-only') {
+      prepareOnly = true;
+      continue;
+    }
+
+    forwarded.push(argument);
+  }
+
+  return { forwarded, prepareOnly };
+};
+
+const bunBinary = () => {
+  const basename = path.basename(process.execPath).toLowerCase();
+
+  return basename === 'bun' || basename === 'bun.exe'
+    ? process.execPath
+    : 'bun';
+};
+
+const builderBinary = () =>
+  path.join(
+    root,
+    'node_modules',
+    '.bin',
+    process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder',
+  );
+
+const requirePath = (target: string, hint: string) => {
+  if (!fs.existsSync(target)) {
+    throw new Error(`${path.relative(root, target)} is missing. ${hint}`);
+  }
+};
+
+const copyInto = (source: string, destination: string) => {
+  fs.cpSync(source, destination, { recursive: true });
+};
+
+/**
+ * The gateway shipped inside the desktop app is the same Next.js standalone
+ * output the Docker image runs. Only the pieces that server actually needs are
+ * copied: a local `next build` leaves the rest of the repository in the
+ * standalone directory, which would otherwise be packaged as well.
+ */
+const assembleGateway = () => {
+  requirePath(
+    path.join(standaloneDir, 'server.js'),
+    'Run `bun run build` before building the desktop app.',
+  );
+
+  fs.rmSync(gatewayDir, { force: true, recursive: true });
+  fs.mkdirSync(gatewayDir, { recursive: true });
+
+  copyInto(
+    path.join(standaloneDir, 'server.js'),
+    path.join(gatewayDir, 'server.js'),
+  );
+  copyInto(
+    path.join(standaloneDir, 'package.json'),
+    path.join(gatewayDir, 'package.json'),
+  );
+  copyInto(path.join(standaloneDir, '.next'), path.join(gatewayDir, '.next'));
+  copyInto(
+    path.join(standaloneDir, 'node_modules'),
+    path.join(gatewayDir, 'node_modules'),
+  );
+  copyInto(
+    path.join(root, '.next', 'static'),
+    path.join(gatewayDir, '.next', 'static'),
+  );
+  copyInto(path.join(root, 'public'), path.join(gatewayDir, 'public'));
+  // Drizzle resolves the migrations folder relative to the working directory,
+  // which is the gateway root at runtime.
+  copyInto(
+    migrationsDir,
+    path.join(gatewayDir, 'lib', 'server', 'storage', 'migrations'),
+  );
+
+  console.log(`Gateway assembled at ${path.relative(root, gatewayDir)}`);
+};
+
+const bundleElectron = () => {
+  fs.rmSync(appDir, { force: true, recursive: true });
+  fs.mkdirSync(appDir, { recursive: true });
+
+  execFileSync(
+    bunBinary(),
+    [
+      'build',
+      path.join(root, 'electron', 'main.ts'),
+      '--outfile',
+      path.join(appDir, 'main.js'),
+      '--target',
+      'node',
+      // Electron itself is provided by the app binary, not by the bundle.
+      '--external',
+      'electron',
+    ],
+    { cwd: root, stdio: 'inherit' },
+  );
+
+  const { author, description, version } = JSON.parse(
+    fs.readFileSync(path.join(root, 'package.json'), 'utf8'),
+  ) as { author: string; description: string; version: string };
+
+  fs.writeFileSync(
+    path.join(appDir, 'package.json'),
+    `${JSON.stringify(
+      {
+        author,
+        description,
+        main: 'main.js',
+        name: 'codebuddy2api-desktop',
+        private: true,
+        version,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
+  console.log(`Electron main bundled at ${path.relative(root, appDir)}`);
+};
+
+const readElectronVersion = () => {
+  const manifest = path.join(root, 'node_modules', 'electron', 'package.json');
+
+  requirePath(manifest, 'Run `bun install` before building the desktop app.');
+
+  return JSON.parse(fs.readFileSync(manifest, 'utf8')) as { version: string };
+};
+
+/**
+ * The gateway runs on Electron's Node, whose ABI differs from the Node the
+ * standalone output was traced against, so `better-sqlite3` has to be compiled
+ * against Electron's headers. Skipping this makes every storage call fail at
+ * startup with an invalid module version error.
+ */
+const rebuildNativeModules = () => {
+  const { version } = readElectronVersion();
+
+  execFileSync(
+    path.join(
+      root,
+      'node_modules',
+      '.bin',
+      process.platform === 'win32'
+        ? 'electron-rebuild.cmd'
+        : 'electron-rebuild',
+    ),
+    [
+      '--version',
+      version,
+      '--module-dir',
+      gatewayDir,
+      '--only',
+      'better-sqlite3',
+      '--force',
+    ],
+    { cwd: root, stdio: 'inherit' },
+  );
+
+  console.log(`Rebuilt native modules against Electron ${version}`);
+};
+
+const packageDesktop = (forwarded: string[]) => {
+  requirePath(
+    builderConfig,
+    'The electron-builder configuration is missing from electron/.',
+  );
+  fs.mkdirSync(resourcesDir, { recursive: true });
+
+  execFileSync(
+    builderBinary(),
+    ['--config', builderConfig, '--publish', 'never', ...forwarded],
+    { cwd: root, stdio: 'inherit' },
+  );
+};
+
+const { forwarded, prepareOnly } = parseArguments(process.argv.slice(2));
+
+assembleGateway();
+bundleElectron();
+rebuildNativeModules();
+
+if (!prepareOnly) {
+  packageDesktop(forwarded);
+}

@@ -2,6 +2,9 @@
   "name": "codebuddy2api",
   "version": "1.3.15",
   "private": true,
+  "description": "Desktop and self-hosted gateway that proxies CodeBuddy with OpenAI- and Anthropic-compatible APIs.",
+  "author": "orangeboyChen",
+  "main": "build/electron-app/main.js",
   "scripts": {
     "dev": "next dev",
     "docs:dev": "cd docs && bun run dev",
@@ -20,7 +23,10 @@
     "lint-staged": "lint-staged",
     "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile=test-report.junit.xml",
     "test:coverage": "vitest run --coverage",
-    "test:patch-branches": "bun scripts/check-patch-branches.ts"
+    "test:patch-branches": "bun scripts/check-patch-branches.ts",
+    "desktop:prepare": "bun scripts/build-desktop.ts --prepare-only",
+    "desktop:dist": "bun scripts/build-desktop.ts",
+    "desktop:start": "electron ."
   },
   "dependencies": {
     "@ant-design/nextjs-registry": "^1.3.0",
@@ -46,6 +52,7 @@
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.2",
     "@commitlint/types": "^21.2.0",
+    "@electron/rebuild": "^4.2.0",
     "@eslint/compat": "^2.1.1",
     "@next/eslint-plugin-next": "^16.3.5",
     "@playwright/test": "^1.63.0",
@@ -62,6 +69,8 @@
     "@typescript-eslint/parser": "^8.70.0",
     "@vitest/coverage-v8": "^5.0.0",
     "drizzle-kit": "^0.31.10",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "eslint": "^10.10.0",
     "eslint-config-next": "^16.3.5",
     "eslint-config-prettier": "^10.1.8",

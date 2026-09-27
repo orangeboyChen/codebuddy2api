@@ -31,6 +31,24 @@ docker run -d \
 
 Open `http://127.0.0.1:8001/dashboard`, complete CodeBuddy authentication or add a credential manually, then create an access key for your clients.
 
+## Desktop App
+
+Every release also ships Electron desktop builds — macOS (Apple silicon and Intel), Windows, and Linux (x86_64 and arm64) — as release assets next to the Docker image. The app bundles the same gateway: the main process starts it on `127.0.0.1:8001`, waits for `/health`, and opens the console in a native window.
+
+Data is written to Electron's `userData` directory rather than the install location, the app defaults to the `sqlite` backend, and it generates its own encryption key on first launch, so nothing has to be configured. Deleting that key makes already encrypted data unreadable, so back up the database together with it.
+
+The builds are not code-signed: right-click and choose Open on macOS the first time, and dismiss SmartScreen with Run anyway on Windows.
+
+Build one locally with Bun:
+
+```bash
+bun install
+bun run build
+bun run desktop:dist -- --mac --arm64
+```
+
+Artifacts land in `build/desktop`. Native modules are compiled for the architecture of the machine that builds them, so an x86 Mac has to be built on an x86 Mac.
+
 ## API Compatibility
 
 The gateway exposes these endpoints under `/v1`:

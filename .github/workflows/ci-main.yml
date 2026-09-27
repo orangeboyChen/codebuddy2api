@@ -24,6 +24,10 @@ jobs:
     name: Bun / TypeScript / Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # Typechecking the Electron main process needs the package's types, not
+      # the ~100 MB binary.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
     steps:
       - name: Checkout repository
@@ -74,6 +78,40 @@ jobs:
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
+
+  desktop-build:
+    name: Desktop Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      # The release workflow builds all five desktop targets; this one keeps
+      # the pipeline honest between releases without paying for macOS and
+      # Windows runners on every push.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun package downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.BUN_CACHE_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-desktop-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-desktop-bun-${{ env.BUN_VERSION }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Next.js app
+        run: bun run build
+
+      - name: Build Linux desktop app
+        run: bun scripts/build-desktop.ts --linux --x64
 
   docker-build:
     name: Docker Build

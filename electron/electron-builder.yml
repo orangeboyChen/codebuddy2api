@@ -1,0 +1,68 @@
+appId: com.orangeboychen.codebuddy2api
+productName: CodeBuddy2API
+copyright: Copyright © 2026 orangeboyChen
+
+directories:
+  output: build/desktop
+  buildResources: electron/resources
+  # A dependency-free directory written by scripts/build-desktop.ts. Packaging
+  # the repository root instead would pull every Next.js dependency into the
+  # app archive, even though the main process is already bundled into one file.
+  app: build/electron-app
+
+files:
+  - '**/*'
+  # Nothing in the app directory needs a dependency — the main process is
+  # bundled into a single file. Without this exclusion electron-builder walks
+  # up to the repository root and archives the whole Next.js dependency tree.
+  - '!**/node_modules/**'
+
+# scripts/build-desktop.ts already rebuilt the gateway's native modules against
+# Electron's headers; letting electron-builder do it again would miss them,
+# because they live outside the app directory.
+npmRebuild: false
+
+# `build/bundle/gateway`, not `build/gateway`: electron-builder skips a
+# `node_modules` directory at the root of an extra resource, and the gateway
+# cannot start without it.
+extraResources:
+  - from: build/bundle
+    to: .
+
+mac:
+  category: public.app-category.developer-tools
+  darkModeSupport: true
+  icon: electron/resources/icon.icns
+  # Builds are unsigned: set a signing identity locally to ship a notarized app.
+  identity: null
+  target:
+    - dmg
+
+dmg:
+  artifactName: CodeBuddy2API-${version}-mac-${arch}.${ext}
+
+win:
+  icon: electron/resources/icon.ico
+  target:
+    - nsis
+    - portable
+
+nsis:
+  artifactName: CodeBuddy2API-${version}-win-${arch}-setup.${ext}
+
+portable:
+  artifactName: CodeBuddy2API-${version}-win-${arch}-portable.${ext}
+
+linux:
+  category: Utility
+  icon: electron/resources/icon.png
+  maintainer: orangeboyChen
+  target:
+    - AppImage
+    - deb
+
+appImage:
+  artifactName: CodeBuddy2API-${version}-linux-${arch}.${ext}
+
+deb:
+  artifactName: codebuddy2api-${version}-linux-${arch}.${ext}
