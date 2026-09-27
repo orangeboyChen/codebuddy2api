@@ -125,11 +125,13 @@ const bundlePage = (): void => {
       'browser',
       '--format',
       'iife',
-      // React and antd read `process.env.NODE_ENV`, which a browser bundle has
-      // no `process` to read it from — bun would otherwise inline the
-      // development value and leave a bare `process.env` behind.
-      '--define',
-      'process.env.NODE_ENV="production"',
+      // React picks its JSX runtime from `process.env.NODE_ENV`, which a
+      // browser bundle has no `process` to read it from. `--production` is what
+      // makes bun inline the value: `--define` alone is not enough, since some
+      // bun versions still resolve `react/jsx-runtime` to the development one
+      // and the page then dies on `jsxDEV is not a function`. It minifies too,
+      // which is wanted here anyway.
+      '--production',
     ],
     { cwd: root, stdio: 'inherit' },
   );
