@@ -111,6 +111,14 @@ test('asks which backend to use, then opens the console it starts', async () => 
   expect(response.ok()).toBe(true);
   expect(await response.json()).toEqual({ version });
 
+  // Nothing to sign in to: the gateway listens on loopback and the data is on
+  // this machine, so there is no password to set and no panel offering one.
+  await consoleWindow.goto(
+    new URL('/settings', consoleWindow.url()).toString(),
+  );
+
+  await expect(consoleWindow.locator('#security')).toHaveCount(0);
+
   await app.close();
 });
 
@@ -187,6 +195,12 @@ const startDeployment = async (): Promise<{
       return;
     }
 
+    if (path === '/admin-api/settings') {
+      answer({ labels: {}, settings: {} });
+
+      return;
+    }
+
     response.writeHead(200, { 'content-type': 'text/html' });
     response.end('<html><body>the deployment’s own page</body></html>');
   });
@@ -223,6 +237,15 @@ test('shows its own console for a deployment, and takes only the data from it', 
 
   expect(response.ok()).toBe(true);
   expect(await response.json()).toEqual({ version: DEPLOYMENT_VERSION });
+
+  // So is its sign-in: the panel is not something a desktop install has, but
+  // this one is a console for a deployment reachable from a network, whose
+  // password and passkeys are the user's to change.
+  await consoleWindow.goto(
+    new URL('/settings', consoleWindow.url()).toString(),
+  );
+
+  await expect(consoleWindow.locator('#security')).toBeVisible();
 
   await app.close();
   deployment.stop();

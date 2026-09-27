@@ -240,6 +240,7 @@ const Security = () => {
       className="mb-6"
       direction="vertical"
       gap={16}
+      id="security"
       padding={24}
       variant="outlined"
     >
