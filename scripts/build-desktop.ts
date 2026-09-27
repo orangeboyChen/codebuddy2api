@@ -119,6 +119,10 @@ const bundleElectron = () => {
         path.join(appDir, outfile),
         '--target',
         'node',
+        // CommonJS, not the default ESM: Electron loads a preload script as
+        // CommonJS, so ESM syntax there would never run at all.
+        '--format',
+        'cjs',
         // Electron itself is provided by the app binary, not by the bundle.
         '--external',
         'electron',

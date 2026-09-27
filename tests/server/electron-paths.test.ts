@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   ensureDesktopDirectories,
   ensureDesktopEncryptionKey,
+  resolveAppBundleDir,
   resolveDesktopPaths,
   resolveGatewayDir,
 } from '@/lib/server/electron/paths';
@@ -64,6 +65,31 @@ describe('ensureDesktopEncryptionKey', () => {
     fs.writeFileSync(keyFile, '  \n');
 
     expect(ensureDesktopEncryptionKey(keyFile)).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('resolveAppBundleDir', () => {
+  beforeEach(resetRoot);
+  afterEach(resetRoot);
+
+  it('takes the bundle directory a packaged app is handed', () => {
+    const appPath = path.join(root, 'app.asar');
+
+    fs.mkdirSync(appPath, { recursive: true });
+    fs.writeFileSync(path.join(appPath, 'main.js'), '');
+
+    expect(resolveAppBundleDir({ appPath })).toBe(appPath);
+  });
+
+  it('takes the build directory when the app path is a checkout', () => {
+    const appPath = path.join(root, 'checkout');
+
+    fs.mkdirSync(appPath, { recursive: true });
+    fs.writeFileSync(path.join(appPath, 'package.json'), '{}');
+
+    expect(resolveAppBundleDir({ appPath })).toBe(
+      path.join(appPath, 'build', 'electron-app'),
+    );
   });
 });
 

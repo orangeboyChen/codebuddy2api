@@ -17,6 +17,12 @@ export interface GatewayDirOptions {
   resourcesPath?: string;
 }
 
+export interface AppBundleDirOptions {
+  appPath: string;
+  /** Defaults to `fs.existsSync`, overridable so tests stay off the disk. */
+  exists?: (candidate: string) => boolean;
+}
+
 const KEY_BYTES = 32;
 
 /**
@@ -64,6 +70,26 @@ export const ensureDesktopEncryptionKey = (keyFile: string): string => {
   fs.writeFileSync(keyFile, `${generated}\n`, { mode: 0o600 });
 
   return generated;
+};
+
+/**
+ * Where the app's own files sit: the tray icon, the preload script and the page
+ * that asks which backend to use, all shipped next to `main.js`.
+ *
+ * Not `__dirname`, which the bundler freezes to the directory the bundle was
+ * built in — a path that exists on the machine that ran the build and on no
+ * other. A packaged app is handed the bundle itself, while `electron .` from a
+ * checkout is handed the repository root, so the bundle is found by asking
+ * which of the two holds it.
+ */
+export const resolveAppBundleDir = (options: AppBundleDirOptions): string => {
+  const exists = options.exists ?? fs.existsSync;
+
+  if (exists(path.join(options.appPath, 'main.js'))) {
+    return options.appPath;
+  }
+
+  return path.join(options.appPath, 'build', 'electron-app');
 };
 
 /**

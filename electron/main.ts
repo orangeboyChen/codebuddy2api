@@ -23,6 +23,7 @@ import {
 import {
   ensureDesktopDirectories,
   ensureDesktopEncryptionKey,
+  resolveAppBundleDir,
   resolveDesktopPaths,
   resolveGatewayDir,
 } from '../lib/server/electron/paths';
@@ -406,12 +407,19 @@ const refreshTray = (): void => {
 };
 
 /**
+ * The files shipped next to this bundle: the tray icon, the preload script and
+ * the page that asks which backend to use.
+ */
+const bundleDir = (): string =>
+  resolveAppBundleDir({ appPath: app.getAppPath() });
+
+/**
  * The menu bar item, which is what makes the app's state visible while the
  * console window is closed — the gateway keeps serving `/v1/*` with no window
  * open, and otherwise nothing would say so.
  */
 const createTray = (): void => {
-  const iconPath = path.join(__dirname, 'tray.png');
+  const iconPath = path.join(bundleDir(), 'tray.png');
 
   if (!fs.existsSync(iconPath)) {
     return;
@@ -527,7 +535,10 @@ const restartGateway = async (): Promise<void> => {
     gateway = await pendingStart;
     pendingStart = null;
 
-    if (quitting) {
+    // The port probe and the health check take seconds, and the backend can
+    // become remote meanwhile — give this gateway back instead of steering the
+    // console to an address the app has already walked away from.
+    if (quitting || backend.mode !== 'local') {
       gateway.stop();
       gateway = null;
 
@@ -689,7 +700,7 @@ const openBackendWindow = (): void => {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(bundleDir(), 'preload.js'),
       sandbox: true,
       spellcheck: false,
     },
@@ -707,7 +718,7 @@ const openBackendWindow = (): void => {
 
   backendWindow = window;
 
-  void window.loadFile(path.join(__dirname, 'backend.html'));
+  void window.loadFile(path.join(bundleDir(), 'backend.html'));
 };
 
 /**
