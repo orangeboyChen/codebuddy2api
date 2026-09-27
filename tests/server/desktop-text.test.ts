@@ -59,6 +59,9 @@ describe('statusText', () => {
     { status: 'running', expected: 'Running · 127.0.0.1:8001' },
     { status: 'starting', expected: 'Starting gateway…' },
     { status: 'failed', expected: 'Gateway failed to start' },
+    // The gateway is running; it is the deployment behind it that is not
+    // answering, which is a different thing to fix.
+    { status: 'unreachable', expected: 'Deployment unreachable' },
   ] as const)('reads $status in English', ({ status, expected }) => {
     expect(statusText(desktopText('en-US'), status, '127.0.0.1:8001')).toBe(
       expected,
