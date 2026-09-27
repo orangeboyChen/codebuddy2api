@@ -324,9 +324,25 @@ test('signs in to a deployment with its password, and leaves the passkey to a br
     loginWindow.locator(`a[href="http://127.0.0.1:${deployment.port}"]`),
   ).toBeVisible();
 
-  await loginWindow.locator('#admin-username').fill('admin');
-  await loginWindow.locator('#admin-password').fill(DEPLOYMENT_PASSWORD);
-  await loginWindow.locator('button[type="submit"]').click();
+  // The form is a client component: filled before it hydrates, the value lands
+  // in the DOM and not in React, and the submit button — which waits for both
+  // fields — never enables. Filled again until it does, which is what a user
+  // in front of the same window would do.
+  const submit = loginWindow.locator('button[type="submit"]');
+
+  await expect
+    .poll(
+      async () => {
+        await loginWindow.locator('#admin-username').fill('admin');
+        await loginWindow.locator('#admin-password').fill(DEPLOYMENT_PASSWORD);
+
+        return submit.isEnabled();
+      },
+      { intervals: [1_000], timeout: 60_000 },
+    )
+    .toBe(true);
+
+  await submit.click();
 
   const consoleWindow = await waitForConsole(app);
 
