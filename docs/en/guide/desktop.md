@@ -10,6 +10,13 @@ The desktop app is an Electron window plus the gateway bundled into the same ins
 - The default port is `8001`, and it can be changed under Settings → Desktop app. When it is taken the app walks to the next free port.
 - On macOS the gateway keeps running after the console window is closed, so `/v1/*` stays available; quitting the app stops it.
 - There is only ever one window and one gateway: launching the app again, clicking the dock icon, or clicking the menu bar item just brings the open window forward.
+- There is no sign-in: the console listens on loopback only, so the only processes that can open it are the ones already running as you on this machine. The login page and the Security settings are not shown in the desktop app.
+
+## Sign-in
+
+A desktop install has no admin password. The gateway listens on `127.0.0.1` only, so a password would only lock you out of a console nobody else can reach — the trade-off is that any process on this machine can open it, which makes it a personal-device install.
+
+Only a self-hosted deployment needs an admin password; `/admin-api/auth/setup` answers 404 in the desktop app.
 
 ## Menu bar status
 

@@ -128,3 +128,5 @@ empty.
 ## Console security
 
 Set the administrator username, password, and confirmation password under **Console security**, then click **Save**. Disabling authentication makes the console directly accessible.
+
+The desktop app does not show this section — it has no sign-in (see [Desktop App](./desktop.md)).

@@ -615,7 +615,11 @@ const CredentialModels = () => {
   );
 };
 
-const Settings = () => {
+/**
+ * `desktop` comes from the server: a desktop install has no sign-in, so the
+ * panel that would set one up has nothing to offer.
+ */
+const Settings = ({ desktop = false }: { desktop?: boolean }) => {
   const { onChange, onSave, settings } = useSettings();
   const translations = useTranslations('Admin');
   const [clearingUsage, setClearingUsage] = useState(false);
@@ -730,7 +734,7 @@ const Settings = () => {
           </Button>
         </Flexbox>
       </Block>
-      <Security />
+      {desktop ? null : <Security />}
     </div>
   );
 };
