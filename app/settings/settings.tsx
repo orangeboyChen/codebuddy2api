@@ -30,6 +30,7 @@ import {
 } from '@/lib/server/search/backends';
 
 import Security from './security';
+import Desktop from './desktop';
 
 export type SettingsValue = string | number | boolean | null;
 
@@ -705,6 +706,7 @@ const Settings = () => {
           </Button>
         </Flexbox>
       </Block>
+      <Desktop />
       <CredentialModels />
       <Block direction="vertical" gap={16} padding={24} variant="outlined">
         <Flexbox align="center" gap={8} horizontal>

@@ -141,6 +141,13 @@ const bundleElectron = () => {
     )}\n`,
   );
 
+  // The menu bar icon is read from next to the bundled main process, so it
+  // cannot come from `electron/resources` — that directory is only electron-
+  // builder's buildResources, which never reaches the packaged app.
+  for (const icon of ['tray.png', 'tray@2x.png']) {
+    copyInto(path.join(resourcesDir, icon), path.join(appDir, icon));
+  }
+
   console.log(`Electron main bundled at ${path.relative(root, appDir)}`);
 };
 

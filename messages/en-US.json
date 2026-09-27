@@ -547,6 +547,16 @@
       "title": "Admin sign in",
       "waitingForPasskey": "Waiting for a saved passkey...",
       "usernameLabel": "Username"
+    },
+    "desktopPanel": {
+      "portHint": "The gateway is running on 127.0.0.1:{port}. Changing the port restarts it and reloads this page, which signs you in again; when the port is taken the app walks to the next free one.",
+      "portLabel": "Local port",
+      "restarting": "Restarting the gateway; the page moves to the new address in a moment…",
+      "save": "Save and restart",
+      "saveFailed": "Save failed",
+      "storageHint": "The desktop app is fixed to SQLite, with data in data/storage.sqlite inside the app data directory. There is no other backend to pick: it serves this machine only, with no second process to share a database with.",
+      "storageLabel": "Storage backend",
+      "title": "Desktop app"
     }
   }
 }

@@ -1,11 +1,12 @@
 import { spawn as spawnProcess } from 'node:child_process';
 import path from 'node:path';
 
+import { DESKTOP_MODE_ENV, DESKTOP_USER_DATA_ENV } from './settings';
 import type { DesktopPaths } from './paths';
 
 export type GatewayEnvPaths = Pick<
   DesktopPaths,
-  'credentialsDir' | 'dataDir' | 'sqlitePath'
+  'credentialsDir' | 'dataDir' | 'sqlitePath' | 'userDataDir'
 >;
 
 export interface GatewayStream {
@@ -93,18 +94,15 @@ const defaultSpawn: GatewaySpawn = (options) =>
     windowsHide: true,
   });
 
-const hasConfiguredBackend = (env: NodeJS.ProcessEnv): boolean =>
-  Boolean(
-    env.CODEBUDDY_STORAGE_BACKEND?.trim() ||
-    env.CODEBUDDY_STORAGE_PG_URL?.trim() ||
-    env.DATABASE_URL?.trim(),
-  );
-
 /**
  * The gateway is the same Next.js standalone server the Docker image runs, so
  * it is configured the same way: through environment variables. Values already
- * present in the environment win, which lets a desktop install be pointed at
- * PostgreSQL or at the plain file backend without rebuilding it.
+ * present in the environment win, which lets a desktop install reuse an
+ * encryption key that was provisioned ahead of time.
+ *
+ * Storage is the exception: a desktop install is always sqlite, because it is
+ * the only backend that needs nothing but the `userData` directory, and there
+ * is no second process to share a database with.
  */
 export const buildGatewayEnv = (
   options: GatewayEnvOptions,
@@ -125,10 +123,14 @@ export const buildGatewayEnv = (
   env.CODEBUDDY_CREDENTIALS_DIR ??= options.paths.credentialsDir;
   env.CODEBUDDY_STORAGE_SQLITE_PATH ??= options.paths.sqlitePath;
   env.CODEBUDDY_STORAGE_ENCRYPTION_KEY ??= options.encryptionKey;
-
-  if (!hasConfiguredBackend(env)) {
-    env.CODEBUDDY_STORAGE_BACKEND = 'sqlite';
-  }
+  env[DESKTOP_MODE_ENV] = '1';
+  env[DESKTOP_USER_DATA_ENV] = options.paths.userDataDir;
+  env.CODEBUDDY_STORAGE_BACKEND = 'sqlite';
+  // An inherited Postgres URL is dropped rather than ignored: the storage layer
+  // falls back to Postgres whenever one is in the environment, so leaving it
+  // here would put the desktop data somewhere the console cannot explain.
+  delete env.CODEBUDDY_STORAGE_PG_URL;
+  delete env.DATABASE_URL;
 
   return env;
 };

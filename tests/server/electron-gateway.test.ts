@@ -64,6 +64,7 @@ const paths = {
   credentialsDir: '/user-data/credentials',
   dataDir: '/user-data/data',
   sqlitePath: '/user-data/data/storage.sqlite',
+  userDataDir: '/user-data',
 };
 
 // Next's generated environment types mark `NODE_ENV` as required.
@@ -85,6 +86,8 @@ describe('buildGatewayEnv', () => {
     expect(env.HOSTNAME).toBe('127.0.0.1');
     expect(env.NODE_ENV).toBe('production');
     expect(env.NEXT_TELEMETRY_DISABLED).toBe('1');
+    expect(env.CODEBUDDY_DESKTOP).toBe('1');
+    expect(env.CODEBUDDY_DESKTOP_USER_DATA_DIR).toBe('/user-data');
     expect(env.CODEBUDDY_STORAGE_BACKEND).toBe('sqlite');
     expect(env.CODEBUDDY_STORAGE_ENCRYPTION_KEY).toBe('secret');
     expect(env.CODEBUDDY_STORAGE_SQLITE_PATH).toBe(paths.sqlitePath);
@@ -94,9 +97,10 @@ describe('buildGatewayEnv', () => {
 
   it.each([
     { CODEBUDDY_STORAGE_BACKEND: 'file' },
-    { CODEBUDDY_STORAGE_PG_URL: 'postgres://localhost' },
+    { CODEBUDDY_STORAGE_BACKEND: 'pg' },
     { DATABASE_URL: 'postgres://localhost' },
-  ])('keeps an already configured backend %j', (overrides) => {
+    { CODEBUDDY_STORAGE_PG_URL: 'postgres://localhost' },
+  ])('stays on sqlite despite %j', (overrides) => {
     const env = buildGatewayEnv({
       baseEnv: asEnv(overrides),
       encryptionKey: 'secret',
@@ -104,9 +108,9 @@ describe('buildGatewayEnv', () => {
       port: 8123,
     });
 
-    expect(env.CODEBUDDY_STORAGE_BACKEND).toBe(
-      overrides.CODEBUDDY_STORAGE_BACKEND,
-    );
+    expect(env.CODEBUDDY_STORAGE_BACKEND).toBe('sqlite');
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.CODEBUDDY_STORAGE_PG_URL).toBeUndefined();
   });
 
   it('keeps an encryption key that is already configured', () => {
@@ -262,7 +266,7 @@ describe('startGateway', () => {
     const spawn = vi.fn(() => child);
     const log = vi.fn();
     const handle = await startGateway({
-      env: asEnv({ CODEBUDDY_STORAGE_BACKEND: 'file' }),
+      env: asEnv({ CODEBUDDY_STORAGE_BACKEND: 'sqlite' }),
       gatewayDir: '/app/gateway',
       log,
       nodePath: '/Electron',
@@ -276,7 +280,7 @@ describe('startGateway', () => {
       command: '/Electron',
       cwd: '/app/gateway',
       env: {
-        CODEBUDDY_STORAGE_BACKEND: 'file',
+        CODEBUDDY_STORAGE_BACKEND: 'sqlite',
         ELECTRON_RUN_AS_NODE: '1',
         NODE_ENV: 'test',
       },

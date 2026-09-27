@@ -7,6 +7,7 @@ export interface DesktopPaths {
   dataDir: string;
   keyFile: string;
   sqlitePath: string;
+  userDataDir: string;
 }
 
 export interface GatewayDirOptions {
@@ -32,6 +33,7 @@ export const resolveDesktopPaths = (userDataDir: string): DesktopPaths => {
     dataDir,
     keyFile: path.join(userDataDir, 'storage-encryption-key'),
     sqlitePath: path.join(dataDir, 'storage.sqlite'),
+    userDataDir,
   };
 };
 
