@@ -33,6 +33,7 @@ import {
   DESKTOP_VERSION_COOKIE,
   defaultDesktopSettings,
   desktopSettingsPath,
+  isPinnedPort,
   normalizeDesktopBackend,
   readDesktopSettings,
   resolveDesktopPreferredPort,
@@ -551,6 +552,12 @@ const restartGateway = async (): Promise<void> => {
     gateway = null;
 
     const port = await findAvailablePort({
+      // One attempt when the port was named — the environment, or the port the
+      // console saved: something outside the app points at that number, so the
+      // app takes it or says it cannot, rather than answering on another one.
+      // Left at the default, it walks upwards instead, which is what keeps the
+      // app usable next to a deployment already serving 8001.
+      attempts: isPinnedPort(userDataDir, process.env) ? 1 : undefined,
       preferred: resolveDesktopPreferredPort(userDataDir, process.env),
     });
 

@@ -162,3 +162,34 @@ export const resolveDesktopPreferredPort = (
 
   return saved ? stored.port : resolvePreferredPort(env, stored.port);
 };
+
+/**
+ * Whether the port was asked for by name, rather than left at the default.
+ *
+ * A named port is a promise to whatever points at it — a firewall rule, a
+ * client config, a bookmark — so the app has to take that one or say it cannot,
+ * instead of quietly starting on the next number up. The default is no such
+ * promise: an install that never named a port still walks upwards, which is
+ * what keeps it usable next to a Docker deployment already serving 8001.
+ *
+ * The environment variable counts even when it asks for the default: it was
+ * typed by someone who meant that number. A saved setting only counts when it
+ * is not the default, because saving a backend writes the default port along
+ * with it, and that is not the user asking for 8001.
+ */
+export const isPinnedPort = (
+  userDataDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean => {
+  const named = env.CODEBUDDY_DESKTOP_PORT?.trim();
+
+  if (named && normalizePort(named, 0)) {
+    return true;
+  }
+
+  if (!fs.existsSync(desktopSettingsPath(userDataDir))) {
+    return false;
+  }
+
+  return readDesktopSettings(userDataDir).port !== DEFAULT_GATEWAY_PORT;
+};

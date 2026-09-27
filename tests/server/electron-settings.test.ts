@@ -5,6 +5,7 @@ import {
   defaultDesktopSettings,
   desktopSettingsPath,
   isDesktopMode,
+  isPinnedPort,
   normalizeDesktopBackend,
   normalizeDesktopPort,
   readDesktopSettings,
@@ -288,5 +289,52 @@ describe('resolveDesktopPreferredPort', () => {
     expect(resolveDesktopPreferredPort(userDataDir, asEnv())).toBe(
       DEFAULT_GATEWAY_PORT,
     );
+  });
+});
+
+describe('isPinnedPort', () => {
+  beforeEach(resetRoot);
+  afterEach(resetRoot);
+
+  it('pins a port the environment named', () => {
+    expect(
+      isPinnedPort(userDataDir, asEnv({ CODEBUDDY_DESKTOP_PORT: '9000' })),
+    ).toBe(true);
+  });
+
+  it('pins the default when the environment named it', () => {
+    expect(
+      isPinnedPort(
+        userDataDir,
+        asEnv({ CODEBUDDY_DESKTOP_PORT: String(DEFAULT_GATEWAY_PORT) }),
+      ),
+    ).toBe(true);
+  });
+
+  it('pins a saved port the console was asked for', () => {
+    fs.mkdirSync(userDataDir, { recursive: true });
+    writeDesktopSettings(userDataDir, {
+      ...defaultDesktopSettings(),
+      port: 8123,
+    });
+
+    expect(isPinnedPort(userDataDir, asEnv())).toBe(true);
+  });
+
+  it('leaves the port free to walk upwards with nothing configured', () => {
+    expect(isPinnedPort(userDataDir, asEnv())).toBe(false);
+  });
+
+  it('ignores an environment value that is not a port', () => {
+    expect(
+      isPinnedPort(userDataDir, asEnv({ CODEBUDDY_DESKTOP_PORT: 'loopback' })),
+    ).toBe(false);
+  });
+
+  it('does not pin the default port a backend save wrote along with it', () => {
+    fs.mkdirSync(userDataDir, { recursive: true });
+    writeDesktopSettings(userDataDir, defaultDesktopSettings());
+
+    expect(isPinnedPort(userDataDir, asEnv())).toBe(false);
   });
 });
