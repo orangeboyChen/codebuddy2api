@@ -6428,11 +6428,11 @@ describe('server units', () => {
       });
     });
 
-    it('defaults the fetch selection to the local backend', async () => {
+    it('defaults the fetch selection to the CodeBuddy backend', async () => {
       await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: '' });
 
       await expect(getActiveConfig()).resolves.toMatchObject({
-        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
       });
     });
 

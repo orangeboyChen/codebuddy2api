@@ -49,13 +49,13 @@ export const FETCH_BACKENDS: readonly FetchBackend[] = [
  *
  * Search defaults to SearXNG, which resolves to no provider at all until a URL
  * is configured — the same "not advertised until it can run" behaviour a fresh
- * deployment had before. Fetch defaults to the gateway's own fetcher, which
- * needs no configuration and so is safe to turn on by default.
+ * deployment had before. Fetch defaults to CodeBuddy's own endpoint: it is the
+ * one the CLI calls, it needs no configuration of its own, and a failed call
+ * falls back to a direct fetch, so a fresh deployment gets page text whether or
+ * not the endpoint answers.
  */
 export const DEFAULT_SEARCH_BACKEND: SearchBackend = 'searxng';
-export const DEFAULT_FETCH_BACKENDS: readonly FetchBackend[] = [
-  'codebuddy2api',
-];
+export const DEFAULT_FETCH_BACKENDS: readonly FetchBackend[] = ['codebuddy'];
 
 /**
  * Console settings each backend needs before it can run.
