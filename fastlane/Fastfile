@@ -31,6 +31,27 @@ lane :mac do |options|
       add_to_search_list: true
     )
 
+    # An https repository and an ssh one are authenticated by different
+    # secrets, and `match` picks which by looking at the url. Handing it both
+    # breaks the https case: when MATCH_GIT_PRIVATE_KEY is set, match wraps
+    # every git command in `ssh-agent bash -c '...'`, and that wrapper is
+    # single-quoted — it closes on the quotes match puts around the
+    # `http.extraheader='Authorization: Basic …'` it adds for an https url, so
+    # the header never reaches git and the clone dies asking for a username.
+    # Only the key is dropped: whatever else authenticates the clone — a
+    # running ssh-agent, a default key, a credential helper, or credentials of
+    # its own in the url — is left to git.
+    unless ENV["MATCH_GIT_URL"].to_s.start_with?("git@", "ssh://")
+      authorization = ENV["MATCH_GIT_BASIC_AUTHORIZATION"]
+      unless authorization.to_s.empty?
+        # The header goes on one line, and base64 carries no whitespace: a
+        # newline pasted along with the value would make git send a broken
+        # Authorization header.
+        ENV["MATCH_GIT_BASIC_AUTHORIZATION"] = authorization.gsub(/\s/, "")
+      end
+      ENV.delete("MATCH_GIT_PRIVATE_KEY")
+    end
+
     # Read-only on purpose: renewing a Developer ID certificate needs the
     # account holder's own login, which CI does not have. It is renewed by
     # hand, when it expires, and pushed back into the repository.
@@ -38,7 +59,8 @@ lane :mac do |options|
       type: "developer_id",
       readonly: true,
       keychain_name: KEYCHAIN_NAME,
-      keychain_password: password
+      keychain_password: password,
+      git_private_key: ENV["MATCH_GIT_PRIVATE_KEY"]
     )
 
     # With no CSC_LINK of its own, electron-builder signs with the identity it
