@@ -152,20 +152,24 @@ describe('fetchTodayUsage', () => {
 });
 
 describe('adminCookieHeader', () => {
-  it('sends the session cookie only', () => {
+  it('sends the session cookie and the desktop console token', () => {
     expect(
       adminCookieHeader([
         { name: 'codebuddy_admin_session', value: 'abc' },
+        { name: 'codebuddy2api-desktop-console', value: 'def' },
         { name: 'codebuddy2api-locale', value: 'zh-CN' },
       ]),
-    ).toBe('codebuddy_admin_session=abc');
+    ).toBe('codebuddy_admin_session=abc; codebuddy2api-desktop-console=def');
   });
 
   it.each([
     { cookies: [], why: 'no cookies' },
     {
-      cookies: [{ name: 'codebuddy_admin_session', value: '' }],
-      why: 'an empty session',
+      cookies: [
+        { name: 'codebuddy_admin_session', value: '' },
+        { name: 'codebuddy2api-desktop-console', value: '' },
+      ],
+      why: 'cookies with nothing in them',
     },
   ])('sends nothing for $why', ({ cookies }) => {
     expect(adminCookieHeader(cookies)).toBe('');

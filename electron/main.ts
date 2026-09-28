@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -28,6 +29,7 @@ import {
   resolveDesktopPaths,
   resolveGatewayDir,
 } from '../lib/server/electron/paths';
+import { DESKTOP_CONSOLE_COOKIE } from '../lib/server/electron/console-token';
 import { findAvailablePort, probePortFree } from '../lib/server/electron/ports';
 import { resolveGatewayNodePath } from '../lib/server/electron/gateway-node';
 import {
@@ -79,6 +81,7 @@ import {
   RELEASES_PAGE_URL,
   checkForUpdate,
   type ReleaseAsset,
+  type UpdateUnavailableReason,
 } from '../lib/server/electron/updates';
 import { fetchServerVersion } from '../lib/server/electron/version';
 
@@ -150,6 +153,12 @@ const INSTALLER_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
  * what is wrong underneath the field as the answer is typed.
  */
 const ASK_ATTEMPTS = 3;
+/**
+ * How much randomness is in the token the console answers to. Thirty-two bytes:
+ * long enough that nothing on this machine guesses it, and it is never typed,
+ * never stored, and never leaves the shell.
+ */
+const CONSOLE_TOKEN_BYTES = 32;
 
 /**
  * `failed` is a gateway that stopped or never came up; `portBusy` is one the
@@ -229,6 +238,12 @@ let locale = 'en-US';
 let appliedSettings: DesktopSettings = defaultDesktopSettings();
 /** Whether a backend has ever been chosen: a first launch has to ask. */
 let backendChosen = false;
+/**
+ * The token the console answers to, made up for this run and handed to the
+ * gateway it starts: the window carries it, and nothing else on this machine
+ * does, so nothing else on this machine is shown the console.
+ */
+let consoleToken = '';
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -330,6 +345,33 @@ const retargetUrl = (window: BrowserWindow, url: string): string => {
 };
 
 /**
+ * Puts the token the console answers to where the window can send it.
+ *
+ * A cookie rather than a header, because the window then sends it with
+ * everything it asks for — the page, the build's own assets, and every
+ * `/admin-api` call the console makes — without the shell standing in the
+ * middle of each one. Nothing on this machine but this window has it, which is
+ * what makes the console the window's and not the address's.
+ */
+const setConsoleCookie = async (origin: string): Promise<void> => {
+  try {
+    await session.defaultSession.cookies.set({
+      httpOnly: true,
+      name: DESKTOP_CONSOLE_COOKIE,
+      url: `${origin}/`,
+      value: consoleToken,
+    });
+  } catch (error) {
+    // Worth saying out loud rather than leaving quiet: without the cookie the
+    // console answers 404 to the app's own window, which looks like a console
+    // that will not come up.
+    console.warn(
+      `Could not hand the window its console token: ${describeError(error)}`,
+    );
+  }
+};
+
+/**
  * Sends a window to the console, keeping the navigation allow-list in step with
  * where it is going.
  */
@@ -338,6 +380,8 @@ const loadConsole = async (
   url: string,
 ): Promise<void> => {
   consoleOrigin = new URL(url).origin;
+
+  await setConsoleCookie(consoleOrigin);
 
   // Twice, because the first navigation of a cold app can stall: it neither
   // finishes nor fails, and a window that never gets a first frame stays
@@ -680,6 +724,7 @@ const launchGateway = async (
 
   return startGateway({
     env: buildGatewayEnv({
+      consoleToken,
       encryptionKey: ensureDesktopEncryptionKey(paths.keyFile),
       paths,
       port,
@@ -935,6 +980,18 @@ const updateMenuLabel = (): string =>
       ? text().updateDownloading
       : text().checkForUpdates;
 
+/**
+ * Why a check could not be made, which is the one thing the dialog can still
+ * say that is worth saying: "it could not be checked" on its own does not tell
+ * anyone whether to look at their network or at the release page.
+ */
+const updateUnavailableMessage = (reason: UpdateUnavailableReason): string =>
+  reason === 'no-release'
+    ? text().updateNoRelease
+    : reason === 'unreadable-version'
+      ? text().updateUnreadableVersion
+      : text().updateUnreachable;
+
 /** The installer for a newer release, downloaded to a temporary file. */
 const downloadInstaller = async (asset: ReleaseAsset): Promise<string> => {
   const target = path.join(app.getPath('temp'), asset.name);
@@ -1026,7 +1083,7 @@ const runUpdateCheck = async (): Promise<void> => {
 
     if (update.kind === 'unavailable') {
       await dialog.showMessageBox({
-        message: text().updateFailed,
+        message: updateUnavailableMessage(update.reason),
         title: 'CodeBuddy2API',
       });
 
@@ -1045,10 +1102,17 @@ const runUpdateCheck = async (): Promise<void> => {
     }
 
     // Newer, but not for this platform and architecture: the release page is
-    // where a build for another machine, or the portable one, is.
+    // where a build for another machine, or the portable one, is. So is a
+    // release whose files this machine could not ask about: the page is where
+    // they are either way, and "no build" is not a claim it could make.
     if (!update.asset) {
       await dialog.showMessageBox({
-        message: fillText(text().updateNoBuild, { version: update.version }),
+        message: fillText(
+          update.missingAsset === 'unprobed'
+            ? text().updateFilesUnreachable
+            : text().updateNoBuild,
+          { version: update.version },
+        ),
         title: 'CodeBuddy2API',
       });
       await shell.openExternal(RELEASES_PAGE_URL);
@@ -1821,6 +1885,10 @@ const startBackend = async (): Promise<void> => {
 
 const bootstrap = async (): Promise<void> => {
   userDataDir = app.getPath('userData');
+  // Made up here and nowhere else: the gateway gets it through the environment,
+  // the window gets it as a cookie, and it dies with this run — a token written
+  // down would be one a next run could be made to honour.
+  consoleToken = randomBytes(CONSOLE_TOKEN_BYTES).toString('hex');
 
   const settings = readDesktopSettings(userDataDir);
   // A settings file exists once a backend has been chosen — or once any other
