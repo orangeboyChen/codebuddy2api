@@ -79,6 +79,7 @@ import {
   RELEASES_PAGE_URL,
   checkForUpdate,
   type ReleaseAsset,
+  type UpdateUnavailableReason,
 } from '../lib/server/electron/updates';
 import { fetchServerVersion } from '../lib/server/electron/version';
 
@@ -900,6 +901,18 @@ const updateMenuLabel = (): string =>
       ? text().updateDownloading
       : text().checkForUpdates;
 
+/**
+ * Why a check could not be made, which is the one thing the dialog can still
+ * say that is worth saying: "it could not be checked" on its own does not tell
+ * anyone whether to look at their network or at the release page.
+ */
+const updateUnavailableMessage = (reason: UpdateUnavailableReason): string =>
+  reason === 'no-release'
+    ? text().updateNoRelease
+    : reason === 'unreadable-version'
+      ? text().updateUnreadableVersion
+      : text().updateUnreachable;
+
 /** The installer for a newer release, downloaded to a temporary file. */
 const downloadInstaller = async (asset: ReleaseAsset): Promise<string> => {
   const target = path.join(app.getPath('temp'), asset.name);
@@ -991,7 +1004,7 @@ const runUpdateCheck = async (): Promise<void> => {
 
     if (update.kind === 'unavailable') {
       await dialog.showMessageBox({
-        message: text().updateFailed,
+        message: updateUnavailableMessage(update.reason),
         title: 'CodeBuddy2API',
       });
 

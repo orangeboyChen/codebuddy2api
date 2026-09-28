@@ -52,6 +52,9 @@ export interface DesktopText {
   updateInstall: string;
   updateLater: string;
   updateNoBuild: string;
+  updateNoRelease: string;
+  updateUnreachable: string;
+  updateUnreadableVersion: string;
   updateUpToDate: string;
   usageUnavailable: string;
 }
@@ -109,6 +112,11 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     updateLater: 'Not now',
     updateNoBuild:
       'Version {version} is available, but there is no build for this computer.',
+    updateNoRelease: 'No release of CodeBuddy2API was found.',
+    updateUnreachable:
+      'Could not reach GitHub, so the newest release could not be looked up. Check the connection and try again.',
+    updateUnreadableVersion:
+      'This build is not stamped with a version, so there is nothing to compare it with.',
     updateUpToDate: 'CodeBuddy2API {version} is up to date.',
     usageUnavailable: 'Usage unavailable',
   },
@@ -166,6 +174,11 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     updateLater: '後で',
     updateNoBuild:
       'バージョン {version} が利用できますが、このコンピュータ向けのビルドはありません。',
+    updateNoRelease: 'CodeBuddy2API のリリースが見つかりませんでした。',
+    updateUnreachable:
+      'GitHub に接続できないため、最新のリリースを確認できませんでした。接続を確認して再試行してください。',
+    updateUnreadableVersion:
+      'このビルドにはバージョンが記録されていないため、比較できません。',
     updateUpToDate: 'CodeBuddy2API {version} は最新です。',
     usageUnavailable: '使用量を取得できません',
   },
@@ -217,6 +230,10 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     updateInstall: '安装',
     updateLater: '稍后',
     updateNoBuild: '新版本 {version} 可用，但没有适用于这台电脑的安装包。',
+    updateNoRelease: '没有找到 CodeBuddy2API 的发布版本。',
+    updateUnreachable:
+      '无法连接 GitHub，因此查不到最新版本。请检查网络后重试。',
+    updateUnreadableVersion: '这个构建没有版本号，无法与发布版本比较。',
     updateUpToDate: 'CodeBuddy2API {version} 已是最新版本。',
     usageUnavailable: '用量不可用',
   },

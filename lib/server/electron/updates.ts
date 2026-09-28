@@ -4,37 +4,61 @@
  *
  * The app is published as GitHub release assets — one installer per platform
  * and architecture, named by `electron/electron-builder.yml` — so there is no
- * feed to subscribe to and no update service: the latest release is asked for
- * when the user asks, and the asset for this machine is picked out of it by
- * name.
+ * feed to subscribe to and no update service: the newest release is asked for
+ * when the user asks, and the build for this machine is the one whose own name
+ * says it is.
+ *
+ * Asked of `github.com` rather than of GitHub's API on purpose. The API gives
+ * an anonymous caller sixty requests an hour per address, which a shared or
+ * corporate one has spent before the day is out — and a check that comes back
+ * "no" because it could not be made is worse than no check at all. The release
+ * page is where a browser is sent, and the installer is downloaded from the
+ * same host, so nothing the app needs sits behind the one door that is limited.
+ * The API is still tried when the page cannot say, because it is a different
+ * host answering the same question.
  */
 
 /** The repository the app is released from. */
 export const UPDATE_REPO = 'orangeboyChen/codebuddy2api';
-export const LATEST_RELEASE_URL = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+/** The page that answers which release is the newest, by redirecting to it. */
+export const LATEST_RELEASE_URL = `https://github.com/${UPDATE_REPO}/releases/latest`;
+/** The same answer, from the API. Tried when the page cannot give one. */
+export const LATEST_API_URL = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
 /** Where to send a machine the release has no build for. */
 export const RELEASES_PAGE_URL = `https://github.com/${UPDATE_REPO}/releases`;
-/** The repository itself, which the menu bar's About item opens. */
+/** The repository itself, which the app's About tab opens. */
 export const HOME_PAGE_URL = `https://github.com/${UPDATE_REPO}`;
-/** GitHub refuses an API request with no `user-agent`, and this is not a browser. */
+/** GitHub refuses a request with no `user-agent`, and this is not a browser. */
 const USER_AGENT = 'CodeBuddy2API-desktop';
-/** Long enough for an installer over a slow line, short enough to give up. */
+/** Long enough for a slow line to answer, short enough to give up. */
 const RELEASE_TIMEOUT_MS = 30_000;
+/** Long enough for GitHub to redirect to a file on its own CDN. */
+const ASSET_TIMEOUT_MS = 30_000;
 
 export interface ReleaseAsset {
   name: string;
   size: number;
-  /** The asset itself, not the API entry that describes it. */
+  /** The file itself, not the answer that pointed at it. */
   url: string;
 }
 
 export interface Release {
-  assets: ReleaseAsset[];
-  /** The release page, for a release this machine has no build in. */
-  htmlUrl: string;
-  /** What the tag names, without its leading `v`. Null when the tag is not a version. */
+  /** The tag the release was published under: the path its files are under. */
+  tag: string;
+  /** The release's own page, for a release with no build for this machine. */
+  url: string;
+  /** What the tag names, without its leading `v`. Null when it is not a version. */
   version: string | null;
 }
+
+/** Why the newest release could not be named — what the dialog says. */
+export type UpdateUnavailableReason =
+  /** Nothing published yet, or a tag that is not a version. */
+  | 'no-release'
+  /** No answer: no network, or a GitHub that would not say. */
+  | 'unreachable'
+  /** A build stamped with something that cannot be compared. */
+  | 'unreadable-version';
 
 export type UpdateCheck =
   | {
@@ -43,17 +67,25 @@ export type UpdateCheck =
       asset: ReleaseAsset | null;
       version: string;
     }
-  | { kind: 'unavailable' }
+  | { kind: 'unavailable'; reason: UpdateUnavailableReason }
   | { kind: 'up-to-date'; version: string };
 
 export interface ReleaseResponse {
-  json: () => Promise<unknown>;
+  headers: { get: (name: string) => string | null };
+  json?: () => Promise<unknown>;
   ok: boolean;
+  /** Where the request ended up: for the release page, that release's own. */
+  url: string;
 }
 
 export type ReleaseFetch = (
   url: string,
-  init?: { headers?: Record<string, string>; signal?: AbortSignal },
+  init?: {
+    headers?: Record<string, string>;
+    method?: string;
+    redirect?: string;
+    signal?: AbortSignal;
+  },
 ) => Promise<ReleaseResponse>;
 
 interface ParsedVersion {
@@ -112,106 +144,105 @@ export const compareVersions = (left: string, right: string): number | null => {
 };
 
 /**
- * The installer this machine wants, or null when the release has none for it:
- * a platform the release does not build for, or asset names that moved on.
+ * The tag a release page names: `…/releases/tag/v1.3.15` → `v1.3.15`.
  *
- * Matched on the ending rather than on the whole name, so a release that
- * changes how it names versions is still recognised, and in the order the
- * platforms prefer — a macOS disk image over nothing, an installer over a
- * portable executable, a self-contained AppImage over a package.
+ * Null for anything else, including the page a release is asked *for* — a
+ * 404 leaves the request where it started, which is not an answer either.
  */
-export const pickAsset = (
-  assets: ReleaseAsset[],
-  platform: NodeJS.Platform = process.platform,
-  arch: string = process.arch,
-): ReleaseAsset | null => {
-  const suffixes: Partial<Record<NodeJS.Platform, string[]>> = {
-    darwin: [`-mac-${arch}.dmg`],
-    linux: [`-linux-${arch}.AppImage`, `-linux-${arch}.deb`],
-    win32: [`-win-${arch}-setup.exe`, `-win-${arch}-portable.exe`],
-  };
+export const tagFromReleasePage = (value: string): string | null => {
+  const match = /\/releases\/tag\/([^/?#]+)/.exec(value ?? '');
 
-  for (const suffix of suffixes[platform] ?? []) {
-    const ending = suffix.toLowerCase();
-    const found = assets.find(
-      (asset) => asset.url && asset.name.toLowerCase().endsWith(ending),
-    );
-
-    if (found) {
-      return found;
-    }
-  }
-
-  return null;
-};
-
-/** The release as the API describes it, or null when the payload is not one. */
-export const releaseFromPayload = (payload: unknown): Release | null => {
-  // An array is an object too, and the API answers a list only from an endpoint
-  // this does not ask; a list is not one release.
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+  if (!match) {
     return null;
   }
 
-  const record = payload as {
-    assets?: unknown;
-    html_url?: unknown;
-    tag_name?: unknown;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    // A tag with a stray `%` in it is still the tag that was asked for.
+    return match[1];
+  }
+};
+
+/** The release's own page, which is where a machine with no build is sent. */
+export const releasePageUrl = (tag: string): string =>
+  `${HOME_PAGE_URL}/releases/tag/${encodeURIComponent(tag)}`;
+
+/** Where GitHub keeps one file of one release. */
+export const assetDownloadUrl = (tag: string, name: string): string =>
+  `${HOME_PAGE_URL}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
+
+/**
+ * The installers this machine wants, named the way
+ * `electron/electron-builder.yml` names them, in the order the platform
+ * prefers: a macOS disk image; on Windows an installer over a portable
+ * executable; on Linux a self-contained AppImage over a package.
+ *
+ * Empty for a platform the app is not built for.
+ */
+export const assetNames = (
+  version: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string[] => {
+  const names: Partial<Record<NodeJS.Platform, string[]>> = {
+    darwin: [`CodeBuddy2API-${version}-mac-${arch}.dmg`],
+    linux: [
+      `CodeBuddy2API-${version}-linux-${arch}.AppImage`,
+      `codebuddy2api-${version}-linux-${arch}.deb`,
+    ],
+    win32: [
+      `CodeBuddy2API-${version}-win-${arch}-setup.exe`,
+      `CodeBuddy2API-${version}-win-${arch}-portable.exe`,
+    ],
   };
-  const tag = typeof record.tag_name === 'string' ? record.tag_name.trim() : '';
-  const assets = Array.isArray(record.assets)
-    ? record.assets.flatMap((entry): ReleaseAsset[] => {
-        if (!entry || typeof entry !== 'object') {
-          return [];
-        }
 
-        const asset = entry as {
-          browser_download_url?: unknown;
-          name?: unknown;
-          size?: unknown;
-        };
-
-        return typeof asset.name === 'string' &&
-          typeof asset.browser_download_url === 'string' &&
-          asset.name &&
-          asset.browser_download_url
-          ? [
-              {
-                name: asset.name,
-                size: typeof asset.size === 'number' ? asset.size : 0,
-                url: asset.browser_download_url,
-              },
-            ]
-          : [];
-      })
-    : [];
-
-  return {
-    assets,
-    htmlUrl:
-      typeof record.html_url === 'string' && record.html_url
-        ? record.html_url
-        : RELEASES_PAGE_URL,
-    version: parseVersion(tag) ? tag.replace(/^v/i, '') : null,
-  };
+  return names[platform] ?? [];
 };
 
 export interface LatestReleaseOptions {
+  /** Tried when the release page cannot name one. */
+  apiUrl?: string;
   fetchImpl?: ReleaseFetch;
   signal?: AbortSignal;
   url?: string;
 }
 
 /**
- * The newest release, or null when it cannot be named: no network, no release
- * yet, a rate limit, a payload that changed shape. Nothing here is worth
- * throwing over — the menu bar item can only say it could not check.
+ * The tag of the newest release, read off the page it redirects to.
+ *
+ * A redirect GitHub did not follow is read out of the header instead, so an
+ * answer is not lost to a runtime that hands the 302 back.
  */
-export const fetchLatestRelease = async ({
-  fetchImpl = fetch as unknown as ReleaseFetch,
-  signal = AbortSignal.timeout(RELEASE_TIMEOUT_MS),
-  url = LATEST_RELEASE_URL,
-}: LatestReleaseOptions = {}): Promise<Release | null> => {
+const fetchTagFromPage = async (
+  fetchImpl: ReleaseFetch,
+  url: string,
+  signal: AbortSignal,
+): Promise<string | null> => {
+  let response: ReleaseResponse;
+
+  try {
+    response = await fetchImpl(url, {
+      headers: { 'user-agent': USER_AGENT },
+      redirect: 'follow',
+      signal,
+    });
+  } catch {
+    return null;
+  }
+
+  return (
+    tagFromReleasePage(response.url) ??
+    tagFromReleasePage(response.headers.get('location') ?? '')
+  );
+};
+
+/** The same tag, read out of the API's answer about the newest release. */
+const fetchTagFromApi = async (
+  fetchImpl: ReleaseFetch,
+  url: string,
+  signal: AbortSignal,
+): Promise<string | null> => {
   try {
     const response = await fetchImpl(url, {
       headers: {
@@ -221,14 +252,103 @@ export const fetchLatestRelease = async ({
       signal,
     });
 
-    if (!response.ok) {
+    if (!response.ok || typeof response.json !== 'function') {
       return null;
     }
 
-    return releaseFromPayload(await response.json());
+    const payload = await response.json();
+    const tag =
+      payload && typeof payload === 'object'
+        ? (payload as { tag_name?: unknown }).tag_name
+        : undefined;
+
+    return typeof tag === 'string' && tag.trim() ? tag.trim() : null;
   } catch {
     return null;
   }
+};
+
+/**
+ * The newest release, or null when it cannot be named: no network, no release
+ * yet, a payload that changed shape. Nothing here is worth throwing over — the
+ * menu bar item can only say that it could not check.
+ */
+export const fetchLatestRelease = async ({
+  apiUrl = LATEST_API_URL,
+  fetchImpl = fetch as unknown as ReleaseFetch,
+  signal = AbortSignal.timeout(RELEASE_TIMEOUT_MS),
+  url = LATEST_RELEASE_URL,
+}: LatestReleaseOptions = {}): Promise<Release | null> => {
+  const tag =
+    (await fetchTagFromPage(fetchImpl, url, signal)) ??
+    (await fetchTagFromApi(fetchImpl, apiUrl, signal));
+
+  if (!tag) {
+    return null;
+  }
+
+  return {
+    tag,
+    url: releasePageUrl(tag),
+    version: parseVersion(tag) ? tag.replace(/^v/i, '') : null,
+  };
+};
+
+export interface FindAssetOptions {
+  arch?: string;
+  fetchImpl?: ReleaseFetch;
+  platform?: NodeJS.Platform;
+  signal?: AbortSignal;
+  /** The tag the release was published under: the path its files are under. */
+  tag: string;
+  /** The version the file was named with: the tag without its leading `v`. */
+  version: string;
+}
+
+/**
+ * The installer this machine wants inside a release, found by asking GitHub
+ * for the file: answered with a redirect to it when it is there, and with a
+ * 404 when the release has none under that name.
+ *
+ * Only the head is asked for, so a hundred megabytes are never downloaded to
+ * find out whether they exist.
+ */
+export const findReleaseAsset = async ({
+  arch,
+  fetchImpl = fetch as unknown as ReleaseFetch,
+  platform,
+  signal = AbortSignal.timeout(ASSET_TIMEOUT_MS),
+  tag,
+  version,
+}: FindAssetOptions): Promise<ReleaseAsset | null> => {
+  for (const name of assetNames(version, platform, arch)) {
+    const url = assetDownloadUrl(tag, name);
+
+    try {
+      const response = await fetchImpl(url, {
+        headers: { 'user-agent': USER_AGENT },
+        method: 'HEAD',
+        redirect: 'follow',
+        signal,
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const length = Number.parseInt(
+        response.headers.get('content-length') ?? '',
+        10,
+      );
+
+      return { name, size: Number.isFinite(length) ? length : 0, url };
+    } catch {
+      // A network that will not make the request, or one that dropped it: the
+      // next name is the next thing to try.
+    }
+  }
+
+  return null;
 };
 
 export interface CheckForUpdateOptions {
@@ -256,13 +376,19 @@ export const checkForUpdate = async ({
   const current = currentVersion.trim();
 
   if (!parseVersion(current)) {
-    return { kind: 'unavailable' };
+    return { kind: 'unavailable', reason: 'unreadable-version' };
   }
 
   const release = await fetchLatestRelease({ fetchImpl, url });
 
-  if (!release?.version) {
-    return { kind: 'unavailable' };
+  if (!release) {
+    return { kind: 'unavailable', reason: 'unreachable' };
+  }
+
+  // Published, but under a tag that is not a version: there is nothing to
+  // compare this build against, and nothing to offer either.
+  if (!release.version) {
+    return { kind: 'unavailable', reason: 'no-release' };
   }
 
   const difference = compareVersions(release.version, current);
@@ -272,7 +398,13 @@ export const checkForUpdate = async ({
   }
 
   return {
-    asset: pickAsset(release.assets, platform, arch),
+    asset: await findReleaseAsset({
+      arch,
+      fetchImpl,
+      platform,
+      tag: release.tag,
+      version: release.version,
+    }),
     kind: 'update',
     version: release.version,
   };
