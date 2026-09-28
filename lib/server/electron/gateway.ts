@@ -231,6 +231,11 @@ export const startGateway = async (
   const spawn = options.spawn ?? defaultSpawn;
   const waitForHealth = options.waitForHealth ?? waitForGatewayHealth;
   const url = `http://127.0.0.1:${options.port}`;
+  // The one path a desktop install answers outside its own window: the console's
+  // pages are 404 to everything else, so a gateway that is already serving would
+  // be reported as one that never became healthy — and stopped, and the failure
+  // shown, sixty seconds later.
+  const healthUrl = `${url}/health`;
   const child = spawn({
     args: [path.join(options.gatewayDir, 'server.js')],
     command: options.nodePath,
@@ -292,7 +297,7 @@ export const startGateway = async (
 
   try {
     const healthyInTime = await Promise.race([
-      waitForHealth({ timeoutMs: options.timeoutMs, url }),
+      waitForHealth({ timeoutMs: options.timeoutMs, url: healthUrl }),
       exited,
     ]);
 

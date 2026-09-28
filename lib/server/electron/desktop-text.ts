@@ -7,7 +7,6 @@
  * exists to ask. The console's own locale cookie decides which set is used.
  */
 export interface DesktopText {
-  about: string;
   /** The address of a deployment, asked for in a dialog of the system's own. */
   address: string;
   appVersion: string;
@@ -35,6 +34,12 @@ export interface DesktopText {
   save: string;
   serverVersion: string;
   settings: string;
+  settingsDataDir: string;
+  settingsDataRemote: string;
+  settingsDatabase: string;
+  settingsTabAbout: string;
+  settingsTabData: string;
+  settingsTabGeneral: string;
   statusFailed: string;
   statusPortBusy: string;
   statusRunning: string;
@@ -62,7 +67,6 @@ export interface DesktopText {
 
 const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'en-US': {
-    about: 'CodeBuddy2API on GitHub',
     address: 'Address',
     appVersion: 'Version {version}',
     backend: 'Backend',
@@ -93,6 +97,12 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     save: 'Save',
     serverVersion: 'Server version {version}',
     settings: 'Settings…',
+    settingsDataDir: 'Data folder {path}',
+    settingsDataRemote: 'The console’s data comes from {url}.',
+    settingsDatabase: 'Database {path}',
+    settingsTabAbout: 'About',
+    settingsTabData: 'Data',
+    settingsTabGeneral: 'General',
     statusFailed: 'Gateway failed to start',
     statusPortBusy: 'Port {port} in use',
     statusRunning: 'Running · {address}',
@@ -124,7 +134,6 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     usageUnavailable: 'Usage unavailable',
   },
   'ja-JP': {
-    about: 'GitHub の CodeBuddy2API',
     address: 'アドレス',
     appVersion: 'バージョン {version}',
     backend: 'バックエンド',
@@ -156,6 +165,12 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     save: '保存',
     serverVersion: 'サーバーバージョン {version}',
     settings: '設定…',
+    settingsDataDir: 'データフォルダ {path}',
+    settingsDataRemote: 'コンソールのデータは {url} にあります。',
+    settingsDatabase: 'データベース {path}',
+    settingsTabAbout: 'このアプリについて',
+    settingsTabData: 'データ',
+    settingsTabGeneral: '一般',
     statusFailed: 'ゲートウェイの起動に失敗しました',
     statusPortBusy: 'ポート {port} は使用中',
     statusRunning: '動作中 · {address}',
@@ -188,7 +203,6 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     usageUnavailable: '使用量を取得できません',
   },
   'zh-CN': {
-    about: 'GitHub 上的 CodeBuddy2API',
     address: '地址',
     appVersion: '版本 {version}',
     backend: '后端',
@@ -218,6 +232,12 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     save: '保存',
     serverVersion: '服务端版本 {version}',
     settings: '设置…',
+    settingsDataDir: '数据目录 {path}',
+    settingsDataRemote: '控制台的数据来自 {url}。',
+    settingsDatabase: '数据库 {path}',
+    settingsTabAbout: '关于',
+    settingsTabData: '数据',
+    settingsTabGeneral: '通用',
     statusFailed: '网关启动失败',
     statusPortBusy: '端口 {port} 被占用',
     statusRunning: '运行中 · {address}',
