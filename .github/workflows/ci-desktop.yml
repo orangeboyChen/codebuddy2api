@@ -76,8 +76,10 @@ jobs:
       - name: Build desktop app
         # Unsigned, and meant to be: only a release gets signed and notarized.
         # What this build is for is knowing the installer still builds between
-        # releases, which needs no certificate.
-        run: bun scripts/build-desktop.ts ${{ inputs.targets || '--linux --x64' }}
+        # releases, which needs no certificate. `--dev-icon` is the other half of
+        # that: nothing here is a release, so an installer from a check carries
+        # the development icon and cannot be mistaken for one from a release.
+        run: bun scripts/build-desktop.ts --dev-icon ${{ inputs.targets || '--linux --x64' }}
 
       # A build nobody can open is only half a check — the installers are
       # downloadable from the run. One day is enough to try one; the release

@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { DEV_ICON_FILENAME } from './dev-icon';
+
 const root = process.cwd();
 const standaloneDir = path.join(root, '.next', 'standalone');
 // The gateway is nested one level deep on purpose: electron-builder always
@@ -18,9 +20,15 @@ const builderConfig = path.join(root, 'electron', 'electron-builder.yml');
 
 const parseArguments = (argv: string[]) => {
   const forwarded: string[] = [];
+  let devIcon = false;
   let prepareOnly = false;
 
   for (const argument of argv) {
+    if (argument === '--dev-icon') {
+      devIcon = true;
+      continue;
+    }
+
     if (argument === '--prepare-only') {
       prepareOnly = true;
       continue;
@@ -29,7 +37,7 @@ const parseArguments = (argv: string[]) => {
     forwarded.push(argument);
   }
 
-  return { forwarded, prepareOnly };
+  return { devIcon, forwarded, prepareOnly };
 };
 
 const bunBinary = () => {
@@ -234,28 +242,63 @@ const rebuildNativeModules = () => {
   console.log(`Rebuilt native modules against Electron ${version}`);
 };
 
-const packageDesktop = (forwarded: string[]) => {
+const packageDesktop = (forwarded: string[], devIcon: boolean) => {
   requirePath(
     builderConfig,
     'The electron-builder configuration is missing from electron/.',
   );
   fs.mkdirSync(resourcesDir, { recursive: true });
 
+  // On the command line rather than through a second configuration file: the
+  // icon is the only thing a development build does differently.
+  const iconPath = path.join(appDir, DEV_ICON_FILENAME);
+
+  if (devIcon) {
+    // An icon electron-builder cannot read is no error to it — it falls back to
+    // the release icon, and out comes an install nothing tells apart from one.
+    requirePath(
+      iconPath,
+      'The development icon is missing from the app directory.',
+    );
+  }
+
+  const iconArguments = devIcon
+    ? [
+        '-c.mac.icon=' + iconPath,
+        '-c.win.icon=' + iconPath,
+        '-c.linux.icon=' + iconPath,
+      ]
+    : [];
+
   runBin('electron-builder', [
     '--config',
     builderConfig,
+    ...iconArguments,
     '--publish',
     'never',
     ...forwarded,
   ]);
 };
 
-const { forwarded, prepareOnly } = parseArguments(process.argv.slice(2));
+const { devIcon, forwarded, prepareOnly } = parseArguments(
+  process.argv.slice(2),
+);
 
 assembleGateway();
 bundleElectron();
 rebuildNativeModules();
 
+// After the bundle, which empties the directory the icon goes into.
+if (devIcon) {
+  const committed = path.join(resourcesDir, DEV_ICON_FILENAME);
+
+  requirePath(
+    committed,
+    'The development icon is missing from electron/resources, where it is committed.',
+  );
+  copyInto(committed, path.join(appDir, DEV_ICON_FILENAME));
+}
+
 if (!prepareOnly) {
-  packageDesktop(forwarded);
+  packageDesktop(forwarded, devIcon);
 }
