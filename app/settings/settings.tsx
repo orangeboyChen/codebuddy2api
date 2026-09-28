@@ -289,19 +289,12 @@ const BackendConfigFields = ({
  * running searches for anyone who had turned them off.
  */
 const WebSearchBackendField = ({
-  desktop = false,
   hint,
   label,
   onChange,
   settings,
   translations,
 }: {
-  /**
-   * Set when the data is this machine's own. Then CodeBuddy is the only engine
-   * to offer: the rest are engines that need a key of the user's, and an app
-   * whose data never leaves the machine has nothing to key them with.
-   */
-  desktop?: boolean;
   hint?: string;
   label: string;
   onChange: (key: string, value: string) => void;
@@ -324,35 +317,16 @@ const WebSearchBackendField = ({
         className="w-full"
         id={settingKey}
         onChange={(value) => onChange(settingKey, value)}
-        options={
-          desktop
-            ? [
-                {
-                  label: SEARCH_BACKEND_LABELS.codebuddy ?? 'codebuddy',
-                  value: 'codebuddy',
-                },
-                // Carried only while it is the answer on disk: a choice the
-                // field cannot show is a choice it reads as having forgotten.
-                ...(off
-                  ? [
-                      {
-                        label: translations('settingsPanel.searchBackendOff'),
-                        value: BACKEND_NONE,
-                      },
-                    ]
-                  : []),
-              ]
-            : [
-                ...SEARCH_BACKENDS.map((backend) => ({
-                  label: SEARCH_BACKEND_LABELS[backend] ?? backend,
-                  value: backend,
-                })),
-                {
-                  label: translations('settingsPanel.searchBackendOff'),
-                  value: BACKEND_NONE,
-                },
-              ]
-        }
+        options={[
+          ...SEARCH_BACKENDS.map((backend) => ({
+            label: SEARCH_BACKEND_LABELS[backend] ?? backend,
+            value: backend,
+          })),
+          {
+            label: translations('settingsPanel.searchBackendOff'),
+            value: BACKEND_NONE,
+          },
+        ]}
         value={off ? BACKEND_NONE : selected}
       />
       {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
@@ -716,10 +690,17 @@ const Settings = ({
               // A backend's own settings are rendered by its picker, which
               // knows which backend they belong to.
               .filter(([settingKey]) => !BACKEND_CONFIG_KEYS.has(settingKey))
+              // Web search is not a setting here at all: CodeBuddy is the only
+              // engine an install whose data is this machine's own can reach,
+              // so the search runs through it and there is nothing to pick —
+              // and a picker's config fields go with it, since every one of
+              // them belongs to an engine that cannot be chosen.
+              .filter(([settingKey]) =>
+                desktop ? settingKey !== 'CODEBUDDY_WEB_SEARCH_BACKEND' : true,
+              )
               .map(([settingKey, label]) =>
                 settingKey === 'CODEBUDDY_WEB_SEARCH_BACKEND' ? (
                   <WebSearchBackendField
-                    desktop={desktop}
                     hint={settingHint(settingKey, translations)}
                     key={settingKey}
                     label={label}
