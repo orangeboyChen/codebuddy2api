@@ -1023,10 +1023,17 @@ const runUpdateCheck = async (): Promise<void> => {
     }
 
     // Newer, but not for this platform and architecture: the release page is
-    // where a build for another machine, or the portable one, is.
+    // where a build for another machine, or the portable one, is. So is a
+    // release whose files this machine could not ask about: the page is where
+    // they are either way, and "no build" is not a claim it could make.
     if (!update.asset) {
       await dialog.showMessageBox({
-        message: fillText(text().updateNoBuild, { version: update.version }),
+        message: fillText(
+          update.missingAsset === 'unprobed'
+            ? text().updateFilesUnreachable
+            : text().updateNoBuild,
+          { version: update.version },
+        ),
         title: 'CodeBuddy2API',
       });
       await shell.openExternal(RELEASES_PAGE_URL);

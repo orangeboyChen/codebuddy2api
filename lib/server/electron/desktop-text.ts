@@ -49,6 +49,7 @@ export interface DesktopText {
   updateChecking: string;
   updateDownloading: string;
   updateFailed: string;
+  updateFilesUnreachable: string;
   updateInstall: string;
   updateLater: string;
   updateNoBuild: string;
@@ -108,6 +109,8 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     updateChecking: 'Checking for updates…',
     updateDownloading: 'Downloading…',
     updateFailed: 'Could not check for updates.',
+    updateFilesUnreachable:
+      'Version {version} is available, but its files could not be looked up.',
     updateInstall: 'Install',
     updateLater: 'Not now',
     updateNoBuild:
@@ -170,6 +173,8 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     updateChecking: 'アップデートを確認しています…',
     updateDownloading: 'ダウンロードしています…',
     updateFailed: 'アップデートを確認できませんでした。',
+    updateFilesUnreachable:
+      'バージョン {version} が利用できますが、ファイルを確認できませんでした。',
     updateInstall: 'インストール',
     updateLater: '後で',
     updateNoBuild:
@@ -227,6 +232,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     updateChecking: '正在检查更新…',
     updateDownloading: '正在下载…',
     updateFailed: '检查更新失败。',
+    updateFilesUnreachable: '新版本 {version} 可用，但没能查到它的安装包。',
     updateInstall: '安装',
     updateLater: '稍后',
     updateNoBuild: '新版本 {version} 可用，但没有适用于这台电脑的安装包。',
