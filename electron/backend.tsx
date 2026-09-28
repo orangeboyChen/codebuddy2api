@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Radio } from 'antd';
+import { Button, Input, Tabs } from '@lobehub/ui';
 
 import { fillText, type DesktopText } from '@/lib/server/electron/desktop-text';
 import type { DesktopBackend } from '@/lib/server/electron/settings';
 
 interface BackendInfo {
+  appVersion: string;
   backend: DesktopBackend;
   /**
    * True until a backend has been chosen. A first launch has no answer on disk,
    * and closing the window then quits the app rather than guessing one.
    */
   firstRun: boolean;
+  /** Where this app lives: opened in the browser from the About tab. */
+  homePage: string;
   locale: string;
   /** The bounds the port field is checked against, from the main process. */
   maxPort: number;
@@ -19,7 +24,9 @@ interface BackendInfo {
   port: number;
   portInUse?: { message: string; port: string } | null;
   /** Absent from a main process that only ever had the one screen. */
-  screen?: 'choose' | 'portInUse' | 'unreachable';
+  screen?: 'choose' | 'portInUse' | 'settings' | 'unreachable';
+  /** Only a backend that is not this app has a version of its own. */
+  serverVersion?: string | null;
   text: DesktopText;
   unreachable?: { host: string; message: string } | null;
 }
@@ -27,6 +34,8 @@ interface BackendInfo {
 interface DesktopBridge {
   getInfo: () => Promise<BackendInfo>;
   openInBrowser: () => Promise<void>;
+  /** The page the app lives on, in the system browser. */
+  openHomePage: () => Promise<void>;
   retryBackend: () => Promise<void>;
   // Everything the window can settle in one call: a backend alone would save
   // the port it never asked about.
@@ -336,6 +345,182 @@ const Choose = ({
   );
 };
 
+interface SettingsProps {
+  backend: DesktopBackend;
+  info: BackendInfo;
+  maxPort: number;
+  minPort: number;
+  port: number;
+  text: DesktopText;
+}
+
+/**
+ * The settings: one tab view, two tabs.
+ *
+ * The backend the app shows data from — which is the question the shell used to
+ * ask on its own — and what this app is. Saving is the Backend tab's own
+ * button, the way the window's close button is the desktop's: nothing is asked
+ * for from a tab it does not belong to.
+ */
+const Settings = ({
+  backend,
+  info,
+  maxPort,
+  minPort,
+  port,
+  text,
+}: SettingsProps) => {
+  const [mode, setMode] = useState<'local' | 'remote'>(backend.mode);
+  const [url, setUrl] = useState(backend.mode === 'remote' ? backend.url : '');
+  const [portValue, setPortValue] = useState(String(port));
+  const [error, setError] = useState('');
+
+  const save = () => {
+    if (mode === 'local') {
+      const nextPort = parsePort(portValue, minPort, maxPort);
+
+      if (!nextPort) {
+        setError(invalidPort(text, minPort, maxPort));
+
+        return;
+      }
+
+      void bridge.setBackend({ backend: { mode: 'local' }, port: nextPort });
+
+      return;
+    }
+
+    const parsed = parseUrl(url);
+
+    if (!parsed) {
+      setError(text.invalidBackendUrl);
+
+      return;
+    }
+
+    // A deployment is reached through its address, so nothing on this machine
+    // is being settled: the port the console is served on is the one already
+    // saved, and the main process leaves it standing.
+    void bridge.setBackend({ backend: { mode: 'remote', url: parsed } });
+  };
+
+  return (
+    <Tabs
+      items={[
+        {
+          children: (
+            <form
+              className="stack"
+              onSubmit={(event) => {
+                // Enter presses the button it would press in any other dialog,
+                // instead of submitting a page that has nowhere to go.
+                event.preventDefault();
+                save();
+              }}
+            >
+              <Radio.Group
+                onChange={(event) => {
+                  setError('');
+                  setMode(event.target.value);
+                }}
+                value={mode}
+              >
+                <fieldset className="options">
+                  <label className="option">
+                    <Radio value="local" />
+                    <span>
+                      <strong>{text.backendLocal}</strong>
+                      <span className="hint">{text.backendLocalHint}</span>
+                    </span>
+                  </label>
+                  <label className="option">
+                    <Radio value="remote" />
+                    <span>
+                      <strong>{text.backendRemote}</strong>
+                      <span className="hint">{text.backendRemoteHint}</span>
+                    </span>
+                  </label>
+                </fieldset>
+              </Radio.Group>
+              {/*
+                The port belongs to this machine and the address to a
+                deployment: each is asked for only while its own option is the
+                one picked.
+              */}
+              {mode === 'remote' ? (
+                <div className="field">
+                  <label htmlFor="url">{text.address}</label>
+                  <Input
+                    id="url"
+                    onChange={(event) => {
+                      setError('');
+                      setUrl(event.target.value);
+                    }}
+                    placeholder={text.backendUrlPlaceholder}
+                    value={url}
+                  />
+                  <span className="hint">{text.backendRemoteHint}</span>
+                </div>
+              ) : (
+                <PortField
+                  onChange={(value) => {
+                    setError('');
+                    setPortValue(value);
+                  }}
+                  text={text}
+                  value={portValue}
+                />
+              )}
+              {error ? <p className="error">{error}</p> : null}
+              <div className="buttons">
+                <button
+                  className="primary"
+                  id="save"
+                  onClick={() => save()}
+                  type="button"
+                >
+                  {text.save}
+                </button>
+              </div>
+            </form>
+          ),
+          key: 'backend',
+          label: text.settingsTabBackend,
+        },
+        {
+          children: (
+            <div className="stack">
+              <p className="message">
+                {fillText(text.appVersion, { version: info.appVersion })}
+              </p>
+              <p className="message">
+                {`${text.backend}: ${backend.mode === 'remote' ? text.backendRemote : text.backendLocal}`}
+              </p>
+              {info.serverVersion ? (
+                <p className="message">
+                  {fillText(text.serverVersion, {
+                    version: info.serverVersion,
+                  })}
+                </p>
+              ) : null}
+              <div className="buttons">
+                <Button
+                  htmlType="button"
+                  onClick={() => void bridge.openHomePage()}
+                >
+                  {info.homePage.replace(/^https?:\/\//, '')}
+                </Button>
+              </div>
+            </div>
+          ),
+          key: 'about',
+          label: text.settingsTabAbout,
+        },
+      ]}
+    />
+  );
+};
+
 interface PortInUseProps {
   backend: DesktopBackend;
   maxPort: number;
@@ -444,9 +629,9 @@ const Unreachable = ({ onChoose, text, unreachable }: UnreachableProps) => (
 
 const BackendWindow = () => {
   const [info, setInfo] = useState<BackendInfo | null>(null);
-  const [screen, setScreen] = useState<'choose' | 'portInUse' | 'unreachable'>(
-    'choose',
-  );
+  const [screen, setScreen] = useState<
+    'choose' | 'portInUse' | 'settings' | 'unreachable'
+  >('choose');
   // The pane, once there is one: only then is there anything to measure, which
   // is after the main process has answered with something to render.
   const [pane, setPane] = useState<HTMLDivElement | null>(null);
@@ -474,6 +659,15 @@ const BackendWindow = () => {
           onChoose={() => setScreen('choose')}
           text={info.text}
           unreachable={info.unreachable}
+        />
+      ) : screen === 'settings' ? (
+        <Settings
+          backend={info.backend}
+          info={info}
+          maxPort={info.maxPort}
+          minPort={info.minPort}
+          port={info.port}
+          text={info.text}
         />
       ) : screen === 'portInUse' && info.portInUse ? (
         <PortInUse

@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import {
   BrowserWindow,
@@ -57,17 +56,6 @@ import {
   readDeviceToken,
   writeDeviceToken,
 } from '../lib/server/electron/device-token';
-import {
-  appleScriptSettings,
-  parseSettingsAnswer,
-  settingsTabForm,
-  windowsSettingsScript,
-  zenitySettingsNoteArgs,
-  zenitySettingsTabArgs,
-  type SettingsAnswer,
-  type SettingsForm,
-  type SettingsTab,
-} from '../lib/server/electron/settings-dialog';
 import {
   DESKTOP_SETTINGS_FILENAME,
   MAX_PORT,
@@ -190,10 +178,10 @@ const CONSOLE_TOKEN_BYTES = 32;
  * which is the user's to settle rather than a failure to report.
  */
 type GatewayStatus =
-  'failed' | 'portBusy' | 'running' | 'starting' | 'unreachable';
+  'failed' | 'paused' | 'portBusy' | 'running' | 'starting' | 'unreachable';
 
 /** What the window that asks about the backend can be asking. */
-type BackendScreen = 'choose' | 'portInUse' | 'unreachable';
+type BackendScreen = 'choose' | 'portInUse' | 'settings' | 'unreachable';
 
 interface Cookie {
   name: string;
@@ -212,6 +200,12 @@ let restartTimer: NodeJS.Timeout | null = null;
 let usageTimer: NodeJS.Timeout | null = null;
 let restarting = false;
 let quitting = false;
+/**
+ * The gateway stopped because the menu bar item said to. Not a failure, and not
+ * something the app fixes on its own: a setting that changes does not start a
+ * gateway the user stopped.
+ */
+let paused = false;
 /** The gateway being started: its child exists, its handle does not yet. */
 let pendingStart: Promise<GatewayHandle> | null = null;
 /**
@@ -600,6 +594,12 @@ const buildTrayMenu = (): Menu =>
     // Nothing to say about the usage yet says so in words, not with a number.
     { enabled: false, label: usageLabel() || text().usageUnavailable },
     { type: 'separator' },
+    // Starting and stopping the gateway is the one thing the menu bar item does
+    // to the gateway itself, so it is the first thing in the menu.
+    {
+      click: () => void setPaused(status !== 'paused'),
+      label: status === 'paused' ? text().resume : text().pause,
+    },
     { click: () => showMainWindow(), label: text().openConsole },
     {
       click: () => {
@@ -672,7 +672,14 @@ const refreshTray = (): void => {
     const development = isDevelopmentBuild();
 
     tray.setTitle(
-      [development ? 'DEV' : '', usageLabel()].filter(Boolean).join(' · '),
+      [
+        development ? 'DEV' : '',
+        // Stopped is the one thing worth saying instead of a number: a count
+        // beside an icon that is not running is a count that stopped moving.
+        status === 'paused' ? text().paused : usageLabel(),
+      ]
+        .filter(Boolean)
+        .join(' · '),
     );
   }
 };
@@ -904,6 +911,17 @@ const resolveStartPort = async (): Promise<number | null> => {
  */
 const restartGateway = async (): Promise<void> => {
   if (quitting) {
+    return;
+  }
+
+  // Paused is a stop the user asked for, so nothing that would start the
+  // gateway — a setting saved in the console, a device signed in — starts it.
+  if (paused) {
+    gateway?.stop();
+    gateway = null;
+    status = 'paused';
+    refreshTray();
+
     return;
   }
 
@@ -1828,257 +1846,47 @@ const askPortAgain = async (): Promise<AskOutcome['kind']> => {
 };
 
 /**
- * The repository, as it is written rather than as it is opened.
- */
-const homePageLabel = (): string => HOME_PAGE_URL.replace(/^https?:\/\//, '');
-
-/**
- * The settings, as one dialog of the computer's own with the computer's tabs.
+ * The settings, as one window of the computer's own with the computer's tabs.
  *
- * The question that was all the shell used to have — which backend, which port
- * — is the first tab, because it is the one that decides what the app is; beside
- * it, a tab saying where this install keeps its data, and a last one saying what
- * this app is and where it lives.
+ * Two tabs, and no more: the backend the app shows data from, which is the
+ * question the shell used to ask on its own — which backend, which port — and
+ * what this app is.
  */
-const settingsForm = (error: string): SettingsForm => {
-  const shell = text();
-  const paths = resolveDesktopPaths(userDataDir);
-  // A deployment is what keeps the data, so this machine's database is not what
-  // the console is showing, and naming it would be naming the wrong thing.
-  const data: SettingsTab =
-    backend.mode === 'remote'
-      ? {
-          label: shell.settingsTabData,
-          links: [{ label: backend.url, url: backend.url }],
-          notes: [fillText(shell.settingsDataRemote, { url: backend.url })],
-        }
-      : {
-          label: shell.settingsTabData,
-          // A link rather than a button: the desktop opens what it names, in the
-          // file manager this desktop uses, and the dialog stays where it is.
-          links: [
-            { label: paths.dataDir, url: pathToFileURL(paths.dataDir).href },
-          ],
-          notes: [
-            fillText(shell.settingsDataDir, { path: paths.dataDir }),
-            fillText(shell.settingsDatabase, { path: paths.sqlitePath }),
-          ],
-        };
-
-  return {
-    cancel: shell.cancel,
-    error,
-    ok: shell.save,
-    tabs: [
-      {
-        fields: [
-          {
-            label: shell.address,
-            message: shell.backendRemoteHint,
-            value: backend.mode === 'remote' ? backend.url : '',
-          },
-          {
-            // Only this machine's gateway is served on a port of this machine's.
-            label: shell.port,
-            message: shell.portHint,
-            value: String(preferredPort()),
-          },
-        ],
-        label: shell.settingsTabGeneral,
-        message: shell.chooseBackend,
-        option: backend.mode === 'remote' ? 1 : 0,
-        options: [shell.backendLocal, shell.backendRemote],
-      },
-      data,
-      {
-        label: shell.settingsTabAbout,
-        links: [{ label: homePageLabel(), url: HOME_PAGE_URL }],
-        notes: [
-          fillText(shell.appVersion, { version: app.getVersion() }),
-          `${shell.backend}: ${backendLabel()}`,
-          // Only a backend that is not this app has a version of its own.
-          ...(serverVersion
-            ? [fillText(shell.serverVersion, { version: serverVersion })]
-            : []),
-        ],
-      },
-    ],
-    title: 'CodeBuddy2API',
-  };
-};
-
-type SettingsOutcome =
-  | { answer: SettingsAnswer; kind: 'answered' }
-  | { kind: 'cancelled' }
-  | { kind: 'failed' };
-
-/** The settings in the dialog AppKit draws: a tab view inside an alert. */
-const askWithSettingsScript = async (
-  form: SettingsForm,
-): Promise<SettingsAnswer | null> => {
-  const { code, stdout } = await runCommand('/usr/bin/osascript', [
-    '-l',
-    'JavaScript',
-    '-e',
-    appleScriptSettings(form),
-  ]);
-
-  return code === 0 ? parseSettingsAnswer(stdout, form) : null;
-};
-
-/** The same dialog as a WinForms form, with the `TabControl` Windows draws. */
-const askWithWindowsSettings = async (
-  form: SettingsForm,
-): Promise<SettingsAnswer | null> => {
-  const args = [
-    '-NoProfile',
-    '-NonInteractive',
-    '-STA',
-    '-EncodedCommand',
-    windowsEncodedCommand(windowsSettingsScript(form)),
-  ];
-  const [command, absolute] = powershellCommands();
-  const { stdout } = await runCommand(command, args).catch(() =>
-    runCommand(absolute, args),
-  );
-
-  return parseSettingsAnswer(stdout, form);
-};
-
 /**
- * The settings in the dialogs zenity draws, which have no tab control between
- * them: the section is picked from a list, and the section picked is the one
- * that is asked about.
+ * Stops the gateway, and starts it again: the one thing the menu bar item can
+ * do to the gateway itself.
+ *
+ * A pause is not a failure and not a setting: the gateway is stopped whole, and
+ * what the item says while it is stopped is that it is stopped.
  */
-const askWithZenitySettings = async (
-  form: SettingsForm,
-): Promise<SettingsAnswer | null> => {
-  const { code, stdout } = await runCommand(
-    'zenity',
-    zenitySettingsTabArgs(form),
-  );
+const setPaused = async (next: boolean): Promise<void> => {
+  paused = next;
 
-  // Cancel in zenity is a non-zero exit, and a section that is none of the tabs
-  // is not an answer either.
-  if (code !== 0) {
-    return null;
-  }
-
-  const picked = form.tabs.findIndex((tab) => tab.label === stdout.trim());
-
-  if (picked < 0) {
-    return null;
-  }
-
-  const tab = form.tabs[picked];
-
-  // A section that only says things, then: zenity has no tab to put it in, so
-  // it is the one dialog zenity has for a text. Nothing is asked in it, so
-  // nothing is answered — the General section's entries would come back empty
-  // from here, and saving empty ones is a change of backend nobody made.
-  if (!tab.options?.length && !tab.fields?.length) {
-    await runCommand('zenity', zenitySettingsNoteArgs(tab)).catch(() => null);
-
-    return null;
-  }
-
-  const outcome = await askWithZenity(settingsTabForm(form, tab));
-
-  if (!outcome) {
-    return null;
-  }
-
-  const answer: SettingsAnswer = {
-    options: form.tabs.map(() => null),
-    values: form.tabs.map(() => []),
-  };
-
-  answer.options[picked] = outcome.option;
-  answer.values[picked] = outcome.values;
-
-  return answer;
-};
-
-const askSettings = async (form: SettingsForm): Promise<SettingsOutcome> => {
-  const ask =
-    process.platform === 'darwin'
-      ? askWithSettingsScript
-      : process.platform === 'win32'
-        ? askWithWindowsSettings
-        : askWithZenitySettings;
-
-  try {
-    const answer = await ask(form);
-
-    return answer ? { answer, kind: 'answered' } : { kind: 'cancelled' };
-  } catch (error) {
-    console.warn(`The desktop could not ask: ${describeError(error)}`);
-
-    return { kind: 'failed' };
-  }
-};
-
-/**
- * The settings, opened from the menu bar item — not the first-run question
- * again, which is one tab of a dialog that has the rest of the settings in it.
- */
-const openSettings = async (): Promise<void> => {
-  if (asking) {
-    return;
-  }
-
-  if (!asksInSystemDialogs()) {
-    // Asked for by name, so it is worth saying out loud.
-    console.warn(
-      'CODEBUDDY_DESKTOP_ASK=window: asking in the app’s own window.',
-    );
-
-    openBackendWindow({ screen: 'choose' });
+  if (paused) {
+    gateway?.stop();
+    gateway = null;
+    status = 'paused';
+    refreshTray();
 
     return;
   }
 
-  asking = true;
-
-  try {
-    let error = '';
-
-    for (let attempt = 0; attempt < ASK_ATTEMPTS; attempt += 1) {
-      const outcome = await askSettings(settingsForm(error));
-
-      if (outcome.kind !== 'answered') {
-        if (outcome.kind === 'failed') {
-          dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage('choose'));
-        }
-
-        return;
-      }
-
-      error = await applyBackendAnswer(
-        outcome.answer.options[0] ?? null,
-        outcome.answer.values[0] ?? [],
-      );
-
-      if (!error) {
-        return;
-      }
-    }
-
-    // Never answered with something the app could use, in a dialog that cannot
-    // say what is wrong under a field: said in a dialog of the system's own.
-    dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage('choose'));
-  } finally {
-    asking = false;
-  }
+  await restartGateway();
 };
 
 /**
- * The dialog that shows a code: where to go, and what to type when there.
+ * The settings, opened from the menu bar item.
  *
- * Nothing is typed into the dialog itself — this app has no secret it could keep
- * and no passkey it could reach — so the only answer asked for is whether to
- * open the page the deployment serves, which is where the approval can be given.
+ * A window of this app's own rather than a dialog of the desktop's: what is
+ * asked for is a tab view, and a script can only hand AppKit, or WinForms, or
+ * zenity, a window it cannot answer for — a control drawn by a script is not
+ * the control the desktop draws. The window is the one the backend question is
+ * asked in, on a screen of its own.
  */
+const openSettings = (): void => {
+  openBackendWindow({ screen: 'settings' });
+};
+
 const deviceCodeForm = (grant: DeviceGrant): AskForm => {
   const shell = text();
 
@@ -2405,6 +2213,10 @@ const startBackend = async (): Promise<void> => {
 };
 
 const bootstrap = async (): Promise<void> => {
+  // Spelled out rather than taken from the bundle: a development build has no
+  // `productName` of its own to give, and the menu bar item, the window and the
+  // About tab all name the app in the same words.
+  app.setName('CodeBuddy2API');
   userDataDir = app.getPath('userData');
   // Made up here and nowhere else: the gateway gets it through the environment,
   // the window gets it as a cookie, and it dies with this run — a token written
@@ -2456,9 +2268,11 @@ const bootstrap = async (): Promise<void> => {
  * have been the app's to accept.
  */
 ipcMain.handle('desktop:info', () => ({
+  appVersion: app.getVersion(),
   backend,
   /** A first launch has no answer on disk, and closing it quits the app. */
   firstRun: !backendChosen,
+  homePage: HOME_PAGE_URL,
   locale,
   // The bounds the field is checked against are the main process's: it is the
   // half that refuses a port outside them.
@@ -2467,6 +2281,7 @@ ipcMain.handle('desktop:info', () => ({
   port: preferredPort(),
   portInUse: portInUseInfo(),
   screen: backendScreen,
+  serverVersion,
   text: text(),
   unreachable: unreachableInfo(),
 }));
@@ -2561,6 +2376,14 @@ ipcMain.handle('desktop:retry-backend', async () => {
     window?.close();
     showMainWindow();
   }
+});
+
+/**
+ * Where this app lives, in the system browser: the window is a window of the
+ * app's, and a page about the app is not one it should navigate itself to.
+ */
+ipcMain.handle('desktop:open-home-page', () => {
+  openExternally(HOME_PAGE_URL);
 });
 
 /** The deployment itself, in the system browser: the app's window is not one. */
