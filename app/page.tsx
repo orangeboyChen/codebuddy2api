@@ -59,6 +59,14 @@ export const AdminPage = async ({
       })
     : await getAdminSessionSummary(request);
   const desktop = isDesktopMode() && !upstream;
+  /*
+    Whether the page's own background is taken away so the frosted glass behind
+    the window shows through: only macOS draws a window over the desktop, and
+    the window is only this app's when the console is this app's. The request's
+    user agent is how a server-rendered page is told which computer answered it.
+  */
+  const vibrancy =
+    desktop && (headerStore.get('user-agent') ?? '').includes('Macintosh');
   const sessionAuthenticated = session?.authenticated ?? false;
 
   if (!desktop && session?.accountConfigured && !sessionAuthenticated) {
@@ -93,6 +101,8 @@ export const AdminPage = async ({
       showLogout={!desktop && sessionAuthenticated}
       initialTab={initialTab}
       initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
+      desktop={desktop}
+      vibrancy={vibrancy}
     >
       {children}
     </AdminPageLayout>

@@ -10,6 +10,8 @@ export interface DesktopText {
   /** The address of a deployment, asked for in a dialog of the system's own. */
   address: string;
   appVersion: string;
+  /** How the console is drawn, in the menu bar item rather than in the window. */
+  appearance: string;
   backend: string;
   backendLocal: string;
   backendLocalHint: string;
@@ -29,12 +31,18 @@ export interface DesktopText {
   deviceSignInFailed: string;
   invalidBackendUrl: string;
   invalidPort: string;
+  /** The language the console speaks, chosen from the menu bar item. */
+  language: string;
+  /** The language taken from the request, which is what the console defaults to. */
+  languageSystem: string;
   openConsole: string;
   openInBrowser: string;
   /** Stops the gateway from the menu bar item. */
   pause: string;
   /** What the menu bar item says while the gateway is stopped. */
   paused: string;
+  /** Asked when the console is opened while the gateway is stopped. */
+  pausedOpenConsole: string;
   port: string;
   portHint: string;
   portInUseBody: string;
@@ -58,6 +66,10 @@ export interface DesktopText {
   statusRunning: string;
   statusStarting: string;
   statusUnreachable: string;
+  themeDark: string;
+  themeLight: string;
+  /** The appearance of the computer itself, followed rather than chosen. */
+  themeSystem: string;
   todayUsage: string;
   unreachableBodyForeign: string;
   unreachableBodyUnreachable: string;
@@ -82,6 +94,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'en-US': {
     address: 'Address',
     appVersion: 'Version {version}',
+    appearance: 'Appearance',
     backend: 'Backend',
     backendLocal: 'This machine',
     backendLocalHint:
@@ -103,10 +116,13 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     deviceSignInFailed: 'The deployment did not sign this app in.',
     invalidBackendUrl: 'Enter an address starting with http:// or https://',
     invalidPort: 'Enter a whole number between {min} and {max}.',
+    language: 'Language',
+    languageSystem: 'Follow system',
     openConsole: 'Open console',
     openInBrowser: 'Open in browser',
     pause: 'Pause',
     paused: 'Paused',
+    pausedOpenConsole: 'The gateway is paused. Start it, and open the console?',
     port: 'Port',
     portHint:
       'The port this app serves its own console and API on, on this machine.',
@@ -131,6 +147,9 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     statusRunning: 'Running · {address}',
     statusStarting: 'Starting gateway…',
     statusUnreachable: 'Deployment unreachable',
+    themeDark: 'Dark',
+    themeLight: 'Light',
+    themeSystem: 'System',
     todayUsage: 'Today {input} / {output}',
     unreachableBodyForeign:
       '{host} answered, but it is not a CodeBuddy2API deployment.',
@@ -159,6 +178,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'ja-JP': {
     address: 'アドレス',
     appVersion: 'バージョン {version}',
+    appearance: '外観',
     backend: 'バックエンド',
     backendLocal: 'このマシン',
     backendLocalHint:
@@ -181,10 +201,14 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     invalidBackendUrl:
       'http:// または https:// で始まるアドレスを入力してください',
     invalidPort: '{min} から {max} までの整数を入力してください。',
+    language: '言語',
+    languageSystem: 'システムに従う',
     openConsole: 'コンソールを開く',
     openInBrowser: 'ブラウザで開く',
     pause: '一時停止',
     paused: '一時停止中',
+    pausedOpenConsole:
+      'ゲートウェイは一時停止中です。起動してコンソールを開きますか？',
     port: 'ポート',
     portHint:
       'このアプリが自身のコンソールと API を提供する、このマシン上のポートです。',
@@ -209,6 +233,9 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     statusRunning: '動作中 · {address}',
     statusStarting: 'ゲートウェイを起動しています…',
     statusUnreachable: 'デプロイに到達できません',
+    themeDark: 'ダーク',
+    themeLight: 'ライト',
+    themeSystem: 'システム',
     todayUsage: '本日の消費 {input} / {output}',
     unreachableBodyForeign:
       '{host} は応答しましたが、CodeBuddy2API のデプロイではありません。',
@@ -238,6 +265,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'zh-CN': {
     address: '地址',
     appVersion: '版本 {version}',
+    appearance: '外观',
     backend: '后端',
     backendLocal: '本机',
     backendLocalHint:
@@ -259,10 +287,13 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     deviceSignInFailed: '部署没有让这个应用登录。',
     invalidBackendUrl: '请输入以 http:// 或 https:// 开头的地址',
     invalidPort: '请输入 {min} 到 {max} 之间的整数。',
+    language: '语言',
+    languageSystem: '跟随系统',
     openConsole: '打开控制台',
     openInBrowser: '在浏览器中打开',
     pause: '暂停运行',
     paused: '已暂停',
+    pausedOpenConsole: '网关已暂停。要启动它并打开控制台吗？',
     port: '端口',
     portHint: '本机上应用提供控制台与 API 的端口。',
     portInUseBody:
@@ -286,6 +317,9 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     statusRunning: '运行中 · {address}',
     statusStarting: '正在启动网关…',
     statusUnreachable: '无法访问该服务',
+    themeDark: '深色',
+    themeLight: '浅色',
+    themeSystem: '跟随系统',
     todayUsage: '今日消耗 {input} / {output}',
     unreachableBodyForeign: '{host} 有响应，但它不是 CodeBuddy2API 的部署。',
     unreachableBodyUnreachable: '{host} 没有响应。它可能离线，或地址不对。',

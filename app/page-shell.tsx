@@ -292,6 +292,14 @@ interface AdminPageLayoutProps {
   initialTab: TabKey;
   initialTheme?: ThemeMode;
   showLogout: boolean;
+  /** Whether this is the console in its own window; see `AdminHeader`. */
+  desktop?: boolean;
+  /**
+   * Whether the page gives up its own background so the window's frosted glass
+   * shows through, which is only a thing on macOS; see `WINDOW_VIBRANCY` in
+   * `electron/main.ts`.
+   */
+  vibrancy?: boolean;
 }
 
 type InitialStateAtom =
@@ -304,11 +312,13 @@ type InitialStateAtom =
 
 const AdminPageLayoutContent = ({
   children,
+  desktop = false,
   initialData,
   initialLocalePreference,
   initialTab,
   initialTheme = 'system',
   showLogout,
+  vibrancy = false,
 }: AdminPageLayoutProps) => {
   const router = useRouter();
   const initialTabAtoms = new Map<InitialStateAtom, unknown>();
@@ -393,6 +403,31 @@ const AdminPageLayoutContent = ({
     },
     [],
   );
+
+  /*
+    Nothing is dropped into the console. A file or an image dropped on the
+    window navigates it to that file, or lands in one of the fields it is
+    dropped on, and neither is somewhere in the console it belongs — so a drop
+    is taken away from the whole page rather than from the one element that
+    would have answered it.
+  */
+  useEffect(() => {
+    if (!desktop) {
+      return;
+    }
+
+    const swallow = (event: DragEvent): void => {
+      event.preventDefault();
+    };
+
+    window.addEventListener('dragover', swallow);
+    window.addEventListener('drop', swallow);
+
+    return () => {
+      window.removeEventListener('dragover', swallow);
+      window.removeEventListener('drop', swallow);
+    };
+  }, [desktop]);
 
   const clearAuthTimer = () => {
     if (authPollTimerRef.current !== null) {
@@ -1640,7 +1675,11 @@ const AdminPageLayoutContent = ({
 
   return (
     <>
-      <div id="dashboardPage" className="console-workspace">
+      <div
+        className="console-workspace"
+        data-vibrancy={vibrancy ? true : undefined}
+        id="dashboardPage"
+      >
         <AdminHeader
           action={
             showLogout ? (
@@ -1656,6 +1695,7 @@ const AdminPageLayoutContent = ({
           }
           activeNavigationKey={activeTab}
           className="console-header"
+          desktop={desktop}
           localePreference={initialLocalePreference}
           navigationItems={tabs.map(({ icon, key, labelKey }) => ({
             icon,

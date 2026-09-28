@@ -1,7 +1,7 @@
 'use client';
 
 import { Block, Flexbox, Input } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { Monitor, Save } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState } from 'react';
@@ -143,22 +143,11 @@ const Desktop = () => {
           {translations('portHint', { port: state.port })}
         </p>
       </div>
-      <div className="mb-4">
-        <label
-          className="mb-2 block whitespace-normal break-words font-medium text-text-light dark:text-text-dark"
-          htmlFor="desktopStorageBackend"
-        >
-          {translations('storageLabel')}
-        </label>
-        <Select
-          className="w-full"
-          disabled
-          id="desktopStorageBackend"
-          options={[{ label: 'SQLite', value: 'sqlite' }]}
-          value={state.storageBackend}
-        />
-        <p className="mt-2 text-secondary">{translations('storageHint')}</p>
-      </div>
+      {/*
+        No picker for the storage backend: this install is the one place its
+        data can be, and a menu with a single disabled entry in it is a choice
+        being offered that was never a choice.
+      */}
       <Flexbox horizontal>
         <Button
           disabled={saving}

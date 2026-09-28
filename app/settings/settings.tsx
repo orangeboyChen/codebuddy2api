@@ -289,12 +289,19 @@ const BackendConfigFields = ({
  * running searches for anyone who had turned them off.
  */
 const WebSearchBackendField = ({
+  desktop = false,
   hint,
   label,
   onChange,
   settings,
   translations,
 }: {
+  /**
+   * Set when the data is this machine's own. Then CodeBuddy is the only engine
+   * to offer: the rest are engines that need a key of the user's, and an app
+   * whose data never leaves the machine has nothing to key them with.
+   */
+  desktop?: boolean;
   hint?: string;
   label: string;
   onChange: (key: string, value: string) => void;
@@ -317,16 +324,35 @@ const WebSearchBackendField = ({
         className="w-full"
         id={settingKey}
         onChange={(value) => onChange(settingKey, value)}
-        options={[
-          ...SEARCH_BACKENDS.map((backend) => ({
-            label: SEARCH_BACKEND_LABELS[backend] ?? backend,
-            value: backend,
-          })),
-          {
-            label: translations('settingsPanel.searchBackendOff'),
-            value: BACKEND_NONE,
-          },
-        ]}
+        options={
+          desktop
+            ? [
+                {
+                  label: SEARCH_BACKEND_LABELS.codebuddy ?? 'codebuddy',
+                  value: 'codebuddy',
+                },
+                // Carried only while it is the answer on disk: a choice the
+                // field cannot show is a choice it reads as having forgotten.
+                ...(off
+                  ? [
+                      {
+                        label: translations('settingsPanel.searchBackendOff'),
+                        value: BACKEND_NONE,
+                      },
+                    ]
+                  : []),
+              ]
+            : [
+                ...SEARCH_BACKENDS.map((backend) => ({
+                  label: SEARCH_BACKEND_LABELS[backend] ?? backend,
+                  value: backend,
+                })),
+                {
+                  label: translations('settingsPanel.searchBackendOff'),
+                  value: BACKEND_NONE,
+                },
+              ]
+        }
         value={off ? BACKEND_NONE : selected}
       />
       {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
@@ -349,12 +375,20 @@ const WebSearchBackendField = ({
  * order is the order of selection, which is why it is shown rather than sorted.
  */
 const WebFetchBackendField = ({
+  desktop = false,
   hint,
   label,
   onChange,
   settings,
   translations,
 }: {
+  /**
+   * Set when the data is this machine's own. Then only the two a desktop
+   * install can reach are offered — CodeBuddy, and this server fetching the
+   * page itself, which is "local" to the person using it rather than the name
+   * of the thing behind it.
+   */
+  desktop?: boolean;
   hint?: string;
   label: string;
   onChange: (key: string, value: string) => void;
@@ -379,10 +413,23 @@ const WebFetchBackendField = ({
         onChange={(values) =>
           onChange(settingKey, serializeFetchBackends(values))
         }
-        options={FETCH_BACKENDS.map((backend) => ({
-          label: FETCH_BACKEND_LABELS[backend] ?? backend,
-          value: backend,
-        }))}
+        options={
+          desktop
+            ? [
+                {
+                  label: FETCH_BACKEND_LABELS.codebuddy ?? 'codebuddy',
+                  value: 'codebuddy',
+                },
+                {
+                  label: translations('settingsPanel.fetchBackendLocal'),
+                  value: 'codebuddy2api',
+                },
+              ]
+            : FETCH_BACKENDS.map((backend) => ({
+                label: FETCH_BACKEND_LABELS[backend] ?? backend,
+                value: backend,
+              }))
+        }
         value={selected}
       />
       {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
@@ -672,6 +719,7 @@ const Settings = ({
               .map(([settingKey, label]) =>
                 settingKey === 'CODEBUDDY_WEB_SEARCH_BACKEND' ? (
                   <WebSearchBackendField
+                    desktop={desktop}
                     hint={settingHint(settingKey, translations)}
                     key={settingKey}
                     label={label}
@@ -681,6 +729,7 @@ const Settings = ({
                   />
                 ) : settingKey === 'CODEBUDDY_WEB_FETCH_BACKEND' ? (
                   <WebFetchBackendField
+                    desktop={desktop}
                     hint={settingHint(settingKey, translations)}
                     key={settingKey}
                     label={label}

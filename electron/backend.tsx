@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Radio } from 'antd';
-import { Button, Input, Tabs } from '@lobehub/ui';
+import {
+  Button,
+  ConfigProvider,
+  Input,
+  Tabs,
+  ThemeProvider,
+} from '@lobehub/ui';
 
+import { configProviderMotion } from '@/lib/client/motion';
 import { fillText, type DesktopText } from '@/lib/server/electron/desktop-text';
 import type { DesktopBackend } from '@/lib/server/electron/settings';
 
@@ -627,7 +634,19 @@ const Unreachable = ({ onChoose, text, unreachable }: UnreachableProps) => (
   </div>
 );
 
-const BackendWindow = () => {
+/**
+ * The appearance the computer is in, which is the one this window is drawn in.
+ *
+ * The window is dressed by the computer and not by the app, so it follows the
+ * appearance setting instead of keeping one of its own: a dark desktop gets a
+ * dark settings window, whatever the console behind it was last left in.
+ */
+const systemAppearance = (): 'dark' | 'light' =>
+  window.matchMedia?.('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
+
+export const BackendWindow = () => {
   const [info, setInfo] = useState<BackendInfo | null>(null);
   const [screen, setScreen] = useState<
     'choose' | 'portInUse' | 'settings' | 'unreachable'
@@ -694,5 +713,20 @@ const BackendWindow = () => {
 const root = document.getElementById('root');
 
 if (root) {
-  createRoot(root).render(<BackendWindow />);
+  // `ConfigProvider` is what `Tabs` reads its motion from, and it throws
+  // without one — which took the whole tree down and left the window blank.
+  // `ThemeProvider` is what gives the controls the appearance the computer is
+  // in; `enableGlobalStyle` is off because this page is dressed by the
+  // stylesheet in `backend.html`, not by the console's.
+  createRoot(root).render(
+    <ConfigProvider motion={configProviderMotion}>
+      <ThemeProvider
+        appearance={systemAppearance()}
+        enableCustomFonts={false}
+        enableGlobalStyle={false}
+      >
+        <BackendWindow />
+      </ThemeProvider>
+    </ConfigProvider>,
+  );
 }
