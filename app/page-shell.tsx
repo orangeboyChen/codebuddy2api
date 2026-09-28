@@ -1821,8 +1821,8 @@ const AdminPageLayoutContent = ({
                     form: {
                       bearerToken: '',
                       editingIndex: null,
-                      firstMessageRoleToSystem: false,
-                      firstSystemMessageRoleToUser: false,
+                      firstMessageRoleToSystem: true,
+                      firstSystemMessageRoleToUser: true,
                       upstreamProtocol: 'chat',
                       userId: '',
                     },

@@ -255,6 +255,19 @@ const getNestedValue = (
   return null;
 };
 
+/**
+ * What a credential is saved with when it never chose.
+ *
+ * Both conversions are on: an upstream that rejects a developer or a system
+ * prompt fails the first request outright, and the console only ever showed the
+ * choice — never that leaving it off was what broke the request. It is the
+ * answer written when the credential is created, which is every path that does
+ * not carry the choice — the automatic sign-in builds its credential from the
+ * token alone — so a credential that did choose, and one written before this
+ * default existed, both keep the answer they have.
+ */
+const DEFAULT_UPSTREAM_ROLE_CONVERSION = true;
+
 const getBooleanSetting = (value: unknown, fallback = false): boolean => {
   if (typeof value === 'boolean') {
     return value;
@@ -661,10 +674,12 @@ export const addCredential = async (
     first_message_role_to_system: getBooleanSetting(
       credentialData.first_message_role_to_system ??
         existingPayload.first_message_role_to_system,
+      DEFAULT_UPSTREAM_ROLE_CONVERSION,
     ),
     first_system_message_role_to_user: getBooleanSetting(
       credentialData.first_system_message_role_to_user ??
         existingPayload.first_system_message_role_to_user,
+      DEFAULT_UPSTREAM_ROLE_CONVERSION,
     ),
   };
 
