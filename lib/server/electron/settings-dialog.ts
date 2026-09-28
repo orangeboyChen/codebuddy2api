@@ -413,7 +413,12 @@ export const windowsSettingsScript = (form: SettingsForm): string => {
       );
     }
 
-    (tab.options ?? []).forEach((option, position) => {
+    // Named once: whether a tab offers a choice is decided here, and every loop
+    // below is about the choice it offered — asking again inside them would be
+    // asking about one that cannot be there, the first loop having not run.
+    const options = tab.options ?? [];
+
+    options.forEach((option, position) => {
       const name = `$option${index}_${position}`;
 
       lines.push(
@@ -428,10 +433,10 @@ export const windowsSettingsScript = (form: SettingsForm): string => {
 
     // One radio button's being picked is what unpicks the others: a group of
     // them in a flow panel is not one control the way AppKit's is.
-    (tab.options ?? []).forEach((_option, position) => {
+    options.forEach((_option, position) => {
       const name = `$option${index}_${position}`;
 
-      (tab.options ?? []).forEach((_other, other) => {
+      options.forEach((_other, other) => {
         if (other === position) {
           return;
         }

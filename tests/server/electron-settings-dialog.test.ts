@@ -86,6 +86,62 @@ describe('appleScriptSettings', () => {
     expect(source).toContain('a\\ttab');
   });
 
+  // A tab is allowed to say nothing at all: no note under it, no link in it.
+  // Nothing is drawn for what is not there, which is not the same as a tab that
+  // has something to fall back to.
+  it('draws a tab that says nothing as one with nothing in it', () => {
+    const source = appleScriptSettings({
+      cancel: 'Cancel',
+      ok: 'Save',
+      tabs: [{ label: 'About' }],
+      title: 'CodeBuddy2API',
+    });
+
+    expect(source).toContain(
+      'var TABS = [{"items":[],"label":"About","out":[]}]',
+    );
+  });
+
+  // Which option is picked to begin with is the tab's to name, and is the one on
+  // disk when it names one. A tab that named none starts on the first of them
+  // rather than on none.
+  it('starts on the first option of a tab that named none', () => {
+    const source = appleScriptSettings({
+      cancel: 'Cancel',
+      ok: 'Save',
+      tabs: [{ label: 'General', options: ['This machine', 'Remote'] }],
+      title: 'CodeBuddy2API',
+    });
+
+    expect(source).toContain('"selected":0');
+  });
+
+  // A field can carry a line of its own under its label: what the value in it is
+  // for, or what it has to look like.
+  it('puts the line a field carries under its label', () => {
+    const source = appleScriptSettings({
+      cancel: 'Cancel',
+      ok: 'Save',
+      tabs: [
+        {
+          fields: [
+            {
+              label: 'Port',
+              message: 'A number between 1 and 65535',
+              value: '8001',
+            },
+          ],
+          label: 'General',
+        },
+      ],
+      title: 'CodeBuddy2API',
+    });
+
+    expect(source).toContain(
+      '{"k":"label","text":"A number between 1 and 65535"}',
+    );
+  });
+
   it('answers nothing at all when the dialog was cancelled', () => {
     expect(script()).toContain("if (alert.runModal !== 1000) {\n  ''");
   });
@@ -192,6 +248,44 @@ describe('windowsSettingsScript', () => {
     );
   });
 
+  // Which option is picked to begin with is the tab's to name, and is the one on
+  // disk when it names one. A tab that named none starts on its first option
+  // rather than on none of them.
+  it('checks the first option of a tab that named none', () => {
+    const source = windowsSettingsScript({
+      cancel: 'Cancel',
+      ok: 'Save',
+      tabs: [{ label: 'General', options: ['This machine', 'Remote'] }],
+      title: 'CodeBuddy2API',
+    });
+
+    expect(source).toContain('$option0_0.Checked = $true');
+  });
+
+  // A field can carry a line of its own under its label: what the value in it is
+  // for, or what it has to look like.
+  it('puts the line a field carries under its label', () => {
+    const source = windowsSettingsScript({
+      cancel: 'Cancel',
+      ok: 'Save',
+      tabs: [
+        {
+          fields: [
+            {
+              label: 'Port',
+              message: 'A number between 1 and 65535',
+              value: '8001',
+            },
+          ],
+          label: 'General',
+        },
+      ],
+      title: 'CodeBuddy2API',
+    });
+
+    expect(source).toContain("'A number between 1 and 65535'");
+  });
+
   it('answers nothing when the form was cancelled', () => {
     expect(script()).toContain(
       'if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 0 }',
@@ -240,6 +334,17 @@ describe('zenity', () => {
     ]);
   });
 
+  // A section with nothing to say says nothing: no note, and no link to open.
+  it('shows a section with neither a note nor a link as one that says nothing', () => {
+    expect(zenitySettingsNoteArgs({ label: 'About' })).toEqual([
+      '--info',
+      '--title',
+      'About',
+      '--text',
+      '',
+    ]);
+  });
+
   it('asks a section that asks something as the question it is', () => {
     expect(settingsTabForm(form(), form().tabs[0])).toEqual({
       cancel: 'Cancel',
@@ -248,6 +353,22 @@ describe('zenity', () => {
       message: 'Choose a backend',
       ok: 'Save',
       options: form().tabs[0].options,
+      title: 'CodeBuddy2API',
+    });
+  });
+
+  // The message a section is about is the whole of it when there is no note
+  // under it, so nothing is joined to it and no blank line is left behind.
+  it('asks a section that says nothing but its message', () => {
+    expect(
+      settingsTabForm(form(), { label: 'About', message: 'Version 1.3.15' }),
+    ).toEqual({
+      cancel: 'Cancel',
+      error: undefined,
+      fields: undefined,
+      message: 'Version 1.3.15',
+      ok: 'Save',
+      options: undefined,
       title: 'CodeBuddy2API',
     });
   });
@@ -298,6 +419,15 @@ describe('parseSettingsAnswer', () => {
   it('reads nothing picked as no option', () => {
     expect(parseSettingsAnswer('-1\n', form())).toEqual({
       options: [null, null, null],
+      values: [['', ''], [], []],
+    });
+  });
+
+  // An option past the end of the list is one the dialog could not have drawn:
+  // read as the first of them, which is a real choice, rather than as none.
+  it('reads an option past the end of the list as the first one', () => {
+    expect(parseSettingsAnswer('7\n', form())).toEqual({
+      options: ['This machine', null, null],
       values: [['', ''], [], []],
     });
   });
