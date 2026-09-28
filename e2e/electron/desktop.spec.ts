@@ -80,8 +80,15 @@ test('asks which backend to use, then opens the console it starts', async () => 
   // A first launch has no settings file, so it asks before starting anything.
   const chooser = await app.firstWindow();
 
+  // A bundle that does not run leaves a blank window and nothing else to go
+  // on, so the reason goes into the failure instead of the log.
+  const pageErrors: string[] = [];
+  chooser.on('pageerror', (error) => pageErrors.push(error.message));
+
   await expect.poll(() => chooser.url()).toContain('backend.html');
   await expect(chooser.locator('#title')).toHaveText('Choose a backend');
+
+  expect(pageErrors).toEqual([]);
 
   await chooser.locator('#save').click();
 

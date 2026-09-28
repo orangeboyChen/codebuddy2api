@@ -105,6 +105,38 @@ const assembleGateway = () => {
   console.log(`Gateway assembled at ${path.relative(root, gatewayDir)}`);
 };
 
+/**
+ * The page the backend window renders.
+ *
+ * Browser target and IIFE, unlike the node/CommonJS pair above: it is loaded
+ * with a plain `<script src>` from `file://`, where an ES module would be
+ * fetched under CORS rules no file can satisfy. React and @lobehub/ui are
+ * bundled in, because there is no `node_modules` next to the page at runtime.
+ */
+const bundlePage = (): void => {
+  execFileSync(
+    bunBinary(),
+    [
+      'build',
+      path.join(root, 'electron', 'backend.tsx'),
+      '--outfile',
+      path.join(appDir, 'backend.js'),
+      '--target',
+      'browser',
+      '--format',
+      'iife',
+      // React picks its JSX runtime from `process.env.NODE_ENV`, which a
+      // browser bundle has no `process` to read it from. `--production` is what
+      // makes bun inline the value: `--define` alone is not enough, since some
+      // bun versions still resolve `react/jsx-runtime` to the development one
+      // and the page then dies on `jsxDEV is not a function`. It minifies too,
+      // which is wanted here anyway.
+      '--production',
+    ],
+    { cwd: root, stdio: 'inherit' },
+  );
+};
+
 const bundleElectron = () => {
   fs.rmSync(appDir, { force: true, recursive: true });
   fs.mkdirSync(appDir, { recursive: true });
@@ -135,6 +167,7 @@ const bundleElectron = () => {
   // The window that picks a backend is a bundled page with a sandboxed
   // preload, so it needs both halves next to the main process.
   bundle('preload.ts', 'preload.js');
+  bundlePage();
 
   const { author, description, version } = JSON.parse(
     fs.readFileSync(path.join(root, 'package.json'), 'utf8'),
