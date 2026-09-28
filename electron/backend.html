@@ -5,17 +5,26 @@
   the window that says so.
 
   It is a bundled page: `scripts/build-desktop.ts` compiles `backend.tsx` into
-  the `backend.js` sitting next to this file, so React and @lobehub/ui are on
-  disk and nothing is fetched. The window only ever talks to the main process,
-  through the preload bridge.
+  the `backend.js` sitting next to this file, so React is on disk and nothing is
+  fetched. The window only ever talks to the main process, through the preload
+  bridge.
+
+  Its styling is plain CSS in the block below, and the controls are the browser's
+  own — a real radio button, a real text field, accent-coloured the way the
+  system does it. The window is a dialog of this computer, not a page of the
+  console, so it is dressed like the computer and not like the console.
+
+  The stylesheet has to live here: the page is loaded from `file://` under a
+  content security policy with no `style-src` beyond `'unsafe-inline'`, so a
+  separate `.css` next to this file would never be fetched.
 -->
-<html class="dark" lang="en">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <!--
       `script-src 'self'` covers `backend.js` next to this file: a page loaded
       from `file://` has no other origin to name, and `'unsafe-inline'` is what
-      the bundled CSS-in-JS needs to insert its own style elements.
+      this stylesheet is.
     -->
     <meta
       content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'none'"
@@ -25,17 +34,175 @@
     <title>CodeBuddy2API</title>
     <style>
       /*
-        The `dark` class is what the console's own theme provider reads, so the
-        window lands on the console's dark theme; the background is here so it
-        is dark in the moment before React paints.
+        The window asks in one language and answers in another, and the same
+        question takes a different amount of room in each — so nothing here is
+        fixed at a width the text has to fit into. `#pane` is measured and the
+        window is sized to it; see `useFitWindow` in `backend.tsx`.
       */
       :root {
         color-scheme: dark;
+
+        --background: #1e1e1e;
+        --foreground: #f2f2f2;
+        --muted: #9b9b9f;
+        --field: rgba(255, 255, 255, 0.06);
+        --field-border: rgba(255, 255, 255, 0.14);
+        --accent: #0a7cff;
+        --danger: #ff6b6b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        /* The pane is measured to size the window, and a scrollbar appearing
+           under a pane that is briefly larger than the window would change the
+           measurement — so nothing here scrolls. */
+        overflow: hidden;
       }
 
       body {
-        background: #111318;
+        background: var(--background);
+        color: var(--foreground);
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        font-size: 13px;
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /*
+        The pane the window is sized to: `max-content` is its own preferred
+        width — what the text wants, rather than what is left over in a window
+        that has not been sized yet — capped so a long hint wraps instead of
+        stretching the window across the screen, and floored so a short question
+        does not come out as a sliver.
+      */
+      #pane {
+        max-width: 480px;
+        min-width: 360px;
+        padding: 20px 22px;
+        width: max-content;
+      }
+
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
         margin: 0;
+      }
+
+      h1 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0;
+        text-align: center;
+      }
+
+      .options {
+        border: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin: 0;
+        padding: 0;
+      }
+
+      /* The whole row answers the click, not just the radio's own dot. */
+      .option {
+        align-items: start;
+        cursor: pointer;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: auto 1fr;
+      }
+
+      .option input {
+        accent-color: var(--accent);
+        height: 13px;
+        margin: 2px 0 0;
+        width: 13px;
+      }
+
+      .option strong {
+        font-weight: 600;
+      }
+
+      .option .hint {
+        color: var(--muted);
+        display: block;
+        font-size: 12px;
+        font-weight: 400;
+      }
+
+      #url {
+        background: var(--field);
+        border: 1px solid var(--field-border);
+        border-radius: 6px;
+        color: inherit;
+        font: inherit;
+        padding: 5px 8px;
+        width: 100%;
+      }
+
+      #url:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      /* Dimmed with the choice it belongs to: only a deployment has an address. */
+      #url:disabled {
+        opacity: 0.5;
+      }
+
+      .message {
+        color: var(--muted);
+        margin: 0;
+      }
+
+      .error {
+        color: var(--danger);
+        font-size: 12px;
+        margin: 0;
+      }
+
+      .buttons {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+
+      button {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--field-border);
+        border-radius: 6px;
+        color: inherit;
+        font: inherit;
+        min-width: 78px;
+        padding: 4px 14px;
+      }
+
+      button:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      /* The system's own accent, and the button Enter presses. */
+      button.primary {
+        background: var(--accent);
+        border-color: transparent;
+        color: #fff;
+      }
+
+      button.primary:hover {
+        background: #3395ff;
       }
     </style>
   </head>

@@ -67,8 +67,19 @@ const WINDOW_HEIGHT = 880;
 const WINDOW_WIDTH = 1360;
 const MIN_WINDOW_HEIGHT = 640;
 const MIN_WINDOW_WIDTH = 960;
-const BACKEND_WINDOW_HEIGHT = 520;
-const BACKEND_WINDOW_WIDTH = 560;
+/**
+ * The window that asks about the backend is sized to what it is asking: the page
+ * measures its own text and the window follows, which is the only way a question
+ * translated into three languages — on a computer that picked its own font —
+ * comes out the size it should be. These are the bounds it is never allowed to
+ * leave, and the size it starts at before the page has measured itself.
+ */
+const BACKEND_WINDOW_MAX_HEIGHT = 720;
+const BACKEND_WINDOW_MAX_WIDTH = 720;
+const BACKEND_WINDOW_MIN_HEIGHT = 180;
+const BACKEND_WINDOW_MIN_WIDTH = 320;
+const BACKEND_WINDOW_HEIGHT = 320;
+const BACKEND_WINDOW_WIDTH = 480;
 const TRAY_ICON_SIZE = 16;
 /**
  * How long quitting waits for a gateway that is still starting. The wait is
@@ -1009,6 +1020,9 @@ const openBackendWindow = ({
     height: BACKEND_WINDOW_HEIGHT,
     resizable: false,
     title: 'CodeBuddy2API',
+    // The page measures itself and asks for the size it needs, so these numbers
+    // are the page's own and not the window around it.
+    useContentSize: true,
     width: BACKEND_WINDOW_WIDTH,
     webPreferences: {
       contextIsolation: true,
@@ -1141,6 +1155,55 @@ ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
   void applyBackend(normalizeDesktopBackend(next), { persist: true });
   window?.close();
 });
+
+/**
+ * Sizes the window that asks about the backend to the question it is asking.
+ *
+ * The page measures its own pane and asks through the bridge: the strings are
+ * this process's own, but only a rendered page knows how much room they took in
+ * the font this computer actually has. Only this window is resized, only within
+ * the bounds above, and only when the size really changed — a page's own layout
+ * is not something that gets to walk the window anywhere it likes.
+ */
+ipcMain.handle(
+  'desktop:set-content-size',
+  (event, width: unknown, height: unknown) => {
+    const window = backendWindow;
+
+    if (!window || window.isDestroyed()) {
+      return;
+    }
+
+    // A size from any other page is not one to honour.
+    if (window.webContents.id !== event.sender.id) {
+      return;
+    }
+
+    const clamp = (value: unknown, min: number, max: number): number => {
+      const size =
+        typeof value === 'number' && Number.isFinite(value) ? value : min;
+
+      return Math.round(Math.min(Math.max(size, min), max));
+    };
+    const nextWidth = clamp(
+      width,
+      BACKEND_WINDOW_MIN_WIDTH,
+      BACKEND_WINDOW_MAX_WIDTH,
+    );
+    const nextHeight = clamp(
+      height,
+      BACKEND_WINDOW_MIN_HEIGHT,
+      BACKEND_WINDOW_MAX_HEIGHT,
+    );
+    const [currentWidth, currentHeight] = window.getContentSize();
+
+    if (currentWidth === nextWidth && currentHeight === nextHeight) {
+      return;
+    }
+
+    window.setContentSize(nextWidth, nextHeight);
+  },
+);
 
 /**
  * Asks the deployment again, for the window that reported it unreachable: a
