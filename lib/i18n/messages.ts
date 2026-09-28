@@ -14,6 +14,7 @@ export type AppMessages = typeof zhCN;
 export type AdminMessages = AppMessages['Admin'];
 export type AdminTranslations = AdminMessages;
 export type AdminLoginMessages = AdminMessages['loginPage'];
+export type AdminDeviceMessages = AdminMessages['devicePage'];
 
 export const getMessages = (locale: AppLocale) => {
   return messages[locale];

@@ -5,6 +5,7 @@ import {
   fetchUpstreamAccountStatus,
   resolveAdminUpstream,
 } from '@/lib/server/admin/upstream';
+import { deviceToken } from '@/lib/server/electron/device-token';
 import {
   getAccountStatus,
   getAccountStatusCredentials,
@@ -25,6 +26,7 @@ const AccountStatusPage = async () => {
   if (upstream) {
     const fromDeployment = await fetchUpstreamAccountStatus({
       cookie: headerStore.get('cookie') ?? '',
+      deviceToken: deviceToken(),
       upstream,
     });
 

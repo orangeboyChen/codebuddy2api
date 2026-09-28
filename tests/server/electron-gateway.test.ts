@@ -173,6 +173,33 @@ describe('buildGatewayEnv', () => {
     expect(env.CODEBUDDY_DESKTOP_CONSOLE_TOKEN).toBeUndefined();
   });
 
+  // The token the deployment handed this app: the gateway is what forwards it,
+  // so it is the gateway that has to be told.
+  it('hands the gateway the token the user approved this app with', () => {
+    const env = buildGatewayEnv({
+      baseEnv: asEnv({}),
+      deviceToken: 'a-device-token',
+      encryptionKey: 'secret',
+      paths,
+      port: 8123,
+    });
+
+    expect(env.CODEBUDDY_DESKTOP_DEVICE_TOKEN).toBe('a-device-token');
+  });
+
+  // Not approved, or signed out: nothing is carried to the deployment, and a
+  // token left over from a run that ended is not carried either.
+  it('sets no device token when this app was not approved', () => {
+    const env = buildGatewayEnv({
+      baseEnv: asEnv({ CODEBUDDY_DESKTOP_DEVICE_TOKEN: 'stale' }),
+      encryptionKey: 'secret',
+      paths,
+      port: 8123,
+    });
+
+    expect(env.CODEBUDDY_DESKTOP_DEVICE_TOKEN).toBeUndefined();
+  });
+
   it('inherits the real environment when none is handed in', () => {
     vi.stubEnv('CODEBUDDY_DESKTOP_TEST_INHERITED', '1');
 

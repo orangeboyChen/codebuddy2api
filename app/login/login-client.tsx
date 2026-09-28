@@ -58,6 +58,8 @@ interface LoginClientProps {
   initialSession: SessionSummary;
   locale: string;
   localePreference?: LocalePreference;
+  /** Where to go once signed in, when the sign-in was asked for by a page. */
+  nextPath?: string;
   translations: Omit<AdminLoginMessages, 'usernameLabel'> & {
     usernameLabel?: string;
   };
@@ -73,6 +75,7 @@ const LoginClient = ({
   initialTheme = 'system',
   locale,
   localePreference = parseLocalePreference(locale),
+  nextPath,
   translations,
 }: LoginClientProps) => {
   const [session, setSession] = useState(initialSession);
@@ -109,13 +112,16 @@ const LoginClient = ({
     });
   };
 
-  const applySuccess = useCallback((nextSession?: SessionSummary) => {
-    if (nextSession) {
-      setSession(nextSession);
-    }
+  const applySuccess = useCallback(
+    (nextSession?: SessionSummary) => {
+      if (nextSession) {
+        setSession(nextSession);
+      }
 
-    window.location.assign('/');
-  }, []);
+      window.location.assign(nextPath ?? '/');
+    },
+    [nextPath],
+  );
 
   const submitPassword = async () => {
     const endpoint =

@@ -11,6 +11,7 @@ import {
 } from '@simplewebauthn/server';
 
 import { ADMIN_SESSION_COOKIE } from './cookie';
+import { isDeviceTokenAuthorized } from './device';
 import { readStorageJsonResult, writeStorageJson } from '../storage';
 import { getForwardedHeaderValue } from '../shared/http';
 import { isDesktopMode } from '../electron/settings';
@@ -593,21 +594,47 @@ const appendAdminSession = (
   ];
 };
 
+/**
+ * What a device the user approved in a browser looks like here.
+ *
+ * It is not a session: nothing was stored when they approved, and nothing is
+ * touched while the device keeps asking. It is returned anyway because every
+ * caller only ever asks one question of it — is this the admin — and the answer
+ * the user gave in the browser is yes.
+ */
+const deviceSessionRecord = (): StoredSessionRecord => ({
+  createdAt: new Date().toISOString(),
+  expiresAt: new Date(
+    Date.now() + ADMIN_SESSION_TTL_SECONDS * 1000,
+  ).toISOString(),
+  id: 'device',
+  lastUsedAt: new Date().toISOString(),
+  tokenHash: '',
+});
+
 const getValidSessionRecord = async (
   request: RequestLike,
 ): Promise<StoredSessionRecord | null> => {
   const token = getSessionToken(request);
 
   if (!token) {
-    return null;
+    return (await isDeviceTokenAuthorized(request))
+      ? deviceSessionRecord()
+      : null;
   }
 
   const tokenHash = hashSessionToken(token);
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
   const matched = findSessionByTokenHash(state, tokenHash);
 
+  // A cookie this deployment no longer knows — signed out in another window, or
+  // a session that expired — is not a reason to ignore the token the user
+  // approved in a browser: the app sends both, and the browser keeps a cookie
+  // nobody took back.
   if (!matched) {
-    return null;
+    return (await isDeviceTokenAuthorized(request))
+      ? deviceSessionRecord()
+      : null;
   }
 
   // Recognising a session needs no write, and rewriting the whole document on
@@ -865,6 +892,13 @@ export const updateAdminSessionUsagePreferences = async (
   }
 
   if (!token) {
+    // A device has no session to hang preferences on, and needs none: it keeps
+    // them the way an install with authentication disabled does, and asking it
+    // to sign in again to remember a chart range would be no answer at all.
+    if (await isDeviceTokenAuthorized(request)) {
+      return normalizedPreferences;
+    }
+
     const state = pruneExpiredState(await loadAdminAuthStateAsync());
     return state.enabled ? null : normalizedPreferences;
   }

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import {
   BrowserWindow,
   Menu,
+  MenuItemConstructorOptions,
   Tray,
   app,
   clipboard,
@@ -45,6 +46,17 @@ import {
   type AskAnswer,
   type AskForm,
 } from '../lib/server/electron/ask';
+import {
+  DEVICE_REQUEST_TIMEOUT_MS,
+  pollForDeviceToken,
+  requestDeviceAuthorization,
+  type DeviceGrant,
+} from '../lib/server/electron/device-auth';
+import {
+  forgetDeviceToken,
+  readDeviceToken,
+  writeDeviceToken,
+} from '../lib/server/electron/device-token';
 import {
   appleScriptSettings,
   parseSettingsAnswer,
@@ -256,6 +268,15 @@ let backendChosen = false;
  * does, so nothing else on this machine is shown the console.
  */
 let consoleToken = '';
+/**
+ * The token the deployment the console shows data from handed this app, when the
+ * user approved it there. Carried on everything forwarded to that deployment, so
+ * the window is signed in without a password ever being typed into it — and held
+ * for that address alone, because it is that deployment that promised it.
+ */
+let deviceToken: string | null = null;
+/** Whether the app is waiting for the user to approve a device code. */
+let signingIn = false;
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -540,6 +561,39 @@ const statusLabel = (): string =>
 const usageLabel = (): string =>
   usageLoaded ? usageText(text(), todayUsage, locale) : '';
 
+/**
+ * The row that says whether this app is signed in to the deployment, and the one
+ * that signs it in or out.
+ *
+ * Nothing is signed out of while a code is still waiting to be approved: the
+ * token being asked for and the one being dropped are the same sign-in, and a
+ * menu that offered both at once would be offering to undo what it is doing.
+ */
+const deviceMenu = (): MenuItemConstructorOptions => {
+  const shell = text();
+
+  if (signingIn) {
+    return { enabled: false, label: shell.signingIn };
+  }
+
+  return deviceToken
+    ? {
+        // Named for the deployment it belongs to, because that is what was
+        // signed in to — and what signing out here leaves.
+        submenu: [
+          { enabled: false, label: shell.signedIn },
+          { click: () => void signOutOfDeployment(), label: shell.signOut },
+        ],
+        label: shell.signedIn,
+      }
+    : { click: () => void signInToDeployment(), label: shell.signIn };
+};
+
+/**
+ * The menu the tray item opens: what the app is doing, the console it serves, and
+ * the settings that decide both — the whole app, in the one place it is always
+ * reachable from.
+ */
 const buildTrayMenu = (): Menu =>
   Menu.buildFromTemplate([
     { enabled: false, label: `CodeBuddy2API · ${statusLabel()}` },
@@ -564,6 +618,10 @@ const buildTrayMenu = (): Menu =>
     // beside one that says where this install keeps its data and one that says
     // what this app is.
     { click: () => void openSettings(), label: text().settings },
+    // Signing in is only a question with a deployment behind the console: this
+    // machine's own gateway is reachable by nothing but this app's window, which
+    // needs no approval from anybody.
+    ...(backend.mode === 'remote' ? [deviceMenu()] : []),
     { type: 'separator' },
     {
       enabled: false,
@@ -758,6 +816,7 @@ const launchGateway = async (
   return startGateway({
     env: buildGatewayEnv({
       consoleToken,
+      deviceToken,
       encryptionKey: ensureDesktopEncryptionKey(paths.keyFile),
       paths,
       port,
@@ -1239,6 +1298,10 @@ const applyBackend = async (
   }
 
   backend = chosen;
+  // A token is a promise one deployment made: pointed at another one, or back at
+  // this machine, the app has no token at all.
+  deviceToken =
+    chosen.mode === 'remote' ? readDeviceToken(userDataDir, chosen.url) : null;
   todayUsage = null;
   usageLoaded = false;
   serverVersion = null;
@@ -2012,6 +2075,170 @@ const openSettings = async (): Promise<void> => {
 };
 
 /**
+ * The dialog that shows a code: where to go, and what to type when there.
+ *
+ * Nothing is typed into the dialog itself — this app has no secret it could keep
+ * and no passkey it could reach — so the only answer asked for is whether to
+ * open the page the deployment serves, which is where the approval can be given.
+ */
+const deviceCodeForm = (grant: DeviceGrant): AskForm => {
+  const shell = text();
+
+  return {
+    cancel: shell.cancel,
+    message: fillText(shell.deviceCodeMessage, {
+      code: grant.userCode,
+      url: grant.verificationUri || grant.verificationUriComplete,
+    }),
+    ok: shell.deviceOpenBrowser,
+    options: [shell.deviceOpenBrowser],
+    title: 'CodeBuddy2API',
+  };
+};
+
+/**
+ * Signing this app in to the deployment whose data it shows.
+ *
+ * The app has no browser of its own to sign in in, and a passkey saved for a
+ * deployment cannot be used from a window at `127.0.0.1`: a browser offers a
+ * credential to the origin it is on. So the deployment is asked for two codes
+ * instead — one the app waits with, one it shows — and the approval is the
+ * user's to make in a browser, on the address the passkey was saved for.
+ *
+ * What comes back is kept on disk and handed to the gateway, which sends it with
+ * everything it forwards: the window is signed in without a password ever having
+ * been typed into this machine's console.
+ */
+const signInToDeployment = async (): Promise<void> => {
+  // This machine's own gateway is served to nobody but this app's window: there
+  // is no deployment to be approved by, and so no sign-in to make.
+  if (backend.mode !== 'remote' || signingIn) {
+    return;
+  }
+
+  const shell = text();
+  // Named before anything is asked of it: the grant is that deployment's, and
+  // the token that comes back is a promise it made. The backend can be pointed
+  // somewhere else while the user is still approving, and a token saved under
+  // the new address would be carried to a deployment that never issued it.
+  const issuedBy = backend.url;
+  const requested = await requestDeviceAuthorization({ baseUrl: issuedBy });
+
+  if (requested.kind === 'notConfigured') {
+    dialog.showErrorBox('CodeBuddy2API', shell.deviceNotConfigured);
+
+    return;
+  }
+
+  if (requested.kind !== 'granted') {
+    dialog.showErrorBox('CodeBuddy2API', shell.deviceSignInFailed);
+
+    return;
+  }
+
+  const { grant } = requested;
+
+  if (asksInSystemDialogs()) {
+    const outcome = await askSystem(deviceCodeForm(grant));
+
+    if (outcome.kind !== 'answered') {
+      return;
+    }
+  } else {
+    // Asked for by name, so it is worth saying out loud: the code is shown on the
+    // page the browser opens, which is where it is typed in as well.
+    console.warn(
+      'CODEBUDDY_DESKTOP_ASK=window: not asking in the system’s dialog.',
+    );
+  }
+
+  openExternally(grant.verificationUriComplete || grant.verificationUri);
+
+  signingIn = true;
+  refreshTray();
+
+  try {
+    const outcome = await pollForDeviceToken({
+      baseUrl: issuedBy,
+      deviceCode: grant.deviceCode,
+      expiresIn: grant.expiresIn,
+      intervalSeconds: grant.intervalSeconds,
+    });
+
+    if (outcome.kind !== 'signedIn') {
+      dialog.showErrorBox(
+        'CodeBuddy2API',
+        outcome.kind === 'expired'
+          ? shell.deviceSignInExpired
+          : shell.deviceSignInFailed,
+      );
+
+      return;
+    }
+
+    // Approved by a deployment that is no longer the one behind the console:
+    // the code was shown for the old address, and this token opens its door.
+    // Keeping it would present one deployment's introduction to another.
+    if (backend.mode !== 'remote' || backend.url !== issuedBy) {
+      dialog.showErrorBox('CodeBuddy2API', shell.deviceSignInFailed);
+
+      return;
+    }
+
+    writeDeviceToken(userDataDir, {
+      token: outcome.token.accessToken,
+      url: issuedBy,
+    });
+    deviceToken = outcome.token.accessToken;
+    refreshTray();
+
+    // Restarted because the token reaches the gateway in its environment: the
+    // console the window already holds is a page that was signed out, and the one
+    // it gets after this is signed in.
+    await restartGateway();
+  } finally {
+    signingIn = false;
+    refreshTray();
+  }
+};
+
+/**
+ * Forgetting the token: signing out here is.
+ *
+ * The deployment is asked to forget it too, best effort — a token this app no
+ * longer holds should not still open the door it was given. Answered either way:
+ * what the user asked for is that this machine stop carrying it.
+ */
+const signOutOfDeployment = async (): Promise<void> => {
+  if (backend.mode !== 'remote') {
+    return;
+  }
+
+  const url = backend.url;
+  const token = deviceToken;
+
+  deviceToken = null;
+  forgetDeviceToken(userDataDir);
+  refreshTray();
+
+  if (token) {
+    try {
+      await fetch(`${url.trim().replace(/\/+$/, '')}/admin-api/oauth/token`, {
+        headers: { authorization: `Bearer ${token}` },
+        method: 'DELETE',
+        signal: AbortSignal.timeout(DEVICE_REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      // A deployment that cannot be reached cannot be told, and one that will
+      // not forget is not worth failing a sign-out over: the token is gone from
+      // this machine either way.
+    }
+  }
+
+  await restartGateway();
+};
+
+/**
  * What to do about a deployment that did not answer, in the dialog the system
  * draws for a message: try it again, name another backend, or open the
  * deployment in the browser where its own page is.
@@ -2195,6 +2422,10 @@ const bootstrap = async (): Promise<void> => {
   appliedSettings = settings;
   backend = settings.backend;
   backendChosen = !firstRun;
+  deviceToken =
+    backend.mode === 'remote'
+      ? readDeviceToken(userDataDir, backend.url)
+      : null;
 
   applyDevelopmentIcon();
   createTray();
