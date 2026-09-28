@@ -6,6 +6,12 @@ import type { MetadataRoute } from 'next';
  * The console is a tool operators keep open all day, so it advertises itself
  * as a standalone app: browsers offer to install it, and the installed icon
  * opens straight into the dashboard instead of the landing page.
+ *
+ * Every icon here is a render of `app/icon.svg` — the same file the desktop
+ * app's own icon comes from — so an install carries the mark the app already
+ * has rather than a second drawing of it. The maskable one puts that mark
+ * smaller and on a full-bleed plate: a launcher that masks it to a shape of
+ * its own keeps only the middle of it.
  */
 const manifest = (): MetadataRoute.Manifest => {
   return {
