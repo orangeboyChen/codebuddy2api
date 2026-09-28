@@ -266,7 +266,15 @@ jobs:
             "$MATCH_GIT_BASIC_AUTHORIZATION" "$MATCH_GIT_PRIVATE_KEY" \
             "$MATCH_GIT_URL" "$MATCH_KEYCHAIN_PASSWORD" "$MATCH_PASSWORD"; do
             if [[ -n "$value" ]]; then
-              echo "::add-mask::$value"
+              # A workflow command is read one line at a time, so a PEM key
+              # would be cut off at its first newline and everything after
+              # it printed as ordinary log output — the rest of the key, in
+              # the log. Percent-escape it onto one line instead, as the
+              # workflow command syntax requires.
+              escaped="${value//'%'/%25}"
+              escaped="${escaped//$'\r'/%0D}"
+              escaped="${escaped//$'\n'/%0A}"
+              echo "::add-mask::$escaped"
             fi
           done
       - name: Give notarytool its API key
