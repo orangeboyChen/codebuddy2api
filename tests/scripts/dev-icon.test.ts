@@ -194,12 +194,40 @@ describe('devIconSvg', () => {
   it('puts the mark on the plate in the mark’s own colour', () => {
     expect(svg).not.toContain('fill="white"');
     expect(svg).toContain('fill="#191A23"');
+    // Every shape of the mark, and the badge's plate: a fourth shape in the
+    // mark's colour would mean one of them was painted in some other.
+    expect(svg.match(/fill="#191A23"/g)).toHaveLength(
+      readAppMark(source).elements.length + 1,
+    );
+  });
+
+  it('draws the mark the way the export draws it, mirrored', () => {
+    // The export draws both its groups flipped. Dropping the flip would leave
+    // the mark back to front, and nothing else here would notice.
+    expect(svg).toContain('scale(-1 1)');
+  });
+
+  it('draws the badge in pixels, scaled into the export’s units', () => {
+    // The badge is written in 1024-space pixels and the icon is drawn in the
+    // export's 24: a badge drawn without that scale would cover the icon.
+    expect(svg).toContain(`transform="scale(${24 / CANVAS})"`);
   });
 
   it('carries the badge, and the three letters in it', () => {
     // One stroked plate, one stroked group of letters — and one path per letter.
     expect(svg.match(/stroke="#FFFFFF"/g)).toHaveLength(2);
     expect(svg.match(/<path d="M 8,8/g)).toHaveLength(3);
+  });
+
+  it('rims the badge, which is what keeps it off the mark', () => {
+    // The mark is the same dark as the badge and reaches into the corner the
+    // badge sits in: without a rim of its own width the two read as one shape.
+    const [, width = '0'] =
+      svg.match(
+        /<rect fill="#191A23"[^>]*stroke="#FFFFFF" stroke-width="(\d+)"/,
+      ) ?? [];
+
+    expect(Number(width)).toBeGreaterThan(0);
   });
 
   it('refers only to the definitions it declares', () => {

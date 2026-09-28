@@ -289,16 +289,19 @@ export const devIconSvg = (source: string): string => {
     `${stops(PLATE_STOPS)}</linearGradient>` +
     `<linearGradient id="dev-sheen" x1="0" x2="0.9" y1="0" y2="1">` +
     `${stops(SHEEN_STOPS)}</linearGradient>` +
+    // The rounded corner everything is clipped to: the plate is drawn as a
+    // square and takes its silhouette from here, and nothing of the mark or of
+    // the badge is left outside it however far they reach.
     `<clipPath id="dev-silhouette"><rect height="${SOURCE}" rx="${radius}" ` +
-    `width="${SOURCE}"/></clipPath>` +
-    `<clipPath id="dev-mark"><rect height="${SOURCE}" rx="${radius}" ` +
     `width="${SOURCE}"/></clipPath>` +
     '</defs>' +
     '<g clip-path="url(#dev-silhouette)">' +
     `<rect fill="url(#dev-plate)" height="${SOURCE}" width="${SOURCE}"/>` +
     `<rect fill="url(#dev-sheen)" height="${SOURCE}" width="${SOURCE}"/>` +
+    // The export draws its mark mirrored, and so is this one: the mark is put
+    // back the way the console shows it.
     '<g transform="translate(24 0) scale(-1 1)">' +
-    `<g clip-path="url(#dev-mark)">${mark}</g>` +
+    mark +
     '</g>' +
     `<g transform="scale(${SOURCE_UNIT})">${badge()}</g>` +
     '</g>' +
