@@ -692,8 +692,8 @@ const devIconPath = (): string => path.join(bundleDir(), 'icon-dev.png');
 const isDevelopmentBuild = (): boolean => fs.existsSync(devIconPath());
 
 // The Dock's icon, which `electron .` has no bundle to take from and would
-// otherwise be Electron's own. An install carries its icon already; a
-// development build is the one that keeps a Dock to show it in.
+// otherwise be Electron's own. An install carries its icon already, so this is
+// the one build that needs it drawn.
 const applyDevelopmentIcon = (): void => {
   if (process.platform !== 'darwin' || app.isPackaged) {
     return;
@@ -792,16 +792,14 @@ const createTray = (): void => {
     });
   }
 
-  // The menu bar item is the app, and it is the only thing that is: a dock icon
-  // beside it is a second app in the system tray with nothing of its own to
-  // offer — every way in is already in the menu. Hidden only once the item
-  // exists, so an install whose icon failed to load still has a dock to click.
-  // Except in a development build, which keeps its dock: that icon is the one
-  // thing telling it apart from a release, and the Dock is where it is seen.
-  if (process.platform === 'darwin' && !development) {
-    app.dock?.hide();
-  }
-
+  // The dock icon stays, and that is a decision rather than an omission:
+  // hiding it turns the whole process into a UIElement (accessory)
+  // application, which is what macOS lets float its window over another app's
+  // fullscreen Space — a console sitting in front of whatever else is on the
+  // screen, with no way to put anything over it. It also takes the app out of
+  // the dock and out of Cmd+Tab, so an open console could only ever be reached
+  // again from the menu bar item. A development build is no exception: on macOS
+  // its own icon is drawn in the Dock, which is the one place it shows.
   refreshTray();
 };
 
