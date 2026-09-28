@@ -326,6 +326,45 @@ export const mapAnthropicContentToChat = (
   return messages;
 };
 
+/**
+ * The text Claude Code itself falls back to when a user turn carries no
+ * content (`Hp` in its bundle), reused here for the same case.
+ */
+export const EMPTY_USER_TURN_CONTENT = '(no content)';
+
+/**
+ * Puts the trailing user turn back when translating it away would end the
+ * request on the assistant's own previous answer.
+ *
+ * A turn the client sent for its own bookkeeping — a token usage hint, say —
+ * leaves nothing to forward once the hint is stripped, and mid-conversation it
+ * is simply dropped. Dropping the *last* turn is not the same thing: what is
+ * left ends on the assistant, and a chat upstream reads a trailing assistant
+ * message as a prefill, carrying on from that answer instead of answering the
+ * turn. That is how one of the client's reminders ends up dictating the reply.
+ *
+ * The turn is therefore kept, with the placeholder Claude Code itself sends in
+ * this situation. A trailing turn that already produced a `user` or `tool`
+ * message is left alone, and an assistant turn the client sent on purpose — a
+ * genuine prefill — is passed through as one.
+ */
+const keepTrailingUserTurn = (
+  messages: ChatMessage[],
+  lastInput: AnthropicMessage | undefined,
+): ChatMessage[] => {
+  if (lastInput?.role !== 'user') {
+    return messages;
+  }
+
+  const last = messages.at(-1);
+
+  if (last && (last.role === 'user' || last.role === 'tool')) {
+    return messages;
+  }
+
+  return [...messages, { role: 'user', content: EMPTY_USER_TURN_CONTENT }];
+};
+
 export const mapAnthropicMessagesToChat = (
   messages: AnthropicMessage[],
 ): ChatMessage[] => {
@@ -345,7 +384,7 @@ export const mapAnthropicMessagesToChat = (
     }
   }
 
-  return result;
+  return keepTrailingUserTurn(result, messages.at(-1));
 };
 
 /**

@@ -2013,7 +2013,7 @@ describe('anthropic messages api', () => {
     expect(JSON.stringify(upstreamBody.messages.at(-1))).toContain('fourth');
   });
 
-  it('drops a user message that carries nothing but the usage hint', async () => {
+  it('keeps a trailing user turn that carried nothing but the usage hint', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
@@ -2045,7 +2045,77 @@ describe('anthropic messages api', () => {
     expect(upstreamBody.messages.map((m) => m.role)).toEqual([
       'user',
       'assistant',
+      'user',
     ]);
+    expect(upstreamBody.messages.at(-1)?.content).toBe('(no content)');
+  });
+
+  it('ends on a user turn when the last turn was only a usage hint', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'the previous answer' },
+          {
+            role: 'user',
+            content: '<total_tokens>15000000 tokens left</total_tokens>',
+          },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    // Ending on the assistant would hand the upstream a prefill: it would
+    // carry on from `the previous answer` instead of answering the turn.
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+    ]);
+    expect(JSON.stringify(upstreamBody)).not.toContain('total_tokens>');
+    expect(upstreamBody.messages.at(-1)?.content).toBe('(no content)');
+  });
+
+  it('leaves an assistant turn the client sent on its own as a prefill', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+      );
+
+    await handleMessagesRequest(
+      makeNextRequest('http://localhost/v1/messages', { method: 'POST' }),
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'I will answer: ' },
+        ],
+      },
+    );
+
+    const upstreamBody = JSON.parse(
+      String((fetchMock.mock.calls[0]?.[1] as RequestInit).body),
+    ) as { messages: Array<{ role: string; content: unknown }> };
+
+    expect(upstreamBody.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    expect(upstreamBody.messages.at(-1)?.content).toBe('I will answer: ');
   });
 
   it('drops the usage hint from an assistant message and without tags', async () => {
@@ -2208,7 +2278,7 @@ describe('anthropic messages api', () => {
     expect(JSON.stringify(upstreamBody.messages.at(-1))).toContain('keep me');
   });
 
-  it('drops a block message the usage hint left with nothing', async () => {
+  it('keeps a trailing user turn the block hint left with nothing', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
@@ -2245,7 +2315,9 @@ describe('anthropic messages api', () => {
     expect(upstreamBody.messages.map((m) => m.role)).toEqual([
       'user',
       'assistant',
+      'user',
     ]);
+    expect(upstreamBody.messages.at(-1)?.content).toBe('(no content)');
   });
 
   it('drops the trailing total tokens countdown message', async () => {
