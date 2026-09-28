@@ -252,6 +252,31 @@ jobs:
           # has never seen github.com.
           mkdir -p ~/.ssh
           ssh-keyscan github.com >> ~/.ssh/known_hosts
+      - name: Keep the signing secrets out of the log
+        shell: bash
+        run: |
+          # GitHub masks a secret it registered, but not what something else
+          # makes of it: the .p8 this job writes to disk, the git credential
+          # match assembles out of one, a value printed next to other text.
+          # Masking them again here covers those too, so nothing fastlane
+          # prints can spill them. It has to run before the API key becomes a
+          # file path below.
+          for value in \
+            "$APPLE_API_ISSUER" "$APPLE_API_KEY" "$APPLE_API_KEY_ID" \
+            "$MATCH_GIT_BASIC_AUTHORIZATION" "$MATCH_GIT_PRIVATE_KEY" \
+            "$MATCH_GIT_URL" "$MATCH_KEYCHAIN_PASSWORD" "$MATCH_PASSWORD"; do
+            if [[ -n "$value" ]]; then
+              # A workflow command is read one line at a time, so a PEM key
+              # would be cut off at its first newline and everything after
+              # it printed as ordinary log output — the rest of the key, in
+              # the log. Percent-escape it onto one line instead, as the
+              # workflow command syntax requires.
+              escaped="${value//'%'/%25}"
+              escaped="${escaped//$'\r'/%0D}"
+              escaped="${escaped//$'\n'/%0A}"
+              echo "::add-mask::$escaped"
+            fi
+          done
       - name: Give notarytool its API key
         if: ${{ env.APPLE_API_KEY != '' }}
         shell: bash
@@ -264,6 +289,15 @@ jobs:
           echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
       - name: Build desktop app
         shell: bash
+        env:
+          # fastlane phones home unless it is told not to: it checks for a
+          # newer version of itself, sends Google Analytics events — including
+          # a hash of the app identifier it guesses out of the project — and
+          # searches GitHub issues with the error message when a lane fails.
+          # None of that is any of those services' business here.
+          FASTLANE_HIDE_GITHUB_ISSUES: '1'
+          FASTLANE_OPT_OUT_USAGE: '1'
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
         run: |
           set -euo pipefail
           # Only macOS goes through fastlane: it is the one platform with a
