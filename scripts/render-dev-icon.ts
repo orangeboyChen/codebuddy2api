@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import sharp from 'sharp';
 
-import { CANVAS, DEV_ICON_FILENAME, devIconSvg } from './dev-icon';
+import { DEV_ICON_FILENAME, OUTPUT_SIZE, devIconSvg } from './dev-icon';
 
 /** Where the repository is, whichever directory this is run from. */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -62,11 +62,11 @@ const render = async (out: string): Promise<void> => {
 
   const svg = devIconSvg(fs.readFileSync(source, 'utf8'));
 
-  // `resize` after the read, not a density before it: what the icon is asked
-  // for is a 1024-pixel square, and this is what guarantees one however the
-  // rasteriser took the SVG's own size.
+  // `resize` after the read, not a density before it: the icon is described in
+  // a 1024-pixel square and committed at 512, and this is what guarantees that
+  // size however the rasteriser took the SVG's own one.
   const png = await sharp(Buffer.from(svg))
-    .resize(CANVAS, CANVAS)
+    .resize(OUTPUT_SIZE, OUTPUT_SIZE)
     .png({ compressionLevel: 9 })
     .toBuffer();
 

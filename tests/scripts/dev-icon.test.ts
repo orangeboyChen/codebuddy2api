@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { CANVAS, devIconSvg, readAppMark } from '@/scripts/dev-icon';
+import {
+  CANVAS,
+  OUTPUT_SIZE,
+  devIconSvg,
+  readAppMark,
+} from '@/scripts/dev-icon';
 
 // What the icon is drawn from: the export the console itself is served from.
 const source = fs.readFileSync(
@@ -287,13 +292,13 @@ describe('the development icon as it is committed', () => {
   it('is a picture electron-builder can make an installer icon from', () => {
     // What the file says about itself, taken from its own header: the eight
     // bytes every PNG starts with, then the width and the height, four bytes
-    // each and big-endian — 1024 is what macOS and Windows want of the picture
-    // they are handed.
+    // each and big-endian — 512 is what the icon theme Linux installs into
+    // lists, and what macOS and Windows ask of the picture they are handed.
     const png = fs.readFileSync(picture);
 
     expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
-    expect(png.readUInt32BE(16)).toBe(CANVAS);
-    expect(png.readUInt32BE(20)).toBe(CANVAS);
+    expect(png.readUInt32BE(16)).toBe(OUTPUT_SIZE);
+    expect(png.readUInt32BE(20)).toBe(OUTPUT_SIZE);
   });
 
   it('is not the picture a release carries', () => {
@@ -323,8 +328,8 @@ describe('the icon a build ships', () => {
 
     // The width and the height, read out of the PNG's own header: four bytes
     // each, sixteen bytes in.
-    expect(png.readUInt32BE(16)).toBe(CANVAS);
-    expect(png.readUInt32BE(20)).toBe(CANVAS);
+    expect(png.readUInt32BE(16)).toBe(OUTPUT_SIZE);
+    expect(png.readUInt32BE(20)).toBe(OUTPUT_SIZE);
     expect(png.equals(fs.readFileSync(path.join(resources, 'icon.png')))).toBe(
       false,
     );

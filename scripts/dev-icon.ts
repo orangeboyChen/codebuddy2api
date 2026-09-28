@@ -41,9 +41,24 @@ export interface AppMark {
  */
 export const DEV_ICON_FILENAME = 'icon-dev.png';
 
-/** How many pixels wide the icon is rendered, and how big the source is. */
+/**
+ * The square the icon is described in: 1024 pixels wide, and the export's own
+ * 24 units. Nothing is rasterised at this size — see `OUTPUT_SIZE`.
+ */
 export const CANVAS = 1024;
 const SOURCE = 24;
+/**
+ * How many pixels wide the picture that is committed is: 512, the largest size
+ * the icon theme Linux installs into lists.
+ *
+ * A single PNG goes into that theme as it is, at its own size, so a 1024-pixel
+ * one lands in a `1024x1024` directory that no menu looks in and the app is
+ * drawn with the generic icon instead — which is the whole difference the
+ * development icon exists to make. macOS and Windows are served by the same
+ * picture: an `icns` asks for 512 and an `ico` for 256, and electron-builder
+ * makes both out of one file.
+ */
+export const OUTPUT_SIZE = 512;
 /**
  * What a pixel of the 1024-space badge is worth once it is drawn inside the
  * export's 24-unit viewBox.

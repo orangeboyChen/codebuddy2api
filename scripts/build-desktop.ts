@@ -252,9 +252,10 @@ const packageDesktop = (forwarded: string[], devIcon: boolean) => {
   /**
    * The development icon, given to electron-builder on the command line rather
    * than through a second configuration file: everything else about the build is
-   * the release build's, and the icon is the only thing that differs. One 1024
-   * pixel PNG serves all three platforms — electron-builder makes the `icns` and
-   * the `ico` macOS and Windows ask for out of it.
+   * the release build's, and the icon is the only thing that differs. One
+   * 512-pixel PNG serves all three platforms: electron-builder makes the `icns`
+   * macOS asks for and the `ico` Windows asks for out of it, and Linux installs
+   * the file as it is.
    */
   const iconPath = path.join(appDir, DEV_ICON_FILENAME);
 
