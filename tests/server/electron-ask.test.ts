@@ -133,6 +133,24 @@ describe('windowsFormScript', () => {
     );
   });
 
+  it('puts what went wrong above the question, in the colour that says so', () => {
+    const script = windowsFormScript(
+      form({
+        error: 'Enter a whole number.',
+        fields: [{ label: 'Port', value: '8002' }],
+      }),
+    );
+
+    expect(script).toContain("$label0.Text = 'Enter a whole number.'");
+    expect(script).toContain(
+      '$label0.ForeColor = [System.Drawing.Color]::Firebrick',
+    );
+    // The question is the label after it: the one on top is not the message.
+    expect(script).toContain(
+      "$label1.Text = 'Where should the data come from?'",
+    );
+  });
+
   it('lets a field be typed into only when its option is picked', () => {
     const script = windowsFormScript(
       form({
@@ -240,6 +258,19 @@ describe('zenity', () => {
       'CodeBuddy2API',
       'This machine',
       'A deployment',
+    ]);
+  });
+
+  it('asks with no row to pick when there is no choice to offer', () => {
+    expect(zenityChoiceArgs(form())).toEqual([
+      '--list',
+      '--title',
+      'CodeBuddy2API',
+      '--text',
+      'Where should the data come from?',
+      '--hide-header',
+      '--column',
+      'CodeBuddy2API',
     ]);
   });
 

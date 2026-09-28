@@ -158,6 +158,51 @@ describe('resolveGatewayNodePath', () => {
     }
   });
 
+  it('replaces a real link that leads to another binary', () => {
+    const directory = realDirectory();
+
+    try {
+      // What is left behind when the app was installed somewhere else before:
+      // the link has to end up leading to the binary this app is running.
+      fs.symlinkSync(
+        '/Applications/CodeBuddy2API-2.app/Contents/MacOS/CodeBuddy2API',
+        path.join(directory, GATEWAY_NODE),
+      );
+
+      const resolved = resolveGatewayNodePath({
+        directory,
+        executable: EXECUTABLE,
+        platform: 'darwin',
+      });
+
+      expect(resolved).toBe(path.join(directory, GATEWAY_NODE));
+      expect(fs.readlinkSync(resolved)).toBe(EXECUTABLE);
+    } finally {
+      fs.rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('reads the platform off the process when it is given none', () => {
+    const directory = realDirectory();
+    const platform = process.platform;
+
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+
+    try {
+      const resolved = resolveGatewayNodePath({
+        directory,
+        executable: EXECUTABLE,
+      });
+
+      // Nothing said macOS, so only the platform it is running on can have: had
+      // it not been read, the binary would have come back untouched.
+      expect(resolved).toBe(path.join(directory, GATEWAY_NODE));
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform });
+      fs.rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('leaves a file that is not a link alone, and runs the binary as it is', () => {
     const directory = realDirectory();
 
