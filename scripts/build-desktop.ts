@@ -212,42 +212,6 @@ const bundleElectron = () => {
   console.log(`Electron main bundled at ${path.relative(root, appDir)}`);
 };
 
-/**
- * The icon a development build carries, written next to the bundled main
- * process: the app's own mark on an orange plate with a `DEV` badge in the
- * corner, so a build nobody is meant to install does not look like a release in
- * the Dock, in an installer or on a menu bar's "About".
- *
- * Run as its own process, and not imported, because rasterising an SVG takes a
- * native image library nothing else in the build needs: this way a build that
- * does not ask for the icon never loads it.
- */
-const renderDevIcon = (): void => {
-  try {
-    execFileSync(
-      bunBinary(),
-      [
-        'run',
-        path.join(root, 'scripts', 'render-dev-icon.ts'),
-        '--out',
-        path.join(appDir, DEV_ICON_FILENAME),
-      ],
-      { cwd: root, stdio: 'inherit' },
-    );
-  } catch (cause) {
-    // The child has printed its own error already; this only says what to do
-    // about the likely one — a rasteriser that is a development dependency and
-    // that nothing else in this build needs — and keeps the original as the
-    // cause, for whoever needs the exit status rather than the hint.
-    throw new Error(
-      'The development icon could not be rendered; the error is above. It is ' +
-        'rasterised with sharp, a development dependency — run `bun install` ' +
-        'if that is what is missing, or build without `--dev-icon`.',
-      { cause },
-    );
-  }
-};
-
 const readElectronVersion = () => {
   const manifest = path.join(root, 'node_modules', 'electron', 'package.json');
 
@@ -293,6 +257,18 @@ const packageDesktop = (forwarded: string[], devIcon: boolean) => {
    * the `ico` macOS and Windows ask for out of it.
    */
   const iconPath = path.join(appDir, DEV_ICON_FILENAME);
+
+  if (devIcon) {
+    // An icon electron-builder cannot read is not an error to it: it falls back
+    // to the release icon it finds in `buildResources`, and out comes an install
+    // that nothing tells apart from a release — which is the one thing this
+    // icon exists to prevent.
+    requirePath(
+      iconPath,
+      'The development icon is missing from the app directory.',
+    );
+  }
+
   const iconArguments = devIcon
     ? [
         '-c.mac.icon=' + iconPath,
@@ -319,9 +295,15 @@ assembleGateway();
 bundleElectron();
 rebuildNativeModules();
 
-// After the bundle, which empties the directory the icon is written into.
+// After the bundle, which empties the directory the icon is copied into. The
+// icon is a committed picture — scripts/dev-icon.ts says how it is drawn — so a
+// build hands electron-builder and `electron .` a file instead of asking either
+// of them to rasterise an SVG.
 if (devIcon) {
-  renderDevIcon();
+  copyInto(
+    path.join(resourcesDir, DEV_ICON_FILENAME),
+    path.join(appDir, DEV_ICON_FILENAME),
+  );
 }
 
 if (!prepareOnly) {

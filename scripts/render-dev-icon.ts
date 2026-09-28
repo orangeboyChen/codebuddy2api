@@ -1,23 +1,36 @@
 /**
- * Writes the development icon as a PNG: the app's own mark on an orange plate,
- * carrying a `DEV` badge, drawn from `app/icon.svg`.
+ * Draws the development icon the desktop app carries, into electron/resources:
+ * the console's own mark on an orange plate, carrying a `DEV` badge, lifted out
+ * of `app/icon.svg`.
  *
- * Its own script, and not part of scripts/build-desktop.ts, because rasterising
- * an SVG takes a native image library that nothing else in the build needs: a
- * build that does not ask for the icon never loads it.
+ * A maintenance script, not a build step. What it writes is committed, so a
+ * build asking for the development icon copies a file instead of drawing one:
+ * neither electron-builder nor `electron .` has to rasterise an SVG, and what a
+ * check on CI ships is the same picture a maintainer looked at.
  *
- * Usage: `bun scripts/render-dev-icon.ts [--out <file>]`
+ * Run it after `app/icon.svg` changes, or after the icon itself is redrawn, and
+ * commit both files: tests/scripts/dev-icon.test.ts fails until they are in
+ * step again.
+ *
+ * Usage: `bun scripts/render-dev-icon.ts [--out <png>]`
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import sharp from 'sharp';
 
 import { CANVAS, DEV_ICON_FILENAME, devIconSvg } from './dev-icon';
 
+/** Where the repository is, whichever directory this is run from. */
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/** What the icon is drawn from: the file the console itself is served from. */
+const source = path.join(root, 'app', 'icon.svg');
+
 /** The file the icon is written to, unless another one is asked for. */
-const DEFAULT_OUT = path.join('build', 'electron-app', DEV_ICON_FILENAME);
+const DEFAULT_OUT = path.join(root, 'electron', 'resources', DEV_ICON_FILENAME);
 
 const parseArguments = (argv: string[]): string => {
   let out = DEFAULT_OUT;
@@ -43,24 +56,25 @@ const parseArguments = (argv: string[]): string => {
 };
 
 const render = async (out: string): Promise<void> => {
-  const source = path.join(process.cwd(), 'app', 'icon.svg');
-
   if (!fs.existsSync(source)) {
     throw new Error(`${source} is missing. The icon is drawn from it.`);
   }
 
+  const svg = devIconSvg(fs.readFileSync(source, 'utf8'));
+
   // `resize` after the read, not a density before it: what the icon is asked
   // for is a 1024-pixel square, and this is what guarantees one however the
   // rasteriser took the SVG's own size.
-  const png = await sharp(
-    Buffer.from(devIconSvg(fs.readFileSync(source, 'utf8'))),
-  )
+  const png = await sharp(Buffer.from(svg))
     .resize(CANVAS, CANVAS)
     .png({ compressionLevel: 9 })
     .toBuffer();
 
   fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
   fs.writeFileSync(out, png);
+  // The drawing beside the picture, so the committed PNG has a diff to explain
+  // it and the icon can be checked without rasterising anything.
+  fs.writeFileSync(out.replace(/\.png$/i, '.svg'), svg);
 
   console.log(`Development icon written to ${out} (${png.length} bytes)`);
 };

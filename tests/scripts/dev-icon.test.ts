@@ -269,3 +269,64 @@ describe('devIconSvg', () => {
     expect(Number(y) + Number(height)).toBeLessThan(CANVAS);
   });
 });
+
+describe('the development icon as it is committed', () => {
+  const resources = path.join(process.cwd(), 'electron', 'resources');
+  const drawing = path.join(resources, 'icon-dev.svg');
+  const picture = path.join(resources, 'icon-dev.png');
+
+  it('is the drawing scripts/render-dev-icon.ts writes', () => {
+    // The picture is committed because a build copies it instead of drawing it.
+    // The drawing beside it is where the picture came from, and the only part
+    // of the icon that can be compared without rasterising anything: change
+    // app/icon.svg, or the way the icon is drawn, and this fails until the
+    // script is run again and both files are committed.
+    expect(fs.readFileSync(drawing, 'utf8')).toBe(devIconSvg(source));
+  });
+
+  it('is a picture electron-builder can make an installer icon from', () => {
+    // What the file says about itself, taken from its own header: the eight
+    // bytes every PNG starts with, then the width and the height, four bytes
+    // each and big-endian — 1024 is what macOS and Windows want of the picture
+    // they are handed.
+    const png = fs.readFileSync(picture);
+
+    expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    expect(png.readUInt32BE(16)).toBe(CANVAS);
+    expect(png.readUInt32BE(20)).toBe(CANVAS);
+  });
+
+  it('is not the picture a release carries', () => {
+    // A build copying the wrong file ships a release icon with a development
+    // build, which is the one thing the icon is there to prevent.
+    expect(fs.readFileSync(picture)).not.toEqual(
+      fs.readFileSync(path.join(resources, 'icon.png')),
+    );
+  });
+});
+
+describe('the icon a build ships', () => {
+  const resources = path.join(process.cwd(), 'electron', 'resources');
+
+  it('is committed, and is the export drawn over', () => {
+    // scripts/render-dev-icon.ts writes the drawing and the picture beside each
+    // other, and both are committed: a build copies them instead of drawing an
+    // icon. An export redrawn without running it leaves a build shipping the
+    // old mark inside the new silhouette.
+    expect(fs.readFileSync(path.join(resources, 'icon-dev.svg'), 'utf8')).toBe(
+      devIconSvg(source),
+    );
+  });
+
+  it('is square at the size every platform asks for, and not the release icon', () => {
+    const png = fs.readFileSync(path.join(resources, 'icon-dev.png'));
+
+    // The width and the height, read out of the PNG's own header: four bytes
+    // each, sixteen bytes in.
+    expect(png.readUInt32BE(16)).toBe(CANVAS);
+    expect(png.readUInt32BE(20)).toBe(CANVAS);
+    expect(png.equals(fs.readFileSync(path.join(resources, 'icon.png')))).toBe(
+      false,
+    );
+  });
+});

@@ -2,9 +2,10 @@
 #
 # fastlane builds nothing here — electron-builder does, through
 # `bun scripts/build-desktop.ts`, the same command the release workflow's other
-# platforms run. `bun run desktop:dist` is deliberately not used: it carries
-# `--dev-icon`, and a release must not be built with the development icon however
-# that script changes. What this lane adds is the certificate: `match` keeps
+# platforms run, and the same one a check on CI runs with `--dev-icon` added.
+# What is asked for here is the development icon's absence: `desktop:dev-dist`
+# is this build carrying it, and a release is not a development build. What this
+# lane adds is the certificate: `match` keeps
 # the Developer ID certificate and its private key, encrypted, in a private git
 # repository, because CI has no way to make one of its own. So the lane imports
 # the certificate into a keychain, points electron-builder at that keychain, and

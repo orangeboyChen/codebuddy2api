@@ -4,12 +4,14 @@
  * The release icon is the console's own mark on the dark brand plate. A build
  * nobody is meant to install — a check on CI, or `electron .` from a checkout —
  * gets the same mark on an orange plate with a `DEV` badge in its bottom-right
- * corner, so an app that is not a release does not look like one in the Dock,
- * in an installer or in the window that asks about updates.
+ * corner, so an app that is not a release does not look like one: in an
+ * installer, in the Finder, and on the Dock whenever the app shows one.
  *
  * Both icons are rendered from `app/icon.svg`, the file the console itself is
  * served from: nothing here draws the mark, it only lifts it out of the export
- * and puts it on another plate.
+ * and puts it on another plate. scripts/render-dev-icon.ts draws the result
+ * once, into electron/resources, and that is what gets committed — the build
+ * copies the picture, it does not make it.
  */
 
 /**
@@ -32,10 +34,10 @@ export interface AppMark {
 }
 
 /**
- * The file the development icon is written to, next to the bundled main
- * process: electron/main.ts spells the same name out rather than importing it
- * from a build script the app would then carry, and electron-builder is pointed
- * at it for every platform.
+ * The name the development icon carries, committed in electron/resources and
+ * copied next to the bundled main process: electron/main.ts spells the same
+ * name out rather than importing it from a build script the app would then
+ * carry, and electron-builder is pointed at it for every platform.
  */
 export const DEV_ICON_FILENAME = 'icon-dev.png';
 
