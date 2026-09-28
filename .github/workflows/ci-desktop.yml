@@ -1,0 +1,86 @@
+name: Desktop Build
+
+on:
+  push:
+    branches:
+      - main
+  # A push only ever builds Linux, so the macOS and Windows targets would
+  # otherwise first run at release time. Dispatch this by hand to build another
+  # one of them, from any branch: the installer comes back as an artifact of the
+  # run.
+  workflow_dispatch:
+    inputs:
+      runs_on:
+        default: ubuntu-latest
+        description: Runner to build on
+        required: false
+      targets:
+        default: '--linux --x64'
+        description: electron-builder targets, for example "--win --x64"
+        required: false
+
+permissions:
+  contents: read
+
+# Its own group, and its own cancellation: dispatching a macOS build by hand
+# must not cancel — or be cancelled by — the checks already running on this
+# commit, which is what sharing Main Checks' group did.
+concurrency:
+  group: ci-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_CACHE_PATH: ~/.bun/install/cache
+  BUN_VERSION: 1.3.14
+  CI: true
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  desktop-build:
+    name: Desktop Build
+    runs-on: ${{ inputs.runs_on || 'ubuntu-latest' }}
+    timeout-minutes: 45
+
+    steps:
+      # The release workflow builds all five desktop targets; this one keeps
+      # the pipeline honest between releases without paying for macOS and
+      # Windows runners on every push.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun package downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.BUN_CACHE_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-desktop-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-desktop-bun-${{ env.BUN_VERSION }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Next.js app
+        run: bun run build
+
+      - name: Build desktop app
+        run: bun scripts/build-desktop.ts ${{ inputs.targets || '--linux --x64' }}
+
+      # A build nobody can open is only half a check — the installers are
+      # downloadable from the run. One day is enough to try one; the release
+      # workflow is where they are kept.
+      - name: Upload desktop builds
+        uses: actions/upload-artifact@v6
+        with:
+          if-no-files-found: error
+          name: desktop-${{ inputs.runs_on || 'ubuntu-latest' }}
+          path: |
+            build/desktop/*.dmg
+            build/desktop/*.exe
+            build/desktop/*.AppImage
+            build/desktop/*.deb
+          retention-days: 1
