@@ -616,8 +616,10 @@ const CredentialModels = () => {
 };
 
 /**
- * `desktop` comes from the server: a desktop install has no sign-in, so the
- * panel that would set one up has nothing to offer.
+ * `desktop` comes from the server: a desktop install whose data is this
+ * machine's own has no sign-in, so the panel that would set one up has nothing
+ * to offer. One whose data comes from a deployment is a different case, and
+ * gets the panel.
  */
 const Settings = ({ desktop = false }: { desktop?: boolean }) => {
   const { onChange, onSave, settings } = useSettings();
