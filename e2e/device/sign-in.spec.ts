@@ -231,10 +231,6 @@ test.describe('A desktop app signing in to a deployment', () => {
     const payload = (await invented.json()) as { error?: string };
 
     expect(invented.ok()).toBe(false);
-
-    // Answered as a code that ran out, or as one never issued: the console says
-    // the same for both, because telling them apart would only say which codes
-    // were ever handed out.
     expect(payload.error).toMatch(/^(expired_token|invalid_grant)$/);
   });
 
