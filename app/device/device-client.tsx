@@ -135,6 +135,10 @@ const DeviceClient = ({
             />
             <Button
               disabled={isPending || !userCode.trim()}
+              // The form's own: without it the button is `type="button"`, and
+              // pressing it submits nothing — the code is never sent, and the
+              // device waits for an approval this page never asked for.
+              htmlType="submit"
               loading={isPending}
               type="primary"
             >
