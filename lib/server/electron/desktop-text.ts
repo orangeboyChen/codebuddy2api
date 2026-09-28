@@ -8,6 +8,8 @@
  */
 export interface DesktopText {
   about: string;
+  /** The address of a deployment, asked for in a dialog of the system's own. */
+  address: string;
   appVersion: string;
   backend: string;
   backendLocal: string;
@@ -57,6 +59,7 @@ export interface DesktopText {
 const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'en-US': {
     about: 'CodeBuddy2API on GitHub',
+    address: 'Address',
     appVersion: 'Version {version}',
     backend: 'Backend',
     backendLocal: 'This machine',
@@ -111,6 +114,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   },
   'ja-JP': {
     about: 'GitHub の CodeBuddy2API',
+    address: 'アドレス',
     appVersion: 'バージョン {version}',
     backend: 'バックエンド',
     backendLocal: 'このマシン',
@@ -167,6 +171,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   },
   'zh-CN': {
     about: 'GitHub 上的 CodeBuddy2API',
+    address: '地址',
     appVersion: '版本 {version}',
     backend: '后端',
     backendLocal: '本机',

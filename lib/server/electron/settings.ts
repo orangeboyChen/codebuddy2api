@@ -65,6 +65,15 @@ const normalizeBackendUrl = (value: unknown): string | null => {
 };
 
 /**
+ * Whether the app could open this address.
+ *
+ * The check a saved setting is put through, exported so a dialog can refuse an
+ * address before it is ever written down.
+ */
+export const isValidBackendUrl = (value: unknown): boolean =>
+  normalizeBackendUrl(value) !== null;
+
+/**
  * Falls back to the local gateway: an address the app cannot open is worse
  * than one it never asked for, and a broken setting must not leave the app
  * with nowhere to go.
@@ -157,18 +166,19 @@ export const resolveDesktopPreferredPort = (
 };
 
 /**
- * Whether the port was asked for by name, rather than left at the default.
+ * Whether the port was asked for by name, rather than left to the app.
  *
  * A named port is a promise to whatever points at it — a firewall rule, a
  * client config, a bookmark — so the app has to take that one or say it cannot,
- * instead of quietly starting on the next number up. The default is no such
- * promise: an install that never named a port still walks upwards, which is
- * what keeps it usable next to a Docker deployment already serving 8001.
+ * instead of quietly starting on the next number up. An install that has never
+ * saved one has promised nothing: it still walks upwards, which is what keeps it
+ * usable next to a Docker deployment already serving 8001.
  *
  * The environment variable counts even when it asks for the default: it was
- * typed by someone who meant that number. A saved setting only counts when it
- * is not the default, because saving a backend writes the default port along
- * with it, and that is not the user asking for 8001.
+ * typed by someone who meant that number. So does any saved setting, the
+ * default included: both ways to save a port now go through a field the user is
+ * shown — the window that asks, or the port row in the console's settings — so
+ * the number on disk is one they were asked about and answered.
  */
 export const isPinnedPort = (
   userDataDir: string,
@@ -180,9 +190,5 @@ export const isPinnedPort = (
     return true;
   }
 
-  if (!fs.existsSync(desktopSettingsPath(userDataDir))) {
-    return false;
-  }
-
-  return readDesktopSettings(userDataDir).port !== DEFAULT_GATEWAY_PORT;
+  return fs.existsSync(desktopSettingsPath(userDataDir));
 };

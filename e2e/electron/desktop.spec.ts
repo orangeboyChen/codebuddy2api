@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
+import { DEFAULT_GATEWAY_PORT } from '../../lib/server/electron/ports';
 import {
   _electron as electron,
   expect,
@@ -46,6 +47,14 @@ const childEnv = (): Record<string, string> => {
   return env;
 };
 
+/**
+ * The question the app asks — which backend, which port — is put to the desktop
+ * on a machine that has one: AppKit's dialog, a WinForms form, zenity's. Nothing
+ * a test can click, and nothing a headless runner can draw, so these run with
+ * the app's own window asking instead.
+ */
+const ASK_IN_WINDOW = { CODEBUDDY_DESKTOP_ASK: 'window' };
+
 const launchApp = ({
   env = {},
   userData = userDataDir,
@@ -56,7 +65,7 @@ const launchApp = ({
   electron.launch({
     args: [repoRoot, `--user-data-dir=${userData}`],
     cwd: repoRoot,
-    env: { ...childEnv(), ...env },
+    env: { ...childEnv(), ...ASK_IN_WINDOW, ...env },
   });
 
 /**
@@ -90,17 +99,23 @@ const freePort = async (): Promise<number> => {
   return port;
 };
 
-/** Something already serving a port: what a Docker deployment on 8001 looks like to the app. */
-const servePort = async (): Promise<{ port: number; stop: () => void }> => {
+/**
+ * Something already serving a port: what a Docker deployment on 8001 looks like
+ * to the app. Given no port, it takes whatever is free.
+ */
+const servePort = async (
+  port = 0,
+): Promise<{ port: number; stop: () => void }> => {
   const server = http.createServer();
 
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', resolve);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
   });
 
-  const { port } = server.address() as { port: number };
+  const { port: listening } = server.address() as { port: number };
 
-  return { port, stop: () => server.close() };
+  return { port: listening, stop: () => server.close() };
 };
 
 /**
@@ -277,6 +292,39 @@ test('asks for another port when the one it saved is already taken', async () =>
   // the user's to choose, not the app's to guess around.
   await expect(window.locator('#portInUse')).toContainText(String(taken.port));
   await expect(window.locator('#port')).toHaveValue(String(taken.port));
+
+  await window.locator('#port').fill(String(spare));
+  await window.locator('#save').click();
+
+  const consoleWindow = await waitForConsole(app);
+
+  expect(consoleWindow.url()).toBe(`http://127.0.0.1:${spare}/dashboard`);
+
+  await app.close();
+  taken.stop();
+});
+
+test('asks about the default port too, once it has been saved', async () => {
+  // The number the app starts on, taken by something else — a Docker deployment
+  // serving 8001 is the usual reason.
+  const taken = await servePort(DEFAULT_GATEWAY_PORT);
+  const spare = await freePort();
+  const dir = separateUserDataDir('default-port-taken');
+
+  // Saved, so it is a promise and not a starting point: the window that asks
+  // showed this number and Save was pressed with it there, even though it is
+  // the one the app would have picked anyway.
+  writeSettings(
+    { backend: { mode: 'local' }, port: DEFAULT_GATEWAY_PORT },
+    dir,
+  );
+
+  const app = await launchApp({ userData: dir });
+  const window = await waitForWindow(app, /backend\.html$/);
+
+  await expect(window.locator('#portInUse')).toContainText(
+    String(DEFAULT_GATEWAY_PORT),
+  );
 
   await window.locator('#port').fill(String(spare));
   await window.locator('#save').click();

@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -29,12 +30,25 @@ import {
 } from '../lib/server/electron/paths';
 import { findAvailablePort, probePortFree } from '../lib/server/electron/ports';
 import {
+  appleScriptChoice,
+  appleScriptField,
+  parseAppleScriptAnswer,
+  parseWindowsAnswer,
+  windowsEncodedCommand,
+  windowsFormScript,
+  zenityChoiceArgs,
+  zenityFieldArgs,
+  type AskAnswer,
+  type AskForm,
+} from '../lib/server/electron/ask';
+import {
   DESKTOP_SETTINGS_FILENAME,
   MAX_PORT,
   MIN_PORT,
   defaultDesktopSettings,
   desktopSettingsPath,
   isPinnedPort,
+  isValidBackendUrl,
   normalizeDesktopBackend,
   normalizeDesktopPort,
   readDesktopSettings,
@@ -94,7 +108,12 @@ const BACKEND_WINDOW_WIDTH = 480;
  * macOS it is the Dock that goes, in `createTray`.
  */
 const SKIP_TASKBAR = process.platform === 'win32';
+/**
+ * The menu bar icon is sixteen points, drawn at twice the pixels on a Retina
+ * menu bar: an icon the size of everybody else's, and as sharp as it.
+ */
 const TRAY_ICON_SIZE = 16;
+const TRAY_ICON_SCALE = 2;
 /**
  * How long quitting waits for a gateway that is still starting. The wait is
  * only ever about stopping the child cleanly, so it stays short.
@@ -124,6 +143,12 @@ const CONSOLE_LOAD_TIMEOUT_MS = 10_000;
  * saying "Downloading…" until the app is restarted.
  */
 const INSTALLER_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+/**
+ * How many times the same question is put again after an answer the app cannot
+ * use. Few: a dialog that keeps coming back is worse than the window, which says
+ * what is wrong underneath the field as the answer is typed.
+ */
+const ASK_ATTEMPTS = 3;
 
 /**
  * `failed` is a gateway that stopped or never came up; `portBusy` is one the
@@ -144,6 +169,8 @@ interface Cookie {
 let gateway: GatewayHandle | null = null;
 let mainWindow: BrowserWindow | null = null;
 let backendWindow: BrowserWindow | null = null;
+/** A question already on the screen: the answer is the one it is waiting for. */
+let asking = false;
 let tray: Tray | null = null;
 let status: GatewayStatus = 'starting';
 let userDataDir = '';
@@ -421,15 +448,15 @@ const showMainWindow = (): void => {
   }
 
   // No console to open: the gateway behind it is not up, and in both cases the
-  // window that says what the user has to settle is the one to bring back.
+  // question the user has to settle is the one to put back in front of them.
   if (status === 'unreachable') {
-    openBackendWindow({ screen: 'unreachable' });
+    void askAboutBackend('unreachable');
 
     return;
   }
 
   if (status === 'portBusy') {
-    openBackendWindow({ screen: 'portInUse' });
+    void askAboutBackend('portInUse');
   }
 };
 
@@ -446,15 +473,20 @@ const statusLabel = (): string =>
     port: String(portBusy ?? preferredPort()),
   });
 
+/**
+ * What the menu bar item says about today's usage, which is nothing at all
+ * until the backend has answered: a placeholder would sit in the menu bar
+ * saying nothing, and claiming zero tokens before the first answer is a number
+ * the user would have to distrust.
+ */
 const usageLabel = (): string =>
-  // `…` until the backend has answered: claiming zero tokens before the first
-  // answer is a number the user would have to distrust.
-  usageLoaded ? usageText(text(), todayUsage, locale) : '…';
+  usageLoaded ? usageText(text(), todayUsage, locale) : '';
 
 const buildTrayMenu = (): Menu =>
   Menu.buildFromTemplate([
     { enabled: false, label: `CodeBuddy2API · ${statusLabel()}` },
-    { enabled: false, label: usageLabel() },
+    // Nothing to say about the usage yet says so in words, not with a number.
+    { enabled: false, label: usageLabel() || text().usageUnavailable },
     { type: 'separator' },
     { click: () => showMainWindow(), label: text().openConsole },
     {
@@ -472,7 +504,7 @@ const buildTrayMenu = (): Menu =>
     { enabled: false, label: `${text().backend}: ${backendLabel()}` },
     // The window behind this item settles both things the app asks about: the
     // backend, and the port it serves on.
-    { click: () => openBackendWindow(), label: text().settings },
+    { click: () => void askAboutBackend('choose'), label: text().settings },
     { type: 'separator' },
     {
       enabled: false,
@@ -504,11 +536,16 @@ const refreshTray = (): void => {
     return;
   }
 
-  tray.setToolTip(`CodeBuddy2API · ${statusLabel()} · ${usageLabel()}`);
+  // The pieces that have something to say, and no empty join between them.
+  const parts = ['CodeBuddy2API', statusLabel(), usageLabel()].filter(Boolean);
+
+  tray.setToolTip(parts.join(' · '));
   tray.setContextMenu(buildTrayMenu());
 
   // macOS only: a short title beside the icon. Today's usage is the number
-  // worth having in front of you; the address is a click away.
+  // worth having in front of you; the address is a click away — and nothing at
+  // all until there is a number, because an icon with "…" beside it is an icon
+  // that never says anything.
   if (process.platform === 'darwin') {
     tray.setTitle(usageLabel());
   }
@@ -545,19 +582,38 @@ const createTray = (): void => {
   // The bytes are read here rather than handed to `createFromPath`, whose own
   // file read does not go through `app.asar` — in a packaged app the icon sits
   // inside the archive next to this bundle.
-  const icon = nativeImage.createFromBuffer(fs.readFileSync(iconPath));
+  const bytes = fs.readFileSync(iconPath);
+  /**
+   * The icon the tray is given, at the size the platform draws it.
+   *
+   * macOS asks for a menu bar icon in points and draws it twice as densely on a
+   * Retina display, so the pixels come from `scaleFactor`: sixteen points wide
+   * holding thirty-two pixels, instead of a sixteen-pixel bitmap stretched to
+   * fill them. Windows and Linux draw the pixels as they are, at one to one.
+   */
+  const icon = template
+    ? nativeImage.createFromBuffer(bytes, {
+        height: TRAY_ICON_SIZE,
+        scaleFactor: TRAY_ICON_SCALE,
+        width: TRAY_ICON_SIZE,
+      })
+    : nativeImage
+        .createFromBuffer(bytes)
+        .resize({ height: TRAY_ICON_SIZE, width: TRAY_ICON_SIZE });
 
   if (icon.isEmpty()) {
     return;
   }
 
+  // Set last, on the image the tray is actually handed: a resize or a re-decode
+  // returns a new image, and the flag — which is what makes macOS colour the
+  // icon itself, white on a dark menu bar and black on a light one — belongs to
+  // that one and not to the bytes it came from.
   if (template) {
     icon.setTemplateImage(true);
   }
 
-  tray = new Tray(
-    icon.resize({ height: TRAY_ICON_SIZE, width: TRAY_ICON_SIZE }),
-  );
+  tray = new Tray(icon);
 
   // On macOS a click opens the menu; elsewhere the menu is not reachable
   // without one, so the click opens the console instead.
@@ -631,11 +687,12 @@ const scheduleRestart = (): void => {
  * The port the next gateway should bind, or null when the app cannot have one
  * without asking.
  *
- * A port the app promised — a saved setting, or `CODEBUDDY_DESKTOP_PORT` — is
- * not its to give up: a client config, a firewall rule or a bookmark points at
- * that number, so the app asks instead of answering on another one. A port
- * nobody named walks upwards, which is what keeps a fresh install usable next
- * to a deployment already serving 8001.
+ * A port the app promised — one the settings file holds, or
+ * `CODEBUDDY_DESKTOP_PORT` — is not its to give up: a client config, a firewall
+ * rule or a bookmark points at that number, so the app asks instead of answering
+ * on another one. Only a port nobody has settled walks upwards, which is what
+ * keeps an install that has never been asked usable next to a deployment already
+ * serving 8001.
  *
  * Probed with the gateway stopped: the one that was running still holds its
  * port, and would otherwise reject the number the app is already on — the one
@@ -694,9 +751,9 @@ const restartGateway = async (): Promise<void> => {
       gateway = null;
       status = 'unreachable';
       refreshTray();
-      // The console has nothing to show yet, so the window that names the
-      // deployment is the one to put in front of the user.
-      openBackendWindow({ screen: 'unreachable' });
+      // The console has nothing to show yet, so what the user is asked is how to
+      // get to a deployment that answers.
+      void askAboutBackend('unreachable');
 
       return;
     }
@@ -713,15 +770,14 @@ const restartGateway = async (): Promise<void> => {
 
     const port = await resolveStartPort();
 
-    // The one number the app cannot pick for the user. Reported in the window
-    // that asks for another rather than in an error box: it is a setting to
-    // change, not a failure of the app, and the gateway keeps nothing to serve
-    // until it is.
+    // The one number the app cannot pick for the user. Asked about rather than
+    // reported in an error box: it is a setting to change, not a failure of the
+    // app, and the gateway keeps nothing to serve until it is.
     if (port === null) {
       portBusy = preferredPort();
       status = 'portBusy';
       refreshTray();
-      openBackendWindow({ screen: 'portInUse' });
+      void askAboutBackend('portInUse');
 
       return;
     }
@@ -1184,6 +1240,432 @@ const openBackendWindow = ({
 };
 
 /**
+ * Whether the desktop is what asks.
+ *
+ * The window above is a page of this app's, dressed in the system's colours but
+ * drawn by this app; the dialogs below are drawn by the desktop instead —
+ * AppKit's on macOS, a WinForms form on Windows, zenity's on Linux — which is
+ * what a question the system is being asked should look like: the appearance the
+ * user's desktop is in, the buttons their other dialogs use, nothing of ours.
+ *
+ * `CODEBUDDY_DESKTOP_ASK=window` asks in the app's own window anyway, which is
+ * what a machine with no desktop to draw a dialog on — a test run, a headless
+ * session — needs, and what the window above is for.
+ */
+const asksInSystemDialogs = (): boolean =>
+  process.env.CODEBUDDY_DESKTOP_ASK?.trim() !== 'window';
+
+/** What came of asking: an answer, no answer at all, or no way to ask. */
+type AskOutcome =
+  | { answer: AskAnswer; kind: 'answered' }
+  | { kind: 'cancelled' }
+  /** The desktop could not ask, so the window has to. */
+  | { kind: 'window' };
+
+interface CommandResult {
+  code: number | null;
+  stderr: string;
+  stdout: string;
+}
+
+/**
+ * Runs the command a dialog of the system's own is asked with, and waits: a
+ * dialog is modal, so this is the wait for the user's answer.
+ */
+const runCommand = (command: string, args: string[]): Promise<CommandResult> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, args, { windowsHide: true });
+    let stderr = '';
+    let stdout = '';
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      resolve({ code, stderr, stdout });
+    });
+  });
+
+/**
+ * The question in the dialog macOS draws.
+ *
+ * `osascript` is the system's own way to ask for one: `display dialog` is AppKit
+ * putting it on the screen, in the appearance the desktop is in and with the
+ * buttons the system uses, and it answers with the button pressed and whatever
+ * was typed beside it.
+ */
+const askWithAppleScript = async (form: AskForm): Promise<AskAnswer | null> => {
+  const options = form.options ?? [];
+  let option: string | null = options[0] ?? null;
+
+  if (options.length) {
+    const { code, stdout } = await runCommand('/usr/bin/osascript', [
+      '-e',
+      appleScriptChoice(form),
+    ]);
+    const choice = parseAppleScriptAnswer(stdout);
+
+    // Dismissed — with Esc, with the button that cancels, or by the dialog giving
+    // up on its own — is not an answer.
+    if (code !== 0 || choice.gaveUp || !choice.button) {
+      return null;
+    }
+
+    option = choice.button;
+  }
+
+  const values: string[] = [];
+
+  for (const field of form.fields ?? []) {
+    // A field belonging to an option the user did not pick is not asked for.
+    if (
+      field.option !== undefined &&
+      field.option !== options.indexOf(option ?? '')
+    ) {
+      values.push('');
+
+      continue;
+    }
+
+    const { code, stdout } = await runCommand('/usr/bin/osascript', [
+      '-e',
+      appleScriptField(form, field),
+    ]);
+    const answer = parseAppleScriptAnswer(stdout);
+
+    if (code !== 0 || answer.gaveUp || answer.button !== form.ok) {
+      return null;
+    }
+
+    values.push(answer.text ?? '');
+  }
+
+  return { option, values };
+};
+
+/** Where Windows PowerShell is, and where it is when it is not on the PATH. */
+const powershellCommands = (): [string, string] => [
+  'powershell.exe',
+  path.join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  ),
+];
+
+/**
+ * The question in a WinForms form: the framework Windows' own dialogs are
+ * written in, with the radio button, the text field and the push button Windows
+ * draws.
+ *
+ * The script travels encoded, so a question translated into Japanese, or an
+ * address with an apostrophe in it, arrives exactly as it was written.
+ */
+const askWithWindowsForm = async (form: AskForm): Promise<AskAnswer | null> => {
+  const args = [
+    '-NoProfile',
+    '-NonInteractive',
+    '-STA',
+    '-EncodedCommand',
+    windowsEncodedCommand(windowsFormScript(form)),
+  ];
+  const [command, absolute] = powershellCommands();
+  const { stdout } = await runCommand(command, args).catch(() =>
+    runCommand(absolute, args),
+  );
+  const lines = parseWindowsAnswer(stdout);
+
+  // A form dismissed with Cancel prints nothing at all.
+  if (!lines) {
+    return null;
+  }
+
+  const options = form.options ?? [];
+  const [picked, ...values] = lines;
+
+  return {
+    option: options.length ? (picked ?? null) : null,
+    values: options.length ? values : lines,
+  };
+};
+
+/** The question in the dialog zenity draws, which is GTK's — the desktop's own. */
+const askWithZenity = async (form: AskForm): Promise<AskAnswer | null> => {
+  const options = form.options ?? [];
+  let option: string | null = options[0] ?? null;
+
+  if (options.length) {
+    const { code, stdout } = await runCommand('zenity', zenityChoiceArgs(form));
+
+    // Cancel in zenity is a non-zero exit.
+    if (code !== 0) {
+      return null;
+    }
+
+    option = stdout.trim() || option;
+  }
+
+  const values: string[] = [];
+
+  for (const field of form.fields ?? []) {
+    if (
+      field.option !== undefined &&
+      field.option !== options.indexOf(option ?? '')
+    ) {
+      values.push('');
+
+      continue;
+    }
+
+    const { code, stdout } = await runCommand(
+      'zenity',
+      zenityFieldArgs(form, field),
+    );
+
+    if (code !== 0) {
+      return null;
+    }
+
+    values.push(stdout.trim());
+  }
+
+  return { option, values };
+};
+
+/**
+ * Puts a question to the desktop.
+ *
+ * `cancelled` is the user answering nothing at all. `window` is a computer with
+ * no dialog of its own to ask in — no PowerShell, no zenity, one that would not
+ * run — and the app's own window is then what asks.
+ */
+const askSystem = async (form: AskForm): Promise<AskOutcome> => {
+  const ask =
+    process.platform === 'darwin'
+      ? askWithAppleScript
+      : process.platform === 'win32'
+        ? askWithWindowsForm
+        : askWithZenity;
+
+  try {
+    const answer = await ask(form);
+
+    return answer ? { answer, kind: 'answered' } : { kind: 'cancelled' };
+  } catch {
+    return { kind: 'window' };
+  }
+};
+
+const invalidPortMessage = (): string =>
+  fillText(text().invalidPort, {
+    max: String(MAX_PORT),
+    min: String(MIN_PORT),
+  });
+
+/** The two settings the app cannot start without, as one question. */
+const backendForm = (error: string): AskForm => {
+  const shell = text();
+
+  return {
+    cancel: shell.cancel,
+    error,
+    fields: [
+      {
+        label: shell.address,
+        message: shell.backendRemoteHint,
+        option: 1,
+        value: backend.mode === 'remote' ? backend.url : '',
+      },
+      {
+        label: shell.port,
+        message: shell.portHint,
+        value: String(preferredPort()),
+      },
+    ],
+    message: shell.chooseBackend,
+    ok: shell.save,
+    options: [shell.backendLocal, shell.backendRemote],
+    title: 'CodeBuddy2API',
+  };
+};
+
+/**
+ * Which backend, and which port, asked in a dialog of the system's own.
+ */
+const askBackendAndPort = async (): Promise<AskOutcome['kind']> => {
+  let error = '';
+
+  for (let attempt = 0; attempt < ASK_ATTEMPTS; attempt += 1) {
+    const outcome = await askSystem(backendForm(error));
+
+    if (outcome.kind !== 'answered') {
+      return outcome.kind;
+    }
+
+    const [url = '', portValue = ''] = outcome.answer.values;
+    const port = normalizeDesktopPort(portValue, 0);
+    const remote = outcome.answer.option === text().backendRemote;
+
+    if (remote && !isValidBackendUrl(url)) {
+      error = text().invalidBackendUrl;
+
+      continue;
+    }
+
+    if (!port) {
+      error = invalidPortMessage();
+
+      continue;
+    }
+
+    await applyBackend(
+      normalizeDesktopBackend(
+        remote ? { mode: 'remote', url } : { mode: 'local' },
+      ),
+      { persist: true, port },
+    );
+
+    return 'answered';
+  }
+
+  // Never answered with a number the app could bind: the window says what is
+  // wrong under the field, which a dialog asked again cannot.
+  return 'window';
+};
+
+/**
+ * Another port, asked when the one the app was given is already serving
+ * something: the number is the user's to settle, not the app's to pick twice.
+ */
+const askPortAgain = async (): Promise<AskOutcome['kind']> => {
+  const shell = text();
+  const busy = portBusy ?? preferredPort();
+  const free = await findAvailablePort({ preferred: busy }).catch(() => null);
+  const port = String(busy);
+  let error = '';
+
+  for (let attempt = 0; attempt < ASK_ATTEMPTS; attempt += 1) {
+    const outcome = await askSystem({
+      cancel: shell.cancel,
+      error,
+      fields: [{ label: shell.port, value: String(free ?? busy) }],
+      message: [
+        fillText(shell.portInUseTitle, { port }),
+        fillText(shell.portInUseBody, { port }),
+      ].join('\n\n'),
+      ok: shell.save,
+      title: 'CodeBuddy2API',
+    });
+
+    if (outcome.kind !== 'answered') {
+      return outcome.kind;
+    }
+
+    const next = normalizeDesktopPort(outcome.answer.values[0] ?? '', 0);
+
+    if (!next) {
+      error = invalidPortMessage();
+
+      continue;
+    }
+
+    await applyBackend(backend, { persist: true, port: next });
+
+    return 'answered';
+  }
+
+  return 'window';
+};
+
+/**
+ * What to do about a deployment that did not answer, in the dialog the system
+ * draws for a message: try it again, name another backend, or open the
+ * deployment in the browser where its own page is.
+ */
+const askAboutUnreachable = async (): Promise<AskOutcome['kind']> => {
+  const shell = text();
+  const choice = await dialog.showMessageBox({
+    // Esc answers nothing at all, which is the one answer that changes nothing.
+    buttons: [
+      shell.retry,
+      shell.changeBackend,
+      shell.openInBrowser,
+      shell.cancel,
+    ],
+    cancelId: 3,
+    defaultId: 0,
+    message: unreachableInfo()?.message ?? shell.statusUnreachable,
+    title: shell.unreachableTitle,
+    type: 'warning',
+  });
+
+  if (choice.response === 0) {
+    await restartGateway();
+
+    return 'answered';
+  }
+
+  if (choice.response === 1) {
+    return askBackendAndPort();
+  }
+
+  // Its own page, in the browser: passkeys and saved passwords are the
+  // deployment's address's, not this app's.
+  if (choice.response === 2 && backend.mode === 'remote') {
+    openExternally(backend.url);
+  }
+
+  return 'answered';
+};
+
+/**
+ * Puts the question the app is waiting on in front of the user.
+ *
+ * In a dialog of the system's own where there is one, and in the app's own
+ * window where there is not: a desktop with no dialog to draw, or an answer the
+ * dialog could not get. `cancelled` is the user answering nothing, which on a
+ * first launch is the app quitting — the gateway is what the answer decides.
+ */
+const askAboutBackend = async (
+  screen: BackendScreen = pendingScreen(),
+): Promise<AskOutcome['kind']> => {
+  if (asking) {
+    return 'answered';
+  }
+
+  if (!asksInSystemDialogs()) {
+    openBackendWindow({ screen });
+
+    return 'window';
+  }
+
+  asking = true;
+
+  try {
+    const kind =
+      screen === 'portInUse'
+        ? await askPortAgain()
+        : screen === 'unreachable'
+          ? await askAboutUnreachable()
+          : await askBackendAndPort();
+
+    if (kind === 'window') {
+      openBackendWindow({ screen });
+    }
+
+    return kind;
+  } finally {
+    asking = false;
+  }
+};
+
+/**
  * Watches the desktop settings so a change made in the console takes effect
  * without restarting the app.
  *
@@ -1264,9 +1746,13 @@ const bootstrap = async (): Promise<void> => {
   startUsagePolling();
 
   // A first launch asks before it starts anything: the answer decides whether a
-  // gateway is even needed.
+  // gateway is even needed. Answered with nothing at all, it quits — the gateway
+  // is the thing the answer decides, and starting one the user did not ask for is
+  // not an answer they gave.
   if (firstRun) {
-    openBackendWindow();
+    if ((await askAboutBackend('choose')) === 'cancelled') {
+      app.quit();
+    }
 
     return;
   }

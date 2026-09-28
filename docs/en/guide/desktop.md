@@ -8,14 +8,14 @@ The desktop app is an Electron window plus a backend for the console. What the w
 
 - With the local backend, the main process starts the gateway — the same Next.js standalone server the Docker image runs — waits for `/health` to answer, and then opens the console window.
 - The gateway listens on `127.0.0.1` only; it is never exposed to the LAN.
-- With the local backend, the default port is `8001`, and it can be changed in the window a first launch opens or under Settings → Desktop app. When it is taken the app does not pick another one: it asks which port to use.
+- With the local backend, the default port is `8001`, and it can be changed in the dialog a first launch asks in or under Settings → Desktop app. Once a port has been settled — saved here, or named with `CODEBUDDY_DESKTOP_PORT` — a taken one is not swapped for another: the app asks which port to use.
 - On macOS the gateway keeps running after the console window is closed, so `/v1/*` stays available; quitting the app stops it.
 - There is only ever one window and one gateway: launching the app again, or clicking the menu bar item, just brings the open window forward. On macOS there is no dock icon at all — the menu bar item is the only way in.
 - There is no sign-in while the backend is this machine: the console listens on loopback only, so the only processes that can open it are the ones already running as you on this machine. No login page, and no Security settings. With a deployment as the backend both come back — see below.
 
 ## Backend
 
-A first launch asks which backend to use — and which port to serve on — and the menu bar item's menu can change both later with Settings…. That window closed without an answer quits the app: the gateway is the thing the answer decides, and starting one nobody chose is not an answer.
+A first launch asks which backend to use — and which port to serve on — in a dialog of the computer's own: AppKit's on macOS, a WinForms form on Windows, the one zenity draws on Linux. Nothing on the screen is drawn by this app, so it is the appearance the desktop is in, the buttons its other dialogs use, and the language the console is showing. The menu bar item's menu can change both later with Settings…. An answer that never came quits the app: the gateway is the thing the answer decides, and starting one nobody chose is not an answer. A machine with no desktop to draw a dialog on — a headless session, a test run — asks in the app's own window instead: `CODEBUDDY_DESKTOP_ASK=window`.
 
 - **This machine**: starts the gateway bundled into the installer, keeps the data on this machine, and asks for no sign-in. This is the default.
 - **A deployment I already run**: an `http://` or `https://` address. The app still starts its own gateway to render the console, and forwards `/admin-api/*` and `/v1/*` to that deployment — so what appears in the window is always the console this app shipped, never a page that deployment answered with. The address is probed at `/health` first, to confirm it really is a CodeBuddy2API deployment; when it is not, a window says which it was (nothing answered, or something that is not this app) and offers to try again, to change the backend, or to open it in the browser. That deployment handles the sign-in; the desktop app stores no password of yours.
@@ -49,7 +49,7 @@ Check for updates… in the same menu asks GitHub for the newest release. When t
 
 ## Port
 
-Change the port in the window a first launch opens, or under Settings → Desktop app. Saving it restarts the gateway and takes the window to the new address. When the port is already taken the app does not move to another one on its own: it opens the window saying which port is in use and asks for a different one — or for whatever is holding it to be stopped, and then Try again. The menu bar says which port is taken until it is settled.
+Change the port in the dialog a first launch asks in, or under Settings → Desktop app. Saving it restarts the gateway and takes the window to the new address. A port that has been saved or named is never swapped for another one on its own: when it is taken the app asks, in the same dialog, which port to use instead — or for whatever is holding it to be stopped, and then Try again. The menu bar says which port is taken until it is settled. An install that has saved nothing yet walks upwards instead, so it still works next to a deployment already serving 8001.
 
 `CODEBUDDY_DESKTOP_PORT` still works for an install that has never saved a port; once one is saved in the console, the saved value wins.
 
