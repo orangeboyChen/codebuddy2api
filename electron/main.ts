@@ -2117,7 +2117,12 @@ const signInToDeployment = async (): Promise<void> => {
   }
 
   const shell = text();
-  const requested = await requestDeviceAuthorization({ baseUrl: backend.url });
+  // Named before anything is asked of it: the grant is that deployment's, and
+  // the token that comes back is a promise it made. The backend can be pointed
+  // somewhere else while the user is still approving, and a token saved under
+  // the new address would be carried to a deployment that never issued it.
+  const issuedBy = backend.url;
+  const requested = await requestDeviceAuthorization({ baseUrl: issuedBy });
 
   if (requested.kind === 'notConfigured') {
     dialog.showErrorBox('CodeBuddy2API', shell.deviceNotConfigured);
@@ -2154,7 +2159,7 @@ const signInToDeployment = async (): Promise<void> => {
 
   try {
     const outcome = await pollForDeviceToken({
-      baseUrl: backend.url,
+      baseUrl: issuedBy,
       deviceCode: grant.deviceCode,
       expiresIn: grant.expiresIn,
       intervalSeconds: grant.intervalSeconds,
@@ -2171,9 +2176,18 @@ const signInToDeployment = async (): Promise<void> => {
       return;
     }
 
+    // Approved by a deployment that is no longer the one behind the console:
+    // the code was shown for the old address, and this token opens its door.
+    // Keeping it would present one deployment's introduction to another.
+    if (backend.mode !== 'remote' || backend.url !== issuedBy) {
+      dialog.showErrorBox('CodeBuddy2API', shell.deviceSignInFailed);
+
+      return;
+    }
+
     writeDeviceToken(userDataDir, {
       token: outcome.token.accessToken,
-      url: backend.url,
+      url: issuedBy,
     });
     deviceToken = outcome.token.accessToken;
     refreshTray();
