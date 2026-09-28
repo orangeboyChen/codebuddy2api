@@ -20,8 +20,8 @@
  * on a white plate, and — in the group a desktop install shows — the same mark
  * in white on the dark plate. What is wanted here is the mark alone, so the
  * plate is left behind: the group taken is the one whose plate is not paper,
- * and every shape in it but the plate is the mark. The plate's corner radius
- * comes along instead, so the development icon keeps the release icon's
+ * and every filled shape in it but the plate is the mark. The plate's corner
+ * radius comes along instead, so the development icon keeps the release icon's
  * silhouette however the export is redrawn.
  */
 export interface AppMark {
@@ -111,40 +111,81 @@ const LETTERS = [
 /** The gap between two letters. */
 const LETTER_GAP = 20;
 /**
- * What the letters are drawn at: as large as the badge they sit in allows.
+ * What the letters are drawn at.
  *
  * A desktop draws an icon small — a menu bar, a taskbar, a window that names
  * what is installed — and three letters in a corner are the first thing to
- * stop reading when it does. The badge is a plate in a corner of the mark, so
- * the letters cannot grow by growing the badge; they take the room inside it
- * instead.
+ * stop reading when it does. The badge cannot grow towards the corner of the
+ * icon, so the letters take the room inside it instead: at 1.3 they measure
+ * 320 by 125 in a badge whose rim leaves 371 by 165, which keeps a margin all
+ * round them. Even so they stop reading below 64 pixels, where what tells a
+ * development build apart is the plate's colour.
  */
 const LETTER_SCALE = 1.3;
 
+/** A comment, which can hide a shape in it that is not drawn at all. */
+const COMMENT = /<!--[\s\S]*?-->/g;
+/** The opening tag of a clipped group, with any attributes and either quote. */
+const GROUP_OPEN = /<g\b[^>]*\bclip-path\s*=\s*(?:"[^"]*"|'[^']*')[^>]*>/g;
+/** Either end of a `<g>`, which a group nested in another one also has. */
+const GROUP_TAG = /<g\b|<\/g>/g;
 // A shape is either self-closing or closed by its own tag, and the tag an
 // export writes may carry a space before its `>`.
-const GROUP = /<g clip-path="url\(#[\w.-]+\)"\s*>([\s\S]*?)<\/g>/g;
 const SHAPE = /<(?:path|rect)\b[^>]*?>(?:[^<]*<\/(?:path|rect)>)?/g;
 const RADIUS = /\brx="([\d.]+)"/;
+const WIDTH = /\bwidth="([\d.]+)"/;
 const PAPER = /\bfill\s*=\s*(?:"white"|'white')/i;
 /** Whatever fill a shape of the mark was exported with, in either quote. */
 const FILL = /\bfill\s*=\s*(?:"[^"]*"|'[^']*')/;
+
 /**
- * The plate, of the group's shapes: the one drawn from the origin, with no `x`
- * of its own, which every shape of the mark — each somewhere inside the plate —
- * does have.
+ * What each clipped group of the export holds, the tag's own contents.
+ *
+ * Counted rather than matched, because a group a design tool nests inside
+ * another one has a `</g>` of its own: a pattern that stops at the first of
+ * those would drop everything drawn after it, silently.
+ */
+const clippedGroups = (source: string): string[] =>
+  [...source.matchAll(GROUP_OPEN)].map((open) => {
+    const start = (open.index ?? 0) + open[0].length;
+    let depth = 1;
+    let end = source.length;
+
+    GROUP_TAG.lastIndex = start;
+
+    for (let tag = GROUP_TAG.exec(source); tag; tag = GROUP_TAG.exec(source)) {
+      depth += tag[0] === '</g>' ? -1 : 1;
+
+      if (depth === 0) {
+        end = tag.index;
+
+        break;
+      }
+    }
+
+    return source.slice(start, end);
+  });
+
+/**
+ * The plate, of the group's shapes: the one the whole icon is drawn on, which
+ * is what its width being the icon's own says. A shape with no fill of its
+ * own — a border, or a clip path left in the group — is not one: it draws
+ * nothing of the plate's colour, and taking it for the plate would leave the
+ * plate itself to be painted as the mark.
  */
 const isPlate = (shape: string): boolean =>
-  shape.startsWith('<rect') && !/\bx="/.test(shape);
+  shape.startsWith('<rect') &&
+  FILL.test(shape) &&
+  (shape.match(WIDTH)?.[1] ?? '') === `${SOURCE}`;
 
 export const readAppMark = (source: string): AppMark => {
+  const body = source.replace(COMMENT, '');
   // The group a desktop install shows is the one whose plate is not paper: the
-  // export draws the plate twice, and picking the last one instead would take
-  // the white plate's group — whose plate is a full square of the mark's colour,
-  // an icon with no mark on it at all.
+  // export draws the plate twice, and taking the other one would paint a full
+  // square of the plate as the mark — an icon with nothing on it.
   const shapes =
-    [...source.matchAll(GROUP)]
-      .map((match) => [...match[1].matchAll(SHAPE)].map((shape) => shape[0]))
+    clippedGroups(body)
+      .map((group) => [...group.matchAll(SHAPE)].map((shape) => shape[0]))
       .find((group) => {
         const plate = group.find(isPlate);
 
@@ -152,15 +193,26 @@ export const readAppMark = (source: string): AppMark => {
       }) ?? [];
   const plate = shapes.find(isPlate) ?? '';
   const radius = plate.match(RADIUS)?.[1] ?? '';
-  // The mark is the rest of the group, whatever colour the export drew it in:
-  // it is put on the plate in the mark's own colour below anyway.
-  const elements = shapes.filter((shape) => shape !== plate);
+  // The mark is every other shape of the group that is filled, whatever colour
+  // the export drew it in: it is put on the plate in the mark's own below.
+  const elements = shapes.filter(
+    (shape) => shape !== plate && FILL.test(shape),
+  );
+
+  if (!plate) {
+    throw new Error(
+      'app/icon.svg has no plate in it — a rectangle the width of the icon, ' +
+        'with a fill — for the development icon to take the mark out of. ' +
+        'Export app/icon.svg again, or change the icon ' +
+        'scripts/render-dev-icon.ts reads.',
+    );
+  }
 
   if (!radius || elements.length === 0) {
     throw new Error(
-      'app/icon.svg holds no plate carrying a mark. The development icon is ' +
-        'lifted out of that export: export app/icon.svg again, or change the ' +
-        'icon scripts/render-dev-icon.ts reads.',
+      `app/icon.svg's plate carries no corner radius${elements.length === 0 ? ' and no filled mark' : ''}: both are what the development icon is drawn from. ` +
+        'Export app/icon.svg again, or change the icon ' +
+        'scripts/render-dev-icon.ts reads.',
     );
   }
 
@@ -223,7 +275,8 @@ const badge = (): string => {
 export const devIconSvg = (source: string): string => {
   const { elements, radius } = readAppMark(source);
   // Whatever colour the export drew the mark in: it goes on the plate in the
-  // mark's own. A shape exported with no fill of its own takes the group's.
+  // mark's own. Every shape of it carries a fill of its own — a shape that does
+  // not is not part of the mark, and is left out for that reason.
   const mark = elements
     .map((element) => element.replace(FILL, `fill="${MARK_COLOR}"`))
     .join('');
@@ -245,7 +298,7 @@ export const devIconSvg = (source: string): string => {
     `<rect fill="url(#dev-plate)" height="${SOURCE}" width="${SOURCE}"/>` +
     `<rect fill="url(#dev-sheen)" height="${SOURCE}" width="${SOURCE}"/>` +
     '<g transform="translate(24 0) scale(-1 1)">' +
-    `<g clip-path="url(#dev-mark)" fill="${MARK_COLOR}">${mark}</g>` +
+    `<g clip-path="url(#dev-mark)">${mark}</g>` +
     '</g>' +
     `<g transform="scale(${SOURCE_UNIT})">${badge()}</g>` +
     '</g>' +

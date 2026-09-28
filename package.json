@@ -27,7 +27,7 @@
     "test:coverage": "vitest run --coverage",
     "test:patch-branches": "bun scripts/check-patch-branches.ts",
     "desktop:prepare": "bun scripts/build-desktop.ts --prepare-only",
-    "desktop:dist": "bun scripts/build-desktop.ts",
+    "desktop:dist": "bun scripts/build-desktop.ts --dev-icon",
     "desktop:start": "bun run desktop:prepare --dev-icon && electron ."
   },
   "dependencies": {

@@ -223,16 +223,29 @@ const bundleElectron = () => {
  * does not ask for the icon never loads it.
  */
 const renderDevIcon = (): void => {
-  execFileSync(
-    bunBinary(),
-    [
-      'run',
-      path.join(root, 'scripts', 'render-dev-icon.ts'),
-      '--out',
-      path.join(appDir, DEV_ICON_FILENAME),
-    ],
-    { cwd: root, stdio: 'inherit' },
-  );
+  try {
+    execFileSync(
+      bunBinary(),
+      [
+        'run',
+        path.join(root, 'scripts', 'render-dev-icon.ts'),
+        '--out',
+        path.join(appDir, DEV_ICON_FILENAME),
+      ],
+      { cwd: root, stdio: 'inherit' },
+    );
+  } catch (cause) {
+    // The child has printed its own error already; this only says what to do
+    // about the likely one — a rasteriser that is a development dependency and
+    // that nothing else in this build needs — and keeps the original as the
+    // cause, for whoever needs the exit status rather than the hint.
+    throw new Error(
+      'The development icon could not be rendered; the error is above. It is ' +
+        'rasterised with sharp, a development dependency — run `bun install` ' +
+        'if that is what is missing, or build without `--dev-icon`.',
+      { cause },
+    );
+  }
 };
 
 const readElectronVersion = () => {
