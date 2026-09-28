@@ -3,9 +3,8 @@
  * carrying a `DEV` badge, drawn from `app/icon.svg`.
  *
  * Its own script, and not part of scripts/build-desktop.ts, because rasterising
- * an SVG takes a native image library that nothing else in the build needs — a
- * release build must not fail on a machine that has no development
- * dependencies installed.
+ * an SVG takes a native image library that nothing else in the build needs: a
+ * build that does not ask for the icon never loads it.
  *
  * Usage: `bun scripts/render-dev-icon.ts [--out <file>]`
  */

@@ -17,12 +17,12 @@
  * is served from.
  *
  * `app/icon.svg` is a design export drawn twice: the mark in the brand colour
- * on a white plate, and — in the last group, the one a desktop install shows —
- * the same mark in white on the dark plate. What is wanted here is the mark
- * alone, so the plate is left behind: of that group's shapes the ones filled in
- * the mark's colour are kept, which is every one of them but the plate. The
- * plate's corner radius comes along instead, so the development icon keeps the
- * release icon's silhouette however the export is redrawn.
+ * on a white plate, and — in the group a desktop install shows — the same mark
+ * in white on the dark plate. What is wanted here is the mark alone, so the
+ * plate is left behind: the group taken is the one whose plate is not paper,
+ * and every shape in it but the plate is the mark. The plate's corner radius
+ * comes along instead, so the development icon keeps the release icon's
+ * silhouette however the export is redrawn.
  */
 export interface AppMark {
   /** The shapes of the mark, in the export's own 24-unit coordinates. */
@@ -33,7 +33,8 @@ export interface AppMark {
 
 /**
  * The file the development icon is written to, next to the bundled main
- * process: electron/main.ts looks for it there, and electron-builder is pointed
+ * process: electron/main.ts spells the same name out rather than importing it
+ * from a build script the app would then carry, and electron-builder is pointed
  * at it for every platform.
  */
 export const DEV_ICON_FILENAME = 'icon-dev.png';
@@ -90,7 +91,7 @@ const BADGE = {
  * something put on top of the icon.
  */
 const BADGE_RING = 9;
-/** The letters: 96 pixels tall, drawn with a 16-pixel stroke centred on the outline. */
+/** The letters: 96 pixels tall including the stroke, drawn at `LETTER_SCALE`. */
 const LETTER_HEIGHT = 96;
 const LETTER_STROKE = 16;
 /**
@@ -109,26 +110,57 @@ const LETTERS = [
 ];
 /** The gap between two letters. */
 const LETTER_GAP = 20;
+/**
+ * What the letters are drawn at: as large as the badge they sit in allows.
+ *
+ * A desktop draws an icon small — a menu bar, a taskbar, a window that names
+ * what is installed — and three letters in a corner are the first thing to
+ * stop reading when it does. The badge is a plate in a corner of the mark, so
+ * the letters cannot grow by growing the badge; they take the room inside it
+ * instead.
+ */
+const LETTER_SCALE = 1.3;
 
-const GROUP = /<g clip-path="url\(#[\w-]+\)">([\s\S]*?)<\/g>/g;
-const SHAPE = /<(?:path|rect)\b[^>]*\/>/g;
+// A shape is either self-closing or closed by its own tag, and the tag an
+// export writes may carry a space before its `>`.
+const GROUP = /<g clip-path="url\(#[\w.-]+\)"\s*>([\s\S]*?)<\/g>/g;
+const SHAPE = /<(?:path|rect)\b[^>]*?>(?:[^<]*<\/(?:path|rect)>)?/g;
 const RADIUS = /\brx="([\d.]+)"/;
+const PAPER = /\bfill\s*=\s*(?:"white"|'white')/i;
+/** Whatever fill a shape of the mark was exported with, in either quote. */
+const FILL = /\bfill\s*=\s*(?:"[^"]*"|'[^']*')/;
+/**
+ * The plate, of the group's shapes: the one drawn from the origin, with no `x`
+ * of its own, which every shape of the mark — each somewhere inside the plate —
+ * does have.
+ */
+const isPlate = (shape: string): boolean =>
+  shape.startsWith('<rect') && !/\bx="/.test(shape);
 
 export const readAppMark = (source: string): AppMark => {
-  const groups = [...source.matchAll(GROUP)];
-  const group = groups.at(-1)?.[1] ?? '';
-  const shapes = [...group.matchAll(SHAPE)].map((match) => match[0]);
-  const plate = shapes.find((shape) => shape.startsWith('<rect')) ?? '';
+  // The group a desktop install shows is the one whose plate is not paper: the
+  // export draws the plate twice, and picking the last one instead would take
+  // the white plate's group — whose plate is a full square of the mark's colour,
+  // an icon with no mark on it at all.
+  const shapes =
+    [...source.matchAll(GROUP)]
+      .map((match) => [...match[1].matchAll(SHAPE)].map((shape) => shape[0]))
+      .find((group) => {
+        const plate = group.find(isPlate);
+
+        return plate !== undefined && !PAPER.test(plate);
+      }) ?? [];
+  const plate = shapes.find(isPlate) ?? '';
   const radius = plate.match(RADIUS)?.[1] ?? '';
-  // The mark is the rest of the group: every shape filled in white, which the
-  // plate — the only other thing in there — is not.
-  const elements = shapes.filter((shape) => shape.includes('fill="white"'));
+  // The mark is the rest of the group, whatever colour the export drew it in:
+  // it is put on the plate in the mark's own colour below anyway.
+  const elements = shapes.filter((shape) => shape !== plate);
 
   if (!radius || elements.length === 0) {
     throw new Error(
-      'app/icon.svg holds no dark plate with a white mark in it. ' +
-        'The development icon is drawn from that group; render the icons again ' +
-        'from the export, or point scripts/render-dev-icon.ts at the new one.',
+      'app/icon.svg holds no plate carrying a mark. The development icon is ' +
+        'lifted out of that export: export app/icon.svg again, or change the ' +
+        'icon scripts/render-dev-icon.ts reads.',
     );
   }
 
@@ -153,16 +185,20 @@ const stops = (
  * export's units.
  */
 const badge = (): string => {
-  const width = LETTERS.reduce(
-    (total, letter) => total + letter.advance + LETTER_GAP,
-    -LETTER_GAP,
-  );
+  const width =
+    LETTERS.reduce(
+      (total, letter) => total + letter.advance + LETTER_GAP,
+      -LETTER_GAP,
+    ) * LETTER_SCALE;
+  const height = LETTER_HEIGHT * LETTER_SCALE;
   let x = BADGE.x + (BADGE.width - width) / 2;
-  const y = BADGE.y + (BADGE.height - LETTER_HEIGHT) / 2;
+  const y = BADGE.y + (BADGE.height - height) / 2;
   const letters = LETTERS.map((letter) => {
-    const drawn = `<path d="${letter.path}" transform="translate(${x} ${y})"/>`;
+    const drawn =
+      `<path d="${letter.path}" ` +
+      `transform="translate(${x} ${y}) scale(${LETTER_SCALE})"/>`;
 
-    x += letter.advance + LETTER_GAP;
+    x += (letter.advance + LETTER_GAP) * LETTER_SCALE;
 
     return drawn;
   }).join('');
@@ -186,10 +222,10 @@ const badge = (): string => {
  */
 export const devIconSvg = (source: string): string => {
   const { elements, radius } = readAppMark(source);
+  // Whatever colour the export drew the mark in: it goes on the plate in the
+  // mark's own. A shape exported with no fill of its own takes the group's.
   const mark = elements
-    .map((element) =>
-      element.replaceAll('fill="white"', `fill="${MARK_COLOR}"`),
-    )
+    .map((element) => element.replace(FILL, `fill="${MARK_COLOR}"`))
     .join('');
 
   return (
@@ -209,7 +245,7 @@ export const devIconSvg = (source: string): string => {
     `<rect fill="url(#dev-plate)" height="${SOURCE}" width="${SOURCE}"/>` +
     `<rect fill="url(#dev-sheen)" height="${SOURCE}" width="${SOURCE}"/>` +
     '<g transform="translate(24 0) scale(-1 1)">' +
-    `<g clip-path="url(#dev-mark)">${mark}</g>` +
+    `<g clip-path="url(#dev-mark)" fill="${MARK_COLOR}">${mark}</g>` +
     '</g>' +
     `<g transform="scale(${SOURCE_UNIT})">${badge()}</g>` +
     '</g>' +

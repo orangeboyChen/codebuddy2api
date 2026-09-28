@@ -560,27 +560,38 @@ const bundleDir = (): string =>
   resolveAppBundleDir({ appPath: app.getAppPath() });
 
 /**
- * The icon a run from a checkout shows on macOS.
+ * The icon a run from a checkout carries on macOS.
  *
- * `electron .` has no bundle to take an icon from, so the app would be drawn
- * with Electron's own wherever macOS names it — the Dock before the menu bar
- * item hides it, the Force Quit window, Activity Monitor. A development build
- * leaves its icon next to the bundled main process, which is where this looks
- * for it; an install carries its icon in the bundle and is already drawn with
- * it, so it never gets here.
+ * `electron .` has no bundle to take an icon from, so the app is drawn with
+ * Electron's own wherever macOS names it — the Dock, which the menu bar item
+ * hides as soon as it exists and which stays if the item cannot be built. A
+ * development build leaves its icon next to the bundled main process, which is
+ * where this looks for it; an install carries its icon in the bundle already,
+ * and never gets here.
  */
 const applyDevelopmentIcon = (): void => {
   if (process.platform !== 'darwin' || app.isPackaged) {
     return;
   }
 
+  // `icon-dev.png`, the same name scripts/dev-icon.ts exports as
+  // `DEV_ICON_FILENAME`: the build writes it next to the bundled main process,
+  // and this bundle does not import a build script to learn the name.
   const iconPath = path.join(bundleDir(), 'icon-dev.png');
 
   if (!fs.existsSync(iconPath)) {
     return;
   }
 
-  app.dock?.setIcon(nativeImage.createFromPath(iconPath));
+  const icon = nativeImage.createFromPath(iconPath);
+
+  // A file that is there but is not a PNG gives an empty image, and a dock
+  // tile of nothing is worse than the one Electron would have drawn.
+  if (icon.isEmpty()) {
+    return;
+  }
+
+  app.dock?.setIcon(icon);
 };
 
 /**

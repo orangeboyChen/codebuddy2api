@@ -219,8 +219,8 @@ const bundleElectron = () => {
  * the Dock, in an installer or on a menu bar's "About".
  *
  * Run as its own process, and not imported, because rasterising an SVG takes a
- * native image library nothing else in the build needs: a release build has to
- * succeed on a machine that has none of the development dependencies installed.
+ * native image library nothing else in the build needs: this way a build that
+ * does not ask for the icon never loads it.
  */
 const renderDevIcon = (): void => {
   execFileSync(
