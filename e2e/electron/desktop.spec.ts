@@ -46,12 +46,62 @@ const childEnv = (): Record<string, string> => {
   return env;
 };
 
-const launchApp = (): Promise<ElectronApplication> =>
+const launchApp = ({
+  env = {},
+  userData = userDataDir,
+}: {
+  env?: Record<string, string>;
+  userData?: string;
+} = {}): Promise<ElectronApplication> =>
   electron.launch({
-    args: [repoRoot, `--user-data-dir=${userDataDir}`],
+    args: [repoRoot, `--user-data-dir=${userData}`],
     cwd: repoRoot,
-    env: childEnv(),
+    env: { ...childEnv(), ...env },
   });
+
+/**
+ * A user data directory no other test has touched. Whether the app is on its
+ * first launch, and which port it was saved to use, is decided by what sits in
+ * one, so a test that needs its own answer has to have its own.
+ */
+const separateUserDataDir = (name: string): string => {
+  const dir = path.join(userDataDir, name);
+
+  fs.rmSync(dir, { force: true, recursive: true });
+  fs.mkdirSync(dir, { recursive: true });
+
+  return dir;
+};
+
+/** A port nothing is serving, for a test that needs one to hand to the app. */
+const freePort = async (): Promise<number> => {
+  const server = http.createServer();
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const { port } = server.address() as { port: number };
+
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  });
+
+  return port;
+};
+
+/** Something already serving a port: what a Docker deployment on 8001 looks like to the app. */
+const servePort = async (): Promise<{ port: number; stop: () => void }> => {
+  const server = http.createServer();
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const { port } = server.address() as { port: number };
+
+  return { port, stop: () => server.close() };
+};
 
 /**
  * The console window, which only exists once the gateway behind it answers —
@@ -97,6 +147,11 @@ test('asks which backend to use, then opens the console it starts', async () => 
 
   await expect.poll(() => chooser.url()).toContain('backend.html');
   await expect(chooser.locator('#title')).toHaveText('Choose a backend');
+
+  // The port is settled in the same window: the gateway that serves this
+  // console runs on this machine either way, and it is the number the app has
+  // to be told before it can start one.
+  await expect(chooser.locator('#port')).toHaveValue('8001');
 
   expect(pageErrors).toEqual([]);
 
@@ -170,16 +225,73 @@ test('opens the console straight away once a backend has been chosen', async () 
   await app.close();
 });
 
+/** The settings the next launch finds on disk, as the window itself would save them. */
+const writeSettings = (settings: unknown, dir: string = userDataDir): void => {
+  fs.writeFileSync(
+    path.join(dir, 'desktop-settings.json'),
+    `${JSON.stringify(settings, null, 2)}\n`,
+  );
+};
+
+test('quits when the window it asks in is closed without an answer', async () => {
+  const dir = separateUserDataDir('first-run-unanswered');
+  const app = await launchApp({ userData: dir });
+
+  // A first launch has nothing behind it yet: no gateway is running, and no
+  // answer is on disk to fall back on.
+  const chooser = await app.firstWindow();
+
+  await expect.poll(() => chooser.url()).toContain('backend.html');
+
+  let closed = false;
+
+  app.on('close', () => {
+    closed = true;
+  });
+
+  await chooser.close();
+
+  // Closed rather than answered: the app goes away instead of starting a
+  // gateway nobody chose, which is the only thing a first launch could start.
+  await expect.poll(() => closed, { timeout: 30_000 }).toBe(true);
+
+  // Nothing was written, so the next launch asks the same question again.
+  expect(fs.existsSync(path.join(dir, 'desktop-settings.json'))).toBe(false);
+});
+
+test('asks for another port when the one it saved is already taken', async () => {
+  // Something else serving the port the app was told to use: what a Docker
+  // deployment already on 8001 looks like from here.
+  const taken = await servePort();
+  const spare = await freePort();
+  const dir = separateUserDataDir('port-taken');
+
+  // A first launch is never reached: the port is already on disk, so the app
+  // tries to start on it and has to say it cannot.
+  writeSettings({ backend: { mode: 'local' }, port: taken.port }, dir);
+
+  const app = await launchApp({ userData: dir });
+  const window = await waitForWindow(app, /backend\.html$/);
+
+  // The number it could not have, and a field to put another one in: a port is
+  // the user's to choose, not the app's to guess around.
+  await expect(window.locator('#portInUse')).toContainText(String(taken.port));
+  await expect(window.locator('#port')).toHaveValue(String(taken.port));
+
+  await window.locator('#port').fill(String(spare));
+  await window.locator('#save').click();
+
+  const consoleWindow = await waitForConsole(app);
+
+  expect(consoleWindow.url()).toBe(`http://127.0.0.1:${spare}/dashboard`);
+
+  await app.close();
+  taken.stop();
+});
+
 /** The backend the next launch finds on disk, as the window itself would save it. */
 const writeBackend = (url: string): void => {
-  fs.writeFileSync(
-    path.join(userDataDir, 'desktop-settings.json'),
-    `${JSON.stringify(
-      { backend: { mode: 'remote', url }, port: 8001 },
-      null,
-      2,
-    )}\n`,
-  );
+  writeSettings({ backend: { mode: 'remote', url }, port: 8001 });
 };
 
 /**

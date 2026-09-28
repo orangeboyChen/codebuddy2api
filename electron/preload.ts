@@ -14,8 +14,10 @@ contextBridge.exposeInMainWorld('desktop', {
     ipcRenderer.invoke('desktop:open-in-browser'),
   retryBackend: (): Promise<void> =>
     ipcRenderer.invoke('desktop:retry-backend'),
-  setBackend: (backend: unknown): Promise<void> =>
-    ipcRenderer.invoke('desktop:set-backend', backend),
+  // Everything the window can settle in one call: a backend alone would save
+  // the port it never asked about.
+  setBackend: (choice: unknown): Promise<void> =>
+    ipcRenderer.invoke('desktop:set-backend', choice),
   // The window that asks about the backend sizes itself to what it is asking,
   // and it is the page that knows how much room its own text took.
   setContentSize: (width: number, height: number): Promise<void> =>

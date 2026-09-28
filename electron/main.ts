@@ -27,13 +27,16 @@ import {
   resolveDesktopPaths,
   resolveGatewayDir,
 } from '../lib/server/electron/paths';
-import { findAvailablePort } from '../lib/server/electron/ports';
+import { findAvailablePort, probePortFree } from '../lib/server/electron/ports';
 import {
   DESKTOP_SETTINGS_FILENAME,
+  MAX_PORT,
+  MIN_PORT,
   defaultDesktopSettings,
   desktopSettingsPath,
   isPinnedPort,
   normalizeDesktopBackend,
+  normalizeDesktopPort,
   readDesktopSettings,
   resolveDesktopPreferredPort,
   writeDesktopSettings,
@@ -81,6 +84,16 @@ const BACKEND_WINDOW_MIN_HEIGHT = 180;
 const BACKEND_WINDOW_MIN_WIDTH = 320;
 const BACKEND_WINDOW_HEIGHT = 320;
 const BACKEND_WINDOW_WIDTH = 480;
+/**
+ * Whether a window of the app also gets a taskbar button.
+ *
+ * The app lives in one place: the menu bar item. Windows draws one reliably, so
+ * a window opened there does not need a second place to be found in. Linux
+ * desktops are too various to take the button away — a session with no tray to
+ * draw the icon in would leave an open window with no way back to it — and on
+ * macOS it is the Dock that goes, in `createTray`.
+ */
+const SKIP_TASKBAR = process.platform === 'win32';
 const TRAY_ICON_SIZE = 16;
 /**
  * How long quitting waits for a gateway that is still starting. The wait is
@@ -112,10 +125,16 @@ const CONSOLE_LOAD_TIMEOUT_MS = 10_000;
  */
 const INSTALLER_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 
-type GatewayStatus = 'failed' | 'running' | 'starting' | 'unreachable';
+/**
+ * `failed` is a gateway that stopped or never came up; `portBusy` is one the
+ * app never started because the port it promised was already serving something,
+ * which is the user's to settle rather than a failure to report.
+ */
+type GatewayStatus =
+  'failed' | 'portBusy' | 'running' | 'starting' | 'unreachable';
 
 /** What the window that asks about the backend can be asking. */
-type BackendScreen = 'choose' | 'unreachable';
+type BackendScreen = 'choose' | 'portInUse' | 'unreachable';
 
 interface Cookie {
   name: string;
@@ -161,8 +180,16 @@ let serverVersion: string | null = null;
  * this app.
  */
 let lastProbe: DeploymentProbe | null = null;
+/**
+ * The port the app wanted and could not have, because something else on this
+ * machine is already serving it. Null whenever a gateway is up or was never
+ * asked for: it is set only to be named to the user, in the menu and in the
+ * window that asks for another one.
+ */
+let portBusy: number | null = null;
 /** What the window that asks about the backend is currently asking. */
 let backendScreen: BackendScreen = 'choose';
+
 /** What an update check is doing, which the menu item reports. */
 let updateState: 'checking' | 'downloading' | 'idle' = 'idle';
 /** The locale the console is showing — the menu bar item speaks it too. */
@@ -314,6 +341,8 @@ const createMainWindow = (url: string): BrowserWindow => {
     height: WINDOW_HEIGHT,
     minHeight: MIN_WINDOW_HEIGHT,
     minWidth: MIN_WINDOW_WIDTH,
+    // One place to find the app: the menu bar item.
+    skipTaskbar: SKIP_TASKBAR,
     show: false,
     title: 'CodeBuddy2API',
     width: WINDOW_WIDTH,
@@ -391,14 +420,31 @@ const showMainWindow = (): void => {
     return;
   }
 
-  // No console to open, because the deployment that would fill it never
-  // answered: the window that says so is the one to bring back.
+  // No console to open: the gateway behind it is not up, and in both cases the
+  // window that says what the user has to settle is the one to bring back.
   if (status === 'unreachable') {
     openBackendWindow({ screen: 'unreachable' });
+
+    return;
+  }
+
+  if (status === 'portBusy') {
+    openBackendWindow({ screen: 'portInUse' });
   }
 };
 
-const statusLabel = (): string => statusText(text(), status, backendAddress());
+/**
+ * The port the app is asking for, which is also the one it could not have: the
+ * number is what a menu item names when the gateway never started.
+ */
+const preferredPort = (): number =>
+  resolveDesktopPreferredPort(userDataDir, process.env);
+
+const statusLabel = (): string =>
+  statusText(text(), status, {
+    address: backendAddress(),
+    port: String(portBusy ?? preferredPort()),
+  });
 
 const usageLabel = (): string =>
   // `…` until the backend has answered: claiming zero tokens before the first
@@ -424,7 +470,9 @@ const buildTrayMenu = (): Menu =>
     },
     { type: 'separator' },
     { enabled: false, label: `${text().backend}: ${backendLabel()}` },
-    { click: () => openBackendWindow(), label: text().changeBackend },
+    // The window behind this item settles both things the app asks about: the
+    // backend, and the port it serves on.
+    { click: () => openBackendWindow(), label: text().settings },
     { type: 'separator' },
     {
       enabled: false,
@@ -519,6 +567,14 @@ const createTray = (): void => {
     });
   }
 
+  // The menu bar item is the app, and it is the only thing that is: a dock icon
+  // beside it is a second app in the system tray with nothing of its own to
+  // offer — every way in is already in the menu. Hidden only once the item
+  // exists, so an install whose icon failed to load still has a dock to click.
+  if (process.platform === 'darwin') {
+    app.dock?.hide();
+  }
+
   refreshTray();
 };
 
@@ -569,6 +625,36 @@ const scheduleRestart = (): void => {
     restartTimer = null;
     void restartGateway();
   }, RESTART_DEBOUNCE_MS);
+};
+
+/**
+ * The port the next gateway should bind, or null when the app cannot have one
+ * without asking.
+ *
+ * A port the app promised — a saved setting, or `CODEBUDDY_DESKTOP_PORT` — is
+ * not its to give up: a client config, a firewall rule or a bookmark points at
+ * that number, so the app asks instead of answering on another one. A port
+ * nobody named walks upwards, which is what keeps a fresh install usable next
+ * to a deployment already serving 8001.
+ *
+ * Probed with the gateway stopped: the one that was running still holds its
+ * port, and would otherwise reject the number the app is already on — the one
+ * just saved included.
+ */
+const resolveStartPort = async (): Promise<number | null> => {
+  const preferred = preferredPort();
+
+  if (await probePortFree(preferred)) {
+    return preferred;
+  }
+
+  if (isPinnedPort(userDataDir, process.env)) {
+    return null;
+  }
+
+  // Nothing free nearby is a question for the user as well, and the same one:
+  // which number to move to is theirs to answer, not the app's to guess twice.
+  return findAvailablePort({ preferred }).catch(() => null);
 };
 
 /**
@@ -625,15 +711,20 @@ const restartGateway = async (): Promise<void> => {
     gateway?.stop();
     gateway = null;
 
-    const port = await findAvailablePort({
-      // One attempt when the port was named — the environment, or the port the
-      // console saved: something outside the app points at that number, so the
-      // app takes it or says it cannot, rather than answering on another one.
-      // Left at the default, it walks upwards instead, which is what keeps the
-      // app usable next to a deployment already serving 8001.
-      attempts: isPinnedPort(userDataDir, process.env) ? 1 : undefined,
-      preferred: resolveDesktopPreferredPort(userDataDir, process.env),
-    });
+    const port = await resolveStartPort();
+
+    // The one number the app cannot pick for the user. Reported in the window
+    // that asks for another rather than in an error box: it is a setting to
+    // change, not a failure of the app, and the gateway keeps nothing to serve
+    // until it is.
+    if (port === null) {
+      portBusy = preferredPort();
+      status = 'portBusy';
+      refreshTray();
+      openBackendWindow({ screen: 'portInUse' });
+
+      return;
+    }
 
     pendingStart = launchGateway(port, upstream);
     gateway = await pendingStart;
@@ -650,6 +741,7 @@ const restartGateway = async (): Promise<void> => {
     }
 
     consoleOrigin = new URL(gateway.url).origin;
+    portBusy = null;
     status = 'running';
     refreshTray();
   } catch (error) {
@@ -919,7 +1011,8 @@ const runUpdateCheck = async (): Promise<void> => {
  *
  * `persist` is set when the choice came from the window that asks: the settings
  * file is then the record of the choice, and the watcher leaves that write
- * alone.
+ * alone. `port` is the port that window settled when it settled one, and is
+ * saved along with the backend; without it, the port already on disk stands.
  *
  * Every switch goes through the bundled gateway, a deployment named or not: the
  * console is this app's own build, and the deployment only supplies the data
@@ -927,7 +1020,7 @@ const runUpdateCheck = async (): Promise<void> => {
  */
 const applyBackend = async (
   next: DesktopBackend,
-  { persist = false }: { persist?: boolean } = {},
+  { persist = false, port }: { persist?: boolean; port?: number } = {},
 ): Promise<void> => {
   const chosen = normalizeDesktopBackend(next);
 
@@ -935,7 +1028,7 @@ const applyBackend = async (
     try {
       appliedSettings = writeDesktopSettings(userDataDir, {
         backend: chosen,
-        port: readDesktopSettings(userDataDir).port,
+        port: port ?? readDesktopSettings(userDataDir).port,
       });
     } catch (error) {
       // A `userData` the app cannot write to still leaves the choice usable for
@@ -963,9 +1056,10 @@ const applyBackend = async (
     return;
   }
 
-  // A deployment that did not answer: the window saying so is already up, and
-  // there is nothing to ask it for numbers.
-  if (status === 'unreachable') {
+  // A deployment that did not answer, or a port something else is already
+  // serving: the window saying so is already up, and there is nothing to ask it
+  // for numbers.
+  if (status === 'unreachable' || status === 'portBusy') {
     return;
   }
 
@@ -999,16 +1093,41 @@ const unreachableInfo = (): { host: string; message: string } | null => {
 };
 
 /**
- * The window that asks which backend to use.
+ * The port that could not be taken, for the window that says which it was and
+ * asks for another.
+ */
+const portInUseInfo = (): { message: string; port: string } | null => {
+  if (portBusy === null) {
+    return null;
+  }
+
+  const port = String(portBusy);
+
+  return { message: fillText(text().portInUseBody, { port }), port };
+};
+
+/**
+ * The screen the window opens on when nothing names one: whatever the app is
+ * waiting for the user to settle, and otherwise the question it always asks.
+ */
+const pendingScreen = (): BackendScreen =>
+  status === 'portBusy'
+    ? 'portInUse'
+    : status === 'unreachable'
+      ? 'unreachable'
+      : 'choose';
+
+/**
+ * The window that asks which backend to use, and which port to serve on.
  *
  * It is a bundled page rather than a console page: it has to work before there
  * is a gateway to serve one, and it is the only thing in the app that can
  * change a setting the gateway reads to start. It is also where a deployment
- * that could not be reached is reported — a console of the app's own would have
- * nothing to show for it.
+ * that could not be reached, or a port that could not be taken, is reported — a
+ * console of the app's own would have nothing to show for either.
  */
 const openBackendWindow = ({
-  screen = 'choose',
+  screen = pendingScreen(),
 }: { screen?: BackendScreen } = {}): void => {
   if (backendWindow) {
     if (backendWindow.isDestroyed()) {
@@ -1030,6 +1149,8 @@ const openBackendWindow = ({
     autoHideMenuBar: true,
     height: BACKEND_WINDOW_HEIGHT,
     resizable: false,
+    // One place to find the app: the menu bar item.
+    skipTaskbar: SKIP_TASKBAR,
     title: 'CodeBuddy2API',
     // The page measures itself and asks for the size it needs, so these numbers
     // are the page's own and not the window around it.
@@ -1047,10 +1168,12 @@ const openBackendWindow = ({
   window.on('closed', () => {
     backendWindow = null;
 
-    // Asked and not answered: the app still has to run, so it takes the local
-    // gateway rather than leaving the user with nothing.
+    // A first launch that never got its answer has nothing to fall back on, so
+    // it quits: the gateway is the thing the answer decides, and starting one
+    // the user did not ask for is not an answer they gave. Once a backend has
+    // been chosen, closing this window leaves the app running as it was.
     if (!backendChosen) {
-      void applyBackend({ mode: 'local' }, { persist: true });
+      app.quit();
     }
   });
 
@@ -1109,9 +1232,10 @@ const startBackend = async (): Promise<void> => {
     return;
   }
 
-  // A deployment that did not answer has a window of its own already, saying so
-  // and offering the way out of it.
-  if (status === 'unreachable') {
+  // A deployment that did not answer, or a port something else is already
+  // serving, has a window of its own already, saying so and offering the way out
+  // of it.
+  if (status === 'unreachable' || status === 'portBusy') {
     return;
   }
 
@@ -1150,20 +1274,47 @@ const bootstrap = async (): Promise<void> => {
   await startBackend();
 };
 
+/**
+ * Everything the window that asks knows: what the app is asking about, the two
+ * settings it can settle — the backend and the port — and why either might not
+ * have been the app's to accept.
+ */
 ipcMain.handle('desktop:info', () => ({
   backend,
+  /** A first launch has no answer on disk, and closing it quits the app. */
+  firstRun: !backendChosen,
   locale,
+  // The bounds the field is checked against are the main process's: it is the
+  // half that refuses a port outside them.
+  maxPort: MAX_PORT,
+  minPort: MIN_PORT,
+  port: preferredPort(),
+  portInUse: portInUseInfo(),
   screen: backendScreen,
   text: text(),
   unreachable: unreachableInfo(),
 }));
 
+/**
+ * Saves what the window settled: which backend, and which port to serve on.
+ */
 ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
   const window = backendWindow;
+  const record =
+    next && typeof next === 'object' && !Array.isArray(next)
+      ? (next as { backend?: unknown; port?: unknown })
+      : {};
 
   // Normalized here, at the boundary a page can reach: the window has no say in
-  // what counts as a backend.
-  void applyBackend(normalizeDesktopBackend(next), { persist: true });
+  // what counts as a backend or as a port.
+  const port = normalizeDesktopPort(record.port, 0);
+
+  void applyBackend(normalizeDesktopBackend(record.backend), {
+    persist: true,
+    // A port the page did not settle — one it never showed, or one left blank —
+    // leaves the one on disk standing.
+    port: port || undefined,
+  });
   window?.close();
 });
 
@@ -1217,22 +1368,23 @@ ipcMain.handle(
 );
 
 /**
- * Asks the deployment again, for the window that reported it unreachable: a
- * deployment that was merely cold, or a network that came back, is fixed by
- * asking once more rather than by retyping the address.
+ * Asks again, for the window that reported a deployment unreachable or a port
+ * taken: a deployment that was merely cold, a network that came back, or a port
+ * freed while the window was open, is all fixed by asking once more rather than
+ * by retyping anything.
+ *
+ * The answer is awaited by the page, which is what lets it say it is trying.
  */
-ipcMain.handle('desktop:retry-backend', () => {
+ipcMain.handle('desktop:retry-backend', async () => {
   const window = backendWindow;
 
-  void (async () => {
-    await restartGateway();
+  await restartGateway();
 
-    // Answered this time: the question goes away and the console comes up.
-    if (status === 'running') {
-      window?.close();
-      showMainWindow();
-    }
-  })();
+  // Answered this time: the question goes away and the console comes up.
+  if (status === 'running') {
+    window?.close();
+    showMainWindow();
+  }
 });
 
 /** The deployment itself, in the system browser: the app's window is not one. */

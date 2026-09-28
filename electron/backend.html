@@ -1,8 +1,9 @@
 <!doctype html>
 <!--
-  The window that asks which backend to use, shown on a first launch and from
-  the menu bar item — and, when the deployment the user named does not answer,
-  the window that says so.
+  The window that asks which backend to use, and which port to serve on, shown
+  on a first launch and from the menu bar item — and, when the deployment the
+  user named does not answer or the port the app was given is already taken, the
+  window that says so.
 
   It is a bundled page: `scripts/build-desktop.ts` compiles `backend.tsx` into
   the `backend.js` sitting next to this file, so React is on disk and nothing is
@@ -138,7 +139,22 @@
         font-weight: 400;
       }
 
-      #url {
+      /*
+        A field and what belongs to it: the address of a deployment and the port
+        the app serves on are asked the same way — the browser's own text field,
+        with the label above it and what it is for underneath.
+      */
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .field label {
+        font-weight: 600;
+      }
+
+      .field input {
         background: var(--field);
         border: 1px solid var(--field-border);
         border-radius: 6px;
@@ -148,14 +164,19 @@
         width: 100%;
       }
 
-      #url:focus-visible {
+      .field input:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 1px;
       }
 
       /* Dimmed with the choice it belongs to: only a deployment has an address. */
-      #url:disabled {
+      .field input:disabled {
         opacity: 0.5;
+      }
+
+      .field .hint {
+        color: var(--muted);
+        font-size: 12px;
       }
 
       .message {
@@ -187,6 +208,11 @@
 
       button:hover {
         background: rgba(255, 255, 255, 0.14);
+      }
+
+      /* Asked and being answered: "Try again" while the app is trying again. */
+      button:disabled {
+        opacity: 0.5;
       }
 
       button:focus-visible {

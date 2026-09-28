@@ -62,17 +62,26 @@ describe('statusText', () => {
     // The gateway is running; it is the deployment behind it that is not
     // answering, which is a different thing to fix.
     { status: 'unreachable', expected: 'Deployment unreachable' },
+    // No gateway at all: the port it would have served on is taken, and the
+    // number is what tells the user which one to change.
+    { status: 'portBusy', expected: 'Port 8001 in use' },
   ] as const)('reads $status in English', ({ status, expected }) => {
-    expect(statusText(desktopText('en-US'), status, '127.0.0.1:8001')).toBe(
-      expected,
-    );
+    expect(
+      statusText(desktopText('en-US'), status, {
+        address: '127.0.0.1:8001',
+        port: '8001',
+      }),
+    ).toBe(expected);
   });
 
   it('does not report a gateway for a remote backend', () => {
     // Only the address: the gateway this app runs is not the one in use.
-    expect(statusText(desktopText('zh-CN'), 'running', 'api.example.com')).toBe(
-      '运行中 · api.example.com',
-    );
+    expect(
+      statusText(desktopText('zh-CN'), 'running', {
+        address: 'api.example.com',
+        port: '8001',
+      }),
+    ).toBe('运行中 · api.example.com');
   });
 });
 
