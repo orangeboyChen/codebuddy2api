@@ -474,7 +474,7 @@ describe('search tool definitions and backend names', () => {
       'jina',
     ]);
     expect(DEFAULT_SEARCH_BACKEND).toBe('searxng');
-    expect(DEFAULT_FETCH_BACKENDS).toEqual(['codebuddy2api']);
+    expect(DEFAULT_FETCH_BACKENDS).toEqual(['codebuddy']);
     // No passthrough: a server tool is executed here or withdrawn, never left
     // for a client that has no way to resolve it.
     expect(SEARCH_BACKENDS).not.toContain('passthrough');
@@ -977,7 +977,7 @@ describe('search provider registry', () => {
     });
 
     it('falls back to the default for the retired passthrough', () => {
-      expect(resolveFetchProvider('passthrough')?.id).toBe('codebuddy2api');
+      expect(resolveFetchProvider('passthrough')?.id).toBe('codebuddy');
     });
 
     it('stores an empty selection as `none`, so clearing the picker turns it off', () => {
@@ -990,9 +990,9 @@ describe('search provider registry', () => {
     });
 
     it('resolves the default when nothing is configured', () => {
-      expect(resolveFetchProvider(null)?.id).toBe('codebuddy2api');
-      expect(resolveFetchProvider(undefined)?.id).toBe('codebuddy2api');
-      expect(resolveFetchProvider('bogus')?.id).toBe('codebuddy2api');
+      expect(resolveFetchProvider(null)?.id).toBe('codebuddy');
+      expect(resolveFetchProvider(undefined)?.id).toBe('codebuddy');
+      expect(resolveFetchProvider('bogus')?.id).toBe('codebuddy');
     });
   });
 

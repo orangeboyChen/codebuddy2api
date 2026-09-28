@@ -92,20 +92,20 @@ were selected — the first one that answers wins. This is worth doing because t
 backends fail in different ways: a direct fetch is refused by some pages, while
 a browser agent is far slower than a direct fetch.
 
-| Backend         | Configuration    | Notes                                                                     |
-| --------------- | ---------------- | ------------------------------------------------------------------------- |
-| `codebuddy`     | none             | CodeBuddy's own `/agenttool/v1/webfetch`, falling back to a direct fetch. |
-| `codebuddy2api` | none             | This server fetches the page directly and converts HTML to text. Default. |
-| `browserable`   | address, API key | Drives a real browser through a Browserable deployment. Key is optional.  |
-| `jina`          | API key          | Jina Reader returns the page as markdown. Key is optional.                |
+| Backend         | Configuration    | Notes                                                                              |
+| --------------- | ---------------- | ---------------------------------------------------------------------------------- |
+| `codebuddy`     | none             | CodeBuddy's own `/agenttool/v1/webfetch`, falling back to a direct fetch. Default. |
+| `codebuddy2api` | none             | This server fetches the page directly and converts HTML to text.                   |
+| `browserable`   | address, API key | Drives a real browser through a Browserable deployment. Key is optional.           |
+| `jina`          | API key          | Jina Reader returns the page as markdown. Key is optional.                         |
 
-Selecting none is how the tool is turned off. `web_fetch` runs locally by
-default now, so a deployment that had left it set to `passthrough` starts
+Selecting none is how the tool is turned off. `web_fetch` defaults to
+`codebuddy` now, so a deployment that had left it set to `passthrough` starts
 fetching pages itself on upgrade — clear the selection to go back.
 
-`codebuddy` is the reason to reach for this setting: it is the same endpoint the
-CodeBuddy CLI calls, so it needs no extra deployment and authenticates with the
-credential already saved in the gateway.
+`codebuddy` is the default because it is the same endpoint the CodeBuddy CLI
+calls: it needs no extra deployment, authenticates with the credential already
+saved in the gateway, and falls back to a direct fetch when the call fails.
 
 The `codebuddy2api` fetch backend treats the URL as untrusted input, since it comes from
 the model: private and loopback addresses are refused before connecting, and

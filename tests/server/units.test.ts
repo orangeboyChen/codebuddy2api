@@ -170,6 +170,7 @@ describe('server units', () => {
     await addCredential({
       bearer_token: 'default-test-token',
       first_message_role_to_system: false,
+      first_system_message_role_to_user: false,
       responses_passthrough: false,
       user_id: 'default@example.com',
     });
@@ -4316,6 +4317,22 @@ describe('server units', () => {
     ).rejects.toThrow('Selected credential was not found');
   });
 
+  it('keeps a credential that chose to leave both conversions off', async () => {
+    // The default is only the answer for a credential that never chose.
+    const created = await addCredential({
+      bearer_token: 'token-without-conversions',
+      first_message_role_to_system: false,
+      first_system_message_role_to_user: false,
+      user_id: 'without-conversions@example.com',
+    });
+
+    const resolved = await resolveProxyContextByCredentialFilename(
+      created.filename,
+    );
+    expect(resolved.preferences.firstMessageRoleToSystem).toBe(false);
+    expect(resolved.preferences.firstSystemMessageRoleToUser).toBe(false);
+  });
+
   it('stops local responses follow-ups when the pinned credential is no longer eligible', async () => {
     const createdCredential = await addCredential({
       bearer_token: 'token-local-follow-up',
@@ -5590,6 +5607,11 @@ describe('server units', () => {
       (credential) => credential.tenant_id === 'tenant-456',
     );
     expect(savedCredential?.tenant_id).toBe('tenant-456');
+    // The automatic sign-in saves a credential built from the token alone, so
+    // it names neither conversion: it has to come out with both on, the way the
+    // console's form would have saved it.
+    expect(savedCredential?.first_message_role_to_system).toBe(true);
+    expect(savedCredential?.first_system_message_role_to_user).toBe(true);
     expect(
       (await readCredentialRecords()).find(
         (credential) => credential.filename === savedCredential?.filename,
@@ -6428,11 +6450,11 @@ describe('server units', () => {
       });
     });
 
-    it('defaults the fetch selection to the local backend', async () => {
+    it('defaults the fetch selection to the CodeBuddy backend', async () => {
       await updateSettings({ CODEBUDDY_WEB_FETCH_BACKEND: '' });
 
       await expect(getActiveConfig()).resolves.toMatchObject({
-        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy2api',
+        CODEBUDDY_WEB_FETCH_BACKEND: 'codebuddy',
       });
     });
 

@@ -53,6 +53,7 @@ describe('anthropic messages api', () => {
     addCredential({
       bearer_token: 'anthropic-test-token',
       first_message_role_to_system: false,
+      first_system_message_role_to_user: false,
       responses_passthrough: false,
       user_id: 'anthropic@example.com',
     });
