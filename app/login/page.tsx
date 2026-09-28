@@ -23,7 +23,17 @@ import { parseThemeMode, themeCookieName } from '@/lib/theme';
 
 export const dynamic = 'force-dynamic';
 
-const LoginPage = async () => {
+const LoginPage = async ({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) => {
+  const { next: nextParam } = await searchParams;
+  // Only ever a path on this console: an absolute URL here would be a link
+  // someone could hand out that signs a user in and then hands them somewhere
+  // else — `//host` included, which a browser reads as a scheme-relative URL.
+  const nextPath =
+    nextParam && /^\/(?!\/)/.test(nextParam) ? nextParam : undefined;
   const headerStore = await headers();
   const cookieStore = await cookies();
   const localePreference = parseLocalePreference(
@@ -70,6 +80,9 @@ const LoginPage = async () => {
       initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
       locale={locale}
       localePreference={localePreference}
+      // Where the sign-in was asked for — a device approval, say — so that
+      // signing in does not drop the user back at the dashboard instead.
+      nextPath={nextPath}
       translations={messages.Admin.loginPage}
     />
   );

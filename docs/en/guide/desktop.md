@@ -46,6 +46,14 @@ With a deployment as the backend, the sign-in page and the password are that dep
 
 A passkey saved for the deployment cannot be used from the app, and neither can the passwords your browser or your system saved for it: both belong to the deployment's address, while this console is served from `127.0.0.1` — a browser only offers a credential for the origin it is on, and it would not match the rpId the deployment was configured with anyway. The sign-in page says so instead of offering a button that would fail, and links to the deployment's own page; following that link opens it in your browser, where the passkey and the saved passwords do work.
 
+## Signing in with a device code
+
+That is also why the app has a way to be signed in from the browser instead: the menu carries **Sign in…** whenever the backend is a deployment you run. It asks that deployment for two codes — one the app waits with, one it shows you — and opens the deployment's own page in your browser, with the code already filled in. Sign in there however that deployment asks (a passkey, a password your browser saved, both), approve the code, and the app picks up a token on its own: no password is ever typed into the window at `127.0.0.1`.
+
+While it waits, the menu says so instead of offering a second code. Approval is good for ten minutes; a code that runs out is simply the end of that offer, and you sign in again. Once signed in, the menu says **Signed in** and offers **Sign out**, which forgets the token on this machine and asks the deployment to forget it too.
+
+The token is kept in `userData` next to the settings, readable by nobody but the user the app runs as, and it belongs to the address it was given for — pointing the app at another deployment starts over. Every request forwarded to that deployment carries it, so the window is signed in until you sign out; a deployment that asks for no sign-in at all is answered with that, rather than with a code nobody can approve.
+
 ## Menu bar status
 
 On macOS a status item sits in the menu bar and shows today's token usage (input / output, refreshed every minute) beside the icon. Its menu shows which backend is in use and at which address, opens the console, copies the address, opens Settings…, or quits the app. Windows and Linux get the same item in the tray, with the status and the usage in its tooltip and a click that opens the console.
@@ -76,12 +84,13 @@ It generates its own encryption key on first launch, so credentials and access k
 
 Everything is written inside Electron's `userData` directory, not next to the installed bundle:
 
-| Path                     | Contents                                                       |
-| ------------------------ | -------------------------------------------------------------- |
-| `data/`                  | File storage directory, and `storage.sqlite` by default        |
-| `credentials/`           | CodeBuddy credential files                                     |
-| `storage-encryption-key` | Storage encryption key generated on first launch (mode `0600`) |
-| `desktop-settings.json`  | The app's own settings: the backend and the port               |
+| Path                        | Contents                                                                  |
+| --------------------------- | ------------------------------------------------------------------------- |
+| `data/`                     | File storage directory, and `storage.sqlite` by default                   |
+| `credentials/`              | CodeBuddy credential files                                                |
+| `storage-encryption-key`    | Storage encryption key generated on first launch (mode `0600`)            |
+| `desktop-settings.json`     | The app's own settings: the backend and the port                          |
+| `desktop-device-token.json` | The token a deployment handed this app when you approved it (mode `0600`) |
 
 ## Signing
 

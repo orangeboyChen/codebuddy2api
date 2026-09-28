@@ -552,6 +552,18 @@
       "waitingForPasskey": "Waiting for a saved passkey...",
       "usernameLabel": "Username"
     },
+    "devicePage": {
+      "approved": "The device is signed in. You can close this tab.",
+      "approvedHeading": "Device approved",
+      "codeLabel": "Code",
+      "description": "A device asked to use this console. Enter the code it is showing to approve it.",
+      "failed": "Approval failed. Try again.",
+      "heading": "Approve a device",
+      "notFound": "That code is not one this console is waiting for, or it has run out.",
+      "submit": "Approve",
+      "submitting": "Approving…",
+      "title": "Device sign-in"
+    },
     "desktopPanel": {
       "portHint": "The gateway is running on 127.0.0.1:{port}. Changing the port restarts it and reloads this page at the new address; when the port is taken the app asks which one to use instead of picking one itself.",
       "portLabel": "Local port",

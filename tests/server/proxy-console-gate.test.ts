@@ -1,7 +1,10 @@
 import { NextRequest } from 'next/server';
+import { vi } from 'vitest';
 
 import proxy from '@/proxy';
 import { DESKTOP_CONSOLE_TOKEN_ENV } from '@/lib/server/electron/console-token';
+import { DESKTOP_DEVICE_TOKEN_ENV } from '@/lib/server/electron/device-token';
+import { ADMIN_UPSTREAM_ENV } from '@/lib/server/admin/upstream';
 
 const ORIGIN = 'http://127.0.0.1:8001';
 
@@ -96,5 +99,48 @@ describe('the console a desktop install serves', () => {
     const response = await withToken(null, () => proxy(pageRequest('/')));
 
     expect(through(response)).toBe(true);
+  });
+
+  it('sends the token the user approved this app with to the deployment', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}'));
+    const before = {
+      device: process.env[DESKTOP_DEVICE_TOKEN_ENV],
+      upstream: process.env[ADMIN_UPSTREAM_ENV],
+    };
+
+    process.env[DESKTOP_DEVICE_TOKEN_ENV] = 'device-token';
+    process.env[ADMIN_UPSTREAM_ENV] = 'https://codebuddy.example.com';
+    vi.stubGlobal('fetch', fetchImpl);
+
+    try {
+      await withToken('token', () =>
+        proxy(
+          pageRequest(
+            '/admin-api/usage',
+            'codebuddy2api-desktop-console=token',
+          ),
+        ),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+
+      for (const [name, value] of [
+        [DESKTOP_DEVICE_TOKEN_ENV, before.device],
+        [ADMIN_UPSTREAM_ENV, before.upstream],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+
+    const headers = new Headers(
+      (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+        .headers as HeadersInit,
+    );
+
+    expect(headers.get('authorization')).toBe('Bearer device-token');
   });
 });

@@ -552,6 +552,18 @@
       "waitingForPasskey": "正在等待已保存的 passkey...",
       "usernameLabel": "用户名"
     },
+    "devicePage": {
+      "approved": "这台设备已登录，可以关掉这个标签页了。",
+      "approvedHeading": "已批准",
+      "codeLabel": "验证码",
+      "description": "有一个设备请求使用这个控制台。输入它显示的那个码，表示你同意。",
+      "failed": "批准失败，请重试。",
+      "heading": "批准设备",
+      "notFound": "这个码不是此控制台正在等的那一个，或者已经过期。",
+      "submit": "批准",
+      "submitting": "正在批准…",
+      "title": "设备登录"
+    },
     "desktopPanel": {
       "portHint": "当前网关运行在 127.0.0.1:{port}。修改端口后桌面端会重启网关，页面会自动加载到新地址；端口被占用时桌面端不会自己挑一个，而是弹窗询问改用哪个端口。",
       "portLabel": "本地端口",

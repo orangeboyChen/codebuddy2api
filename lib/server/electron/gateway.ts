@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { ADMIN_UPSTREAM_ENV } from '../admin/upstream';
 import { DESKTOP_CONSOLE_TOKEN_ENV } from './console-token';
+import { DESKTOP_DEVICE_TOKEN_ENV } from './device-token';
 import { DESKTOP_MODE_ENV, DESKTOP_USER_DATA_ENV } from './settings';
 import type { DesktopPaths } from './paths';
 
@@ -56,6 +57,11 @@ export interface GatewayEnvOptions {
    * gets a page: see `console-token`.
    */
   consoleToken?: string | null;
+  /**
+   * The token the deployment this console shows data from handed this app, to be
+   * sent with everything forwarded there: see `device-token`.
+   */
+  deviceToken?: string | null;
   encryptionKey: string;
   paths: GatewayEnvPaths;
   port: number;
@@ -166,6 +172,14 @@ export const buildGatewayEnv = (
     env[DESKTOP_CONSOLE_TOKEN_ENV] = options.consoleToken.trim();
   } else {
     delete env[DESKTOP_CONSOLE_TOKEN_ENV];
+  }
+
+  // Dropped rather than emptied for the same reason: a stale token would send
+  // one deployment's introduction to another.
+  if (options.deviceToken?.trim()) {
+    env[DESKTOP_DEVICE_TOKEN_ENV] = options.deviceToken.trim();
+  } else {
+    delete env[DESKTOP_DEVICE_TOKEN_ENV];
   }
 
   return env;

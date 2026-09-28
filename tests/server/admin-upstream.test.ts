@@ -320,6 +320,67 @@ describe('forwardToUpstream', () => {
     expect(response.headers.get('location')).toBe('https://evil.example/login');
   });
 
+  it('carries the token the user approved this app with', async () => {
+    const fetchImpl = vi.fn(async () => respond());
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await forwardToUpstream({
+      deviceToken: 'device-token',
+      localOrigin: LOCAL_ORIGIN,
+      request: request(`${LOCAL_ORIGIN}/admin-api/usage/today`),
+      upstream: UPSTREAM,
+    });
+
+    const headers = new Headers(
+      (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+        .headers as HeadersInit,
+    );
+
+    expect(headers.get('authorization')).toBe('Bearer device-token');
+  });
+
+  it('carries nothing when this app was never approved', async () => {
+    const fetchImpl = vi.fn(async () => respond());
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await forwardToUpstream({
+      deviceToken: '   ',
+      localOrigin: LOCAL_ORIGIN,
+      request: request(`${LOCAL_ORIGIN}/admin-api/usage/today`),
+      upstream: UPSTREAM,
+    });
+
+    const headers = new Headers(
+      (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+        .headers as HeadersInit,
+    );
+
+    expect(headers.get('authorization')).toBeNull();
+  });
+
+  it('leaves an authorization the request already had alone', async () => {
+    const fetchImpl = vi.fn(async () => respond());
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await forwardToUpstream({
+      deviceToken: 'device-token',
+      localOrigin: LOCAL_ORIGIN,
+      request: request(`${LOCAL_ORIGIN}/v1/chat/completions`, {
+        // A key of the caller's own, which is the one that has to reach the
+        // deployment: this app's sign-in is not the request's credential.
+        headers: { authorization: 'Bearer sk-caller' },
+      }),
+      upstream: UPSTREAM,
+    });
+
+    const headers = new Headers(
+      (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+        .headers as HeadersInit,
+    );
+
+    expect(headers.get('authorization')).toBe('Bearer sk-caller');
+  });
+
   it('gives up on a deployment that does not answer in time', async () => {
     vi.stubGlobal(
       'fetch',

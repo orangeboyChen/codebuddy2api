@@ -263,6 +263,13 @@ const getDocumentPath = (namespace: string, key: string): string => {
     return path.join(getFileStorageDir(), 'admin-auth.json');
   }
 
+  // The grants and tokens a device sign-in is made of. Hashes and codes only —
+  // the secrets themselves are never stored — so it is not an encrypted
+  // document, but it is still this deployment's to keep.
+  if (namespace === 'admin-device' && key === 'grants') {
+    return path.join(getFileStorageDir(), 'admin-device.json');
+  }
+
   if (
     namespace === 'credentials' &&
     key === CREDENTIAL_MANAGER_STATE_FILENAME

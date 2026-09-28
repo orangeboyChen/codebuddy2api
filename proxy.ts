@@ -5,6 +5,7 @@ import {
   consoleRequestAllowed,
   isOpenPath,
 } from '@/lib/server/electron/console-token';
+import { deviceToken } from '@/lib/server/electron/device-token';
 import {
   forwardToUpstream,
   isProxiedPath,
@@ -53,6 +54,8 @@ const proxy = async (request: NextRequest): Promise<Response> => {
   }
 
   return forwardToUpstream({
+    // What the deployment handed this app when the user approved it there.
+    deviceToken: deviceToken(),
     localOrigin: request.nextUrl.origin,
     request: request as unknown as Request,
     upstream,

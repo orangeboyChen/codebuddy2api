@@ -180,6 +180,14 @@ const copyResponseHeaders = (
 };
 
 export interface ForwardOptions {
+  /**
+   * The token this app was handed by the deployment, to be sent along with
+   * everything forwarded to it. It is the desktop's half of the device
+   * authorization grant: the user approved this app on the deployment's own
+   * page, where a passkey works, and this is how the window is signed in
+   * without a password ever being typed into it.
+   */
+  deviceToken?: string | null;
   request: Request;
   /** The origin this console is served from, for redirects it has to keep. */
   localOrigin: string;
@@ -195,6 +203,7 @@ export interface ForwardOptions {
  * have to tell apart from its own.
  */
 export const forwardToUpstream = async ({
+  deviceToken = null,
   localOrigin,
   request,
   timeoutMs = UPSTREAM_HEADERS_TIMEOUT_MS,
@@ -210,6 +219,13 @@ export const forwardToUpstream = async ({
       headers.set(name, value);
     }
   });
+
+  // Only when the window sent none of its own: a session cookie the user signed
+  // in with in this window is the stronger claim, and both at once would ask the
+  // deployment to decide between them.
+  if (deviceToken?.trim() && !headers.has('authorization')) {
+    headers.set('authorization', `Bearer ${deviceToken.trim()}`);
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => {
