@@ -61,10 +61,16 @@ export type UpdateUnavailableReason =
   | 'unreadable-version';
 
 export type UpdateCheck =
+  | { asset: ReleaseAsset; kind: 'update'; version: string }
   | {
+      asset: null;
       kind: 'update';
-      /** Null when the release has no build for this platform and architecture. */
-      asset: ReleaseAsset | null;
+      /**
+       * Why there is nothing to install: `no-build` when the release has no
+       * file for this platform and architecture, `unprobed` when not one of the
+       * names could be asked for — which is not the release's answer.
+       */
+      missingAsset: 'no-build' | 'unprobed';
       version: string;
     }
   | { kind: 'unavailable'; reason: UpdateUnavailableReason }
@@ -269,6 +275,17 @@ const fetchTagFromApi = async (
 };
 
 /**
+ * A wait the fallback can still use.
+ *
+ * The page and the API share one timeout, which is what makes the wait bounded
+ * at all — but the shared signal has already run out when the page was the
+ * thing that hung, and an aborted signal would fail the API's request before it
+ * was ever made. Which is the one case the fallback exists for.
+ */
+const fallbackSignal = (signal: AbortSignal): AbortSignal =>
+  signal.aborted ? AbortSignal.timeout(RELEASE_TIMEOUT_MS) : signal;
+
+/**
  * The newest release, or null when it cannot be named: no network, no release
  * yet, a payload that changed shape. Nothing here is worth throwing over — the
  * menu bar item can only say that it could not check.
@@ -281,7 +298,7 @@ export const fetchLatestRelease = async ({
 }: LatestReleaseOptions = {}): Promise<Release | null> => {
   const tag =
     (await fetchTagFromPage(fetchImpl, url, signal)) ??
-    (await fetchTagFromApi(fetchImpl, apiUrl, signal));
+    (await fetchTagFromApi(fetchImpl, apiUrl, fallbackSignal(signal)));
 
   if (!tag) {
     return null;
@@ -306,6 +323,21 @@ export interface FindAssetOptions {
 }
 
 /**
+ * What asking a release for this machine's installer came back with.
+ *
+ * "No file for this computer" and "no request got through" are different
+ * answers, and only the first one is the release's: the second says nothing
+ * about whether a build exists, so it must not be shown as though it did.
+ */
+export type AssetProbe =
+  /** The file this machine wants, in the release that is out. */
+  | { asset: ReleaseAsset; kind: 'found' }
+  /** Asked, and the release has no file for this platform and architecture. */
+  | { kind: 'no-build' }
+  /** Not one of the names could be asked for: no answer either way. */
+  | { kind: 'unprobed' };
+
+/**
  * The installer this machine wants inside a release, found by asking GitHub
  * for the file: answered with a redirect to it when it is there, and with a
  * 404 when the release has none under that name.
@@ -320,8 +352,18 @@ export const findReleaseAsset = async ({
   signal = AbortSignal.timeout(ASSET_TIMEOUT_MS),
   tag,
   version,
-}: FindAssetOptions): Promise<ReleaseAsset | null> => {
-  for (const name of assetNames(version, platform, arch)) {
+}: FindAssetOptions): Promise<AssetProbe> => {
+  const names = assetNames(version, platform, arch);
+
+  // A platform the app is not built for: nothing to ask about, and the release
+  // cannot have answered for it.
+  if (!names.length) {
+    return { kind: 'no-build' };
+  }
+
+  let asked = 0;
+
+  for (const name of names) {
     const url = assetDownloadUrl(tag, name);
 
     try {
@@ -332,6 +374,9 @@ export const findReleaseAsset = async ({
         signal,
       });
 
+      // An answer, whether it is the file or the 404 that says there is none.
+      asked += 1;
+
       if (!response.ok) {
         continue;
       }
@@ -341,14 +386,17 @@ export const findReleaseAsset = async ({
         10,
       );
 
-      return { name, size: Number.isFinite(length) ? length : 0, url };
+      return {
+        asset: { name, size: Number.isFinite(length) ? length : 0, url },
+        kind: 'found',
+      };
     } catch {
       // A network that will not make the request, or one that dropped it: the
       // next name is the next thing to try.
     }
   }
 
-  return null;
+  return { kind: asked ? 'no-build' : 'unprobed' };
 };
 
 export interface CheckForUpdateOptions {
@@ -397,15 +445,22 @@ export const checkForUpdate = async ({
     return { kind: 'up-to-date', version: current };
   }
 
+  const probe = await findReleaseAsset({
+    arch,
+    fetchImpl,
+    platform,
+    tag: release.tag,
+    version: release.version,
+  });
+
+  if (probe.kind === 'found') {
+    return { asset: probe.asset, kind: 'update', version: release.version };
+  }
+
   return {
-    asset: await findReleaseAsset({
-      arch,
-      fetchImpl,
-      platform,
-      tag: release.tag,
-      version: release.version,
-    }),
+    asset: null,
     kind: 'update',
+    missingAsset: probe.kind,
     version: release.version,
   };
 };

@@ -273,6 +273,50 @@ describe('fetchLatestRelease', () => {
     ).resolves.toBeNull();
   });
 
+  // The fallback is only worth having because the page may be the thing that
+  // hangs: a wait it ran out on must not be the wait the API gets too, or the
+  // request is aborted before it is ever made.
+  it('gives the API a wait of its own when the page ran the shared one out', async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const fetchImpl = vi.fn(
+      async (url: string, init?: { signal?: AbortSignal }) => {
+        signals.push(init?.signal);
+
+        return url === LATEST_RELEASE_URL
+          ? pageResponse(LATEST_RELEASE_URL)
+          : apiResponse({ tag_name: 'v1.4.0' });
+      },
+    ) as unknown as ReleaseFetch;
+
+    await expect(
+      fetchLatestRelease({ fetchImpl, signal: AbortSignal.abort() }),
+    ).resolves.toMatchObject({ tag: 'v1.4.0' });
+
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(false);
+  });
+
+  // A caller's own wait is honoured still: it is what a cancelled check is.
+  it('waits on the caller’s signal when there is time left in it', async () => {
+    const signal = AbortSignal.timeout(60_000);
+    const signals: Array<AbortSignal | undefined> = [];
+    const fetchImpl = vi.fn(
+      async (url: string, init?: { signal?: AbortSignal }) => {
+        signals.push(init?.signal);
+
+        return url === LATEST_RELEASE_URL
+          ? pageResponse(LATEST_RELEASE_URL)
+          : apiResponse({ tag_name: 'v1.4.0' });
+      },
+    ) as unknown as ReleaseFetch;
+
+    await expect(
+      fetchLatestRelease({ fetchImpl, signal }),
+    ).resolves.toMatchObject({ tag: 'v1.4.0' });
+
+    expect(signals[1]).toBe(signal);
+  });
+
   // A tag that is not a version is published all the same, but there is
   // nothing to compare a build against.
   it('reports no version for a tag that is not one', async () => {
@@ -299,9 +343,12 @@ describe('findReleaseAsset', () => {
         version: '1.4.0',
       }),
     ).resolves.toEqual({
-      name: 'CodeBuddy2API-1.4.0-mac-arm64.dmg',
-      size: 0,
-      url: assetDownloadUrl('v1.4.0', 'CodeBuddy2API-1.4.0-mac-arm64.dmg'),
+      asset: {
+        name: 'CodeBuddy2API-1.4.0-mac-arm64.dmg',
+        size: 0,
+        url: assetDownloadUrl('v1.4.0', 'CodeBuddy2API-1.4.0-mac-arm64.dmg'),
+      },
+      kind: 'found',
     });
   });
 
@@ -312,7 +359,7 @@ describe('findReleaseAsset', () => {
 
     await expect(
       findReleaseAsset({ fetchImpl, tag: 'v1.4.0', version: '1.4.0' }),
-    ).resolves.toMatchObject({ size: 1_000 });
+    ).resolves.toMatchObject({ asset: { size: 1_000 }, kind: 'found' });
   });
 
   // The release builds two files for Windows, and the second one is the one to
@@ -331,7 +378,8 @@ describe('findReleaseAsset', () => {
         version: '1.4.0',
       }),
     ).resolves.toMatchObject({
-      name: 'CodeBuddy2API-1.4.0-win-x64-portable.exe',
+      asset: { name: 'CodeBuddy2API-1.4.0-win-x64-portable.exe' },
+      kind: 'found',
     });
   });
 
@@ -344,7 +392,7 @@ describe('findReleaseAsset', () => {
         tag: 'v1.4.0',
         version: '1.4.0',
       }),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ kind: 'no-build' });
   });
 
   it('has nothing to offer a platform the app is not built for', async () => {
@@ -356,17 +404,20 @@ describe('findReleaseAsset', () => {
         tag: 'v1.4.0',
         version: '1.4.0',
       }),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ kind: 'no-build' });
   });
 
-  it('answers nothing when the network is not there', async () => {
+  // A network that dropped every request is not the release answering "no
+  // build for this machine": whether there is one is exactly what went
+  // unanswered.
+  it('does not call a network that answered nothing a release with no file', async () => {
     await expect(
       findReleaseAsset({
         fetchImpl: offlineFetch(),
         tag: 'v1.4.0',
         version: '1.4.0',
       }),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ kind: 'unprobed' });
   });
 });
 
@@ -401,6 +452,31 @@ describe('checkForUpdate', () => {
     ).resolves.toEqual({
       asset: null,
       kind: 'update',
+      missingAsset: 'no-build',
+      version: '1.4.0',
+    });
+  });
+
+  // Newer, but this machine could not ask about its files: said as that, not
+  // as a release that has no build for it.
+  it('says the files went unanswered rather than that there are none', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url === LATEST_RELEASE_URL
+        ? pageResponse(TAG_PAGE)
+        : url === LATEST_API_URL
+          ? apiResponse({ tag_name: 'v1.4.0' })
+          : Promise.reject(new Error('offline')),
+    ) as unknown as ReleaseFetch;
+
+    await expect(
+      checkForUpdate({
+        currentVersion: '1.3.15',
+        fetchImpl,
+      }),
+    ).resolves.toEqual({
+      asset: null,
+      kind: 'update',
+      missingAsset: 'unprobed',
       version: '1.4.0',
     });
   });
