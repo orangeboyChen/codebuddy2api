@@ -2,6 +2,7 @@ import { spawn as spawnProcess } from 'node:child_process';
 import path from 'node:path';
 
 import { ADMIN_UPSTREAM_ENV } from '../admin/upstream';
+import { DESKTOP_CONSOLE_TOKEN_ENV } from './console-token';
 import { DESKTOP_MODE_ENV, DESKTOP_USER_DATA_ENV } from './settings';
 import type { DesktopPaths } from './paths';
 
@@ -50,6 +51,11 @@ export interface GatewayHandle {
 
 export interface GatewayEnvOptions {
   baseEnv?: NodeJS.ProcessEnv;
+  /**
+   * The token the console this gateway serves answers to. Nothing without it
+   * gets a page: see `console-token`.
+   */
+  consoleToken?: string | null;
   encryptionKey: string;
   paths: GatewayEnvPaths;
   port: number;
@@ -152,6 +158,14 @@ export const buildGatewayEnv = (
     env[ADMIN_UPSTREAM_ENV] = options.upstream;
   } else {
     delete env[ADMIN_UPSTREAM_ENV];
+  }
+
+  // Dropped rather than emptied when there is none, so a token left behind in
+  // the environment cannot silently decide who a console answers to.
+  if (options.consoleToken?.trim()) {
+    env[DESKTOP_CONSOLE_TOKEN_ENV] = options.consoleToken.trim();
+  } else {
+    delete env[DESKTOP_CONSOLE_TOKEN_ENV];
   }
 
   return env;
