@@ -177,6 +177,18 @@ jobs:
     name: Desktop ${{ matrix.label }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
+    # Signing the macOS app, and asking Apple to notarize it. Empty when the
+    # repository carries no certificate: electron-builder then leaves the app
+    # unsigned instead of failing, and Gatekeeper refuses it on the user's Mac
+    # exactly as it does today. Scoped to the macOS entries on purpose — an
+    # Apple certificate means nothing to the Windows and Linux installers, and
+    # electron-builder would try to sign them with it all the same.
+    env:
+      APPLE_API_ISSUER: ${{ matrix.macos && secrets.APPLE_API_ISSUER || '' }}
+      APPLE_API_KEY: ${{ matrix.macos && secrets.APPLE_API_KEY || '' }}
+      APPLE_API_KEY_ID: ${{ matrix.macos && secrets.APPLE_API_KEY_ID || '' }}
+      CSC_KEY_PASSWORD: ${{ matrix.macos && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+      CSC_LINK: ${{ matrix.macos && secrets.MACOS_CERTIFICATE || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -188,11 +200,13 @@ jobs:
               label: macos-arm64,
               runs_on: macos-latest,
               targets: '--mac --arm64',
+              macos: true,
             }
           - {
               label: macos-x64,
               runs_on: macos-15-intel,
               targets: '--mac --x64',
+              macos: true,
             }
           - {
               label: windows-x64,
@@ -223,9 +237,41 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run build
+      - name: Give notarytool its API key
+        if: ${{ env.APPLE_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `notarytool --key` takes a path to the .p8 and not the key itself,
+          # so the secret has to become a file before electron-builder runs.
+          key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY" > "$key"
+          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
       - name: Build desktop app
         shell: bash
         run: bun scripts/build-desktop.ts ${{ matrix.targets }}
+      - name: Check that the app is signed
+        if: ${{ env.CSC_LINK != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find build/desktop -name '*.app' -maxdepth 2 -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo '::error::electron-builder left no .app behind'
+            exit 1
+          fi
+          # A build that quietly skipped signing looks exactly like one that
+          # worked, right up to the Mac that refuses to open the dmg.
+          codesign -dv --verbose=4 "$app" 2>&1 | tee codesign.log
+          if grep -q 'TeamIdentifier=not set' codesign.log; then
+            echo "::error::$app carries no signing identity — check MACOS_CERTIFICATE and MACOS_CERTIFICATE_PASSWORD"
+            exit 1
+          fi
+          # Signed but not notarized opens on no Mac either: Gatekeeper asks
+          # Apple about the app, and there is nothing on file for it.
+          if [[ -z "$APPLE_API_KEY" ]]; then
+            echo '::warning::The app is signed but was never notarized — APPLE_API_KEY, APPLE_API_KEY_ID or APPLE_API_ISSUER is missing'
+          fi
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error
@@ -283,11 +329,17 @@ jobs:
             echo
             echo '## Desktop apps'
             echo
-            echo 'Unsigned builds of the Electron app, one per platform:'
+            echo 'Builds of the Electron app, one per platform:'
             echo
             echo '- macOS: `CodeBuddy2API-<version>-mac-<arch>.dmg` (Apple silicon and Intel)'
             echo '- Windows: `CodeBuddy2API-<version>-win-x64-setup.exe` and `-portable.exe`'
             echo '- Linux: `CodeBuddy2API-<version>-linux-<arch>.AppImage` and `codebuddy2api-<version>-linux-<arch>.deb`'
+            echo
+            echo 'The macOS builds are signed and notarized when the repository has a Developer ID certificate. Without one, Gatekeeper refuses the app — open it with:'
+            echo
+            echo '```sh'
+            echo 'xattr -cr /Applications/CodeBuddy2API.app'
+            echo '```'
             echo
             echo '## Commits'
             echo

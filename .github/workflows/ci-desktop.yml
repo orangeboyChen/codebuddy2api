@@ -40,6 +40,15 @@ jobs:
     name: Desktop Build
     runs-on: ${{ inputs.runs_on || 'ubuntu-latest' }}
     timeout-minutes: 45
+    # The same signing the release workflow does, so a hand-dispatched macOS
+    # build can be checked before a release is cut. Empty unless the targets
+    # say macOS: see the comment in release.yml.
+    env:
+      APPLE_API_ISSUER: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.APPLE_API_ISSUER || '' }}
+      APPLE_API_KEY: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.APPLE_API_KEY || '' }}
+      APPLE_API_KEY_ID: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.APPLE_API_KEY_ID || '' }}
+      CSC_KEY_PASSWORD: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+      CSC_LINK: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.MACOS_CERTIFICATE || '' }}
 
     steps:
       # The release workflow builds all five desktop targets; this one keeps
@@ -67,8 +76,42 @@ jobs:
       - name: Build Next.js app
         run: bun run build
 
+      - name: Give notarytool its API key
+        if: ${{ env.APPLE_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `notarytool --key` takes a path to the .p8 and not the key itself,
+          # so the secret has to become a file before electron-builder runs.
+          key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY" > "$key"
+          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
+
       - name: Build desktop app
         run: bun scripts/build-desktop.ts ${{ inputs.targets || '--linux --x64' }}
+
+      - name: Check that the app is signed
+        if: ${{ env.CSC_LINK != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find build/desktop -name '*.app' -maxdepth 2 -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo '::error::electron-builder left no .app behind'
+            exit 1
+          fi
+          # A build that quietly skipped signing looks exactly like one that
+          # worked, right up to the Mac that refuses to open the dmg.
+          codesign -dv --verbose=4 "$app" 2>&1 | tee codesign.log
+          if grep -q 'TeamIdentifier=not set' codesign.log; then
+            echo "::error::$app carries no signing identity — check MACOS_CERTIFICATE and MACOS_CERTIFICATE_PASSWORD"
+            exit 1
+          fi
+          # Signed but not notarized opens on no Mac either: Gatekeeper asks
+          # Apple about the app, and there is nothing on file for it.
+          if [[ -z "$APPLE_API_KEY" ]]; then
+            echo '::warning::The app is signed but was never notarized — APPLE_API_KEY, APPLE_API_KEY_ID or APPLE_API_ISSUER is missing'
+          fi
 
       # A build nobody can open is only half a check — the installers are
       # downloadable from the run. One day is enough to try one; the release

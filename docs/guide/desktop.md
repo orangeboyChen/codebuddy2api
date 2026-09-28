@@ -70,7 +70,13 @@ macOS 顶部菜单栏会常驻一个状态图标，图标旁显示今日的 toke
 
 ## 签名说明
 
-构建产物未做代码签名。macOS 首次打开需要在「访达」中右键点击应用并选择「打开」；Windows 会提示 SmartScreen，选择「仍要运行」即可。
+Release 中的 macOS 构建用 Developer ID 证书签名并交给 Apple 公证，双击 dmg 即可打开。仓库里没有配置证书时构建照旧产出，只是未签名——Gatekeeper 会拒绝它，这时把应用拖进 `Applications` 后执行：
+
+```sh
+xattr -cr /Applications/CodeBuddy2API.app
+```
+
+再在「访达」中右键点击应用并选择「打开」。Windows 构建未签名时会提示 SmartScreen，选择「仍要运行」即可。
 
 ## 从源码构建
 
