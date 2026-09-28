@@ -1,0 +1,50 @@
+# The macOS build.
+#
+# fastlane builds nothing here — electron-builder does, through
+# `bun run desktop:dist`. What this lane adds is the certificate: `match` keeps
+# the Developer ID certificate and its private key, encrypted, in a private git
+# repository, because CI has no way to make one of its own. So the lane imports
+# the certificate into a keychain, points electron-builder at that keychain, and
+# gets out of the way.
+#
+# Without MATCH_GIT_URL it still builds, unsigned, exactly as it did before.
+
+KEYCHAIN_NAME = "codebuddy2api-build"
+
+lane :mac do |options|
+  targets = (options[:targets] || "--mac --arm64").split
+
+  if ENV["MATCH_GIT_URL"].to_s.empty?
+    UI.important("MATCH_GIT_URL is not set — building without a signing certificate.")
+  else
+    password = ENV["MATCH_KEYCHAIN_PASSWORD"] || ""
+
+    # A keychain of our own rather than the login keychain: `match` puts the
+    # certificate in one place, and electron-builder is told to look there and
+    # nowhere else, so it cannot pick up some other identity by accident.
+    create_keychain(
+      name: KEYCHAIN_NAME,
+      password: password,
+      default_keychain: true,
+      unlock: true,
+      timeout: 3600,
+      add_to_search_list: true
+    )
+
+    # Read-only on purpose: renewing a Developer ID certificate needs the
+    # account holder's own login, which CI does not have. It is renewed by
+    # hand, when it expires, and pushed back into the repository.
+    match(
+      type: "developer_id",
+      readonly: true,
+      keychain_name: KEYCHAIN_NAME,
+      keychain_password: password
+    )
+
+    # With no CSC_LINK of its own, electron-builder signs with the identity it
+    # finds in CSC_KEYCHAIN.
+    ENV["CSC_KEYCHAIN"] = File.expand_path(lane_context[SharedValues::KEYCHAIN_PATH])
+  end
+
+  sh("bun", "run", "desktop:dist", "--", *targets)
+end

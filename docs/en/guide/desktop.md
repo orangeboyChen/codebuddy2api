@@ -70,21 +70,10 @@ Everything is written inside Electron's `userData` directory, not next to the in
 
 ## Signing
 
-The builds are not code-signed. On macOS, right-click the app and choose Open the first time; on Windows, dismiss the SmartScreen prompt with Run anyway.
+The macOS builds in a release are signed and notarized, so the dmg opens on a double-click. On Windows, dismiss the SmartScreen prompt with Run anyway.
 
-## Building from source
+If macOS says the app is damaged and cannot be opened, drag it into `Applications` and run:
 
-```bash
-bun install
-bun run build
-bun run desktop:prepare   # assemble the gateway, bundle the main process, rebuild better-sqlite3 for Electron
-bun run desktop:dist      # the same, plus electron-builder packaging
+```sh
+xattr -cr /Applications/CodeBuddy2API.app
 ```
-
-Arguments after `desktop:dist` are forwarded to electron-builder, so a single target looks like this:
-
-```bash
-bun run desktop:dist -- --mac --arm64
-```
-
-Artifacts land in `build/desktop`. Native modules are compiled for the architecture of the machine that builds them, so an x86 Mac has to be built on an x86 Mac.

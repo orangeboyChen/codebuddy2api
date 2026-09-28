@@ -33,8 +33,11 @@ mac:
   category: public.app-category.developer-tools
   darkModeSupport: true
   icon: electron/resources/icon.icns
-  # Builds are unsigned: set a signing identity locally to ship a notarized app.
-  identity: null
+  # No `identity`: electron-builder signs with the Developer ID certificate it
+  # finds in the keychain, which on a release runner is the one the workflow
+  # imports from `CSC_LINK`, and skips signing when there is none — the same
+  # unsigned build this produced before. `identity: null` would forbid signing
+  # even with a certificate, and Gatekeeper then refuses the dmg.
   target:
     - dmg
 

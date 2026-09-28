@@ -70,21 +70,10 @@ macOS 顶部菜单栏会常驻一个状态图标，图标旁显示今日的 toke
 
 ## 签名说明
 
-构建产物未做代码签名。macOS 首次打开需要在「访达」中右键点击应用并选择「打开」；Windows 会提示 SmartScreen，选择「仍要运行」即可。
+Release 中的 macOS 构建已签名并经过 Apple 公证，下载后双击 dmg 即可打开。Windows 构建会提示 SmartScreen，选择「仍要运行」即可。
 
-## 从源码构建
+如果 macOS 提示「已损坏，无法打开」，把应用拖进「应用程序」后执行：
 
-```bash
-bun install
-bun run build
-bun run desktop:prepare   # 组装网关、打包主进程、按 Electron 重新编译 better-sqlite3
-bun run desktop:dist      # 以上步骤 + electron-builder 打包
+```sh
+xattr -cr /Applications/CodeBuddy2API.app
 ```
-
-`desktop:dist` 后的参数会传给 electron-builder，例如只构建 macOS arm64：
-
-```bash
-bun run desktop:dist -- --mac --arm64
-```
-
-产物位于 `build/desktop`。原生模块是按构建机器的架构编译的，因此 x86 的 Mac 需要在 x86 的机器上构建。

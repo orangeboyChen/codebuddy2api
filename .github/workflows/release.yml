@@ -177,6 +177,19 @@ jobs:
     name: Desktop ${{ matrix.label }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
+    # Notarization, and the private git repository `match` keeps the Developer
+    # ID certificate in. Empty when the repository has none: the build then
+    # stays unsigned, as it is today. Scoped to the macOS entries on purpose —
+    # Apple credentials mean nothing to the Windows and Linux installers.
+    env:
+      APPLE_API_ISSUER: ${{ matrix.macos && secrets.APPLE_API_ISSUER || '' }}
+      APPLE_API_KEY: ${{ matrix.macos && secrets.APPLE_API_KEY || '' }}
+      APPLE_API_KEY_ID: ${{ matrix.macos && secrets.APPLE_API_KEY_ID || '' }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ matrix.macos && secrets.MATCH_GIT_BASIC_AUTHORIZATION || '' }}
+      MATCH_GIT_PRIVATE_KEY: ${{ matrix.macos && secrets.MATCH_GIT_PRIVATE_KEY || '' }}
+      MATCH_GIT_URL: ${{ matrix.macos && secrets.MATCH_GIT_URL || '' }}
+      MATCH_KEYCHAIN_PASSWORD: ${{ matrix.macos && secrets.MATCH_KEYCHAIN_PASSWORD || '' }}
+      MATCH_PASSWORD: ${{ matrix.macos && secrets.MATCH_PASSWORD || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -188,11 +201,13 @@ jobs:
               label: macos-arm64,
               runs_on: macos-latest,
               targets: '--mac --arm64',
+              macos: true,
             }
           - {
               label: macos-x64,
               runs_on: macos-15-intel,
               targets: '--mac --x64',
+              macos: true,
             }
           - {
               label: windows-x64,
@@ -223,9 +238,64 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run build
+      # `match` is Ruby, and it is the only reason this repository has any.
+      - uses: ruby/setup-ruby@v1
+        if: ${{ matrix.macos }}
+        with:
+          bundler-cache: true
+          ruby-version: '3.3'
+      - name: Trust github.com for the certificate repository
+        if: ${{ env.MATCH_GIT_PRIVATE_KEY != '' }}
+        shell: bash
+        run: |
+          # `git clone` over ssh refuses a host it has never seen, and a runner
+          # has never seen github.com.
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+      - name: Give notarytool its API key
+        if: ${{ env.APPLE_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `notarytool --key` takes a path to the .p8 and not the key itself,
+          # so the secret has to become a file before electron-builder runs.
+          key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY" > "$key"
+          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
       - name: Build desktop app
         shell: bash
-        run: bun scripts/build-desktop.ts ${{ matrix.targets }}
+        run: |
+          set -euo pipefail
+          # Only macOS goes through fastlane: it is the one platform with a
+          # certificate to import, and the lane builds the same app — unsigned —
+          # when there is none.
+          if [[ "${{ matrix.macos }}" == "true" ]]; then
+            bundle exec fastlane mac targets:"${{ matrix.targets }}"
+          else
+            bun scripts/build-desktop.ts ${{ matrix.targets }}
+          fi
+      - name: Check that the app is signed
+        if: ${{ env.MATCH_GIT_URL != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find build/desktop -name '*.app' -maxdepth 2 -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo '::error::electron-builder left no .app behind'
+            exit 1
+          fi
+          # A build that quietly skipped signing looks exactly like one that
+          # worked, right up to the Mac that refuses to open the dmg.
+          codesign -dv --verbose=4 "$app" 2>&1 | tee codesign.log
+          if grep -q 'TeamIdentifier=not set' codesign.log; then
+            echo "::error::$app carries no signing identity — check MATCH_GIT_URL, MATCH_PASSWORD and MATCH_KEYCHAIN_PASSWORD"
+            exit 1
+          fi
+          # Signed but not notarized opens on no Mac either: Gatekeeper asks
+          # Apple about the app, and there is nothing on file for it.
+          if [[ -z "$APPLE_API_KEY" ]]; then
+            echo '::warning::The app is signed but was never notarized — APPLE_API_KEY, APPLE_API_KEY_ID or APPLE_API_ISSUER is missing'
+          fi
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error
@@ -283,11 +353,17 @@ jobs:
             echo
             echo '## Desktop apps'
             echo
-            echo 'Unsigned builds of the Electron app, one per platform:'
+            echo 'Builds of the Electron app, one per platform:'
             echo
             echo '- macOS: `CodeBuddy2API-<version>-mac-<arch>.dmg` (Apple silicon and Intel)'
             echo '- Windows: `CodeBuddy2API-<version>-win-x64-setup.exe` and `-portable.exe`'
             echo '- Linux: `CodeBuddy2API-<version>-linux-<arch>.AppImage` and `codebuddy2api-<version>-linux-<arch>.deb`'
+            echo
+            echo 'On Windows, dismiss the SmartScreen prompt with Run anyway. If macOS says the app is damaged and cannot be opened, drag it into `Applications` and run:'
+            echo
+            echo '```sh'
+            echo 'xattr -cr /Applications/CodeBuddy2API.app'
+            echo '```'
             echo
             echo '## Commits'
             echo
