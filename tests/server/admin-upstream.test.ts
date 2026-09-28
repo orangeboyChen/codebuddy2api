@@ -320,6 +320,67 @@ describe('forwardToUpstream', () => {
     expect(response.headers.get('location')).toBe('https://evil.example/login');
   });
 
+  it('carries the token the user approved this app with', async () => {
+    const fetchImpl = vi.fn(async () => respond());
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await forwardToUpstream({
+      deviceToken: 'device-token',
+      localOrigin: LOCAL_ORIGIN,
+      request: request(`${LOCAL_ORIGIN}/admin-api/usage/today`),
+      upstream: UPSTREAM,
+    });
+
+    const headers = new Headers(
+      (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+        .headers as HeadersInit,
+    );
+
+    expect(headers.get('authorization')).toBe('Bearer device-token');
+  });
+
+  it('carries nothing when this app was never approved', async () => {
+    const fetchImpl = vi.fn(async () => respond());
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await forwardToUpstream({
+      deviceToken: '   ',
+      localOrigin: LOCAL_ORIGIN,
+      request: request(`${LOCAL_ORIGIN}/admin-api/usage/today`),
+      upstream: UPSTREAM,
+    });
+
+    const headers = new Headers(
+      (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+        .headers as HeadersInit,
+    );
+
+    expect(headers.get('authorization')).toBeNull();
+  });
+
+  it('leaves an authorization the request already had alone', async () => {
+    const fetchImpl = vi.fn(async () => respond());
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await forwardToUpstream({
+      deviceToken: 'device-token',
+      localOrigin: LOCAL_ORIGIN,
+      request: request(`${LOCAL_ORIGIN}/v1/chat/completions`, {
+        // A key of the caller's own, which is the one that has to reach the
+        // deployment: this app's sign-in is not the request's credential.
+        headers: { authorization: 'Bearer sk-caller' },
+      }),
+      upstream: UPSTREAM,
+    });
+
+    const headers = new Headers(
+      (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+        .headers as HeadersInit,
+    );
+
+    expect(headers.get('authorization')).toBe('Bearer sk-caller');
+  });
+
   it('gives up on a deployment that does not answer in time', async () => {
     vi.stubGlobal(
       'fetch',
@@ -369,6 +430,47 @@ describe('fetchUpstreamSessionSummary', () => {
     expect(fetchImpl).toHaveBeenCalledWith(
       `${UPSTREAM}/admin-api/auth/session`,
       expect.objectContaining({ headers: { cookie: 'session=abc' } }),
+    );
+  });
+
+  // A page rendered here is not a request the proxy forwards, so nothing else
+  // attaches the token: without it a device approval leaves the console signed
+  // out while the menu bar says signed in.
+  it('carries the token the user approved in a browser', async () => {
+    const fetchImpl = respond({ session: { authenticated: true } });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await expect(
+      fetchUpstreamSessionSummary({
+        cookie: 'session=stale',
+        deviceToken: 'device-token',
+        upstream: UPSTREAM,
+      }),
+    ).resolves.toEqual({ authenticated: true });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `${UPSTREAM}/admin-api/auth/session`,
+      expect.objectContaining({
+        headers: {
+          authorization: 'Bearer device-token',
+          cookie: 'session=stale',
+        },
+      }),
+    );
+  });
+
+  it('sends no authorization for a token that is not one', async () => {
+    const fetchImpl = respond({ session: { authenticated: false } });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await fetchUpstreamSessionSummary({
+      deviceToken: '   ',
+      upstream: UPSTREAM,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ headers: {} }),
     );
   });
 
@@ -461,6 +563,25 @@ describe('fetchUpstreamAccountStatus', () => {
     expect(fetchImpl).toHaveBeenCalledWith(
       `${UPSTREAM}/admin-api/account-status`,
       expect.objectContaining({ headers: { cookie: 'session=abc' } }),
+    );
+  });
+
+  // The accounts the page reads on the server, which is a page the proxy never
+  // sees: the token has to be handed to it here too.
+  it('asks with the token this app was approved with', async () => {
+    const fetchImpl = respond({ credentials: [], statuses: [] });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await fetchUpstreamAccountStatus({
+      deviceToken: 'device-token',
+      upstream: UPSTREAM,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `${UPSTREAM}/admin-api/account-status`,
+      expect.objectContaining({
+        headers: { authorization: 'Bearer device-token' },
+      }),
     );
   });
 

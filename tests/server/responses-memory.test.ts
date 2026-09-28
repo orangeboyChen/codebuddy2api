@@ -753,4 +753,89 @@ describe('Responses memory bounds', () => {
     expect(text).toContain('response.output_text.done');
     expect(text).toContain(`"text":"${'y'.repeat(chunk.length * chunkCount)}"`);
   });
+
+  it('closes a stream without repeating the completed item in every event', async () => {
+    // The closing events each used to rebuild the completed item, and
+    // `output_text.done` carried a whole item next to the text it was
+    // announcing: five copies of the answer on the wire for one answer, and
+    // every copy is a full-size string while it lives.
+    const answer = 'z'.repeat(20_000);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: answer } }] })}\n\n`,
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'close the stream',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+
+    const events = (await response.text())
+      .split('\n\n')
+      .map((frame) =>
+        frame.split('\n').find((line) => line.startsWith('data: ')),
+      )
+      .filter((line): line is string => Boolean(line))
+      .map((line) => line.slice(6).trim())
+      .filter((payload) => payload !== '[DONE]')
+      .map((payload) => JSON.parse(payload) as Record<string, unknown>);
+    const byType = (type: string): Record<string, unknown> | undefined =>
+      events.find((event) => event.type === type);
+
+    // `output_item.done` is the event defined to carry the item...
+    expect(byType('response.output_item.done')?.item).toMatchObject({
+      content: [{ text: answer, type: 'output_text' }],
+      role: 'assistant',
+      status: 'completed',
+      type: 'message',
+    });
+
+    // ...and `output_text.done` carries the text, not a second copy of it.
+    expect(byType('response.output_text.done')).toMatchObject({
+      text: answer,
+    });
+    expect(byType('response.output_text.done')?.item).toBeUndefined();
+
+    // The completed response still carries both the item and the text.
+    const completed = byType('response.completed')?.response as {
+      output: Array<{ content: Array<{ text: string }> }>;
+      output_text: string;
+    };
+    expect(completed.output_text).toBe(answer);
+    expect(completed.output[0]?.content[0]?.text).toBe(answer);
+  });
+
+  it('rejects streamed reasoning above the limit that bounds streamed text', async () => {
+    // `outputText` was bounded and the reasoning accumulator was not, so a
+    // long chain of thought grew without limit — and the closing events hold
+    // it three times over: the summary, the replayable blob and the completed
+    // output. Reasoning models emit far more of it than they emit text.
+    const oversized = [
+      'r'.repeat(900_000),
+      'r'.repeat(900_000),
+      'r'.repeat(300_001),
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        oversized
+          .map(
+            (chunk) =>
+              `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: chunk } }] })}\n\n`,
+          )
+          .join(''),
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    );
+
+    const response = await handleResponsesRequest(makeRequest(), {
+      input: 'oversized reasoning',
+      model: 'gpt-5.5',
+      stream: true,
+    });
+
+    expect(await response.text()).toContain('response.error');
+  });
 });

@@ -7,7 +7,6 @@
  * exists to ask. The console's own locale cookie decides which set is used.
  */
 export interface DesktopText {
-  about: string;
   /** The address of a deployment, asked for in a dialog of the system's own. */
   address: string;
   appVersion: string;
@@ -22,6 +21,12 @@ export interface DesktopText {
   checkForUpdates: string;
   chooseBackend: string;
   copyAddress: string;
+  /** What the dialog that shows a device code says. */
+  deviceCodeMessage: string;
+  deviceNotConfigured: string;
+  deviceOpenBrowser: string;
+  deviceSignInExpired: string;
+  deviceSignInFailed: string;
   invalidBackendUrl: string;
   invalidPort: string;
   openConsole: string;
@@ -35,6 +40,16 @@ export interface DesktopText {
   save: string;
   serverVersion: string;
   settings: string;
+  settingsDataDir: string;
+  settingsDataRemote: string;
+  settingsDatabase: string;
+  settingsTabAbout: string;
+  settingsTabData: string;
+  settingsTabGeneral: string;
+  signIn: string;
+  signedIn: string;
+  signingIn: string;
+  signOut: string;
   statusFailed: string;
   statusPortBusy: string;
   statusRunning: string;
@@ -62,7 +77,6 @@ export interface DesktopText {
 
 const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'en-US': {
-    about: 'CodeBuddy2API on GitHub',
     address: 'Address',
     appVersion: 'Version {version}',
     backend: 'Backend',
@@ -78,6 +92,12 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     checkForUpdates: 'Check for updates…',
     chooseBackend: 'Choose a backend',
     copyAddress: 'Copy address',
+    deviceCodeMessage:
+      'Sign this app in at {url}, with the code {code}. The browser opens on the page that asks for it.',
+    deviceNotConfigured: 'That deployment does not ask for a sign-in.',
+    deviceOpenBrowser: 'Open the browser',
+    deviceSignInExpired: 'The code ran out before it was approved.',
+    deviceSignInFailed: 'The deployment did not sign this app in.',
     invalidBackendUrl: 'Enter an address starting with http:// or https://',
     invalidPort: 'Enter a whole number between {min} and {max}.',
     openConsole: 'Open console',
@@ -93,6 +113,16 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     save: 'Save',
     serverVersion: 'Server version {version}',
     settings: 'Settings…',
+    settingsDataDir: 'Data folder {path}',
+    settingsDataRemote: 'The console’s data comes from {url}.',
+    settingsDatabase: 'Database {path}',
+    settingsTabAbout: 'About',
+    settingsTabData: 'Data',
+    settingsTabGeneral: 'General',
+    signIn: 'Sign in…',
+    signedIn: 'Signed in',
+    signingIn: 'Waiting for the browser…',
+    signOut: 'Sign out',
     statusFailed: 'Gateway failed to start',
     statusPortBusy: 'Port {port} in use',
     statusRunning: 'Running · {address}',
@@ -124,7 +154,6 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     usageUnavailable: 'Usage unavailable',
   },
   'ja-JP': {
-    about: 'GitHub の CodeBuddy2API',
     address: 'アドレス',
     appVersion: 'バージョン {version}',
     backend: 'バックエンド',
@@ -140,6 +169,12 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     checkForUpdates: 'アップデートを確認…',
     chooseBackend: 'バックエンドを選択',
     copyAddress: 'アドレスをコピー',
+    deviceCodeMessage:
+      'このアプリを {url} でコード {code} を使ってサインインさせます。ブラウザーでそのページが開きます。',
+    deviceNotConfigured: 'そのデプロイはサインインを求めません。',
+    deviceOpenBrowser: 'ブラウザーを開く',
+    deviceSignInExpired: 'コードは承認される前に期限切れになりました。',
+    deviceSignInFailed: 'デプロイはこのアプリをサインインさせませんでした。',
     invalidBackendUrl:
       'http:// または https:// で始まるアドレスを入力してください',
     invalidPort: '{min} から {max} までの整数を入力してください。',
@@ -156,6 +191,16 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     save: '保存',
     serverVersion: 'サーバーバージョン {version}',
     settings: '設定…',
+    settingsDataDir: 'データフォルダ {path}',
+    settingsDataRemote: 'コンソールのデータは {url} にあります。',
+    settingsDatabase: 'データベース {path}',
+    settingsTabAbout: 'このアプリについて',
+    settingsTabData: 'データ',
+    settingsTabGeneral: '一般',
+    signIn: 'サインイン…',
+    signedIn: 'サインイン済み',
+    signingIn: 'ブラウザーを待っています…',
+    signOut: 'サインアウト',
     statusFailed: 'ゲートウェイの起動に失敗しました',
     statusPortBusy: 'ポート {port} は使用中',
     statusRunning: '動作中 · {address}',
@@ -188,7 +233,6 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     usageUnavailable: '使用量を取得できません',
   },
   'zh-CN': {
-    about: 'GitHub 上的 CodeBuddy2API',
     address: '地址',
     appVersion: '版本 {version}',
     backend: '后端',
@@ -204,6 +248,12 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     checkForUpdates: '检查更新…',
     chooseBackend: '选择后端',
     copyAddress: '复制地址',
+    deviceCodeMessage:
+      '在 {url} 用验证码 {code} 登录这个应用。浏览器会打开要求输入它的那一页。',
+    deviceNotConfigured: '那个部署不要求登录。',
+    deviceOpenBrowser: '打开浏览器',
+    deviceSignInExpired: '验证码在被批准之前就过期了。',
+    deviceSignInFailed: '部署没有让这个应用登录。',
     invalidBackendUrl: '请输入以 http:// 或 https:// 开头的地址',
     invalidPort: '请输入 {min} 到 {max} 之间的整数。',
     openConsole: '打开控制台',
@@ -218,6 +268,16 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     save: '保存',
     serverVersion: '服务端版本 {version}',
     settings: '设置…',
+    settingsDataDir: '数据目录 {path}',
+    settingsDataRemote: '控制台的数据来自 {url}。',
+    settingsDatabase: '数据库 {path}',
+    settingsTabAbout: '关于',
+    settingsTabData: '数据',
+    settingsTabGeneral: '通用',
+    signIn: '登录…',
+    signedIn: '已登录',
+    signingIn: '正在等待浏览器…',
+    signOut: '退出登录',
     statusFailed: '网关启动失败',
     statusPortBusy: '端口 {port} 被占用',
     statusRunning: '运行中 · {address}',

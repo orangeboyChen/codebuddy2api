@@ -185,6 +185,17 @@ export const mapChatStreamToResponsesEventStream = (
         reasoningItemAdded = true;
       };
 
+      // Memoized: the closing events all carry the same completed item, and
+      // every rebuild is another full-size copy of the answer on the heap. The
+      // text is final by the time any of them is emitted, so sharing one
+      // object changes nothing on the wire.
+      let completedMessageItem: Record<string, unknown> | null = null;
+      const getCompletedMessageItem = (): Record<string, unknown> => {
+        completedMessageItem ??= buildStreamingMessageItem('completed');
+
+        return completedMessageItem;
+      };
+
       const ensureMessageAdded = (): void => {
         if (messageAddedEmitted) {
           return;
@@ -390,16 +401,18 @@ export const mapChatStreamToResponsesEventStream = (
             });
             if (outputText) {
               ensureMessageAdded();
+              // `output_text.done` carries the text, not the item: the item is
+              // a second full copy of the same text, and `output_item.done`
+              // is the event defined to carry it.
               enqueueEvent({
                 type: 'response.output_text.done',
-                item: buildStreamingMessageItem('completed'),
                 output_index: messageState.outputIndex,
                 response_id: responseId,
                 text: outputText,
               });
               enqueueEvent({
                 type: 'response.output_item.done',
-                item: buildStreamingMessageItem('completed'),
+                item: getCompletedMessageItem(),
                 output_index: messageState.outputIndex,
                 response_id: responseId,
               });
@@ -438,7 +451,7 @@ export const mapChatStreamToResponsesEventStream = (
                   ...(outputText && messageState.outputIndex !== null
                     ? [
                         {
-                          item: buildStreamingMessageItem('completed'),
+                          item: getCompletedMessageItem(),
                           outputIndex: messageState.outputIndex,
                         },
                       ]
@@ -568,6 +581,17 @@ export const mapChatStreamToResponsesEventStream = (
               if (delta?.reasoning_content) {
                 reasoningItemId ||= createResponseReasoningId();
                 streamedReasoning += delta.reasoning_content;
+                // Bounded like the text above, and for the same reason: the
+                // closing events hold the reasoning three times over — the
+                // summary, the replayable blob and the completed output — so
+                // an unbound chain of thought is the largest thing this stream
+                // can accumulate. Reasoning models emit far more of it than
+                // they emit answer text.
+                if (streamedReasoning.length > MAX_STREAM_TEXT_LENGTH) {
+                  throw new Error(
+                    'Response reasoning exceeds the maximum size',
+                  );
+                }
                 ensureReasoningItemAdded();
                 enqueueEvent({
                   type: 'response.reasoning_text.delta',

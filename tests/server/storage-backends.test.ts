@@ -461,6 +461,28 @@ describe('storage backends', () => {
     expect(trimDebugLogs).toHaveBeenCalledWith(10);
   });
 
+  // A document the desktop's device sign-in is stored in: a namespace the file
+  // backend does not name is not one it will write, which surfaces as the sign-in
+  // being unwritable rather than as anything about the grant.
+  it('keeps the grants a device signs in with in the data directory', async () => {
+    const storage = await import('@/lib/server/storage');
+
+    // The runtime is on `globalThis`, so it outlives `resetModules`: an earlier
+    // test leaves a database backend behind unless it is dropped here.
+    storage.resetStorageRuntime();
+
+    await storage.writeStorageJson('admin-device', 'grants', { grants: [] });
+
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(tempDataDir, 'admin-device.json'), 'utf8'),
+      ),
+    ).toEqual({ grants: [] });
+    await expect(
+      storage.readStorageJson('admin-device', 'grants'),
+    ).resolves.toEqual({ grants: [] });
+  });
+
   it('fails fast when pg backend is enabled without a connection string', async () => {
     process.env.CODEBUDDY_STORAGE_BACKEND = 'pg';
     process.env.CODEBUDDY_STORAGE_PG_URL = '';

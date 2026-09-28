@@ -10,6 +10,7 @@ import {
   resolveAdminUpstream,
   unreachableSessionSummary,
 } from '@/lib/server/admin/upstream';
+import { deviceToken } from '@/lib/server/electron/device-token';
 import { getMessages } from '@/lib/i18n/messages';
 import { resolveRequestOrigin } from '@/lib/server/shared/http';
 import {
@@ -23,7 +24,18 @@ import { parseThemeMode, themeCookieName } from '@/lib/theme';
 
 export const dynamic = 'force-dynamic';
 
-const LoginPage = async () => {
+const LoginPage = async ({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) => {
+  const { next: nextParam } = await searchParams;
+  // Only ever a path on this console: an absolute URL here would be a link
+  // someone could hand out that signs a user in and then hands them somewhere
+  // else — `//host` included, which a browser reads as a scheme-relative URL,
+  // and `\host` too, which it reads as one before it is done with the path.
+  const nextPath =
+    nextParam && /^\/(?![/\\])/.test(nextParam) ? nextParam : undefined;
   const headerStore = await headers();
   const cookieStore = await cookies();
   const localePreference = parseLocalePreference(
@@ -47,7 +59,11 @@ const LoginPage = async () => {
   // this build is only rendering it.
   const upstream = resolveAdminUpstream();
   const summary = upstream
-    ? await fetchUpstreamSessionSummary({ cookie: cookieHeader, upstream })
+    ? await fetchUpstreamSessionSummary({
+        cookie: cookieHeader,
+        deviceToken: deviceToken(),
+        upstream,
+      })
     : await getAdminSessionSummary(request);
   const session = summary ?? unreachableSessionSummary();
   await getTranslations({
@@ -70,6 +86,9 @@ const LoginPage = async () => {
       initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
       locale={locale}
       localePreference={localePreference}
+      // Where the sign-in was asked for — a device approval, say — so that
+      // signing in does not drop the user back at the dashboard instead.
+      nextPath={nextPath}
       translations={messages.Admin.loginPage}
     />
   );

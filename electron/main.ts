@@ -2,10 +2,12 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   BrowserWindow,
   Menu,
+  MenuItemConstructorOptions,
   Tray,
   app,
   clipboard,
@@ -44,6 +46,28 @@ import {
   type AskAnswer,
   type AskForm,
 } from '../lib/server/electron/ask';
+import {
+  DEVICE_REQUEST_TIMEOUT_MS,
+  pollForDeviceToken,
+  requestDeviceAuthorization,
+  type DeviceGrant,
+} from '../lib/server/electron/device-auth';
+import {
+  forgetDeviceToken,
+  readDeviceToken,
+  writeDeviceToken,
+} from '../lib/server/electron/device-token';
+import {
+  appleScriptSettings,
+  parseSettingsAnswer,
+  settingsTabForm,
+  windowsSettingsScript,
+  zenitySettingsNoteArgs,
+  zenitySettingsTabArgs,
+  type SettingsAnswer,
+  type SettingsForm,
+  type SettingsTab,
+} from '../lib/server/electron/settings-dialog';
 import {
   DESKTOP_SETTINGS_FILENAME,
   MAX_PORT,
@@ -244,6 +268,15 @@ let backendChosen = false;
  * does, so nothing else on this machine is shown the console.
  */
 let consoleToken = '';
+/**
+ * The token the deployment the console shows data from handed this app, when the
+ * user approved it there. Carried on everything forwarded to that deployment, so
+ * the window is signed in without a password ever being typed into it — and held
+ * for that address alone, because it is that deployment that promised it.
+ */
+let deviceToken: string | null = null;
+/** Whether the app is waiting for the user to approve a device code. */
+let signingIn = false;
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -411,6 +444,7 @@ const createMainWindow = (url: string): BrowserWindow => {
     autoHideMenuBar: true,
     backgroundColor: '#16161a',
     height: WINDOW_HEIGHT,
+    icon: windowIcon(),
     minHeight: MIN_WINDOW_HEIGHT,
     minWidth: MIN_WINDOW_WIDTH,
     // One place to find the app: the menu bar item.
@@ -527,6 +561,39 @@ const statusLabel = (): string =>
 const usageLabel = (): string =>
   usageLoaded ? usageText(text(), todayUsage, locale) : '';
 
+/**
+ * The row that says whether this app is signed in to the deployment, and the one
+ * that signs it in or out.
+ *
+ * Nothing is signed out of while a code is still waiting to be approved: the
+ * token being asked for and the one being dropped are the same sign-in, and a
+ * menu that offered both at once would be offering to undo what it is doing.
+ */
+const deviceMenu = (): MenuItemConstructorOptions => {
+  const shell = text();
+
+  if (signingIn) {
+    return { enabled: false, label: shell.signingIn };
+  }
+
+  return deviceToken
+    ? {
+        // Named for the deployment it belongs to, because that is what was
+        // signed in to — and what signing out here leaves.
+        submenu: [
+          { enabled: false, label: shell.signedIn },
+          { click: () => void signOutOfDeployment(), label: shell.signOut },
+        ],
+        label: shell.signedIn,
+      }
+    : { click: () => void signInToDeployment(), label: shell.signIn };
+};
+
+/**
+ * The menu the tray item opens: what the app is doing, the console it serves, and
+ * the settings that decide both — the whole app, in the one place it is always
+ * reachable from.
+ */
 const buildTrayMenu = (): Menu =>
   Menu.buildFromTemplate([
     { enabled: false, label: `CodeBuddy2API · ${statusLabel()}` },
@@ -547,9 +614,14 @@ const buildTrayMenu = (): Menu =>
     },
     { type: 'separator' },
     { enabled: false, label: `${text().backend}: ${backendLabel()}` },
-    // The window behind this item settles both things the app asks about: the
-    // backend, and the port it serves on.
-    { click: () => void askAboutBackend('choose'), label: text().settings },
+    // The settings dialog: the backend and the port in a tab of their own,
+    // beside one that says where this install keeps its data and one that says
+    // what this app is.
+    { click: () => void openSettings(), label: text().settings },
+    // Signing in is only a question with a deployment behind the console: this
+    // machine's own gateway is reachable by nothing but this app's window, which
+    // needs no approval from anybody.
+    ...(backend.mode === 'remote' ? [deviceMenu()] : []),
     { type: 'separator' },
     {
       enabled: false,
@@ -569,9 +641,6 @@ const buildTrayMenu = (): Menu =>
       enabled: updateState === 'idle',
       label: updateMenuLabel(),
     },
-    // Where the app lives. The menu bar is the only place the app has to say
-    // so, and the repository is where every other answer about it is.
-    { click: () => openExternally(HOME_PAGE_URL), label: text().about },
     { type: 'separator' },
     { click: () => app.quit(), label: text().quit },
   ]);
@@ -582,7 +651,14 @@ const refreshTray = (): void => {
   }
 
   // The pieces that have something to say, and no empty join between them.
-  const parts = ['CodeBuddy2API', statusLabel(), usageLabel()].filter(Boolean);
+  const parts = [
+    // A development build says so first: on macOS the item is an alpha mask, so
+    // a badge drawn into it — or the plate it sits on — is thrown away.
+    ...(isDevelopmentBuild() ? ['DEV'] : []),
+    'CodeBuddy2API',
+    statusLabel(),
+    usageLabel(),
+  ].filter(Boolean);
 
   tray.setToolTip(parts.join(' · '));
   tray.setContextMenu(buildTrayMenu());
@@ -592,7 +668,12 @@ const refreshTray = (): void => {
   // all until there is a number, because an icon with "…" beside it is an icon
   // that never says anything.
   if (process.platform === 'darwin') {
-    tray.setTitle(usageLabel());
+    // `DEV` there too: the mask throws away a drawn badge, and text survives.
+    const development = isDevelopmentBuild();
+
+    tray.setTitle(
+      [development ? 'DEV' : '', usageLabel()].filter(Boolean).join(' · '),
+    );
   }
 };
 
@@ -602,6 +683,45 @@ const refreshTray = (): void => {
  */
 const bundleDir = (): string =>
   resolveAppBundleDir({ appPath: app.getAppPath() });
+
+// The name scripts/dev-icon.ts exports as DEV_ICON_FILENAME, spelled out rather
+// than imported from a build script this process would then carry. Whether the
+// file is there is what makes a build a development one.
+const devIconPath = (): string => path.join(bundleDir(), 'icon-dev.png');
+
+const isDevelopmentBuild = (): boolean => fs.existsSync(devIconPath());
+
+// The Dock's icon, which `electron .` has no bundle to take from and would
+// otherwise be Electron's own. An install carries its icon already, so this is
+// the one build that needs it drawn.
+const applyDevelopmentIcon = (): void => {
+  if (process.platform !== 'darwin' || app.isPackaged) {
+    return;
+  }
+
+  const iconPath = devIconPath();
+
+  if (!fs.existsSync(iconPath)) {
+    return;
+  }
+
+  const icon = nativeImage.createFromPath(iconPath);
+
+  // A file that is there but is not a PNG gives an empty image, and a dock
+  // tile of nothing is worse than the one Electron would have drawn.
+  if (icon.isEmpty()) {
+    return;
+  }
+
+  app.dock?.setIcon(icon);
+};
+
+// Where a platform draws a window's icon at all — the title bar, the taskbar.
+// macOS draws it in none of them, and there it is the Dock.
+const windowIcon = (): string | undefined =>
+  process.platform === 'darwin' || !isDevelopmentBuild()
+    ? undefined
+    : devIconPath();
 
 /**
  * The menu bar item, which is what makes the app's state visible while the
@@ -615,10 +735,14 @@ const createTray = (): void => {
   // monochrome one disappears into a dark taskbar, so they get the app's own
   // icon, which brings its own background and reads on a light tray too.
   const template = process.platform === 'darwin';
-  const iconPath = path.join(
-    bundleDir(),
-    template ? 'tray-template.png' : 'tray.png',
-  );
+  const development = isDevelopmentBuild();
+  const iconPath =
+    // Orange where the release is the app's dark, but not on macOS: there the
+    // item is a mask, and an orange plate put through it comes out a light mark,
+    // which is what the release already looks like.
+    development && !template
+      ? devIconPath()
+      : path.join(bundleDir(), template ? 'tray-template.png' : 'tray.png');
 
   if (!fs.existsSync(iconPath)) {
     return;
@@ -668,14 +792,14 @@ const createTray = (): void => {
     });
   }
 
-  // The menu bar item is the app, and it is the only thing that is: a dock icon
-  // beside it is a second app in the system tray with nothing of its own to
-  // offer — every way in is already in the menu. Hidden only once the item
-  // exists, so an install whose icon failed to load still has a dock to click.
-  if (process.platform === 'darwin') {
-    app.dock?.hide();
-  }
-
+  // The dock icon stays, and that is a decision rather than an omission:
+  // hiding it turns the whole process into a UIElement (accessory)
+  // application, which is what macOS lets float its window over another app's
+  // fullscreen Space — a console sitting in front of whatever else is on the
+  // screen, with no way to put anything over it. It also takes the app out of
+  // the dock and out of Cmd+Tab, so an open console could only ever be reached
+  // again from the menu bar item. A development build is no exception: on macOS
+  // its own icon is drawn in the Dock, which is the one place it shows.
   refreshTray();
 };
 
@@ -690,6 +814,7 @@ const launchGateway = async (
   return startGateway({
     env: buildGatewayEnv({
       consoleToken,
+      deviceToken,
       encryptionKey: ensureDesktopEncryptionKey(paths.keyFile),
       paths,
       port,
@@ -1171,6 +1296,10 @@ const applyBackend = async (
   }
 
   backend = chosen;
+  // A token is a promise one deployment made: pointed at another one, or back at
+  // this machine, the app has no token at all.
+  deviceToken =
+    chosen.mode === 'remote' ? readDeviceToken(userDataDir, chosen.url) : null;
   todayUsage = null;
   usageLoaded = false;
   serverVersion = null;
@@ -1276,6 +1405,7 @@ const openBackendWindow = ({
   const window = new BrowserWindow({
     autoHideMenuBar: true,
     height: BACKEND_WINDOW_HEIGHT,
+    icon: windowIcon(),
     resizable: false,
     // One place to find the app: the menu bar item.
     skipTaskbar: SKIP_TASKBAR,
@@ -1589,6 +1719,42 @@ const backendForm = (error: string): AskForm => {
 };
 
 /**
+ * What an answer to the backend question means, whichever dialog asked it.
+ *
+ * An empty string when the answer could be used, and the reason it could not
+ * when it could not: the same two things are asked for by the first-run
+ * question and by the settings dialog, and the answer is read the same way.
+ */
+const applyBackendAnswer = async (
+  option: string | null,
+  values: string[],
+): Promise<string> => {
+  const [url = '', portValue = ''] = values;
+  const port = normalizeDesktopPort(portValue, 0);
+  const remote = option === text().backendRemote;
+
+  if (remote && !isValidBackendUrl(url)) {
+    return text().invalidBackendUrl;
+  }
+
+  // A number is asked for only with the local gateway — the dialog asks for
+  // nothing else when a deployment is named, and the port the console is served
+  // on then stays the one already on disk.
+  if (!remote && !port) {
+    return invalidPortMessage();
+  }
+
+  await applyBackend(
+    normalizeDesktopBackend(
+      remote ? { mode: 'remote', url } : { mode: 'local' },
+    ),
+    { persist: true, port: port || undefined },
+  );
+
+  return '';
+};
+
+/**
  * Which backend, and which port, asked in a dialog of the system's own.
  */
 const askBackendAndPort = async (): Promise<AskOutcome['kind']> => {
@@ -1601,33 +1767,14 @@ const askBackendAndPort = async (): Promise<AskOutcome['kind']> => {
       return outcome.kind;
     }
 
-    const [url = '', portValue = ''] = outcome.answer.values;
-    const port = normalizeDesktopPort(portValue, 0);
-    const remote = outcome.answer.option === text().backendRemote;
-
-    if (remote && !isValidBackendUrl(url)) {
-      error = text().invalidBackendUrl;
-
-      continue;
-    }
-
-    // A number is asked for only with the local gateway — the dialog above asks
-    // for nothing else when a deployment is named, and the port the console is
-    // served on then stays the one already on disk.
-    if (!remote && !port) {
-      error = invalidPortMessage();
-
-      continue;
-    }
-
-    await applyBackend(
-      normalizeDesktopBackend(
-        remote ? { mode: 'remote', url } : { mode: 'local' },
-      ),
-      { persist: true, port: port || undefined },
+    error = await applyBackendAnswer(
+      outcome.answer.option,
+      outcome.answer.values,
     );
 
-    return 'answered';
+    if (!error) {
+      return 'answered';
+    }
   }
 
   // Never answered with a number the app could bind, in a dialog that cannot
@@ -1678,6 +1825,415 @@ const askPortAgain = async (): Promise<AskOutcome['kind']> => {
   }
 
   return 'failed';
+};
+
+/**
+ * The repository, as it is written rather than as it is opened.
+ */
+const homePageLabel = (): string => HOME_PAGE_URL.replace(/^https?:\/\//, '');
+
+/**
+ * The settings, as one dialog of the computer's own with the computer's tabs.
+ *
+ * The question that was all the shell used to have — which backend, which port
+ * — is the first tab, because it is the one that decides what the app is; beside
+ * it, a tab saying where this install keeps its data, and a last one saying what
+ * this app is and where it lives.
+ */
+const settingsForm = (error: string): SettingsForm => {
+  const shell = text();
+  const paths = resolveDesktopPaths(userDataDir);
+  // A deployment is what keeps the data, so this machine's database is not what
+  // the console is showing, and naming it would be naming the wrong thing.
+  const data: SettingsTab =
+    backend.mode === 'remote'
+      ? {
+          label: shell.settingsTabData,
+          links: [{ label: backend.url, url: backend.url }],
+          notes: [fillText(shell.settingsDataRemote, { url: backend.url })],
+        }
+      : {
+          label: shell.settingsTabData,
+          // A link rather than a button: the desktop opens what it names, in the
+          // file manager this desktop uses, and the dialog stays where it is.
+          links: [
+            { label: paths.dataDir, url: pathToFileURL(paths.dataDir).href },
+          ],
+          notes: [
+            fillText(shell.settingsDataDir, { path: paths.dataDir }),
+            fillText(shell.settingsDatabase, { path: paths.sqlitePath }),
+          ],
+        };
+
+  return {
+    cancel: shell.cancel,
+    error,
+    ok: shell.save,
+    tabs: [
+      {
+        fields: [
+          {
+            label: shell.address,
+            message: shell.backendRemoteHint,
+            value: backend.mode === 'remote' ? backend.url : '',
+          },
+          {
+            // Only this machine's gateway is served on a port of this machine's.
+            label: shell.port,
+            message: shell.portHint,
+            value: String(preferredPort()),
+          },
+        ],
+        label: shell.settingsTabGeneral,
+        message: shell.chooseBackend,
+        option: backend.mode === 'remote' ? 1 : 0,
+        options: [shell.backendLocal, shell.backendRemote],
+      },
+      data,
+      {
+        label: shell.settingsTabAbout,
+        links: [{ label: homePageLabel(), url: HOME_PAGE_URL }],
+        notes: [
+          fillText(shell.appVersion, { version: app.getVersion() }),
+          `${shell.backend}: ${backendLabel()}`,
+          // Only a backend that is not this app has a version of its own.
+          ...(serverVersion
+            ? [fillText(shell.serverVersion, { version: serverVersion })]
+            : []),
+        ],
+      },
+    ],
+    title: 'CodeBuddy2API',
+  };
+};
+
+type SettingsOutcome =
+  | { answer: SettingsAnswer; kind: 'answered' }
+  | { kind: 'cancelled' }
+  | { kind: 'failed' };
+
+/** The settings in the dialog AppKit draws: a tab view inside an alert. */
+const askWithSettingsScript = async (
+  form: SettingsForm,
+): Promise<SettingsAnswer | null> => {
+  const { code, stdout } = await runCommand('/usr/bin/osascript', [
+    '-l',
+    'JavaScript',
+    '-e',
+    appleScriptSettings(form),
+  ]);
+
+  return code === 0 ? parseSettingsAnswer(stdout, form) : null;
+};
+
+/** The same dialog as a WinForms form, with the `TabControl` Windows draws. */
+const askWithWindowsSettings = async (
+  form: SettingsForm,
+): Promise<SettingsAnswer | null> => {
+  const args = [
+    '-NoProfile',
+    '-NonInteractive',
+    '-STA',
+    '-EncodedCommand',
+    windowsEncodedCommand(windowsSettingsScript(form)),
+  ];
+  const [command, absolute] = powershellCommands();
+  const { stdout } = await runCommand(command, args).catch(() =>
+    runCommand(absolute, args),
+  );
+
+  return parseSettingsAnswer(stdout, form);
+};
+
+/**
+ * The settings in the dialogs zenity draws, which have no tab control between
+ * them: the section is picked from a list, and the section picked is the one
+ * that is asked about.
+ */
+const askWithZenitySettings = async (
+  form: SettingsForm,
+): Promise<SettingsAnswer | null> => {
+  const { code, stdout } = await runCommand(
+    'zenity',
+    zenitySettingsTabArgs(form),
+  );
+
+  // Cancel in zenity is a non-zero exit, and a section that is none of the tabs
+  // is not an answer either.
+  if (code !== 0) {
+    return null;
+  }
+
+  const picked = form.tabs.findIndex((tab) => tab.label === stdout.trim());
+
+  if (picked < 0) {
+    return null;
+  }
+
+  const tab = form.tabs[picked];
+
+  // A section that only says things, then: zenity has no tab to put it in, so
+  // it is the one dialog zenity has for a text. Nothing is asked in it, so
+  // nothing is answered — the General section's entries would come back empty
+  // from here, and saving empty ones is a change of backend nobody made.
+  if (!tab.options?.length && !tab.fields?.length) {
+    await runCommand('zenity', zenitySettingsNoteArgs(tab)).catch(() => null);
+
+    return null;
+  }
+
+  const outcome = await askWithZenity(settingsTabForm(form, tab));
+
+  if (!outcome) {
+    return null;
+  }
+
+  const answer: SettingsAnswer = {
+    options: form.tabs.map(() => null),
+    values: form.tabs.map(() => []),
+  };
+
+  answer.options[picked] = outcome.option;
+  answer.values[picked] = outcome.values;
+
+  return answer;
+};
+
+const askSettings = async (form: SettingsForm): Promise<SettingsOutcome> => {
+  const ask =
+    process.platform === 'darwin'
+      ? askWithSettingsScript
+      : process.platform === 'win32'
+        ? askWithWindowsSettings
+        : askWithZenitySettings;
+
+  try {
+    const answer = await ask(form);
+
+    return answer ? { answer, kind: 'answered' } : { kind: 'cancelled' };
+  } catch (error) {
+    console.warn(`The desktop could not ask: ${describeError(error)}`);
+
+    return { kind: 'failed' };
+  }
+};
+
+/**
+ * The settings, opened from the menu bar item — not the first-run question
+ * again, which is one tab of a dialog that has the rest of the settings in it.
+ */
+const openSettings = async (): Promise<void> => {
+  if (asking) {
+    return;
+  }
+
+  if (!asksInSystemDialogs()) {
+    // Asked for by name, so it is worth saying out loud.
+    console.warn(
+      'CODEBUDDY_DESKTOP_ASK=window: asking in the app’s own window.',
+    );
+
+    openBackendWindow({ screen: 'choose' });
+
+    return;
+  }
+
+  asking = true;
+
+  try {
+    let error = '';
+
+    for (let attempt = 0; attempt < ASK_ATTEMPTS; attempt += 1) {
+      const outcome = await askSettings(settingsForm(error));
+
+      if (outcome.kind !== 'answered') {
+        if (outcome.kind === 'failed') {
+          dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage('choose'));
+        }
+
+        return;
+      }
+
+      error = await applyBackendAnswer(
+        outcome.answer.options[0] ?? null,
+        outcome.answer.values[0] ?? [],
+      );
+
+      if (!error) {
+        return;
+      }
+    }
+
+    // Never answered with something the app could use, in a dialog that cannot
+    // say what is wrong under a field: said in a dialog of the system's own.
+    dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage('choose'));
+  } finally {
+    asking = false;
+  }
+};
+
+/**
+ * The dialog that shows a code: where to go, and what to type when there.
+ *
+ * Nothing is typed into the dialog itself — this app has no secret it could keep
+ * and no passkey it could reach — so the only answer asked for is whether to
+ * open the page the deployment serves, which is where the approval can be given.
+ */
+const deviceCodeForm = (grant: DeviceGrant): AskForm => {
+  const shell = text();
+
+  return {
+    cancel: shell.cancel,
+    message: fillText(shell.deviceCodeMessage, {
+      code: grant.userCode,
+      url: grant.verificationUri || grant.verificationUriComplete,
+    }),
+    ok: shell.deviceOpenBrowser,
+    options: [shell.deviceOpenBrowser],
+    title: 'CodeBuddy2API',
+  };
+};
+
+/**
+ * Signing this app in to the deployment whose data it shows.
+ *
+ * The app has no browser of its own to sign in in, and a passkey saved for a
+ * deployment cannot be used from a window at `127.0.0.1`: a browser offers a
+ * credential to the origin it is on. So the deployment is asked for two codes
+ * instead — one the app waits with, one it shows — and the approval is the
+ * user's to make in a browser, on the address the passkey was saved for.
+ *
+ * What comes back is kept on disk and handed to the gateway, which sends it with
+ * everything it forwards: the window is signed in without a password ever having
+ * been typed into this machine's console.
+ */
+const signInToDeployment = async (): Promise<void> => {
+  // This machine's own gateway is served to nobody but this app's window: there
+  // is no deployment to be approved by, and so no sign-in to make.
+  if (backend.mode !== 'remote' || signingIn) {
+    return;
+  }
+
+  const shell = text();
+  // Named before anything is asked of it: the grant is that deployment's, and
+  // the token that comes back is a promise it made. The backend can be pointed
+  // somewhere else while the user is still approving, and a token saved under
+  // the new address would be carried to a deployment that never issued it.
+  const issuedBy = backend.url;
+  const requested = await requestDeviceAuthorization({ baseUrl: issuedBy });
+
+  if (requested.kind === 'notConfigured') {
+    dialog.showErrorBox('CodeBuddy2API', shell.deviceNotConfigured);
+
+    return;
+  }
+
+  if (requested.kind !== 'granted') {
+    dialog.showErrorBox('CodeBuddy2API', shell.deviceSignInFailed);
+
+    return;
+  }
+
+  const { grant } = requested;
+
+  if (asksInSystemDialogs()) {
+    const outcome = await askSystem(deviceCodeForm(grant));
+
+    if (outcome.kind !== 'answered') {
+      return;
+    }
+  } else {
+    // Asked for by name, so it is worth saying out loud: the code is shown on the
+    // page the browser opens, which is where it is typed in as well.
+    console.warn(
+      'CODEBUDDY_DESKTOP_ASK=window: not asking in the system’s dialog.',
+    );
+  }
+
+  openExternally(grant.verificationUriComplete || grant.verificationUri);
+
+  signingIn = true;
+  refreshTray();
+
+  try {
+    const outcome = await pollForDeviceToken({
+      baseUrl: issuedBy,
+      deviceCode: grant.deviceCode,
+      expiresIn: grant.expiresIn,
+      intervalSeconds: grant.intervalSeconds,
+    });
+
+    if (outcome.kind !== 'signedIn') {
+      dialog.showErrorBox(
+        'CodeBuddy2API',
+        outcome.kind === 'expired'
+          ? shell.deviceSignInExpired
+          : shell.deviceSignInFailed,
+      );
+
+      return;
+    }
+
+    // Approved by a deployment that is no longer the one behind the console:
+    // the code was shown for the old address, and this token opens its door.
+    // Keeping it would present one deployment's introduction to another.
+    if (backend.mode !== 'remote' || backend.url !== issuedBy) {
+      dialog.showErrorBox('CodeBuddy2API', shell.deviceSignInFailed);
+
+      return;
+    }
+
+    writeDeviceToken(userDataDir, {
+      token: outcome.token.accessToken,
+      url: issuedBy,
+    });
+    deviceToken = outcome.token.accessToken;
+    refreshTray();
+
+    // Restarted because the token reaches the gateway in its environment: the
+    // console the window already holds is a page that was signed out, and the one
+    // it gets after this is signed in.
+    await restartGateway();
+  } finally {
+    signingIn = false;
+    refreshTray();
+  }
+};
+
+/**
+ * Forgetting the token: signing out here is.
+ *
+ * The deployment is asked to forget it too, best effort — a token this app no
+ * longer holds should not still open the door it was given. Answered either way:
+ * what the user asked for is that this machine stop carrying it.
+ */
+const signOutOfDeployment = async (): Promise<void> => {
+  if (backend.mode !== 'remote') {
+    return;
+  }
+
+  const url = backend.url;
+  const token = deviceToken;
+
+  deviceToken = null;
+  forgetDeviceToken(userDataDir);
+  refreshTray();
+
+  if (token) {
+    try {
+      await fetch(`${url.trim().replace(/\/+$/, '')}/admin-api/oauth/token`, {
+        headers: { authorization: `Bearer ${token}` },
+        method: 'DELETE',
+        signal: AbortSignal.timeout(DEVICE_REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      // A deployment that cannot be reached cannot be told, and one that will
+      // not forget is not worth failing a sign-out over: the token is gone from
+      // this machine either way.
+    }
+  }
+
+  await restartGateway();
 };
 
 /**
@@ -1864,7 +2420,12 @@ const bootstrap = async (): Promise<void> => {
   appliedSettings = settings;
   backend = settings.backend;
   backendChosen = !firstRun;
+  deviceToken =
+    backend.mode === 'remote'
+      ? readDeviceToken(userDataDir, backend.url)
+      : null;
 
+  applyDevelopmentIcon();
   createTray();
   watchDesktopSettings();
   startUsagePolling();
