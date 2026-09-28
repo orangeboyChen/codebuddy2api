@@ -1,7 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-
 import { DEFAULT_GATEWAY_PORT } from '../../lib/server/electron/ports';
 import {
   _electron as electron,
@@ -634,6 +634,69 @@ test('says what happened when the deployment does not answer', async () => {
   );
   // Which deployment, since that is the thing to check or to change.
   await expect(window.locator('body')).toContainText('127.0.0.1:1');
+
+  await app.close();
+});
+
+/**
+ * What the app is to the desktop it runs on: a window among the rest, not one
+ * the system floats over them.
+ *
+ * Hiding the dock icon turned the process into a UIElement (accessory)
+ * application, and macOS lets one of those put its window over another app's
+ * fullscreen Space — a console in front of everything, with no dock icon and no
+ * Cmd+Tab row to get back to it. The policy belongs to the process, so it is
+ * read from the workspace rather than asked of the app.
+ */
+const NSApplicationActivationPolicyRegular = 0;
+
+const activationPolicy = (pid: number): number => {
+  const script = [
+    "ObjC.import('Cocoa')",
+    'var apps = $.NSWorkspace.sharedWorkspace.runningApplications',
+    'for (var i = 0; i < apps.count; i += 1) {',
+    '  var a = apps.objectAtIndex(i)',
+    `  if (a.processIdentifier == ${pid}) { ObjC.unwrap(a.activationPolicy); break }`,
+    '}',
+  ].join('\n');
+
+  return Number(
+    execFileSync('osascript', ['-l', 'JavaScript', '-e', script], {
+      encoding: 'utf8',
+    }).trim(),
+  );
+};
+
+test('is an app among the others: a dock icon, and a window nothing floats over', async () => {
+  test.skip(
+    process.platform !== 'darwin',
+    'the dock, and the policy that decides the window, are macOS’s',
+  );
+
+  // A first launch, so it is the window that asks which backend to use: the
+  // policy and the dock icon are the process's, and are settled long before a
+  // gateway behind the console has answered.
+  const app = await launchApp({ userData: separateUserDataDir('dock-icon') });
+
+  await waitForWindow(app, /backend\.html$/);
+
+  const pid = await app.evaluate(() => process.pid);
+
+  expect(activationPolicy(pid)).toBe(NSApplicationActivationPolicyRegular);
+  expect(
+    await app.evaluate(({ app }) => (app.dock ? app.dock.isVisible() : null)),
+  ).toBe(true);
+
+  // A window of its own, which is what that policy buys: not pinned in front of
+  // the others, and visible the way any other window is.
+  expect(
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().map((it) => ({
+        alwaysOnTop: it.isAlwaysOnTop(),
+        visible: it.isVisible(),
+      })),
+    ),
+  ).toEqual([{ alwaysOnTop: false, visible: true }]);
 
   await app.close();
 });
