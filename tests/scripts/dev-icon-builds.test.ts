@@ -1,22 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/**
- * Which builds carry the development icon.
- *
- * Nothing in the code keeps a release from carrying it: scripts/build-desktop.ts
- * copies it whenever it is asked to, and asking is one flag on one command
- * line, in a workflow file or in a lane. The flag is the only thing that says
- * which build is which, so the command lines are what is guarded here.
- */
+// Which builds carry the development icon. The flag is the only thing that says
+// which build is which, so the command lines are what is guarded here.
 const read = (relative: string): string =>
   fs.readFileSync(path.join(process.cwd(), relative), 'utf8');
 
-/**
- * The file without the lines that only explain it: both formats here comment
- * with a leading `#`, and a comment that names the flag is not a build that
- * passes it.
- */
+// Without the lines that only explain it: both formats comment with a leading
+// `#`, and a comment naming the flag is not a build that passes it.
 const code = (relative: string): string =>
   read(relative)
     .split('\n')
@@ -29,8 +20,8 @@ const LANE = 'fastlane/Fastfile';
 
 describe('the development icon in a build', () => {
   it('is asked for by the build that checks a change', () => {
-    // A check build is not meant to be installed, and is the one the icon is
-    // for: dropping the flag here leaves a check build looking like a release.
+    // A check build is the one the icon is for: dropping the flag leaves it
+    // looking like a release.
     expect(code(CHECK)).toContain('--dev-icon');
   });
 
@@ -39,10 +30,8 @@ describe('the development icon in a build', () => {
   });
 
   it('is not what the macOS release is packaged from', () => {
-    // The macOS release runs through fastlane, which calls the build script
-    // itself and not `desktop:dev-dist`: the npm script asks for the
-    // development icon, the script does not, and that difference is the whole
-    // release.
+    // fastlane calls the build script itself, not `desktop:dev-dist`: the npm
+    // script asks for the development icon, the build script does not.
     const lane = code(LANE);
     const commands = lane
       .split('\n')
@@ -54,9 +43,8 @@ describe('the development icon in a build', () => {
   });
 
   it('is copied by the build, not drawn by it', () => {
-    // The icon is a committed file, and rasterising an SVG is nobody's build
-    // step: it needs a native image library, and it makes what a check on CI
-    // ships depend on the rasteriser that happened to run there.
+    // The icon is committed, so a build copies it: rasterising an SVG needs a
+    // native image library nobody's build should have to load.
     expect(read('scripts/build-desktop.ts')).not.toContain(
       'render-dev-icon.ts',
     );

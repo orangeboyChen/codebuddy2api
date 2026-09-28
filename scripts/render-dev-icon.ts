@@ -1,16 +1,6 @@
 /**
- * Draws the development icon the desktop app carries, into electron/resources:
- * the console's own mark on an orange plate, carrying a `DEV` badge, lifted out
- * of `app/icon.svg`.
- *
- * A maintenance script, not a build step. What it writes is committed, so a
- * build asking for the development icon copies a file instead of drawing one:
- * neither electron-builder nor `electron .` has to rasterise an SVG, and what a
- * check on CI ships is the same picture a maintainer looked at.
- *
- * Run it after `app/icon.svg` changes, or after the icon itself is redrawn, and
- * commit both files: tests/scripts/dev-icon.test.ts fails until they are in
- * step again.
+ * Writes the development icon into electron/resources. Run by hand, not by a
+ * build: what it writes is committed, and a build copies it.
  *
  * Usage: `bun scripts/render-dev-icon.ts [--out <png>]`
  */
@@ -62,9 +52,6 @@ const render = async (out: string): Promise<void> => {
 
   const svg = devIconSvg(fs.readFileSync(source, 'utf8'));
 
-  // `resize` after the read, not a density before it: the icon is described in
-  // a 1024-pixel square and committed at 512, and this is what guarantees that
-  // size however the rasteriser took the SVG's own one.
   const png = await sharp(Buffer.from(svg))
     .resize(OUTPUT_SIZE, OUTPUT_SIZE)
     .png({ compressionLevel: 9 })
@@ -72,8 +59,6 @@ const render = async (out: string): Promise<void> => {
 
   fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
   fs.writeFileSync(out, png);
-  // The drawing beside the picture, so the committed PNG has a diff to explain
-  // it and the icon can be checked without rasterising anything.
   fs.writeFileSync(out.replace(/\.png$/i, '.svg'), svg);
 
   console.log(`Development icon written to ${out} (${png.length} bytes)`);

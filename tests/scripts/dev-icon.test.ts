@@ -16,10 +16,7 @@ const source = fs.readFileSync(
   'utf8',
 );
 
-/**
- * The export's two groups, in the order it draws them: the mark on a white
- * plate, and the same mark on the dark plate an install shows.
- */
+// The export's two groups: the mark on a white plate, and on the dark plate an install shows.
 const groups = [
   ...source.matchAll(/<g clip-path="url\(#[\w.-]+\)"[^>]*>[\s\S]*?<\/g>/g),
 ].map((match) => match[0]);
@@ -30,11 +27,8 @@ const plate = '<rect width="24" height="24" rx="5.17895" fill="#191A23"/>';
 const rewrite = (group: string, rewritten: string): string =>
   source.replace(group, rewritten);
 
-/**
- * What the mark is, with the way it is written taken out: an export that draws
- * the same shapes in another colour, or closes a tag of its own, is the same
- * mark.
- */
+// The mark with the way it is written taken out: the same shapes in another
+// colour, or closed by a tag of their own, are the same mark.
 const outline = (svg: string): { radius: string; shapes: string[] } => {
   const { elements, radius } = readAppMark(svg);
 
@@ -62,8 +56,8 @@ describe('readAppMark', () => {
   });
 
   it('takes that group wherever in the export it is drawn', () => {
-    // The white plate's group last: taking whichever comes last would paint
-    // its plate — a full square — as the mark.
+    // The white plate's group last: taking whichever comes last would paint its
+    // plate — a full square — as the mark.
     const swapped = source
       .replace(onPaper, '@@paper@@')
       .replace(onDark, '@@dark@@')
@@ -121,10 +115,8 @@ describe('readAppMark', () => {
   });
 
   it('leaves out what is not drawn: a comment, and a shape with no fill', () => {
-    // Both would be painted as the mark — the comment's rect as a full square
-    // of it — if the export were read without looking at what fills a shape.
-    // Neither is written the way the plate is, so taking either in shows up as
-    // an element the mark does not have.
+    // Both would be painted as the mark — the comment's rect as a full square of
+    // it — if a shape were taken in without looking at what fills it.
     const commented = rewrite(
       onDark,
       onDark.replace(
@@ -145,9 +137,8 @@ describe('readAppMark', () => {
   });
 
   it('takes the plate by what it spans, and by its being filled', () => {
-    // A border the export draws before the plate: taken for the plate, its own
-    // corner radius would become the silhouette's, and the plate itself would
-    // then be painted as the mark — a full square of it.
+    // A border drawn before the plate: taken for the plate, the plate itself
+    // would be painted as the mark — a full square of it.
     const bordered = rewrite(
       onDark,
       onDark.replace(
@@ -201,34 +192,34 @@ describe('devIconSvg', () => {
   it('puts the mark on the plate in the mark’s own colour', () => {
     expect(svg).not.toContain('fill="white"');
     expect(svg).toContain('fill="#191A23"');
-    // Every shape of the mark, and the badge's plate: a fourth shape in the
-    // mark's colour would mean one of them was painted in some other.
+    // Every shape of the mark, and the badge's plate: a fourth would mean one
+    // of them was painted in some other colour.
     expect(svg.match(/fill="#191A23"/g)).toHaveLength(
       readAppMark(source).elements.length + 1,
     );
   });
 
   it('draws the mark the way the export draws it, mirrored', () => {
-    // The export draws both its groups flipped. Dropping the flip would leave
-    // the mark back to front, and nothing else here would notice.
+    // Dropping the flip would leave the mark back to front, and nothing else
+    // here would notice.
     expect(svg).toContain('scale(-1 1)');
   });
 
   it('draws the badge in pixels, scaled into the export’s units', () => {
-    // The badge is written in 1024-space pixels and the icon is drawn in the
-    // export's 24: a badge drawn without that scale would cover the icon.
+    // Written in 1024-space pixels, drawn in the export's 24: without that
+    // scale the badge would cover the icon.
     expect(svg).toContain(`transform="scale(${24 / CANVAS})"`);
   });
 
   it('carries the badge, and the three letters in it', () => {
-    // One stroked plate, one stroked group of letters — and one path per letter.
+    // One stroked plate, one stroked group of letters, one path per letter.
     expect(svg.match(/stroke="#FFFFFF"/g)).toHaveLength(2);
     expect(svg.match(/<path d="M 8,8/g)).toHaveLength(3);
   });
 
   it('rims the badge, which is what keeps it off the mark', () => {
-    // The mark is the same dark as the badge and reaches into the corner the
-    // badge sits in: without a rim of its own width the two read as one shape.
+    // The mark is the same dark as the badge and reaches into the corner it sits
+    // in: without a rim of its own the two read as one shape.
     const [, width = '0'] =
       svg.match(
         /<rect fill="#191A23"[^>]*stroke="#FFFFFF" stroke-width="(\d+)"/,
@@ -254,9 +245,7 @@ describe('devIconSvg', () => {
 
   it('draws the letters larger than their own outlines', () => {
     // A desktop draws an icon small, and the badge cannot grow towards the
-    // corner of it, so the letters take the room inside the badge instead: the
-    // first letter's advance and the gap after it are 88 of their own units,
-    // and what is drawn between two letters is more than that.
+    // corner of it, so the letters take the room inside the badge instead.
     const xs = [
       ...svg.matchAll(/<path d="M 8,8[^>]*translate\(([\d.]+) /g),
     ].map((match) => Number(match[1]));
@@ -283,19 +272,15 @@ describe('the development icon as it is committed', () => {
   const picture = path.join(resources, 'icon-dev.png');
 
   it('is the drawing scripts/render-dev-icon.ts writes', () => {
-    // The picture is committed because a build copies it instead of drawing it.
-    // The drawing beside it is where the picture came from, and the only part
-    // of the icon that can be compared without rasterising anything: change
-    // app/icon.svg, or the way the icon is drawn, and this fails until the
-    // script is run again and both files are committed.
+    // The drawing is what the generator writes, and the only part of the icon
+    // comparable without rasterising: change app/icon.svg, or the icon, and
+    // this fails until the script is run again and both files are committed.
     expect(fs.readFileSync(drawing, 'utf8')).toBe(devIconSvg(source));
   });
 
   it('is a picture electron-builder can make an installer icon from', () => {
-    // What the file says about itself, taken from its own header: the eight
-    // bytes every PNG starts with, then the width and the height, four bytes
-    // each and big-endian — 512 is what the icon theme Linux installs into
-    // lists, and what macOS and Windows ask of the picture they are handed.
+    // From its own header: the eight bytes every PNG starts with, then the width
+    // and the height, four bytes each and big-endian.
     const png = fs.readFileSync(picture);
 
     expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
@@ -305,19 +290,18 @@ describe('the development icon as it is committed', () => {
 
   it('is not the picture a release carries', () => {
     // A build copying the wrong file ships a release icon with a development
-    // build, which is the one thing the icon is there to prevent.
+    // build.
     expect(fs.readFileSync(picture)).not.toEqual(
       fs.readFileSync(path.join(resources, 'icon.png')),
     );
   });
 
   it('is the icon the drawing describes, painted', async () => {
-    // The drawing is compared above; this is the picture, and it says only that
-    // the parts the drawing puts there are there: the plate is orange, the mark
-    // is the brand dark, and the badge carries white. Enough to catch a picture
-    // left behind by a run of the script that never happened — a stale icon, or
-    // a release's — and loose enough that another rasteriser's sampling still
-    // lands inside it.
+    // The drawing is compared above; this is the picture, saying only that the
+    // parts the drawing puts there are there: an orange plate, the brand dark
+    // mark, a badge carrying white. Enough to catch a stale picture, or a
+    // release's; loose enough that another rasteriser's sampling still lands
+    // inside it.
     const { data, info } = await sharp(fs.readFileSync(picture))
       .raw()
       .toBuffer({ resolveWithObject: true });

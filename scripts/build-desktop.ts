@@ -249,21 +249,13 @@ const packageDesktop = (forwarded: string[], devIcon: boolean) => {
   );
   fs.mkdirSync(resourcesDir, { recursive: true });
 
-  /**
-   * The development icon, given to electron-builder on the command line rather
-   * than through a second configuration file: everything else about the build is
-   * the release build's, and the icon is the only thing that differs. One
-   * 512-pixel PNG serves all three platforms: electron-builder makes the `icns`
-   * macOS asks for and the `ico` Windows asks for out of it, and Linux installs
-   * the file as it is.
-   */
+  // On the command line rather than through a second configuration file: the
+  // icon is the only thing a development build does differently.
   const iconPath = path.join(appDir, DEV_ICON_FILENAME);
 
   if (devIcon) {
-    // An icon electron-builder cannot read is not an error to it: it falls back
-    // to the release icon it finds in `buildResources`, and out comes an install
-    // that nothing tells apart from a release — which is the one thing this
-    // icon exists to prevent.
+    // An icon electron-builder cannot read is no error to it — it falls back to
+    // the release icon, and out comes an install nothing tells apart from one.
     requirePath(
       iconPath,
       'The development icon is missing from the app directory.',
@@ -296,13 +288,8 @@ assembleGateway();
 bundleElectron();
 rebuildNativeModules();
 
-// After the bundle, which empties the directory the icon is copied into. The
-// icon is a committed picture — scripts/dev-icon.ts says how it is drawn — so a
-// build hands electron-builder and `electron .` a file instead of asking either
-// of them to rasterise an SVG.
+// After the bundle, which empties the directory the icon goes into.
 if (devIcon) {
-  // The icon is committed, so a copy that finds nothing has lost a file rather
-  // than failed to make one: say which file, and not `cp`'s own path.
   const committed = path.join(resourcesDir, DEV_ICON_FILENAME);
 
   requirePath(
