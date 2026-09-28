@@ -301,10 +301,15 @@ rebuildNativeModules();
 // build hands electron-builder and `electron .` a file instead of asking either
 // of them to rasterise an SVG.
 if (devIcon) {
-  copyInto(
-    path.join(resourcesDir, DEV_ICON_FILENAME),
-    path.join(appDir, DEV_ICON_FILENAME),
+  // The icon is committed, so a copy that finds nothing has lost a file rather
+  // than failed to make one: say which file, and not `cp`'s own path.
+  const committed = path.join(resourcesDir, DEV_ICON_FILENAME);
+
+  requirePath(
+    committed,
+    'The development icon is missing from electron/resources, where it is committed.',
   );
+  copyInto(committed, path.join(appDir, DEV_ICON_FILENAME));
 }
 
 if (!prepareOnly) {

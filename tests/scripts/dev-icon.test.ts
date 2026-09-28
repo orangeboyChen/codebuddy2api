@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import sharp from 'sharp';
+
 import {
   CANVAS,
   OUTPUT_SIZE,
@@ -308,30 +310,40 @@ describe('the development icon as it is committed', () => {
       fs.readFileSync(path.join(resources, 'icon.png')),
     );
   });
-});
 
-describe('the icon a build ships', () => {
-  const resources = path.join(process.cwd(), 'electron', 'resources');
+  it('is the icon the drawing describes, painted', async () => {
+    // The drawing is compared above; this is the picture, and it says only that
+    // the parts the drawing puts there are there: the plate is orange, the mark
+    // is the brand dark, and the badge carries white. Enough to catch a picture
+    // left behind by a run of the script that never happened — a stale icon, or
+    // a release's — and loose enough that another rasteriser's sampling still
+    // lands inside it.
+    const { data, info } = await sharp(fs.readFileSync(picture))
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const counts = { clear: 0, dark: 0, plate: 0, white: 0 };
 
-  it('is committed, and is the export drawn over', () => {
-    // scripts/render-dev-icon.ts writes the drawing and the picture beside each
-    // other, and both are committed: a build copies them instead of drawing an
-    // icon. An export redrawn without running it leaves a build shipping the
-    // old mark inside the new silhouette.
-    expect(fs.readFileSync(path.join(resources, 'icon-dev.svg'), 'utf8')).toBe(
-      devIconSvg(source),
-    );
-  });
+    for (let at = 0; at < data.length; at += info.channels) {
+      const [red, green, blue, alpha] = data.subarray(at, at + 4);
 
-  it('is square at the size every platform asks for, and not the release icon', () => {
-    const png = fs.readFileSync(path.join(resources, 'icon-dev.png'));
+      if (alpha === 0) {
+        counts.clear += 1;
+      } else if (red < 80 && green < 80 && blue < 90) {
+        counts.dark += 1;
+      } else if (red > 200 && green > 100 && blue < 160) {
+        counts.plate += 1;
+      } else if (red > 235 && green > 235 && blue > 235) {
+        counts.white += 1;
+      }
+    }
 
-    // The width and the height, read out of the PNG's own header: four bytes
-    // each, sixteen bytes in.
-    expect(png.readUInt32BE(16)).toBe(OUTPUT_SIZE);
-    expect(png.readUInt32BE(20)).toBe(OUTPUT_SIZE);
-    expect(png.equals(fs.readFileSync(path.join(resources, 'icon.png')))).toBe(
-      false,
-    );
+    // Outside the silhouette's corners, which are rounded.
+    expect(counts.clear).toBeGreaterThan(0);
+    // The plate, lit and shaded: most of the square that is drawn on.
+    expect(counts.plate).toBeGreaterThan((info.width * info.height) / 2);
+    // The mark on it, and the badge in the corner.
+    expect(counts.dark).toBeGreaterThan(1000);
+    // The badge's rim and its letters.
+    expect(counts.white).toBeGreaterThan(200);
   });
 });
