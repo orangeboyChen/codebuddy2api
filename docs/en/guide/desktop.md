@@ -70,13 +70,13 @@ Everything is written inside Electron's `userData` directory, not next to the in
 
 ## Signing
 
-macOS builds in a release are signed with a Developer ID certificate and notarized by Apple, so the dmg opens on a double-click. Without a certificate configured in the repository the build is still produced, unsigned — Gatekeeper refuses it, and opening it means dragging the app into `Applications` and running:
+The macOS builds in a release are signed and notarized, so the dmg opens on a double-click. On Windows, dismiss the SmartScreen prompt with Run anyway.
+
+If macOS says the app is damaged and cannot be opened, drag it into `Applications` and run:
 
 ```sh
 xattr -cr /Applications/CodeBuddy2API.app
 ```
-
-then right-clicking the app in Finder and choosing Open. An unsigned Windows build raises SmartScreen; dismiss it with Run anyway.
 
 ## Building from source
 

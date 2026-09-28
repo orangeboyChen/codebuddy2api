@@ -70,13 +70,13 @@ macOS ではメニューバーに状態アイコンが常駐し、アイコン�
 
 ## 署名について
 
-リリースの macOS ビルドは Developer ID 証明書で署名し Apple に公証を依頼しているため、dmg をダブルクリックすれば開けます。リポジトリに証明書を設定していない場合もビルドは生成されますが、未署名になるため Gatekeeper に拒否されます。その場合はアプリを `Applications` にコピーしてから次を実行し、
+リリースの macOS ビルドは署名と Apple の公証を済ませているため、dmg をダブルクリックすれば開けます。Windows では SmartScreen が表示されるので「実行」を選んでください。
+
+macOS に「壊れているため開けません」と表示される場合は、アプリを `Applications` にコピーしてから次を実行してください。
 
 ```sh
 xattr -cr /Applications/CodeBuddy2API.app
 ```
-
-Finder でアプリを右クリックして「開く」を選んでください。Windows ビルドが未署名の場合は SmartScreen が表示されるので「実行」を選びます。
 
 ## ソースからビルドする
 
