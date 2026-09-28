@@ -177,18 +177,19 @@ jobs:
     name: Desktop ${{ matrix.label }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
-    # Signing the macOS app, and asking Apple to notarize it. Empty when the
-    # repository carries no certificate: electron-builder then leaves the app
-    # unsigned instead of failing, and Gatekeeper refuses it on the user's Mac
-    # exactly as it does today. Scoped to the macOS entries on purpose — an
-    # Apple certificate means nothing to the Windows and Linux installers, and
-    # electron-builder would try to sign them with it all the same.
+    # Notarization, and the private git repository `match` keeps the Developer
+    # ID certificate in. Empty when the repository has none: the build then
+    # stays unsigned, as it is today. Scoped to the macOS entries on purpose —
+    # Apple credentials mean nothing to the Windows and Linux installers.
     env:
       APPLE_API_ISSUER: ${{ matrix.macos && secrets.APPLE_API_ISSUER || '' }}
       APPLE_API_KEY: ${{ matrix.macos && secrets.APPLE_API_KEY || '' }}
       APPLE_API_KEY_ID: ${{ matrix.macos && secrets.APPLE_API_KEY_ID || '' }}
-      CSC_KEY_PASSWORD: ${{ matrix.macos && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
-      CSC_LINK: ${{ matrix.macos && secrets.MACOS_CERTIFICATE || '' }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ matrix.macos && secrets.MATCH_GIT_BASIC_AUTHORIZATION || '' }}
+      MATCH_GIT_PRIVATE_KEY: ${{ matrix.macos && secrets.MATCH_GIT_PRIVATE_KEY || '' }}
+      MATCH_GIT_URL: ${{ matrix.macos && secrets.MATCH_GIT_URL || '' }}
+      MATCH_KEYCHAIN_PASSWORD: ${{ matrix.macos && secrets.MATCH_KEYCHAIN_PASSWORD || '' }}
+      MATCH_PASSWORD: ${{ matrix.macos && secrets.MATCH_PASSWORD || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -237,6 +238,20 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run build
+      # `match` is Ruby, and it is the only reason this repository has any.
+      - uses: ruby/setup-ruby@v1
+        if: ${{ matrix.macos }}
+        with:
+          bundler-cache: true
+          ruby-version: '3.3'
+      - name: Trust github.com for the certificate repository
+        if: ${{ env.MATCH_GIT_PRIVATE_KEY != '' }}
+        shell: bash
+        run: |
+          # `git clone` over ssh refuses a host it has never seen, and a runner
+          # has never seen github.com.
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
       - name: Give notarytool its API key
         if: ${{ env.APPLE_API_KEY != '' }}
         shell: bash
@@ -249,9 +264,18 @@ jobs:
           echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
       - name: Build desktop app
         shell: bash
-        run: bun scripts/build-desktop.ts ${{ matrix.targets }}
+        run: |
+          set -euo pipefail
+          # Only macOS goes through fastlane: it is the one platform with a
+          # certificate to import, and the lane builds the same app — unsigned —
+          # when there is none.
+          if [[ "${{ matrix.macos }}" == "true" ]]; then
+            bundle exec fastlane mac targets:"${{ matrix.targets }}"
+          else
+            bun scripts/build-desktop.ts ${{ matrix.targets }}
+          fi
       - name: Check that the app is signed
-        if: ${{ env.CSC_LINK != '' }}
+        if: ${{ env.MATCH_GIT_URL != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -264,7 +288,7 @@ jobs:
           # worked, right up to the Mac that refuses to open the dmg.
           codesign -dv --verbose=4 "$app" 2>&1 | tee codesign.log
           if grep -q 'TeamIdentifier=not set' codesign.log; then
-            echo "::error::$app carries no signing identity — check MACOS_CERTIFICATE and MACOS_CERTIFICATE_PASSWORD"
+            echo "::error::$app carries no signing identity — check MATCH_GIT_URL, MATCH_PASSWORD and MATCH_KEYCHAIN_PASSWORD"
             exit 1
           fi
           # Signed but not notarized opens on no Mac either: Gatekeeper asks

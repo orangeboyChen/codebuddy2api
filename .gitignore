@@ -48,6 +48,13 @@ test-results/
 .eslintcache
 *.log
 
+# Ruby / fastlane: the bundle lives in the checkout for CI to cache
+.bundle/
+vendor/bundle/
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/test_output/
+
 # OS / editor files
 .DS_Store
 .idea/

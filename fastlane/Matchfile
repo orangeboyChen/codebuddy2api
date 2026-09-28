@@ -1,0 +1,16 @@
+# The macOS signing certificate, kept by `match` in a private git repository
+# and read from the environment so that this one does not carry the address of
+# another one.
+git_url(ENV["MATCH_GIT_URL"])
+
+storage_mode("git")
+
+# A Developer ID Application certificate: the kind that signs an app going out
+# outside the Mac App Store, which is what a dmg is.
+type("developer_id")
+
+app_identifier(["com.orangeboychen.codebuddy2api"])
+
+# A dmg needs no provisioning profile, and asking Apple for one would mean a
+# login that CI has no way to do.
+skip_provisioning_profiles(true)
