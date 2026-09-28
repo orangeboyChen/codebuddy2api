@@ -433,6 +433,47 @@ describe('fetchUpstreamSessionSummary', () => {
     );
   });
 
+  // A page rendered here is not a request the proxy forwards, so nothing else
+  // attaches the token: without it a device approval leaves the console signed
+  // out while the menu bar says signed in.
+  it('carries the token the user approved in a browser', async () => {
+    const fetchImpl = respond({ session: { authenticated: true } });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await expect(
+      fetchUpstreamSessionSummary({
+        cookie: 'session=stale',
+        deviceToken: 'device-token',
+        upstream: UPSTREAM,
+      }),
+    ).resolves.toEqual({ authenticated: true });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `${UPSTREAM}/admin-api/auth/session`,
+      expect.objectContaining({
+        headers: {
+          authorization: 'Bearer device-token',
+          cookie: 'session=stale',
+        },
+      }),
+    );
+  });
+
+  it('sends no authorization for a token that is not one', async () => {
+    const fetchImpl = respond({ session: { authenticated: false } });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await fetchUpstreamSessionSummary({
+      deviceToken: '   ',
+      upstream: UPSTREAM,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ headers: {} }),
+    );
+  });
+
   it('sends no cookie header when there is no session yet', async () => {
     const fetchImpl = respond({ session: { authenticated: false } });
     vi.stubGlobal('fetch', fetchImpl);
@@ -522,6 +563,25 @@ describe('fetchUpstreamAccountStatus', () => {
     expect(fetchImpl).toHaveBeenCalledWith(
       `${UPSTREAM}/admin-api/account-status`,
       expect.objectContaining({ headers: { cookie: 'session=abc' } }),
+    );
+  });
+
+  // The accounts the page reads on the server, which is a page the proxy never
+  // sees: the token has to be handed to it here too.
+  it('asks with the token this app was approved with', async () => {
+    const fetchImpl = respond({ credentials: [], statuses: [] });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await fetchUpstreamAccountStatus({
+      deviceToken: 'device-token',
+      upstream: UPSTREAM,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `${UPSTREAM}/admin-api/account-status`,
+      expect.objectContaining({
+        headers: { authorization: 'Bearer device-token' },
+      }),
     );
   });
 

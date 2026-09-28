@@ -389,6 +389,37 @@ describe('a request a device sent', () => {
       revokeDeviceToken(new Request(`${ORIGIN}/admin-api/oauth/token`)),
     ).resolves.toBe(false);
   });
+
+  // The window carries both: a cookie the deployment set once, and the token
+  // the user approved in a browser. A cookie that names a session this
+  // deployment no longer has — signed out elsewhere, or expired — must not be
+  // the end of the question, or every request in that state is answered 401
+  // until somebody clears the cookie by hand.
+  it('is the admin even when the cookie it came with is stale', async () => {
+    const { token } = await issueAndApprove();
+    const { isAdminSessionAuthenticated } =
+      await import('@/lib/server/admin/session');
+
+    const request = new Request(`${ORIGIN}/admin-api/usage`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        cookie: 'admin_session=a-session-that-is-gone',
+      },
+    });
+
+    await expect(isAdminSessionAuthenticated(request)).resolves.toBe(true);
+  });
+
+  it('is nobody with a stale cookie and no token', async () => {
+    const { isAdminSessionAuthenticated } =
+      await import('@/lib/server/admin/session');
+
+    const request = new Request(`${ORIGIN}/admin-api/usage`, {
+      headers: { cookie: 'admin_session=a-session-that-is-gone' },
+    });
+
+    await expect(isAdminSessionAuthenticated(request)).resolves.toBe(false);
+  });
 });
 
 describe('what a client is told', () => {

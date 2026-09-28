@@ -265,6 +265,35 @@ export const forwardToUpstream = async ({
 };
 
 /**
+ * What a request this console makes of the deployment carries.
+ *
+ * The window's own cookie, and — when the user approved this app in a browser —
+ * the token that came back. Both, because a page rendered here is not a request
+ * the proxy forwards: nothing else would attach the token to it, and a console
+ * rendered signed out while the menu bar says signed in is the grant not
+ * working.
+ */
+const upstreamHeaders = ({
+  cookie,
+  deviceToken,
+}: {
+  cookie?: string;
+  deviceToken?: string | null;
+}): Record<string, string> => {
+  const headers: Record<string, string> = {};
+
+  if (cookie?.trim()) {
+    headers.cookie = cookie;
+  }
+
+  if (deviceToken?.trim()) {
+    headers.authorization = `Bearer ${deviceToken.trim()}`;
+  }
+
+  return headers;
+};
+
+/**
  * The accounts the deployment can see, and what they are worth.
  *
  * The one page that reads its data on the server rather than asking
@@ -277,16 +306,18 @@ export const forwardToUpstream = async ({
  */
 export const fetchUpstreamAccountStatus = async ({
   cookie = '',
+  deviceToken = null,
   timeoutMs = UPSTREAM_HEADERS_TIMEOUT_MS,
   upstream,
 }: {
   cookie?: string;
+  deviceToken?: string | null;
   timeoutMs?: number;
   upstream: string;
 }): Promise<{ credentials: unknown[]; statuses: unknown[] } | null> => {
   try {
     const response = await fetch(`${upstream}/admin-api/account-status`, {
-      headers: cookie ? { cookie } : {},
+      headers: upstreamHeaders({ cookie, deviceToken }),
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -336,16 +367,18 @@ export const unreachableSessionSummary = (): AdminSessionSummary => ({
  */
 export const fetchUpstreamSessionSummary = async ({
   cookie = '',
+  deviceToken = null,
   timeoutMs = UPSTREAM_HEADERS_TIMEOUT_MS,
   upstream,
 }: {
   cookie?: string;
+  deviceToken?: string | null;
   timeoutMs?: number;
   upstream: string;
 }): Promise<AdminSessionSummary | null> => {
   try {
     const response = await fetch(`${upstream}/admin-api/auth/session`, {
-      headers: cookie ? { cookie } : {},
+      headers: upstreamHeaders({ cookie, deviceToken }),
       signal: AbortSignal.timeout(timeoutMs),
     });
 

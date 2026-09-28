@@ -627,8 +627,14 @@ const getValidSessionRecord = async (
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
   const matched = findSessionByTokenHash(state, tokenHash);
 
+  // A cookie this deployment no longer knows — signed out in another window, or
+  // a session that expired — is not a reason to ignore the token the user
+  // approved in a browser: the app sends both, and the browser keeps a cookie
+  // nobody took back.
   if (!matched) {
-    return null;
+    return (await isDeviceTokenAuthorized(request))
+      ? deviceSessionRecord()
+      : null;
   }
 
   // Recognising a session needs no write, and rewriting the whole document on

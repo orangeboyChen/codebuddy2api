@@ -11,6 +11,7 @@ import {
   fetchUpstreamSessionSummary,
   resolveAdminUpstream,
 } from '@/lib/server/admin/upstream';
+import { deviceToken } from '@/lib/server/electron/device-token';
 import { isDesktopMode } from '@/lib/server/electron/settings';
 import {
   localeCookieName,
@@ -45,8 +46,17 @@ export const AdminPage = async ({
   // but one showing a deployment's data is that deployment's console, and the
   // deployment is reachable from a network.
   const upstream = resolveAdminUpstream();
+  // Both, when there are two: the window's own cookie, and the token the
+  // deployment handed this app when the user approved it in a browser. A page
+  // rendered here is not a request the proxy forwards, so nothing else would
+  // attach that token — and without it a device approval leaves the console
+  // signed out.
   const session = upstream
-    ? await fetchUpstreamSessionSummary({ cookie: cookieHeader, upstream })
+    ? await fetchUpstreamSessionSummary({
+        cookie: cookieHeader,
+        deviceToken: deviceToken(),
+        upstream,
+      })
     : await getAdminSessionSummary(request);
   const desktop = isDesktopMode() && !upstream;
   const sessionAuthenticated = session?.authenticated ?? false;
