@@ -163,9 +163,15 @@ test('asks which backend to use, then opens the console it starts', async () => 
   await expect.poll(() => chooser.url()).toContain('backend.html');
   await expect(chooser.locator('#title')).toHaveText('Choose a backend');
 
-  // The port is settled in the same window: the gateway that serves this
-  // console runs on this machine either way, and it is the number the app has
-  // to be told before it can start one.
+  // The port belongs to this machine's gateway, so the local choice — the one
+  // the page opens on — is the one that asks for it.
+  await expect(chooser.locator('#port')).toHaveValue('8001');
+
+  // Naming a deployment settles its address and nothing else: there is no port
+  // of this machine's to ask for, and the saved number is left standing.
+  await chooser.locator('input[value="remote"]').check();
+  await expect(chooser.locator('#port')).toHaveCount(0);
+  await chooser.locator('input[value="local"]').check();
   await expect(chooser.locator('#port')).toHaveValue('8001');
 
   expect(pageErrors).toEqual([]);
@@ -582,6 +588,34 @@ test('shows its own console for a deployment, and takes only the data from it', 
   );
 
   await expect(consoleWindow.locator('#security')).toBeVisible();
+
+  await app.close();
+  deployment.stop();
+});
+
+test('names a deployment in the window, and is asked for no port', async () => {
+  const deployment = await startDeployment();
+
+  // A first launch: nothing on disk, so the window is what asks.
+  const app = await launchApp({ userData: separateUserDataDir('remote-port') });
+  const chooser = await waitForWindow(app, /backend\.html$/);
+
+  await chooser.locator('input[value="remote"]').check();
+
+  // The address is the whole answer: a deployment is reached through it, and
+  // the port the console is served on is not this machine's to settle.
+  await expect(chooser.locator('#port')).toHaveCount(0);
+
+  await chooser.locator('#url').fill(`http://127.0.0.1:${deployment.port}`);
+  await chooser.locator('#save').click();
+
+  // …so the console opens on the port the app would have used anyway, without
+  // the number ever having been asked for.
+  const consoleWindow = await waitForConsole(app);
+
+  expect(consoleWindow.url()).toBe(
+    `http://127.0.0.1:${DEFAULT_GATEWAY_PORT}/dashboard`,
+  );
 
   await app.close();
   deployment.stop();

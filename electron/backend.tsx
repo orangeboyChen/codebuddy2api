@@ -174,9 +174,9 @@ interface PortFieldProps {
 }
 
 /**
- * The port the app serves its own console and API on. Shown on every screen
- * that can change it, because the gateway runs on it either way: a deployment
- * only decides where the data behind the console comes from.
+ * The port the app serves its own console and API on. Only the local gateway is
+ * served on a port of this machine's: a deployment is reached through its
+ * address, so naming one leaves the saved number standing.
  */
 const PortField = ({ error, onChange, text, value }: PortFieldProps) => (
   <div className="field">
@@ -227,15 +227,15 @@ const Choose = ({
   }, [mode]);
 
   const save = () => {
-    const nextPort = parsePort(portValue, minPort, maxPort);
-
-    if (!nextPort) {
-      setPortError(invalidPort(text, minPort, maxPort));
-
-      return;
-    }
-
     if (mode === 'local') {
+      const nextPort = parsePort(portValue, minPort, maxPort);
+
+      if (!nextPort) {
+        setPortError(invalidPort(text, minPort, maxPort));
+
+        return;
+      }
+
       void bridge.setBackend({ backend: { mode: 'local' }, port: nextPort });
 
       return;
@@ -249,10 +249,10 @@ const Choose = ({
       return;
     }
 
-    void bridge.setBackend({
-      backend: { mode: 'remote', url: parsed },
-      port: nextPort,
-    });
+    // A deployment is reached through its address, so nothing on this machine
+    // is being settled: the port the console is served on is the one already
+    // saved, and the main process leaves it standing.
+    void bridge.setBackend({ backend: { mode: 'remote', url: parsed } });
   };
 
   return (
@@ -303,15 +303,22 @@ const Choose = ({
         />
         {urlError ? <p className="error">{urlError}</p> : null}
       </div>
-      <PortField
-        error={portError}
-        onChange={(value) => {
-          setPortError('');
-          setPortValue(value);
-        }}
-        text={text}
-        value={portValue}
-      />
+      {/*
+        Only this machine's gateway is served on a port of this machine's: with
+        a deployment named, the address is the whole answer and the port stays
+        the one already saved.
+      */}
+      {mode === 'local' ? (
+        <PortField
+          error={portError}
+          onChange={(value) => {
+            setPortError('');
+            setPortValue(value);
+          }}
+          text={text}
+          value={portValue}
+        />
+      ) : null}
       <div className="buttons">
         {/*
           A first launch that gets no answer quits: the app has nothing else to

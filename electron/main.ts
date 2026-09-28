@@ -29,6 +29,7 @@ import {
   resolveGatewayDir,
 } from '../lib/server/electron/paths';
 import { findAvailablePort, probePortFree } from '../lib/server/electron/ports';
+import { resolveGatewayNodePath } from '../lib/server/electron/gateway-node';
 import {
   appleScriptChoice,
   appleScriptField,
@@ -655,7 +656,14 @@ const launchGateway = async (
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath,
     }),
-    nodePath: process.execPath,
+    // The gateway is this app's own binary run as Node. On macOS it is reached
+    // through a link outside the bundle, so that renaming itself — which Next
+    // does as soon as it starts — cannot give it a Dock tile of its own: the
+    // menu bar item is meant to be the only icon this app has.
+    nodePath: resolveGatewayNodePath({
+      directory: app.getPath('temp'),
+      executable: process.execPath,
+    }),
     // The gateway can also die later — a crash, or a database that stops
     // answering. Nothing restarts it then, but the menu bar must stop claiming
     // it is running.
@@ -1240,25 +1248,37 @@ const openBackendWindow = ({
 };
 
 /**
- * Whether the desktop is what asks.
+ * Whether the desktop is what asks, which it is unless it is told not to.
  *
- * The window above is a page of this app's, dressed in the system's colours but
- * drawn by this app; the dialogs below are drawn by the desktop instead —
- * AppKit's on macOS, a WinForms form on Windows, zenity's on Linux — which is
- * what a question the system is being asked should look like: the appearance the
- * user's desktop is in, the buttons their other dialogs use, nothing of ours.
+ * The dialogs below are drawn by the desktop — AppKit's on macOS, a WinForms
+ * form on Windows, zenity's on Linux — which is what a question the system is
+ * being asked should look like: the appearance the user's desktop is in, the
+ * buttons their other dialogs use, nothing of ours.
  *
- * `CODEBUDDY_DESKTOP_ASK=window` asks in the app's own window anyway, which is
- * what a machine with no desktop to draw a dialog on — a test run, a headless
- * session — needs, and what the window above is for.
+ * The window above is a page of this app's, and it is reached only when it is
+ * asked for by name: `CODEBUDDY_DESKTOP_ASK=window`, which is what the test
+ * suite needs — a native dialog is nothing Playwright can click. A computer
+ * with no dialog of its own is not answered with it: it is told so in one of
+ * its own message boxes instead.
  */
 const asksInSystemDialogs = (): boolean =>
   process.env.CODEBUDDY_DESKTOP_ASK?.trim() !== 'window';
 
-/** What came of asking: an answer, no answer at all, or no way to ask. */
+/**
+ * What came of asking: an answer, no answer at all, no way to ask, or a window
+ * this app drew because it was told to.
+ *
+ * `failed` is a computer that has no dialog of its own to draw one in, or one
+ * whose dialog never gave an answer the app could use. Neither is answered with
+ * a page of this app's: the question is the system's to ask, and a page this app
+ * draws is not the system's answer to anything. A dialog of the system's own
+ * says what happened instead — `dialog.showErrorBox`, which is NSAlert, Win32
+ * and GTK, not a window of ours.
+ */
 type AskOutcome =
   | { answer: AskAnswer; kind: 'answered' }
   | { kind: 'cancelled' }
+  | { kind: 'failed' }
   /** The desktop could not ask, so the window has to. */
   | { kind: 'window' };
 
@@ -1457,8 +1477,13 @@ const askSystem = async (form: AskForm): Promise<AskOutcome> => {
     const answer = await ask(form);
 
     return answer ? { answer, kind: 'answered' } : { kind: 'cancelled' };
-  } catch {
-    return { kind: 'window' };
+  } catch (error) {
+    // The window is what asks instead, which is not a thing to do quietly: the
+    // page it shows is this app's own, and the only reason it is on screen is
+    // that this computer had no dialog to draw one.
+    console.warn(`The desktop could not ask: ${describeError(error)}`);
+
+    return { kind: 'failed' };
   }
 };
 
@@ -1483,8 +1508,12 @@ const backendForm = (error: string): AskForm => {
         value: backend.mode === 'remote' ? backend.url : '',
       },
       {
+        // Only this machine's gateway is served on a port of this machine's: a
+        // deployment is named by its address, and what it answers is reached
+        // through that address rather than through a number here.
         label: shell.port,
         message: shell.portHint,
+        option: 0,
         value: String(preferredPort()),
       },
     ],
@@ -1518,7 +1547,10 @@ const askBackendAndPort = async (): Promise<AskOutcome['kind']> => {
       continue;
     }
 
-    if (!port) {
+    // A number is asked for only with the local gateway — the dialog above asks
+    // for nothing else when a deployment is named, and the port the console is
+    // served on then stays the one already on disk.
+    if (!remote && !port) {
       error = invalidPortMessage();
 
       continue;
@@ -1528,15 +1560,16 @@ const askBackendAndPort = async (): Promise<AskOutcome['kind']> => {
       normalizeDesktopBackend(
         remote ? { mode: 'remote', url } : { mode: 'local' },
       ),
-      { persist: true, port },
+      { persist: true, port: port || undefined },
     );
 
     return 'answered';
   }
 
-  // Never answered with a number the app could bind: the window says what is
-  // wrong under the field, which a dialog asked again cannot.
-  return 'window';
+  // Never answered with a number the app could bind, in a dialog that cannot
+  // say what is wrong under a field the way a window can: rather than draw one,
+  // the app says so in a dialog of the system's own.
+  return 'failed';
 };
 
 /**
@@ -1580,7 +1613,7 @@ const askPortAgain = async (): Promise<AskOutcome['kind']> => {
     return 'answered';
   }
 
-  return 'window';
+  return 'failed';
 };
 
 /**
@@ -1625,12 +1658,27 @@ const askAboutUnreachable = async (): Promise<AskOutcome['kind']> => {
 };
 
 /**
+ * What the app says, in a dialog of the computer's own, when the computer had
+ * none to ask in: the question is the system's to ask, so the reason it went
+ * unasked is the system's to deliver — never a page this app drew.
+ */
+const couldNotAskMessage = (screen: BackendScreen): string =>
+  [
+    `This computer could not be asked ${
+      screen === 'portInUse' ? 'which port to use' : 'which backend to use'
+    }.`,
+    'No dialog of its own would draw the question, and the app does not draw one of its own to ask it in.',
+  ].join('\n\n');
+
+/**
  * Puts the question the app is waiting on in front of the user.
  *
- * In a dialog of the system's own where there is one, and in the app's own
- * window where there is not: a desktop with no dialog to draw, or an answer the
- * dialog could not get. `cancelled` is the user answering nothing, which on a
- * first launch is the app quitting — the gateway is what the answer decides.
+ * In a dialog of the system's own, always: AppKit's on macOS, a WinForms form on
+ * Windows, the one zenity draws on Linux. `cancelled` is the user answering
+ * nothing, which on a first launch is the app quitting — the gateway is what the
+ * answer decides. `failed` is a computer with no dialog to ask in, or one whose
+ * dialog never gave an answer the app could use: it is said in a dialog of the
+ * system's own too, because a page this app draws is not the system's UI.
  */
 const askAboutBackend = async (
   screen: BackendScreen = pendingScreen(),
@@ -1640,6 +1688,12 @@ const askAboutBackend = async (
   }
 
   if (!asksInSystemDialogs()) {
+    // Asked for by name, so it is worth saying out loud: `CODEBUDDY_DESKTOP_ASK`
+    // is what turns the dialogs of the system's own off.
+    console.warn(
+      'CODEBUDDY_DESKTOP_ASK=window: asking in the app’s own window.',
+    );
+
     openBackendWindow({ screen });
 
     return 'window';
@@ -1655,8 +1709,10 @@ const askAboutBackend = async (
           ? await askAboutUnreachable()
           : await askBackendAndPort();
 
-    if (kind === 'window') {
-      openBackendWindow({ screen });
+    if (kind === 'failed') {
+      // NSAlert, Win32, GTK — the computer's own way of saying it, not a page
+      // this app drew to say it in.
+      dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage(screen));
     }
 
     return kind;
@@ -1750,7 +1806,12 @@ const bootstrap = async (): Promise<void> => {
   // is the thing the answer decides, and starting one the user did not ask for is
   // not an answer they gave.
   if (firstRun) {
-    if ((await askAboutBackend('choose')) === 'cancelled') {
+    const kind = await askAboutBackend('choose');
+
+    // No answer, and no dialog that could have carried one: either way the app
+    // has no gateway to start, and a first launch is not a menu bar item
+    // waiting for an answer nobody asked for.
+    if (kind === 'cancelled' || kind === 'failed') {
       app.quit();
     }
 
