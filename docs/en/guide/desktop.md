@@ -11,7 +11,8 @@ The desktop app is an Electron window plus a backend for the console. What the w
 - With the local backend, the default port is `8001`, and it can be changed in the dialog a first launch asks in or under Settings → Desktop app. Naming a deployment instead asks for its address alone: the port it is served on keeps its current value. Once a port has been settled — saved here, or named with `CODEBUDDY_DESKTOP_PORT` — a taken one is not swapped for another: the app asks which port to use.
 - On macOS the gateway keeps running after the console window is closed, so `/v1/*` stays available; quitting the app stops it.
 - There is only ever one window and one gateway: launching the app again, or clicking the menu bar item, just brings the open window forward. On macOS there is no dock icon at all — the menu bar item is the only way in.
-- There is no sign-in while the backend is this machine: the console listens on loopback only, so the only processes that can open it are the ones already running as you on this machine. No login page, and no Security settings. With a deployment as the backend both come back — see below.
+- There is no sign-in while the backend is this machine: the console listens on loopback, and is served to the app's own window. No login page, and no Security settings. With a deployment as the backend both come back — see below.
+- The console is served to the app's own window: the shell makes up a token when it starts, hands it to the gateway through the environment and to the window as a cookie, and anything else — a browser, a script — is answered 404 at `127.0.0.1`. `/v1/*` and `/health` are left out of it, being what the gateway runs for.
 
 ## Backend
 
@@ -25,7 +26,7 @@ With a remote backend the menu names its address in the Backend row; Copy addres
 
 ## Sign-in
 
-A desktop install has no admin password. The gateway listens on `127.0.0.1` only, so a password would only lock you out of a console nobody else can reach — the trade-off is that any process on this machine can open it, which makes it a personal-device install.
+A desktop install has no admin password. The gateway listens on `127.0.0.1`, and the console is served to the app's own window, so a password would only lock you out of a console nobody else can reach.
 
 Only a self-hosted deployment needs an admin password; `/admin-api/auth/setup` answers 404 in the desktop app.
 

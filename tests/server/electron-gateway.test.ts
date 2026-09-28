@@ -145,6 +145,34 @@ describe('buildGatewayEnv', () => {
     expect(env.CODEBUDDY_STORAGE_SQLITE_PATH).toBe('/elsewhere/storage.sqlite');
   });
 
+  // The token is how the shell tells the gateway which requests are its own
+  // window's. It is made up for one run, so it is passed down rather than read
+  // back out of anything.
+  it('hands the gateway the console token it made up for this run', () => {
+    const env = buildGatewayEnv({
+      baseEnv: asEnv({}),
+      consoleToken: 'a-console-token',
+      encryptionKey: 'secret',
+      paths,
+      port: 8123,
+    });
+
+    expect(env.CODEBUDDY_DESKTOP_CONSOLE_TOKEN).toBe('a-console-token');
+  });
+
+  // Not a desktop install: a deployment someone runs themselves is meant to be
+  // reached in a browser, so nothing is asked of it.
+  it('sets no console token when the shell did not make one', () => {
+    const env = buildGatewayEnv({
+      baseEnv: asEnv({ CODEBUDDY_DESKTOP_CONSOLE_TOKEN: 'stale' }),
+      encryptionKey: 'secret',
+      paths,
+      port: 8123,
+    });
+
+    expect(env.CODEBUDDY_DESKTOP_CONSOLE_TOKEN).toBeUndefined();
+  });
+
   it('inherits the real environment when none is handed in', () => {
     vi.stubEnv('CODEBUDDY_DESKTOP_TEST_INHERITED', '1');
 

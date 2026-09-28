@@ -1,4 +1,5 @@
 import { ADMIN_SESSION_COOKIE } from '../admin/cookie';
+import { DESKTOP_CONSOLE_COOKIE } from './console-token';
 
 /**
  * Today's token counts, as the menu bar item shows them: what went in and what
@@ -85,16 +86,23 @@ export const fetchTodayUsage = async ({
 };
 
 /**
- * The cookie header for a request the shell makes on the console's behalf.
+ * The cookies a request the shell makes on the console's behalf carries.
  *
  * A remote deployment guards its admin API with the same session cookie the
  * console uses, and the shell has no credentials of its own — it only borrows
  * the one the window already has, after the user signed in there.
+ *
+ * The desktop console token travels with it because the shell's own calls hit
+ * the same gate the window's do: without it, the app's gateway would answer
+ * the menu bar's request for today's usage with the same 404 it answers a
+ * browser with.
  */
+const FORWARDED_COOKIES = [ADMIN_SESSION_COOKIE, DESKTOP_CONSOLE_COOKIE];
+
 export const adminCookieHeader = (
   cookies: Array<{ name: string; value: string }>,
 ): string =>
   cookies
-    .filter((it) => it.name === ADMIN_SESSION_COOKIE && it.value)
+    .filter((it) => FORWARDED_COOKIES.includes(it.name) && it.value)
     .map((it) => `${it.name}=${it.value}`)
     .join('; ');
