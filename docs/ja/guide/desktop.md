@@ -70,21 +70,10 @@ macOS ではメニューバーに状態アイコンが常駐し、アイコン�
 
 ## 署名について
 
-ビルド成果物はコード署名されていません。macOS では初回起動時に Finder で右クリックして「開く」を選択し、Windows では SmartScreen の警告で「実行」を選んでください。
+リリースの macOS ビルドは署名と Apple の公証を済ませているため、dmg をダブルクリックすれば開けます。Windows では SmartScreen が表示されるので「実行」を選んでください。
 
-## ソースからビルドする
+macOS に「壊れているため開けません」と表示される場合は、アプリを `Applications` にコピーしてから次を実行してください。
 
-```bash
-bun install
-bun run build
-bun run desktop:prepare   # ゲートウェイの構成、メインプロセスのバンドル、better-sqlite3 の Electron 向け再ビルド
-bun run desktop:dist      # 上記に加えて electron-builder でパッケージング
+```sh
+xattr -cr /Applications/CodeBuddy2API.app
 ```
-
-`desktop:dist` 以降の引数は electron-builder に渡されます。単一ターゲットをビルドする場合は次のようにします。
-
-```bash
-bun run desktop:dist -- --mac --arm64
-```
-
-成果物は `build/desktop` に出力されます。ネイティブモジュールはビルドしたマシンのアーキテクチャ向けにコンパイルされるため、x86 の Mac は x86 のマシンでビルドする必要があります。

@@ -1,0 +1,157 @@
+name: Desktop Build
+
+on:
+  push:
+    branches:
+      - main
+  # A push only ever builds Linux, so the macOS and Windows targets would
+  # otherwise first run at release time. Dispatch this by hand to build another
+  # one of them, from any branch: the installer comes back as an artifact of the
+  # run.
+  workflow_dispatch:
+    inputs:
+      runs_on:
+        default: ubuntu-latest
+        description: Runner to build on
+        required: false
+      targets:
+        default: '--linux --x64'
+        description: electron-builder targets, for example "--win --x64"
+        required: false
+
+permissions:
+  contents: read
+
+# Its own group, and its own cancellation: dispatching a macOS build by hand
+# must not cancel — or be cancelled by — the checks already running on this
+# commit, which is what sharing Main Checks' group did.
+concurrency:
+  group: ci-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_CACHE_PATH: ~/.bun/install/cache
+  BUN_VERSION: 1.3.14
+  CI: true
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  desktop-build:
+    name: Desktop Build
+    runs-on: ${{ inputs.runs_on || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    # The same certificate the release workflow uses, so a hand-dispatched
+    # macOS build can be checked before a release is cut. Empty unless the
+    # targets say macOS: see the comment in release.yml.
+    env:
+      APPLE_API_ISSUER: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.APPLE_API_ISSUER || '' }}
+      APPLE_API_KEY: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.APPLE_API_KEY || '' }}
+      APPLE_API_KEY_ID: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.APPLE_API_KEY_ID || '' }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.MATCH_GIT_BASIC_AUTHORIZATION || '' }}
+      MATCH_GIT_PRIVATE_KEY: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.MATCH_GIT_PRIVATE_KEY || '' }}
+      MATCH_GIT_URL: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.MATCH_GIT_URL || '' }}
+      MATCH_KEYCHAIN_PASSWORD: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.MATCH_KEYCHAIN_PASSWORD || '' }}
+      MATCH_PASSWORD: ${{ contains(inputs.targets || '--linux --x64', '--mac') && secrets.MATCH_PASSWORD || '' }}
+
+    steps:
+      # The release workflow builds all five desktop targets; this one keeps
+      # the pipeline honest between releases without paying for macOS and
+      # Windows runners on every push.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun package downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.BUN_CACHE_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-desktop-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-desktop-bun-${{ env.BUN_VERSION }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Next.js app
+        run: bun run build
+
+      # `match` is Ruby, and it is the only reason this repository has any.
+      - uses: ruby/setup-ruby@v1
+        if: ${{ contains(inputs.targets || '--linux --x64', '--mac') }}
+        with:
+          bundler-cache: true
+          ruby-version: '3.3'
+
+      - name: Trust github.com for the certificate repository
+        if: ${{ env.MATCH_GIT_PRIVATE_KEY != '' }}
+        shell: bash
+        run: |
+          # `git clone` over ssh refuses a host it has never seen, and a runner
+          # has never seen github.com.
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Give notarytool its API key
+        if: ${{ env.APPLE_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `notarytool --key` takes a path to the .p8 and not the key itself,
+          # so the secret has to become a file before electron-builder runs.
+          key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY" > "$key"
+          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Build desktop app
+        run: |
+          set -euo pipefail
+          # Only a macOS build goes through fastlane: it is the one target with
+          # a certificate to import, and the lane builds the same app —
+          # unsigned — when there is none.
+          if [[ "${{ inputs.targets || '--linux --x64' }}" == *--mac* ]]; then
+            bundle exec fastlane mac targets:"${{ inputs.targets || '--linux --x64' }}"
+          else
+            bun scripts/build-desktop.ts ${{ inputs.targets || '--linux --x64' }}
+          fi
+
+      - name: Check that the app is signed
+        if: ${{ env.MATCH_GIT_URL != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find build/desktop -name '*.app' -maxdepth 2 -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo '::error::electron-builder left no .app behind'
+            exit 1
+          fi
+          # A build that quietly skipped signing looks exactly like one that
+          # worked, right up to the Mac that refuses to open the dmg.
+          codesign -dv --verbose=4 "$app" 2>&1 | tee codesign.log
+          if grep -q 'TeamIdentifier=not set' codesign.log; then
+            echo "::error::$app carries no signing identity — check MATCH_GIT_URL, MATCH_PASSWORD and MATCH_KEYCHAIN_PASSWORD"
+            exit 1
+          fi
+          # Signed but not notarized opens on no Mac either: Gatekeeper asks
+          # Apple about the app, and there is nothing on file for it.
+          if [[ -z "$APPLE_API_KEY" ]]; then
+            echo '::warning::The app is signed but was never notarized — APPLE_API_KEY, APPLE_API_KEY_ID or APPLE_API_ISSUER is missing'
+          fi
+
+      # A build nobody can open is only half a check — the installers are
+      # downloadable from the run. One day is enough to try one; the release
+      # workflow is where they are kept.
+      - name: Upload desktop builds
+        uses: actions/upload-artifact@v6
+        with:
+          if-no-files-found: error
+          name: desktop-${{ inputs.runs_on || 'ubuntu-latest' }}
+          path: |
+            build/desktop/*.dmg
+            build/desktop/*.exe
+            build/desktop/*.AppImage
+            build/desktop/*.deb
+          retention-days: 1
