@@ -349,12 +349,20 @@ const WebSearchBackendField = ({
  * order is the order of selection, which is why it is shown rather than sorted.
  */
 const WebFetchBackendField = ({
+  desktop = false,
   hint,
   label,
   onChange,
   settings,
   translations,
 }: {
+  /**
+   * Set when the data is this machine's own. Then only the two a desktop
+   * install can reach are offered — CodeBuddy, and this server fetching the
+   * page itself, which is "local" to the person using it rather than the name
+   * of the thing behind it.
+   */
+  desktop?: boolean;
   hint?: string;
   label: string;
   onChange: (key: string, value: string) => void;
@@ -379,10 +387,23 @@ const WebFetchBackendField = ({
         onChange={(values) =>
           onChange(settingKey, serializeFetchBackends(values))
         }
-        options={FETCH_BACKENDS.map((backend) => ({
-          label: FETCH_BACKEND_LABELS[backend] ?? backend,
-          value: backend,
-        }))}
+        options={
+          desktop
+            ? [
+                {
+                  label: FETCH_BACKEND_LABELS.codebuddy ?? 'codebuddy',
+                  value: 'codebuddy',
+                },
+                {
+                  label: translations('settingsPanel.fetchBackendLocal'),
+                  value: 'codebuddy2api',
+                },
+              ]
+            : FETCH_BACKENDS.map((backend) => ({
+                label: FETCH_BACKEND_LABELS[backend] ?? backend,
+                value: backend,
+              }))
+        }
         value={selected}
       />
       {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
@@ -669,6 +690,14 @@ const Settings = ({
               // A backend's own settings are rendered by its picker, which
               // knows which backend they belong to.
               .filter(([settingKey]) => !BACKEND_CONFIG_KEYS.has(settingKey))
+              // Web search is not a setting here at all: CodeBuddy is the only
+              // engine an install whose data is this machine's own can reach,
+              // so the search runs through it and there is nothing to pick —
+              // and a picker's config fields go with it, since every one of
+              // them belongs to an engine that cannot be chosen.
+              .filter(([settingKey]) =>
+                desktop ? settingKey !== 'CODEBUDDY_WEB_SEARCH_BACKEND' : true,
+              )
               .map(([settingKey, label]) =>
                 settingKey === 'CODEBUDDY_WEB_SEARCH_BACKEND' ? (
                   <WebSearchBackendField
@@ -681,6 +710,7 @@ const Settings = ({
                   />
                 ) : settingKey === 'CODEBUDDY_WEB_FETCH_BACKEND' ? (
                   <WebFetchBackendField
+                    desktop={desktop}
                     hint={settingHint(settingKey, translations)}
                     key={settingKey}
                     label={label}

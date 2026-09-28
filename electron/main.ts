@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import {
   BrowserWindow,
@@ -14,11 +13,20 @@ import {
   dialog,
   ipcMain,
   nativeImage,
+  nativeTheme,
   session,
   shell,
 } from 'electron';
 
-import { localeCookieName } from '../lib/i18n/cookie-names';
+import {
+  localeCookieName,
+  localePreferenceCookieName,
+} from '../lib/i18n/cookie-names';
+import {
+  parseThemeMode,
+  resolvedThemeCookieName,
+  themeCookieName,
+} from '../lib/theme';
 import {
   buildGatewayEnv,
   startGateway,
@@ -57,17 +65,6 @@ import {
   readDeviceToken,
   writeDeviceToken,
 } from '../lib/server/electron/device-token';
-import {
-  appleScriptSettings,
-  parseSettingsAnswer,
-  settingsTabForm,
-  windowsSettingsScript,
-  zenitySettingsNoteArgs,
-  zenitySettingsTabArgs,
-  type SettingsAnswer,
-  type SettingsForm,
-  type SettingsTab,
-} from '../lib/server/electron/settings-dialog';
 import {
   DESKTOP_SETTINGS_FILENAME,
   MAX_PORT,
@@ -109,6 +106,20 @@ import {
 } from '../lib/server/electron/updates';
 import { fetchServerVersion } from '../lib/server/electron/version';
 
+/** Every window of the app's own carries this title, and never another. */
+const APP_TITLE = 'CodeBuddy2API';
+
+/**
+ * The app's name, set before `ready` and before anything reads it.
+ *
+ * A development build — `electron .` — has no bundle to take a `productName`
+ * from, so the menu, the window and the About tab would all call this process
+ * "Electron". Named at module scope rather than in `bootstrap`, because the
+ * application menu is built from it and a name set later is a menu that was
+ * already written.
+ */
+app.setName(APP_TITLE);
+
 const WINDOW_HEIGHT = 880;
 const WINDOW_WIDTH = 1360;
 const MIN_WINDOW_HEIGHT = 640;
@@ -126,6 +137,29 @@ const BACKEND_WINDOW_MIN_HEIGHT = 180;
 const BACKEND_WINDOW_MIN_WIDTH = 320;
 const BACKEND_WINDOW_HEIGHT = 320;
 const BACKEND_WINDOW_WIDTH = 480;
+/**
+ * The colour a window is before the page inside it has drawn anything.
+ *
+ * Both the console and the settings are dark on a dark desktop, so a window
+ * that comes up white for as long as its page takes to load is a flash of the
+ * one thing on the screen that is not — and in dark appearance it is the
+ * brightest thing on it.
+ */
+const WINDOW_BACKGROUND_COLOR = '#16161a';
+/**
+ * On macOS the window is drawn on the desktop's own blur, behind the page, the
+ * way every other window there is. Nowhere else: Windows and Linux paint a
+ * window's background themselves and have no such material to hand.
+ */
+const WINDOW_VIBRANCY = 'under-window';
+/**
+ * A picture in the console is not a thing to be dragged.
+ *
+ * Dragging one out of a window that is not a browser drops a file nobody asked
+ * for, or navigates to `file://` — and either reads as the window misbehaving.
+ * The console is read and clicked, so what is in it is too.
+ */
+const NO_IMAGE_DRAG_CSS = 'img { -webkit-user-drag: none; }';
 /**
  * Whether a window of the app also gets a taskbar button.
  *
@@ -190,10 +224,10 @@ const CONSOLE_TOKEN_BYTES = 32;
  * which is the user's to settle rather than a failure to report.
  */
 type GatewayStatus =
-  'failed' | 'portBusy' | 'running' | 'starting' | 'unreachable';
+  'failed' | 'paused' | 'portBusy' | 'running' | 'starting' | 'unreachable';
 
 /** What the window that asks about the backend can be asking. */
-type BackendScreen = 'choose' | 'portInUse' | 'unreachable';
+type BackendScreen = 'choose' | 'portInUse' | 'settings' | 'unreachable';
 
 interface Cookie {
   name: string;
@@ -212,6 +246,12 @@ let restartTimer: NodeJS.Timeout | null = null;
 let usageTimer: NodeJS.Timeout | null = null;
 let restarting = false;
 let quitting = false;
+/**
+ * The gateway stopped because the menu bar item said to. Not a failure, and not
+ * something the app fixes on its own: a setting that changes does not start a
+ * gateway the user stopped.
+ */
+let paused = false;
 /** The gateway being started: its child exists, its handle does not yet. */
 let pendingStart: Promise<GatewayHandle> | null = null;
 /**
@@ -255,6 +295,13 @@ let backendScreen: BackendScreen = 'choose';
 let updateState: 'checking' | 'downloading' | 'idle' = 'idle';
 /** The locale the console is showing — the menu bar item speaks it too. */
 let locale = 'en-US';
+/** The appearance the console is showing, which the menu bar item can change. */
+let consoleTheme: 'dark' | 'light' | 'system' = 'system';
+/**
+ * The language the console is showing, and `system` for one that follows the
+ * request: the choice the menu bar item offers is the one already made.
+ */
+let consoleLocalePreference = 'system';
 /**
  * The settings already applied, so the app does not react to the writes it
  * makes itself.
@@ -439,10 +486,37 @@ const loadConsole = async (
   }
 };
 
+/**
+ * Takes dragging away from the pictures in a window, on every page that loads
+ * in it — a stylesheet is what survives a navigation, and the console is a page
+ * that navigates.
+ */
+const stopImageDragging = (window: BrowserWindow): void => {
+  window.webContents.on('did-finish-load', () => {
+    void window.webContents.insertCSS(NO_IMAGE_DRAG_CSS);
+  });
+};
+
+/**
+ * Keeps the app's own name on a window rather than the page's.
+ *
+ * The console rewrites the document's title on its way between tabs, and there
+ * is a moment in the middle of the move with no title at all — which took the
+ * name off the window and put it back, a blink on every switch. Every window
+ * of this app carries the same title and never another, so the page is not the
+ * one worth asking.
+ */
+const keepWindowTitle = (window: BrowserWindow): void => {
+  window.on('page-title-updated', (event) => {
+    event.preventDefault();
+  });
+  window.setTitle(APP_TITLE);
+};
+
 const createMainWindow = (url: string): BrowserWindow => {
   const window = new BrowserWindow({
     autoHideMenuBar: true,
-    backgroundColor: '#16161a',
+    backgroundColor: WINDOW_BACKGROUND_COLOR,
     height: WINDOW_HEIGHT,
     icon: windowIcon(),
     minHeight: MIN_WINDOW_HEIGHT,
@@ -450,7 +524,12 @@ const createMainWindow = (url: string): BrowserWindow => {
     // One place to find the app: the menu bar item.
     skipTaskbar: SKIP_TASKBAR,
     show: false,
-    title: 'CodeBuddy2API',
+    title: APP_TITLE,
+    // macOS only: the frost behind the page. Everywhere else a window is
+    // painted by the desktop and there is nothing to put behind it.
+    ...(process.platform === 'darwin'
+      ? { vibrancy: WINDOW_VIBRANCY }
+      : undefined),
     width: WINDOW_WIDTH,
     webPreferences: {
       contextIsolation: true,
@@ -483,9 +562,40 @@ const createMainWindow = (url: string): BrowserWindow => {
     mainWindow = null;
   });
 
+  stopImageDragging(window);
+  keepWindowTitle(window);
+
   void loadConsole(window, url);
 
   return window;
+};
+
+/**
+ * Asks before opening the console of a gateway that is stopped.
+ *
+ * There is nothing to show while nothing is serving the console, so the click
+ * used to answer with nothing at all — and a button that does nothing is a
+ * button that reads as broken. Starting the gateway is what was meant by it,
+ * so starting it is what is offered.
+ */
+const askToStartPausedGateway = async (): Promise<void> => {
+  const shell = text();
+  const { response } = await dialog.showMessageBox({
+    buttons: [shell.resume, shell.cancel],
+    cancelId: 1,
+    defaultId: 0,
+    message: shell.pausedOpenConsole,
+    title: APP_TITLE,
+  });
+
+  if (response !== 0) {
+    return;
+  }
+
+  // Opened after the gateway is up and not before: a window made now would load
+  // a console nobody is serving, and land on an error instead of the console.
+  await setPaused(false);
+  showMainWindow();
 };
 
 /**
@@ -500,6 +610,15 @@ const showMainWindow = (): void => {
   // yet, and the question is the thing to answer first.
   if (backendWindow && !backendWindow.isDestroyed()) {
     backendWindow.focus();
+
+    return;
+  }
+
+  // A paused gateway is one the window can be reopened for, but not one that is
+  // serving anything to put in it — so the click is answered with the question
+  // rather than with a window that says the console is gone.
+  if (status === 'paused') {
+    void askToStartPausedGateway();
 
     return;
   }
@@ -537,6 +656,25 @@ const showMainWindow = (): void => {
   if (status === 'portBusy') {
     void askAboutBackend('portInUse');
   }
+};
+
+/**
+ * Opens the console because somebody asked for it — a click on the menu bar
+ * item, on the Dock, on a second launch — rather than because a restart of the
+ * gateway just succeeded.
+ *
+ * Every one of those is a click on a paused gateway too, and a paused gateway
+ * has no console to open: what is meant by the click is starting it, so that is
+ * what is offered instead of a window that would load nothing.
+ */
+const openConsoleOnRequest = (): void => {
+  if (status === 'paused') {
+    void askToStartPausedGateway();
+
+    return;
+  }
+
+  showMainWindow();
 };
 
 /**
@@ -590,17 +728,168 @@ const deviceMenu = (): MenuItemConstructorOptions => {
 };
 
 /**
+ * The languages the console speaks, each named in itself: a language is not
+ * translated, so these read the same in every locale the menu bar item has.
+ *
+ * The three `lib/i18n/routing` offers, spelled out because that module carries
+ * next-intl with it and the main process has no use for one.
+ */
+const LOCALE_MENU_ITEMS: Array<{ label: string; value: string }> = [
+  { label: '简体中文', value: 'zh-CN' },
+  { label: 'English', value: 'en-US' },
+  { label: '日本語', value: 'ja-JP' },
+];
+
+/** What the console calls a language it takes from the request. */
+const SYSTEM_LOCALE_PREFERENCE = 'system';
+
+/**
+ * Writes the cookies the console keeps its own look and language in, and shows
+ * the window again so it is drawn in what was chosen.
+ *
+ * Both are read when a page is rendered — the appearance on the server, the
+ * language by next-intl — so a pick here is followed by a reload rather than by
+ * an attempt to reach into a page that is already on the screen.
+ */
+const writeConsolePreferences = async (cookies: Cookie[]): Promise<void> => {
+  if (!consoleOrigin) {
+    return;
+  }
+
+  for (const cookie of cookies) {
+    try {
+      await session.defaultSession.cookies.set({
+        ...cookie,
+        url: `${consoleOrigin}/`,
+      });
+    } catch (error) {
+      // Worth saying out loud: a preference that did not land looks like a menu
+      // item that does nothing.
+      console.warn(`Could not save ${cookie.name}: ${describeError(error)}`);
+
+      return;
+    }
+  }
+
+  refreshTray();
+
+  // Only a console that is being served can be asked for another page: a paused
+  // gateway has no window to reload, and the choice is there next time.
+  if (mainWindow && !mainWindow.isDestroyed() && gateway) {
+    mainWindow.reload();
+  }
+};
+
+/** Picks the appearance the console is drawn in. */
+const chooseAppearance = (next: 'dark' | 'light' | 'system'): void => {
+  consoleTheme = next;
+
+  void writeConsolePreferences([
+    { name: themeCookieName, value: next },
+    {
+      // `system` is resolved here, where the preference the whole computer is
+      // in is known: the cookie is what a server-rendered page starts from, and
+      // a page rendered before the OS changes cannot be asked to notice.
+      name: resolvedThemeCookieName,
+      value:
+        next === 'system'
+          ? nativeTheme.shouldUseDarkColors
+            ? 'dark'
+            : 'light'
+          : next,
+    },
+  ]);
+};
+
+/** Picks the language the console speaks. */
+const chooseLocale = (next: string): void => {
+  consoleLocalePreference = next;
+
+  void writeConsolePreferences([
+    { name: localePreferenceCookieName, value: next },
+    // Emptied rather than left standing when the choice is the system's: a
+    // locale cookie from before would keep answering for it.
+    {
+      name: localeCookieName,
+      value: next === SYSTEM_LOCALE_PREFERENCE ? '' : next,
+    },
+  ]);
+};
+
+/**
+ * The appearance and the language, in the menu bar rather than in the console:
+ * the window is a window of this computer, and a desktop app is dressed from the
+ * place its other settings are — not from a picker inside the page.
+ */
+const appearanceMenu = (): MenuItemConstructorOptions => ({
+  label: text().appearance,
+  submenu: [
+    {
+      checked: consoleTheme === 'light',
+      click: () => chooseAppearance('light'),
+      label: text().themeLight,
+      type: 'radio',
+    },
+    {
+      checked: consoleTheme === 'dark',
+      click: () => chooseAppearance('dark'),
+      label: text().themeDark,
+      type: 'radio',
+    },
+    {
+      checked: consoleTheme === 'system',
+      click: () => chooseAppearance('system'),
+      label: text().themeSystem,
+      type: 'radio',
+    },
+  ],
+});
+
+const languageMenu = (): MenuItemConstructorOptions => ({
+  label: text().language,
+  submenu: [
+    {
+      checked: consoleLocalePreference === SYSTEM_LOCALE_PREFERENCE,
+      click: () => chooseLocale(SYSTEM_LOCALE_PREFERENCE),
+      label: text().languageSystem,
+      type: 'radio',
+    },
+    ...LOCALE_MENU_ITEMS.map(({ label, value }) => ({
+      checked: consoleLocalePreference === value,
+      click: () => chooseLocale(value),
+      label,
+      type: 'radio' as const,
+    })),
+  ],
+});
+
+/**
  * The menu the tray item opens: what the app is doing, the console it serves, and
  * the settings that decide both — the whole app, in the one place it is always
  * reachable from.
  */
 const buildTrayMenu = (): Menu =>
   Menu.buildFromTemplate([
-    { enabled: false, label: `CodeBuddy2API · ${statusLabel()}` },
+    { enabled: false, label: `${APP_TITLE} · ${statusLabel()}` },
     // Nothing to say about the usage yet says so in words, not with a number.
     { enabled: false, label: usageLabel() || text().usageUnavailable },
     { type: 'separator' },
-    { click: () => showMainWindow(), label: text().openConsole },
+    /*
+      Starting and stopping the gateway is the one thing the menu bar item does
+      to the gateway itself, so it is the first thing in the menu — and only
+      this machine's gateway is the app's to stop. With a deployment named, the
+      gateway here is the console's way to it: there is nothing to pause, and
+      what runs is the deployment's to control from the console.
+    */
+    ...(backend.mode === 'local'
+      ? [
+          {
+            click: () => void setPaused(status !== 'paused'),
+            label: status === 'paused' ? text().resume : text().pause,
+          },
+        ]
+      : []),
+    { click: () => openConsoleOnRequest(), label: text().openConsole },
     {
       click: () => {
         const baseUrl = consoleBaseUrl();
@@ -614,15 +903,19 @@ const buildTrayMenu = (): Menu =>
     },
     { type: 'separator' },
     { enabled: false, label: `${text().backend}: ${backendLabel()}` },
-    // The settings dialog: the backend and the port in a tab of their own,
-    // beside one that says where this install keeps its data and one that says
-    // what this app is.
+    // The settings: the backend and the port in a tab of their own, beside one
+    // that says what this app is.
     { click: () => void openSettings(), label: text().settings },
     // Signing in is only a question with a deployment behind the console: this
     // machine's own gateway is reachable by nothing but this app's window, which
     // needs no approval from anybody.
     ...(backend.mode === 'remote' ? [deviceMenu()] : []),
     { type: 'separator' },
+    // How the console looks and what language it speaks: the desktop's to
+    // decide, so the window carries no pickers of its own.
+    ...(consoleOrigin
+      ? [appearanceMenu(), languageMenu(), { type: 'separator' as const }]
+      : []),
     {
       enabled: false,
       label: fillText(text().appVersion, { version: app.getVersion() }),
@@ -651,14 +944,7 @@ const refreshTray = (): void => {
   }
 
   // The pieces that have something to say, and no empty join between them.
-  const parts = [
-    // A development build says so first: on macOS the item is an alpha mask, so
-    // a badge drawn into it — or the plate it sits on — is thrown away.
-    ...(isDevelopmentBuild() ? ['DEV'] : []),
-    'CodeBuddy2API',
-    statusLabel(),
-    usageLabel(),
-  ].filter(Boolean);
+  const parts = [APP_TITLE, statusLabel(), usageLabel()].filter(Boolean);
 
   tray.setToolTip(parts.join(' · '));
   tray.setContextMenu(buildTrayMenu());
@@ -668,11 +954,10 @@ const refreshTray = (): void => {
   // all until there is a number, because an icon with "…" beside it is an icon
   // that never says anything.
   if (process.platform === 'darwin') {
-    // `DEV` there too: the mask throws away a drawn badge, and text survives.
-    const development = isDevelopmentBuild();
-
     tray.setTitle(
-      [development ? 'DEV' : '', usageLabel()].filter(Boolean).join(' · '),
+      // Stopped is the one thing worth saying instead of a number: a count
+      // beside an icon that is not running is a count that stopped moving.
+      status === 'paused' ? text().paused : usageLabel(),
     );
   }
 };
@@ -788,7 +1073,7 @@ const createTray = (): void => {
   // without one, so the click opens the console instead.
   if (process.platform !== 'darwin') {
     tray.on('click', () => {
-      showMainWindow();
+      openConsoleOnRequest();
     });
   }
 
@@ -842,7 +1127,7 @@ const launchGateway = async (
       status = 'failed';
       refreshTray();
       dialog.showErrorBox(
-        'CodeBuddy2API',
+        APP_TITLE,
         `The local gateway stopped unexpectedly.\n\n${describeError(error)}`,
       );
     },
@@ -904,6 +1189,17 @@ const resolveStartPort = async (): Promise<number | null> => {
  */
 const restartGateway = async (): Promise<void> => {
   if (quitting) {
+    return;
+  }
+
+  // Paused is a stop the user asked for, so nothing that would start the
+  // gateway — a setting saved in the console, a device signed in — starts it.
+  if (paused) {
+    gateway?.stop();
+    gateway = null;
+    status = 'paused';
+    refreshTray();
+
     return;
   }
 
@@ -983,7 +1279,7 @@ const restartGateway = async (): Promise<void> => {
     status = 'failed';
     refreshTray();
     dialog.showErrorBox(
-      'CodeBuddy2API',
+      APP_TITLE,
       `The local gateway failed to start.\n\n${describeError(error)}`,
     );
   } finally {
@@ -1027,6 +1323,21 @@ const refreshUsage = async (): Promise<void> => {
 
   if (consoleLocale) {
     locale = consoleLocale;
+  }
+
+  // What the console is drawn in, and the choice behind its language: the menu
+  // bar item offers both, and an offer that does not know what is already
+  // picked is an offer that marks nothing.
+  consoleTheme = parseThemeMode(
+    cookies.find((it) => it.name === themeCookieName)?.value,
+  );
+
+  const preference = cookies.find(
+    (it) => it.name === localePreferenceCookieName,
+  )?.value;
+
+  if (preference) {
+    consoleLocalePreference = preference;
   }
 
   todayUsage = await fetchTodayUsage({
@@ -1140,7 +1451,7 @@ const replaceAppImage = async (downloaded: string): Promise<boolean> => {
   } catch (error) {
     await fs.promises.rm(staged, { force: true });
     dialog.showErrorBox(
-      'CodeBuddy2API',
+      APP_TITLE,
       `${text().updateFailed}\n\n${describeError(error)}`,
     );
 
@@ -1174,7 +1485,7 @@ const runUpdateCheck = async (): Promise<void> => {
     if (update.kind === 'unavailable') {
       await dialog.showMessageBox({
         message: updateUnavailableMessage(update.reason),
-        title: 'CodeBuddy2API',
+        title: APP_TITLE,
       });
 
       return;
@@ -1185,7 +1496,7 @@ const runUpdateCheck = async (): Promise<void> => {
         message: fillText(text().updateUpToDate, {
           version: update.version,
         }),
-        title: 'CodeBuddy2API',
+        title: APP_TITLE,
       });
 
       return;
@@ -1203,7 +1514,7 @@ const runUpdateCheck = async (): Promise<void> => {
             : text().updateNoBuild,
           { version: update.version },
         ),
-        title: 'CodeBuddy2API',
+        title: APP_TITLE,
       });
       await shell.openExternal(RELEASES_PAGE_URL);
 
@@ -1250,7 +1561,7 @@ const runUpdateCheck = async (): Promise<void> => {
     }
   } catch (error) {
     dialog.showErrorBox(
-      'CodeBuddy2API',
+      APP_TITLE,
       `${text().updateFailed}\n\n${describeError(error)}`,
     );
   } finally {
@@ -1287,7 +1598,7 @@ const applyBackend = async (
       // A `userData` the app cannot write to still leaves the choice usable for
       // this run — it just will not be there next time.
       dialog.showErrorBox(
-        'CodeBuddy2API',
+        APP_TITLE,
         `Could not save the backend.\n\n${describeError(error)}`,
       );
     }
@@ -1404,15 +1715,23 @@ const openBackendWindow = ({
 
   const window = new BrowserWindow({
     autoHideMenuBar: true,
+    backgroundColor: WINDOW_BACKGROUND_COLOR,
     height: BACKEND_WINDOW_HEIGHT,
     icon: windowIcon(),
     resizable: false,
     // One place to find the app: the menu bar item.
     skipTaskbar: SKIP_TASKBAR,
-    title: 'CodeBuddy2API',
+    // Shown once the page in it has drawn, which is also once the page has
+    // said how big it wants to be: a window put on the screen before that is
+    // a white flash first and a jump to its real size after.
+    show: false,
+    title: APP_TITLE,
     // The page measures itself and asks for the size it needs, so these numbers
     // are the page's own and not the window around it.
     useContentSize: true,
+    ...(process.platform === 'darwin'
+      ? { vibrancy: WINDOW_VIBRANCY }
+      : undefined),
     width: BACKEND_WINDOW_WIDTH,
     webPreferences: {
       contextIsolation: true,
@@ -1434,6 +1753,12 @@ const openBackendWindow = ({
       app.quit();
     }
   });
+
+  window.once('ready-to-show', () => {
+    window.show();
+  });
+
+  keepWindowTitle(window);
 
   backendWindow = window;
   backendScreen = screen;
@@ -1714,7 +2039,7 @@ const backendForm = (error: string): AskForm => {
     message: shell.chooseBackend,
     ok: shell.save,
     options: [shell.backendLocal, shell.backendRemote],
-    title: 'CodeBuddy2API',
+    title: APP_TITLE,
   };
 };
 
@@ -1804,7 +2129,7 @@ const askPortAgain = async (): Promise<AskOutcome['kind']> => {
         fillText(shell.portInUseBody, { port }),
       ].join('\n\n'),
       ok: shell.save,
-      title: 'CodeBuddy2API',
+      title: APP_TITLE,
     });
 
     if (outcome.kind !== 'answered') {
@@ -1828,257 +2153,47 @@ const askPortAgain = async (): Promise<AskOutcome['kind']> => {
 };
 
 /**
- * The repository, as it is written rather than as it is opened.
- */
-const homePageLabel = (): string => HOME_PAGE_URL.replace(/^https?:\/\//, '');
-
-/**
- * The settings, as one dialog of the computer's own with the computer's tabs.
+ * The settings, as one window of the computer's own with the computer's tabs.
  *
- * The question that was all the shell used to have — which backend, which port
- * — is the first tab, because it is the one that decides what the app is; beside
- * it, a tab saying where this install keeps its data, and a last one saying what
- * this app is and where it lives.
+ * Two tabs, and no more: the backend the app shows data from, which is the
+ * question the shell used to ask on its own — which backend, which port — and
+ * what this app is.
  */
-const settingsForm = (error: string): SettingsForm => {
-  const shell = text();
-  const paths = resolveDesktopPaths(userDataDir);
-  // A deployment is what keeps the data, so this machine's database is not what
-  // the console is showing, and naming it would be naming the wrong thing.
-  const data: SettingsTab =
-    backend.mode === 'remote'
-      ? {
-          label: shell.settingsTabData,
-          links: [{ label: backend.url, url: backend.url }],
-          notes: [fillText(shell.settingsDataRemote, { url: backend.url })],
-        }
-      : {
-          label: shell.settingsTabData,
-          // A link rather than a button: the desktop opens what it names, in the
-          // file manager this desktop uses, and the dialog stays where it is.
-          links: [
-            { label: paths.dataDir, url: pathToFileURL(paths.dataDir).href },
-          ],
-          notes: [
-            fillText(shell.settingsDataDir, { path: paths.dataDir }),
-            fillText(shell.settingsDatabase, { path: paths.sqlitePath }),
-          ],
-        };
-
-  return {
-    cancel: shell.cancel,
-    error,
-    ok: shell.save,
-    tabs: [
-      {
-        fields: [
-          {
-            label: shell.address,
-            message: shell.backendRemoteHint,
-            value: backend.mode === 'remote' ? backend.url : '',
-          },
-          {
-            // Only this machine's gateway is served on a port of this machine's.
-            label: shell.port,
-            message: shell.portHint,
-            value: String(preferredPort()),
-          },
-        ],
-        label: shell.settingsTabGeneral,
-        message: shell.chooseBackend,
-        option: backend.mode === 'remote' ? 1 : 0,
-        options: [shell.backendLocal, shell.backendRemote],
-      },
-      data,
-      {
-        label: shell.settingsTabAbout,
-        links: [{ label: homePageLabel(), url: HOME_PAGE_URL }],
-        notes: [
-          fillText(shell.appVersion, { version: app.getVersion() }),
-          `${shell.backend}: ${backendLabel()}`,
-          // Only a backend that is not this app has a version of its own.
-          ...(serverVersion
-            ? [fillText(shell.serverVersion, { version: serverVersion })]
-            : []),
-        ],
-      },
-    ],
-    title: 'CodeBuddy2API',
-  };
-};
-
-type SettingsOutcome =
-  | { answer: SettingsAnswer; kind: 'answered' }
-  | { kind: 'cancelled' }
-  | { kind: 'failed' };
-
-/** The settings in the dialog AppKit draws: a tab view inside an alert. */
-const askWithSettingsScript = async (
-  form: SettingsForm,
-): Promise<SettingsAnswer | null> => {
-  const { code, stdout } = await runCommand('/usr/bin/osascript', [
-    '-l',
-    'JavaScript',
-    '-e',
-    appleScriptSettings(form),
-  ]);
-
-  return code === 0 ? parseSettingsAnswer(stdout, form) : null;
-};
-
-/** The same dialog as a WinForms form, with the `TabControl` Windows draws. */
-const askWithWindowsSettings = async (
-  form: SettingsForm,
-): Promise<SettingsAnswer | null> => {
-  const args = [
-    '-NoProfile',
-    '-NonInteractive',
-    '-STA',
-    '-EncodedCommand',
-    windowsEncodedCommand(windowsSettingsScript(form)),
-  ];
-  const [command, absolute] = powershellCommands();
-  const { stdout } = await runCommand(command, args).catch(() =>
-    runCommand(absolute, args),
-  );
-
-  return parseSettingsAnswer(stdout, form);
-};
-
 /**
- * The settings in the dialogs zenity draws, which have no tab control between
- * them: the section is picked from a list, and the section picked is the one
- * that is asked about.
+ * Stops the gateway, and starts it again: the one thing the menu bar item can
+ * do to the gateway itself.
+ *
+ * A pause is not a failure and not a setting: the gateway is stopped whole, and
+ * what the item says while it is stopped is that it is stopped.
  */
-const askWithZenitySettings = async (
-  form: SettingsForm,
-): Promise<SettingsAnswer | null> => {
-  const { code, stdout } = await runCommand(
-    'zenity',
-    zenitySettingsTabArgs(form),
-  );
+const setPaused = async (next: boolean): Promise<void> => {
+  paused = next;
 
-  // Cancel in zenity is a non-zero exit, and a section that is none of the tabs
-  // is not an answer either.
-  if (code !== 0) {
-    return null;
-  }
-
-  const picked = form.tabs.findIndex((tab) => tab.label === stdout.trim());
-
-  if (picked < 0) {
-    return null;
-  }
-
-  const tab = form.tabs[picked];
-
-  // A section that only says things, then: zenity has no tab to put it in, so
-  // it is the one dialog zenity has for a text. Nothing is asked in it, so
-  // nothing is answered — the General section's entries would come back empty
-  // from here, and saving empty ones is a change of backend nobody made.
-  if (!tab.options?.length && !tab.fields?.length) {
-    await runCommand('zenity', zenitySettingsNoteArgs(tab)).catch(() => null);
-
-    return null;
-  }
-
-  const outcome = await askWithZenity(settingsTabForm(form, tab));
-
-  if (!outcome) {
-    return null;
-  }
-
-  const answer: SettingsAnswer = {
-    options: form.tabs.map(() => null),
-    values: form.tabs.map(() => []),
-  };
-
-  answer.options[picked] = outcome.option;
-  answer.values[picked] = outcome.values;
-
-  return answer;
-};
-
-const askSettings = async (form: SettingsForm): Promise<SettingsOutcome> => {
-  const ask =
-    process.platform === 'darwin'
-      ? askWithSettingsScript
-      : process.platform === 'win32'
-        ? askWithWindowsSettings
-        : askWithZenitySettings;
-
-  try {
-    const answer = await ask(form);
-
-    return answer ? { answer, kind: 'answered' } : { kind: 'cancelled' };
-  } catch (error) {
-    console.warn(`The desktop could not ask: ${describeError(error)}`);
-
-    return { kind: 'failed' };
-  }
-};
-
-/**
- * The settings, opened from the menu bar item — not the first-run question
- * again, which is one tab of a dialog that has the rest of the settings in it.
- */
-const openSettings = async (): Promise<void> => {
-  if (asking) {
-    return;
-  }
-
-  if (!asksInSystemDialogs()) {
-    // Asked for by name, so it is worth saying out loud.
-    console.warn(
-      'CODEBUDDY_DESKTOP_ASK=window: asking in the app’s own window.',
-    );
-
-    openBackendWindow({ screen: 'choose' });
+  if (paused) {
+    gateway?.stop();
+    gateway = null;
+    status = 'paused';
+    refreshTray();
 
     return;
   }
 
-  asking = true;
-
-  try {
-    let error = '';
-
-    for (let attempt = 0; attempt < ASK_ATTEMPTS; attempt += 1) {
-      const outcome = await askSettings(settingsForm(error));
-
-      if (outcome.kind !== 'answered') {
-        if (outcome.kind === 'failed') {
-          dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage('choose'));
-        }
-
-        return;
-      }
-
-      error = await applyBackendAnswer(
-        outcome.answer.options[0] ?? null,
-        outcome.answer.values[0] ?? [],
-      );
-
-      if (!error) {
-        return;
-      }
-    }
-
-    // Never answered with something the app could use, in a dialog that cannot
-    // say what is wrong under a field: said in a dialog of the system's own.
-    dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage('choose'));
-  } finally {
-    asking = false;
-  }
+  await restartGateway();
 };
 
 /**
- * The dialog that shows a code: where to go, and what to type when there.
+ * The settings, opened from the menu bar item.
  *
- * Nothing is typed into the dialog itself — this app has no secret it could keep
- * and no passkey it could reach — so the only answer asked for is whether to
- * open the page the deployment serves, which is where the approval can be given.
+ * A window of this app's own rather than a dialog of the desktop's: what is
+ * asked for is a tab view, and a script can only hand AppKit, or WinForms, or
+ * zenity, a window it cannot answer for — a control drawn by a script is not
+ * the control the desktop draws. The window is the one the backend question is
+ * asked in, on a screen of its own.
  */
+const openSettings = (): void => {
+  openBackendWindow({ screen: 'settings' });
+};
+
 const deviceCodeForm = (grant: DeviceGrant): AskForm => {
   const shell = text();
 
@@ -2090,7 +2205,7 @@ const deviceCodeForm = (grant: DeviceGrant): AskForm => {
     }),
     ok: shell.deviceOpenBrowser,
     options: [shell.deviceOpenBrowser],
-    title: 'CodeBuddy2API',
+    title: APP_TITLE,
   };
 };
 
@@ -2123,13 +2238,13 @@ const signInToDeployment = async (): Promise<void> => {
   const requested = await requestDeviceAuthorization({ baseUrl: issuedBy });
 
   if (requested.kind === 'notConfigured') {
-    dialog.showErrorBox('CodeBuddy2API', shell.deviceNotConfigured);
+    dialog.showErrorBox(APP_TITLE, shell.deviceNotConfigured);
 
     return;
   }
 
   if (requested.kind !== 'granted') {
-    dialog.showErrorBox('CodeBuddy2API', shell.deviceSignInFailed);
+    dialog.showErrorBox(APP_TITLE, shell.deviceSignInFailed);
 
     return;
   }
@@ -2165,7 +2280,7 @@ const signInToDeployment = async (): Promise<void> => {
 
     if (outcome.kind !== 'signedIn') {
       dialog.showErrorBox(
-        'CodeBuddy2API',
+        APP_TITLE,
         outcome.kind === 'expired'
           ? shell.deviceSignInExpired
           : shell.deviceSignInFailed,
@@ -2178,7 +2293,7 @@ const signInToDeployment = async (): Promise<void> => {
     // the code was shown for the old address, and this token opens its door.
     // Keeping it would present one deployment's introduction to another.
     if (backend.mode !== 'remote' || backend.url !== issuedBy) {
-      dialog.showErrorBox('CodeBuddy2API', shell.deviceSignInFailed);
+      dialog.showErrorBox(APP_TITLE, shell.deviceSignInFailed);
 
       return;
     }
@@ -2332,7 +2447,7 @@ const askAboutBackend = async (
     if (kind === 'failed') {
       // NSAlert, Win32, GTK — the computer's own way of saying it, not a page
       // this app drew to say it in.
-      dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage(screen));
+      dialog.showErrorBox(APP_TITLE, couldNotAskMessage(screen));
     }
 
     return kind;
@@ -2456,9 +2571,11 @@ const bootstrap = async (): Promise<void> => {
  * have been the app's to accept.
  */
 ipcMain.handle('desktop:info', () => ({
+  appVersion: app.getVersion(),
   backend,
   /** A first launch has no answer on disk, and closing it quits the app. */
   firstRun: !backendChosen,
+  homePage: HOME_PAGE_URL,
   locale,
   // The bounds the field is checked against are the main process's: it is the
   // half that refuses a port outside them.
@@ -2467,6 +2584,7 @@ ipcMain.handle('desktop:info', () => ({
   port: preferredPort(),
   portInUse: portInUseInfo(),
   screen: backendScreen,
+  serverVersion,
   text: text(),
   unreachable: unreachableInfo(),
 }));
@@ -2563,6 +2681,14 @@ ipcMain.handle('desktop:retry-backend', async () => {
   }
 });
 
+/**
+ * Where this app lives, in the system browser: the window is a window of the
+ * app's, and a page about the app is not one it should navigate itself to.
+ */
+ipcMain.handle('desktop:open-home-page', () => {
+  openExternally(HOME_PAGE_URL);
+});
+
 /** The deployment itself, in the system browser: the app's window is not one. */
 ipcMain.handle('desktop:open-in-browser', () => {
   if (backend.mode === 'remote') {
@@ -2576,7 +2702,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    showMainWindow();
+    openConsoleOnRequest();
   });
 
   // On macOS the gateway keeps serving API clients after the console window is
@@ -2592,7 +2718,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('activate', () => {
-    showMainWindow();
+    openConsoleOnRequest();
   });
 
   app.on('before-quit', (event) => {
@@ -2641,7 +2767,7 @@ if (!app.requestSingleInstanceLock()) {
       status = 'failed';
       refreshTray();
       dialog.showErrorBox(
-        'CodeBuddy2API',
+        APP_TITLE,
         `The local gateway failed to start.\n\n${describeError(error)}`,
       );
       app.quit();

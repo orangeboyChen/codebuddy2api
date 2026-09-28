@@ -138,6 +138,15 @@ textarea {
   color: var(--lobe-color-text);
 }
 
+/*
+  The window is drawn over the desktop, so the page gives up the flat colour
+  that would cover the frosted glass behind it. Only the space between the
+  cards: they keep theirs, and so does everything drawn on them.
+*/
+.console-workspace[data-vibrancy] {
+  background: transparent;
+}
+
 .admin-header {
   --border-color: var(--lobe-color-border);
   --bg-color: color-mix(in srgb, var(--lobe-color-bg-layout) 72%, transparent);
@@ -220,6 +229,15 @@ textarea {
 
 .admin-header-tab[data-active] {
   background: var(--lobe-color-fill-secondary) !important;
+}
+
+/*
+  The window's own header starts at the left edge: the brand it would otherwise
+  sit beside is the app's name, which is on the menu bar item and in the title
+  bar already.
+*/
+.admin-header[data-desktop] .admin-header-navigation {
+  margin-left: 0;
 }
 
 .admin-header-select {

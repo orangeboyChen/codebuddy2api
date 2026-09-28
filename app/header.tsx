@@ -26,6 +26,14 @@ interface AdminHeaderProps {
   activeNavigationKey?: string;
   brand?: string;
   className?: string;
+  /**
+   * Whether this is the console in its own window rather than in a browser.
+   *
+   * The window is dressed from the menu bar item: the appearance and the
+   * language are in its menu, and the app's name is on the item and in the
+   * window's own title bar — so neither is asked for twice on one screen.
+   */
+  desktop?: boolean;
   localePreference: LocalePreference;
   navigationItems?: Array<{
     icon: LucideIcon;
@@ -43,6 +51,7 @@ export const AdminHeader = ({
   activeNavigationKey,
   brand,
   className,
+  desktop = false,
   onLocaleChange,
   onThemeChange,
   theme,
@@ -58,10 +67,15 @@ export const AdminHeader = ({
     system: translations('themeSystem'),
   };
   return (
-    <header className={`admin-header ${className}`}>
-      <Text as="div" className="admin-header-brand" strong>
-        {brand ?? translations('brand')}
-      </Text>
+    <header
+      className={`admin-header ${className}`}
+      data-desktop={desktop ? true : undefined}
+    >
+      {desktop ? null : (
+        <Text as="div" className="admin-header-brand" strong>
+          {brand ?? translations('brand')}
+        </Text>
+      )}
       {navigationItems?.length ? (
         <>
           <nav
@@ -107,34 +121,38 @@ export const AdminHeader = ({
         gap={8}
         horizontal
       >
-        <label className="admin-header-select">
-          <Languages aria-hidden="true" size={16} strokeWidth={2} />
-          <Select
-            aria-label="Language"
-            onChange={onLocaleChange}
-            options={[
-              { label: systemLocaleLabel, value: systemLocalePreference },
-              ...locales.map((item) => ({
-                label: localeLabels[item] ?? item,
-                value: item,
-              })),
-            ]}
-            value={localePreference}
-          />
-        </label>
-        <label className="admin-header-select">
-          <SunMoon aria-hidden="true" size={16} strokeWidth={2} />
-          <Select
-            aria-label="Theme mode"
-            onChange={(value) => onThemeChange(value as ThemeMode)}
-            options={[
-              { label: themeLabels.light, value: 'light' },
-              { label: themeLabels.dark, value: 'dark' },
-              { label: themeLabels.system, value: 'system' },
-            ]}
-            value={theme}
-          />
-        </label>
+        {desktop ? null : (
+          <>
+            <label className="admin-header-select">
+              <Languages aria-hidden="true" size={16} strokeWidth={2} />
+              <Select
+                aria-label="Language"
+                onChange={onLocaleChange}
+                options={[
+                  { label: systemLocaleLabel, value: systemLocalePreference },
+                  ...locales.map((item) => ({
+                    label: localeLabels[item] ?? item,
+                    value: item,
+                  })),
+                ]}
+                value={localePreference}
+              />
+            </label>
+            <label className="admin-header-select">
+              <SunMoon aria-hidden="true" size={16} strokeWidth={2} />
+              <Select
+                aria-label="Theme mode"
+                onChange={(value) => onThemeChange(value as ThemeMode)}
+                options={[
+                  { label: themeLabels.light, value: 'light' },
+                  { label: themeLabels.dark, value: 'dark' },
+                  { label: themeLabels.system, value: 'system' },
+                ]}
+                value={theme}
+              />
+            </label>
+          </>
+        )}
         {action}
       </Flexbox>
       <div className="admin-header-mobile-menu">
@@ -151,50 +169,57 @@ export const AdminHeader = ({
                   { key: 'navigation-divider', type: 'divider' as const },
                 ]
               : []),
-            {
-              children: [
-                {
-                  key: systemLocalePreference,
-                  label: systemLocaleLabel,
-                  onClick: () => onLocaleChange(systemLocalePreference),
-                },
-                ...locales.map((item) => ({
-                  key: item,
-                  label: localeLabels[item] ?? item,
-                  onClick: () => onLocaleChange(item),
-                })),
-              ],
-              icon: Languages,
-              key: 'locale',
-              label:
-                localePreference === systemLocalePreference
-                  ? systemLocaleLabel
-                  : (localeLabels[localePreference] ?? locale),
-              type: 'submenu',
-            },
-            {
-              children: [
-                {
-                  key: 'light',
-                  label: themeLabels.light,
-                  onClick: () => onThemeChange('light'),
-                },
-                {
-                  key: 'dark',
-                  label: themeLabels.dark,
-                  onClick: () => onThemeChange('dark'),
-                },
-                {
-                  key: 'system',
-                  label: themeLabels.system,
-                  onClick: () => onThemeChange('system'),
-                },
-              ],
-              icon: SunMoon,
-              key: 'theme',
-              label: themeLabels[theme],
-              type: 'submenu',
-            },
+            // The same two the window leaves out at full width: a narrow window
+            // is still the desktop, and the menu bar item is still where its
+            // appearance and language are chosen.
+            ...(desktop
+              ? []
+              : [
+                  {
+                    children: [
+                      {
+                        key: systemLocalePreference,
+                        label: systemLocaleLabel,
+                        onClick: () => onLocaleChange(systemLocalePreference),
+                      },
+                      ...locales.map((item) => ({
+                        key: item,
+                        label: localeLabels[item] ?? item,
+                        onClick: () => onLocaleChange(item),
+                      })),
+                    ],
+                    icon: Languages,
+                    key: 'locale',
+                    label:
+                      localePreference === systemLocalePreference
+                        ? systemLocaleLabel
+                        : (localeLabels[localePreference] ?? locale),
+                    type: 'submenu' as const,
+                  },
+                  {
+                    children: [
+                      {
+                        key: 'light',
+                        label: themeLabels.light,
+                        onClick: () => onThemeChange('light'),
+                      },
+                      {
+                        key: 'dark',
+                        label: themeLabels.dark,
+                        onClick: () => onThemeChange('dark'),
+                      },
+                      {
+                        key: 'system',
+                        label: themeLabels.system,
+                        onClick: () => onThemeChange('system'),
+                      },
+                    ],
+                    icon: SunMoon,
+                    key: 'theme',
+                    label: themeLabels[theme],
+                    type: 'submenu' as const,
+                  },
+                ]),
           ]}
           footer={action ?? undefined}
           nativeButton

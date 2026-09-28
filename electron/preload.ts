@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('desktop', {
   getInfo: (): Promise<unknown> => ipcRenderer.invoke('desktop:info'),
   openInBrowser: (): Promise<void> =>
     ipcRenderer.invoke('desktop:open-in-browser'),
+  openHomePage: (): Promise<void> =>
+    ipcRenderer.invoke('desktop:open-home-page'),
   retryBackend: (): Promise<void> =>
     ipcRenderer.invoke('desktop:retry-backend'),
   // Everything the window can settle in one call: a backend alone would save

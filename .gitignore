@@ -38,6 +38,7 @@ config/usage/
 .tmp-e2e-electron/
 playwright-report/
 playwright-report-desktop/
+playwright-report-device/
 playwright-report-electron/
 test-results/
 

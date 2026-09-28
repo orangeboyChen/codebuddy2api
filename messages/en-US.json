@@ -473,6 +473,7 @@
       "browserableUrlHint": "Address of the deployment, for example http://127.0.0.1:8000. A fetch is sent to it as a task, so it is far slower than a direct fetch — put it after a faster backend.",
       "jinaKeyHint": "Optional. Without a key the public endpoint is used at a lower rate limit.",
       "searchBackendOff": "Off (do not run web search)",
+      "fetchBackendLocal": "Local",
       "duckduckgoRegions": {
         "worldwide": "Worldwide",
         "china": "China",
