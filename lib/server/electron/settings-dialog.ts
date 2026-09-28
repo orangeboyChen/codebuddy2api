@@ -291,11 +291,29 @@ const WINDOWS_TABS_HEIGHT = 240;
  * What a link hands the shell on Windows: the address itself, unless it is a
  * file the desktop could open — `Start-Process` is given the path, which is what
  * opens the folder in Explorer, rather than a `file://` URL it would not.
+ *
+ * Read back the way Windows writes a path: `file:///C:/Users/alice` is
+ * `C:\Users\alice`, and a share reached as `file://host/share` is
+ * `\\host\share`. Cutting the scheme off the front would leave `/C:/Users/alice`,
+ * which is no path Windows can open.
  */
-const windowsLinkTarget = (url: string): string =>
-  url.startsWith('file://')
-    ? decodeURIComponent(url.slice('file://'.length))
-    : url;
+const windowsLinkTarget = (url: string): string => {
+  if (!url.startsWith('file://')) {
+    return url;
+  }
+
+  try {
+    const { hostname, pathname } = new URL(url);
+    const path = decodeURIComponent(pathname)
+      .replace(/^\/+/, '')
+      .replace(/\//g, '\\');
+
+    return hostname ? `\\\\${hostname}\\${path}` : path;
+  } catch {
+    // Not a URL naming a file after all: the address is still an address.
+    return url;
+  }
+};
 
 export const windowsSettingsScript = (form: SettingsForm): string => {
   const lines: string[] = [

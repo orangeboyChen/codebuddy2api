@@ -151,10 +151,45 @@ describe('windowsSettingsScript', () => {
     );
   });
 
-  it('opens what a link names in whatever handles it', () => {
-    // A folder is a path, not a URL: `Start-Process` is given the one that
-    // opens Explorer.
-    expect(script()).toContain("Start-Process '/home/orangeboy/data'");
+  // A folder is a path, not a URL: `Start-Process` is given the one that opens
+  // Explorer, which is the path Windows writes — a drive letter and backslashes,
+  // not the slashes a URL keeps.
+  it.each([
+    {
+      label: 'C:\\Users\\alice\\data',
+      url: 'file:///C:/Users/alice/data',
+      why: 'a folder on a drive',
+    },
+    {
+      label: 'C:\\Program Files\\data',
+      url: 'file:///C:/Program%20Files/data',
+      why: 'a path that had to be escaped',
+    },
+    {
+      label: '\\\\files\\shared\\data',
+      url: 'file://files/shared/data',
+      why: 'a share on another computer',
+    },
+  ])('hands the shell $why as the path Windows writes', ({ label, url }) => {
+    const windows = form();
+
+    windows.tabs[1].links = [{ label, url }];
+
+    expect(windowsSettingsScript(windows)).toContain(
+      `Start-Process '${label}'`,
+    );
+  });
+
+  it('leaves a link that is not a file the address it is', () => {
+    const windows = form();
+
+    windows.tabs[1].links = [
+      { label: 'CodeBuddy2API', url: 'https://github.com/orangeboyChen' },
+    ];
+
+    expect(windowsSettingsScript(windows)).toContain(
+      "Start-Process 'https://github.com/orangeboyChen'",
+    );
   });
 
   it('answers nothing when the form was cancelled', () => {

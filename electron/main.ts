@@ -1909,25 +1909,31 @@ const askWithZenitySettings = async (
     return null;
   }
 
+  const tab = form.tabs[picked];
+
+  // A section that only says things, then: zenity has no tab to put it in, so
+  // it is the one dialog zenity has for a text. Nothing is asked in it, so
+  // nothing is answered — the General section's entries would come back empty
+  // from here, and saving empty ones is a change of backend nobody made.
+  if (!tab.options?.length && !tab.fields?.length) {
+    await runCommand('zenity', zenitySettingsNoteArgs(tab)).catch(() => null);
+
+    return null;
+  }
+
+  const outcome = await askWithZenity(settingsTabForm(form, tab));
+
+  if (!outcome) {
+    return null;
+  }
+
   const answer: SettingsAnswer = {
     options: form.tabs.map(() => null),
     values: form.tabs.map(() => []),
   };
-  const tab = form.tabs[picked];
 
-  if (tab.options?.length || tab.fields?.length) {
-    const outcome = await askWithZenity(settingsTabForm(form, tab));
-
-    if (!outcome) {
-      return null;
-    }
-
-    answer.options[picked] = outcome.option;
-    answer.values[picked] = outcome.values;
-  } else {
-    // A section that only says things: the one dialog zenity has for a text.
-    await runCommand('zenity', zenitySettingsNoteArgs(tab)).catch(() => null);
-  }
+  answer.options[picked] = outcome.option;
+  answer.values[picked] = outcome.values;
 
   return answer;
 };
