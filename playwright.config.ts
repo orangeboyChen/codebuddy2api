@@ -6,8 +6,10 @@ const e2eRoot = path.join('.tmp-e2e', String(process.pid));
 export default defineConfig({
   testDir: './e2e',
   // The desktop runs have their own configs: they need a server started as the
-  // app starts it, or no server at all.
-  testIgnore: ['**/desktop/**', '**/electron/**'],
+  // app starts it, or no server at all. The device run has its own too — a
+  // console with an administrator account, which is the one thing the others
+  // must not have.
+  testIgnore: ['**/desktop/**', '**/device/**', '**/electron/**'],
   fullyParallel: false,
   workers: 1,
   reporter: [['list'], ['html', { open: 'never' }]],

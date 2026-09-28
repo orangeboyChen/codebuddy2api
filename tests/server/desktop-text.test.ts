@@ -65,6 +65,9 @@ describe('statusText', () => {
     // No gateway at all: the port it would have served on is taken, and the
     // number is what tells the user which one to change.
     { status: 'portBusy', expected: 'Port 8001 in use' },
+    // Stopped on purpose, so it is not a failure and not a number to change:
+    // the menu bar item says what it is, and offers starting it again.
+    { status: 'paused', expected: 'Paused' },
   ] as const)('reads $status in English', ({ status, expected }) => {
     expect(
       statusText(desktopText('en-US'), status, {

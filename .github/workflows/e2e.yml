@@ -54,6 +54,9 @@ jobs:
       - name: Run desktop console E2E tests
         run: bun run test:e2e:desktop
 
+      - name: Run device sign-in E2E tests
+        run: bun run test:e2e:device
+
       - name: Upload Playwright report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -62,6 +65,7 @@ jobs:
           path: |
             playwright-report/
             playwright-report-desktop/
+            playwright-report-device/
           if-no-files-found: ignore
 
   electron:
