@@ -411,6 +411,7 @@ const createMainWindow = (url: string): BrowserWindow => {
     autoHideMenuBar: true,
     backgroundColor: '#16161a',
     height: WINDOW_HEIGHT,
+    icon: windowIcon(),
     minHeight: MIN_WINDOW_HEIGHT,
     minWidth: MIN_WINDOW_WIDTH,
     // One place to find the app: the menu bar item.
@@ -582,7 +583,14 @@ const refreshTray = (): void => {
   }
 
   // The pieces that have something to say, and no empty join between them.
-  const parts = ['CodeBuddy2API', statusLabel(), usageLabel()].filter(Boolean);
+  const parts = [
+    // A development build says so first: the menu bar item is the only thing a
+    // release and a development build of this app do not draw the same way.
+    ...(isDevelopmentBuild() ? ['DEV'] : []),
+    'CodeBuddy2API',
+    statusLabel(),
+    usageLabel(),
+  ].filter(Boolean);
 
   tray.setToolTip(parts.join(' · '));
   tray.setContextMenu(buildTrayMenu());
@@ -592,7 +600,14 @@ const refreshTray = (): void => {
   // all until there is a number, because an icon with "…" beside it is an icon
   // that never says anything.
   if (process.platform === 'darwin') {
-    tray.setTitle(usageLabel());
+    // A development build puts `DEV` there instead: the menu bar icon is an
+    // alpha mask macOS colours itself, so a badge drawn into it — or the orange
+    // plate it sits on — is thrown away, and text is the one mark that survives.
+    const development = isDevelopmentBuild();
+
+    tray.setTitle(
+      [development ? 'DEV' : '', usageLabel()].filter(Boolean).join(' · '),
+    );
   }
 };
 
@@ -604,24 +619,36 @@ const bundleDir = (): string =>
   resolveAppBundleDir({ appPath: app.getAppPath() });
 
 /**
- * The icon a run from a checkout carries on macOS.
+ * The icon a development build carries, next to the bundled main process.
  *
- * `electron .` has no bundle to take an icon from, so the app is drawn with
- * Electron's own wherever macOS names it — the Dock, which the menu bar item
- * hides as soon as it exists and which stays if the item cannot be built. A
- * development build leaves its icon next to the bundled main process, which is
- * where this looks for it; an install carries its icon in the bundle already,
- * and never gets here.
+ * `icon-dev.png`: the same name scripts/dev-icon.ts exports as
+ * `DEV_ICON_FILENAME` — the build writes it there, and this process does not
+ * import a build script to learn the name. Whether the file is there is what
+ * makes a build a development one, a check build and a run from a checkout
+ * alike: an install is built without it and never carries it.
+ */
+const devIconPath = (): string => path.join(bundleDir(), 'icon-dev.png');
+
+const isDevelopmentBuild = (): boolean => fs.existsSync(devIconPath());
+
+/**
+ * The icon the app is drawn with on macOS: the Dock's.
+ *
+ * `electron .` has no bundle to take an icon from, so without this the app
+ * would be drawn with Electron's own wherever macOS names it. A development
+ * build leaves its icon next to the bundled main process, which is where this
+ * looks for it; an install carries its icon in the bundle already, and never
+ * gets here.
+ *
+ * The Dock is the place it shows: `createTray` leaves it up in a development
+ * build, for exactly that reason, and hides it in a release.
  */
 const applyDevelopmentIcon = (): void => {
   if (process.platform !== 'darwin' || app.isPackaged) {
     return;
   }
 
-  // `icon-dev.png`, the same name scripts/dev-icon.ts exports as
-  // `DEV_ICON_FILENAME`: the build writes it next to the bundled main process,
-  // and this bundle does not import a build script to learn the name.
-  const iconPath = path.join(bundleDir(), 'icon-dev.png');
+  const iconPath = devIconPath();
 
   if (!fs.existsSync(iconPath)) {
     return;
@@ -639,6 +666,17 @@ const applyDevelopmentIcon = (): void => {
 };
 
 /**
+ * What a window of a development build is drawn with: its own icon, where the
+ * platform draws a window's icon at all — the title bar, the taskbar, the list
+ * of running apps. macOS draws a window's icon in none of them, and there it is
+ * the Dock, in `applyDevelopmentIcon`.
+ */
+const windowIcon = (): string | undefined =>
+  process.platform === 'darwin' || !isDevelopmentBuild()
+    ? undefined
+    : devIconPath();
+
+/**
  * The menu bar item, which is what makes the app's state visible while the
  * console window is closed — the gateway keeps serving `/v1/*` with no window
  * open, and otherwise nothing would say so.
@@ -650,10 +688,15 @@ const createTray = (): void => {
   // monochrome one disappears into a dark taskbar, so they get the app's own
   // icon, which brings its own background and reads on a light tray too.
   const template = process.platform === 'darwin';
-  const iconPath = path.join(
-    bundleDir(),
-    template ? 'tray-template.png' : 'tray.png',
-  );
+  const development = isDevelopmentBuild();
+  const iconPath =
+    // A development build is drawn with its own icon everywhere the platform
+    // draws one in colour — orange where the release is the app's dark. Not on
+    // macOS: there the item is a mask, and an orange plate put through it comes
+    // out as a light mark, which is what the release already looks like.
+    development && !template
+      ? devIconPath()
+      : path.join(bundleDir(), template ? 'tray-template.png' : 'tray.png');
 
   if (!fs.existsSync(iconPath)) {
     return;
@@ -707,7 +750,11 @@ const createTray = (): void => {
   // beside it is a second app in the system tray with nothing of its own to
   // offer — every way in is already in the menu. Hidden only once the item
   // exists, so an install whose icon failed to load still has a dock to click.
-  if (process.platform === 'darwin') {
+  //
+  // Except in a development build, which keeps its dock: the icon it carries is
+  // the one thing that tells it apart from a release, and the Dock is where
+  // that icon is seen.
+  if (process.platform === 'darwin' && !development) {
     app.dock?.hide();
   }
 
@@ -1311,6 +1358,7 @@ const openBackendWindow = ({
   const window = new BrowserWindow({
     autoHideMenuBar: true,
     height: BACKEND_WINDOW_HEIGHT,
+    icon: windowIcon(),
     resizable: false,
     // One place to find the app: the menu bar item.
     skipTaskbar: SKIP_TASKBAR,
