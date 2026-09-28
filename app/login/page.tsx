@@ -5,6 +5,11 @@ import { redirect } from 'next/navigation';
 
 import LoginClient from './login-client';
 import { getAdminSessionSummary } from '@/lib/server/admin/session';
+import {
+  fetchUpstreamSessionSummary,
+  resolveAdminUpstream,
+  unreachableSessionSummary,
+} from '@/lib/server/admin/upstream';
 import { getMessages } from '@/lib/i18n/messages';
 import { resolveRequestOrigin } from '@/lib/server/shared/http';
 import {
@@ -38,7 +43,13 @@ const LoginPage = async () => {
   const request = new Request(`${protocol}://${host}/login`, {
     headers: cookieHeader ? { cookie: cookieHeader } : {},
   });
-  const session = await getAdminSessionSummary(request);
+  // The password belongs to whichever console this is: the deployment's, when
+  // this build is only rendering it.
+  const upstream = resolveAdminUpstream();
+  const summary = upstream
+    ? await fetchUpstreamSessionSummary({ cookie: cookieHeader, upstream })
+    : await getAdminSessionSummary(request);
+  const session = summary ?? unreachableSessionSummary();
   await getTranslations({
     locale,
     namespace: 'Admin.loginPage',

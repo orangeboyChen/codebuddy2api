@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 
 import {
@@ -22,6 +23,9 @@ const userDataDir = path.join(
   '.tmp-e2e-electron',
   String(process.pid),
 );
+
+/** The version the deployment in the last test answers with — never the app's. */
+const DEPLOYMENT_VERSION = '9.9.9';
 
 /**
  * `ELECTRON_RUN_AS_NODE` turns the Electron binary into plain Node — it is how
@@ -121,4 +125,153 @@ test('opens the console straight away once a backend has been chosen', async () 
   expect(app.windows()).toHaveLength(1);
 
   await app.close();
+});
+
+/** The backend the next launch finds on disk, as the window itself would save it. */
+const writeBackend = (url: string): void => {
+  fs.writeFileSync(
+    path.join(userDataDir, 'desktop-settings.json'),
+    `${JSON.stringify(
+      { backend: { mode: 'remote', url }, port: 8001 },
+      null,
+      2,
+    )}\n`,
+  );
+};
+
+/**
+ * A deployment the user already runs, standing in for one: `/health` names this
+ * service, and everything else answers with a page of its own — the page the app
+ * must never put in its window.
+ */
+const startDeployment = async (): Promise<{
+  port: number;
+  stop: () => void;
+}> => {
+  const server = http.createServer((request, response) => {
+    const path = (request.url ?? '/').split('?')[0];
+    const answer = (payload: unknown): void => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(payload));
+    };
+
+    if (path === '/health') {
+      answer({
+        service: 'codebuddy2api',
+        status: 'healthy',
+        storage: 'sqlite',
+      });
+
+      return;
+    }
+
+    if (path === '/admin-api/version') {
+      answer({ version: DEPLOYMENT_VERSION });
+
+      return;
+    }
+
+    if (path === '/admin-api/auth/session') {
+      answer({
+        session: {
+          accountConfigured: true,
+          authEnabled: true,
+          authenticated: true,
+          passkeyCount: 0,
+          passwordConfigured: true,
+          usagePreferences: null,
+          username: 'admin',
+        },
+      });
+
+      return;
+    }
+
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<html><body>the deployment’s own page</body></html>');
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address() as { port: number };
+
+  return { port: address.port, stop: () => server.close() };
+};
+
+test('shows its own console for a deployment, and takes only the data from it', async () => {
+  const deployment = await startDeployment();
+
+  writeBackend(`http://127.0.0.1:${deployment.port}`);
+
+  const app = await launchApp();
+  const consoleWindow = await waitForConsole(app);
+
+  // The console is the app's own build on loopback, not the deployment's page:
+  // the address in the window is the gateway the app started here.
+  expect(consoleWindow.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/dashboard$/);
+  expect(await consoleWindow.title()).not.toContain(
+    'the deployment’s own page',
+  );
+
+  // …and the numbers in it are the deployment's: `/admin-api` is forwarded, so
+  // the version it answers with is the version it has, not the app's.
+  const response = await consoleWindow.request.get(
+    new URL('/admin-api/version', consoleWindow.url()).toString(),
+  );
+
+  expect(response.ok()).toBe(true);
+  expect(await response.json()).toEqual({ version: DEPLOYMENT_VERSION });
+
+  await app.close();
+  deployment.stop();
+});
+
+test('says what happened when the deployment does not answer', async () => {
+  // Nothing listens there: the connection is refused at once.
+  writeBackend('http://127.0.0.1:1');
+
+  const app = await launchApp();
+  const window = await app.firstWindow();
+
+  await expect.poll(() => window.url()).toContain('backend.html');
+  await expect(window.locator('body')).toContainText(
+    'Could not use this deployment',
+  );
+  // Which deployment, since that is the thing to check or to change.
+  await expect(window.locator('body')).toContainText('127.0.0.1:1');
+
+  await app.close();
+});
+
+test('refuses an address that answers, but is not this app', async () => {
+  const stranger = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<html><body>somebody else’s page</body></html>');
+  });
+
+  await new Promise<void>((resolve) => {
+    stranger.listen(0, '127.0.0.1', resolve);
+  });
+
+  writeBackend(
+    `http://127.0.0.1:${(stranger.address() as { port: number }).port}`,
+  );
+
+  const app = await launchApp();
+  const window = await app.firstWindow();
+
+  await expect.poll(() => window.url()).toContain('backend.html');
+  await expect(window.locator('body')).toContainText(
+    'Could not use this deployment',
+  );
+  // The old behaviour was to render whatever answered. Nothing of that page is
+  // in the window.
+  await expect(window.locator('body')).not.toContainText(
+    'somebody else’s page',
+  );
+
+  await app.close();
+  stranger.close();
 });
