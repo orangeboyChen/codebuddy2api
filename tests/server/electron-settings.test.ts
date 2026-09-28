@@ -6,6 +6,7 @@ import {
   desktopSettingsPath,
   isDesktopMode,
   isPinnedPort,
+  isValidBackendUrl,
   normalizeDesktopBackend,
   normalizeDesktopPort,
   readDesktopSettings,
@@ -331,10 +332,27 @@ describe('isPinnedPort', () => {
     ).toBe(false);
   });
 
-  it('does not pin the default port a backend save wrote along with it', () => {
+  it('pins the port a save settled, the default included', () => {
+    // A save is an answer to the port the window asked about: it was on the
+    // screen, and Save was pressed with it there — including when it is the
+    // number the app started on.
     fs.mkdirSync(userDataDir, { recursive: true });
     writeDesktopSettings(userDataDir, defaultDesktopSettings());
 
-    expect(isPinnedPort(userDataDir, asEnv())).toBe(false);
+    expect(isPinnedPort(userDataDir, asEnv())).toBe(true);
+  });
+});
+
+describe('isValidBackendUrl', () => {
+  it('takes an address the app could open', () => {
+    expect(isValidBackendUrl('https://codebuddy.example.com')).toBe(true);
+    expect(isValidBackendUrl(' http://127.0.0.1:8080/ ')).toBe(true);
+  });
+
+  it('refuses one it could not, before anything is saved', () => {
+    expect(isValidBackendUrl('codebuddy.example.com')).toBe(false);
+    expect(isValidBackendUrl('ftp://codebuddy.example.com')).toBe(false);
+    expect(isValidBackendUrl('')).toBe(false);
+    expect(isValidBackendUrl(undefined)).toBe(false);
   });
 });

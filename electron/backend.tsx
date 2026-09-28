@@ -1,14 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import type { DesktopText } from '@/lib/server/electron/desktop-text';
+import { fillText, type DesktopText } from '@/lib/server/electron/desktop-text';
 import type { DesktopBackend } from '@/lib/server/electron/settings';
 
 interface BackendInfo {
   backend: DesktopBackend;
+  /**
+   * True until a backend has been chosen. A first launch has no answer on disk,
+   * and closing the window then quits the app rather than guessing one.
+   */
+  firstRun: boolean;
   locale: string;
+  /** The bounds the port field is checked against, from the main process. */
+  maxPort: number;
+  minPort: number;
+  /** The port the app would serve on: the one saved, or the default. */
+  port: number;
+  portInUse?: { message: string; port: string } | null;
   /** Absent from a main process that only ever had the one screen. */
-  screen?: 'choose' | 'unreachable';
+  screen?: 'choose' | 'portInUse' | 'unreachable';
   text: DesktopText;
   unreachable?: { host: string; message: string } | null;
 }
@@ -17,7 +28,12 @@ interface DesktopBridge {
   getInfo: () => Promise<BackendInfo>;
   openInBrowser: () => Promise<void>;
   retryBackend: () => Promise<void>;
-  setBackend: (backend: DesktopBackend) => Promise<void>;
+  // Everything the window can settle in one call: a backend alone would save
+  // the port it never asked about.
+  setBackend: (choice: {
+    backend: DesktopBackend;
+    port?: number;
+  }) => Promise<void>;
   setContentSize: (width: number, height: number) => Promise<void>;
 }
 
@@ -42,6 +58,37 @@ const parseUrl = (value: string): string | null => {
     return null;
   }
 };
+
+/**
+ * The port the app would bind, or null when the field does not hold one.
+ *
+ * Nothing but digits counts, because a number is what the gateway binds — the
+ * same rule the main process applies to a saved setting. The bounds come from
+ * it too, so a port it would refuse is refused here as well.
+ */
+const parsePort = (
+  value: string,
+  minPort: number,
+  maxPort: number,
+): number | null => {
+  const trimmed = value.trim();
+
+  if (!/^\d{1,5}$/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+
+  return parsed >= minPort && parsed <= maxPort ? parsed : null;
+};
+
+/**
+ * What to say when the field does not hold a port the app could bind. The
+ * bounds are named in it, and they are the main process's, so they are not
+ * written here.
+ */
+const invalidPort = (text: DesktopText, minPort: number, maxPort: number) =>
+  fillText(text.invalidPort, { max: String(maxPort), min: String(minPort) });
 
 /**
  * Asks the main process for a window the size of the pane.
@@ -119,15 +166,56 @@ const Option = ({ checked, hint, label, onChange, value }: OptionProps) => (
   </label>
 );
 
+interface PortFieldProps {
+  error?: string;
+  onChange: (value: string) => void;
+  text: DesktopText;
+  value: string;
+}
+
+/**
+ * The port the app serves its own console and API on. Only the local gateway is
+ * served on a port of this machine's: a deployment is reached through its
+ * address, so naming one leaves the saved number standing.
+ */
+const PortField = ({ error, onChange, text, value }: PortFieldProps) => (
+  <div className="field">
+    <label htmlFor="port">{text.port}</label>
+    <input
+      id="port"
+      inputMode="numeric"
+      maxLength={5}
+      onChange={(event) => onChange(event.target.value)}
+      type="text"
+      value={value}
+    />
+    <span className="hint">{text.portHint}</span>
+    {error ? <p className="error">{error}</p> : null}
+  </div>
+);
+
 interface ChooseProps {
   backend: DesktopBackend;
+  firstRun: boolean;
+  maxPort: number;
+  minPort: number;
+  port: number;
   text: DesktopText;
 }
 
-const Choose = ({ backend, text }: ChooseProps) => {
+const Choose = ({
+  backend,
+  firstRun,
+  maxPort,
+  minPort,
+  port,
+  text,
+}: ChooseProps) => {
   const [mode, setMode] = useState<'local' | 'remote'>(backend.mode);
   const [url, setUrl] = useState(backend.mode === 'remote' ? backend.url : '');
-  const [error, setError] = useState('');
+  const [urlError, setUrlError] = useState('');
+  const [portValue, setPortValue] = useState(String(port));
+  const [portError, setPortError] = useState('');
   const field = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -140,7 +228,15 @@ const Choose = ({ backend, text }: ChooseProps) => {
 
   const save = () => {
     if (mode === 'local') {
-      void bridge.setBackend({ mode: 'local' });
+      const nextPort = parsePort(portValue, minPort, maxPort);
+
+      if (!nextPort) {
+        setPortError(invalidPort(text, minPort, maxPort));
+
+        return;
+      }
+
+      void bridge.setBackend({ backend: { mode: 'local' }, port: nextPort });
 
       return;
     }
@@ -148,12 +244,15 @@ const Choose = ({ backend, text }: ChooseProps) => {
     const parsed = parseUrl(url);
 
     if (!parsed) {
-      setError(text.invalidBackendUrl);
+      setUrlError(text.invalidBackendUrl);
 
       return;
     }
 
-    void bridge.setBackend({ mode: 'remote', url: parsed });
+    // A deployment is reached through its address, so nothing on this machine
+    // is being settled: the port the console is served on is the one already
+    // saved, and the main process leaves it standing.
+    void bridge.setBackend({ backend: { mode: 'remote', url: parsed } });
   };
 
   return (
@@ -173,7 +272,7 @@ const Choose = ({ backend, text }: ChooseProps) => {
           hint={text.backendLocalHint}
           label={text.backendLocal}
           onChange={() => {
-            setError('');
+            setUrlError('');
             setMode('local');
           }}
           value="local"
@@ -183,30 +282,128 @@ const Choose = ({ backend, text }: ChooseProps) => {
           hint={text.backendRemoteHint}
           label={text.backendRemote}
           onChange={() => {
-            setError('');
+            setUrlError('');
             setMode('remote');
           }}
           value="remote"
         />
       </fieldset>
-      <input
-        disabled={mode !== 'remote'}
-        id="url"
-        onChange={(event) => {
-          setError('');
-          setUrl(event.target.value);
-        }}
-        placeholder={text.backendUrlPlaceholder}
-        ref={field}
-        type="text"
-        value={url}
-      />
-      {error ? <p className="error">{error}</p> : null}
+      <div className="field">
+        <input
+          disabled={mode !== 'remote'}
+          id="url"
+          onChange={(event) => {
+            setUrlError('');
+            setUrl(event.target.value);
+          }}
+          placeholder={text.backendUrlPlaceholder}
+          ref={field}
+          type="text"
+          value={url}
+        />
+        {urlError ? <p className="error">{urlError}</p> : null}
+      </div>
+      {/*
+        Only this machine's gateway is served on a port of this machine's: with
+        a deployment named, the address is the whole answer and the port stays
+        the one already saved.
+      */}
+      {mode === 'local' ? (
+        <PortField
+          error={portError}
+          onChange={(value) => {
+            setPortError('');
+            setPortValue(value);
+          }}
+          text={text}
+          value={portValue}
+        />
+      ) : null}
       <div className="buttons">
-        {/* Closing without answering leaves the app on the backend it was
-            already using — or on the local gateway, on a first launch. */}
+        {/*
+          A first launch that gets no answer quits: the app has nothing else to
+          start, and no gateway to keep running. Later, closing leaves the
+          backend and the port already in use alone.
+        */}
         <button onClick={() => window.close()} type="button">
-          {text.cancel}
+          {firstRun ? text.quit : text.cancel}
+        </button>
+        <button className="primary" id="save" type="submit">
+          {text.save}
+        </button>
+      </div>
+    </form>
+  );
+};
+
+interface PortInUseProps {
+  backend: DesktopBackend;
+  maxPort: number;
+  minPort: number;
+  portInUse: { message: string; port: string };
+  text: DesktopText;
+}
+
+/**
+ * The port the app was asked for and could not have: something on this machine
+ * is already serving it. The number is the one thing to settle, so the field is
+ * here rather than a screen away — and "Try again" is for a port that was freed
+ * while this window was open.
+ */
+const PortInUse = ({
+  backend,
+  maxPort,
+  minPort,
+  portInUse,
+  text,
+}: PortInUseProps) => {
+  const [port, setPort] = useState(portInUse.port);
+  const [error, setError] = useState('');
+  const [retrying, setRetrying] = useState(false);
+
+  const save = () => {
+    const nextPort = parsePort(port, minPort, maxPort);
+
+    if (!nextPort) {
+      setError(invalidPort(text, minPort, maxPort));
+
+      return;
+    }
+
+    void bridge.setBackend({ backend, port: nextPort });
+  };
+
+  const retry = async () => {
+    setRetrying(true);
+    await bridge.retryBackend();
+    setRetrying(false);
+  };
+
+  return (
+    <form
+      className="stack"
+      onSubmit={(event) => {
+        event.preventDefault();
+        save();
+      }}
+    >
+      <h1 id="portInUse">
+        {fillText(text.portInUseTitle, { port: portInUse.port })}
+      </h1>
+      {/* The main process already filled the port into this one. */}
+      <p className="message">{portInUse.message}</p>
+      <PortField
+        error={error}
+        onChange={(value) => {
+          setError('');
+          setPort(value);
+        }}
+        text={text}
+        value={port}
+      />
+      <div className="buttons">
+        <button disabled={retrying} onClick={() => void retry()} type="button">
+          {text.retry}
         </button>
         <button className="primary" id="save" type="submit">
           {text.save}
@@ -247,7 +444,9 @@ const Unreachable = ({ onChoose, text, unreachable }: UnreachableProps) => (
 
 const BackendWindow = () => {
   const [info, setInfo] = useState<BackendInfo | null>(null);
-  const [screen, setScreen] = useState<'choose' | 'unreachable'>('choose');
+  const [screen, setScreen] = useState<'choose' | 'portInUse' | 'unreachable'>(
+    'choose',
+  );
   // The pane, once there is one: only then is there anything to measure, which
   // is after the main process has answered with something to render.
   const [pane, setPane] = useState<HTMLDivElement | null>(null);
@@ -276,8 +475,23 @@ const BackendWindow = () => {
           text={info.text}
           unreachable={info.unreachable}
         />
+      ) : screen === 'portInUse' && info.portInUse ? (
+        <PortInUse
+          backend={info.backend}
+          maxPort={info.maxPort}
+          minPort={info.minPort}
+          portInUse={info.portInUse}
+          text={info.text}
+        />
       ) : (
-        <Choose backend={info.backend} text={info.text} />
+        <Choose
+          backend={info.backend}
+          firstRun={info.firstRun}
+          maxPort={info.maxPort}
+          minPort={info.minPort}
+          port={info.port}
+          text={info.text}
+        />
       )}
     </div>
   );

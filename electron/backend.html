@@ -1,8 +1,9 @@
 <!doctype html>
 <!--
-  The window that asks which backend to use, shown on a first launch and from
-  the menu bar item — and, when the deployment the user named does not answer,
-  the window that says so.
+  The window that asks which backend to use, and which port to serve on, shown
+  on a first launch and from the menu bar item — and, when the deployment the
+  user named does not answer or the port the app was given is already taken, the
+  window that says so.
 
   It is a bundled page: `scripts/build-desktop.ts` compiles `backend.tsx` into
   the `backend.js` sitting next to this file, so React is on disk and nothing is
@@ -39,16 +40,16 @@
         fixed at a width the text has to fit into. `#pane` is measured and the
         window is sized to it; see `useFitWindow` in `backend.tsx`.
       */
+      /*
+        The window is a dialog of this computer, so the computer dresses it:
+        every colour below is one the system answers with — the window
+        background, the text on it, the fields, the buttons, the accent — and
+        `color-scheme` is what lets them follow the appearance setting, light on
+        a light desktop and dark on a dark one. Nothing here is a colour this
+        app picked.
+      */
       :root {
-        color-scheme: dark;
-
-        --background: #1e1e1e;
-        --foreground: #f2f2f2;
-        --muted: #9b9b9f;
-        --field: rgba(255, 255, 255, 0.06);
-        --field-border: rgba(255, 255, 255, 0.14);
-        --accent: #0a7cff;
-        --danger: #ff6b6b;
+        color-scheme: light dark;
       }
 
       * {
@@ -65,8 +66,8 @@
       }
 
       body {
-        background: var(--background);
-        color: var(--foreground);
+        background: Canvas;
+        color: CanvasText;
         font-family:
           -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
         font-size: 13px;
@@ -121,7 +122,8 @@
       }
 
       .option input {
-        accent-color: var(--accent);
+        /* The accent the user picked for the whole computer, not for this app. */
+        accent-color: AccentColor;
         height: 13px;
         margin: 2px 0 0;
         width: 13px;
@@ -132,39 +134,60 @@
       }
 
       .option .hint {
-        color: var(--muted);
+        color: GrayText;
         display: block;
         font-size: 12px;
         font-weight: 400;
       }
 
-      #url {
-        background: var(--field);
-        border: 1px solid var(--field-border);
+      /*
+        A field and what belongs to it: the address of a deployment and the port
+        the app serves on are asked the same way — the browser's own text field,
+        with the label above it and what it is for underneath.
+      */
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .field label {
+        font-weight: 600;
+      }
+
+      .field input {
+        background: Field;
+        border: 1px solid ButtonBorder;
         border-radius: 6px;
-        color: inherit;
+        color: FieldText;
         font: inherit;
         padding: 5px 8px;
         width: 100%;
       }
 
-      #url:focus-visible {
-        outline: 2px solid var(--accent);
+      .field input:focus-visible {
+        outline: 2px solid Highlight;
         outline-offset: 1px;
       }
 
       /* Dimmed with the choice it belongs to: only a deployment has an address. */
-      #url:disabled {
+      .field input:disabled {
         opacity: 0.5;
       }
 
+      .field .hint {
+        color: GrayText;
+        font-size: 12px;
+      }
+
       .message {
-        color: var(--muted);
+        color: GrayText;
         margin: 0;
       }
 
       .error {
-        color: var(--danger);
+        /* Red enough to read on either appearance: no system colour says "wrong". */
+        color: light-dark(#b3261e, #ff8a80);
         font-size: 12px;
         margin: 0;
       }
@@ -176,33 +199,39 @@
       }
 
       button {
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid var(--field-border);
+        background: ButtonFace;
+        border: 1px solid ButtonBorder;
         border-radius: 6px;
-        color: inherit;
+        color: ButtonText;
         font: inherit;
         min-width: 78px;
         padding: 4px 14px;
       }
 
+      /* Pressed towards the text colour, so a hover reads on either appearance. */
       button:hover {
-        background: rgba(255, 255, 255, 0.14);
+        background: color-mix(in srgb, ButtonText 12%, ButtonFace);
+      }
+
+      /* Asked and being answered: "Try again" while the app is trying again. */
+      button:disabled {
+        opacity: 0.5;
       }
 
       button:focus-visible {
-        outline: 2px solid var(--accent);
+        outline: 2px solid Highlight;
         outline-offset: 1px;
       }
 
       /* The system's own accent, and the button Enter presses. */
       button.primary {
-        background: var(--accent);
+        background: AccentColor;
         border-color: transparent;
-        color: #fff;
+        color: AccentColorText;
       }
 
       button.primary:hover {
-        background: #3395ff;
+        background: color-mix(in srgb, ButtonText 15%, AccentColor);
       }
     </style>
   </head>

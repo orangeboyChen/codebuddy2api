@@ -8,6 +8,8 @@
  */
 export interface DesktopText {
   about: string;
+  /** The address of a deployment, asked for in a dialog of the system's own. */
+  address: string;
   appVersion: string;
   backend: string;
   backendLocal: string;
@@ -21,13 +23,20 @@ export interface DesktopText {
   chooseBackend: string;
   copyAddress: string;
   invalidBackendUrl: string;
+  invalidPort: string;
   openConsole: string;
   openInBrowser: string;
+  port: string;
+  portHint: string;
+  portInUseBody: string;
+  portInUseTitle: string;
   quit: string;
   retry: string;
   save: string;
   serverVersion: string;
+  settings: string;
   statusFailed: string;
+  statusPortBusy: string;
   statusRunning: string;
   statusStarting: string;
   statusUnreachable: string;
@@ -50,6 +59,7 @@ export interface DesktopText {
 const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'en-US': {
     about: 'CodeBuddy2API on GitHub',
+    address: 'Address',
     appVersion: 'Version {version}',
     backend: 'Backend',
     backendLocal: 'This machine',
@@ -65,13 +75,22 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     chooseBackend: 'Choose a backend',
     copyAddress: 'Copy address',
     invalidBackendUrl: 'Enter an address starting with http:// or https://',
+    invalidPort: 'Enter a whole number between {min} and {max}.',
     openConsole: 'Open console',
     openInBrowser: 'Open in browser',
+    port: 'Port',
+    portHint:
+      'The port this app serves its own console and API on, on this machine.',
+    portInUseBody:
+      'Something else on this machine is already serving 127.0.0.1:{port}. Pick another port, or stop what is using this one and try again.',
+    portInUseTitle: 'Port {port} is already in use',
     quit: 'Quit',
     retry: 'Try again',
     save: 'Save',
     serverVersion: 'Server version {version}',
+    settings: 'Settings…',
     statusFailed: 'Gateway failed to start',
+    statusPortBusy: 'Port {port} in use',
     statusRunning: 'Running · {address}',
     statusStarting: 'Starting gateway…',
     statusUnreachable: 'Deployment unreachable',
@@ -95,6 +114,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   },
   'ja-JP': {
     about: 'GitHub の CodeBuddy2API',
+    address: 'アドレス',
     appVersion: 'バージョン {version}',
     backend: 'バックエンド',
     backendLocal: 'このマシン',
@@ -111,13 +131,22 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     copyAddress: 'アドレスをコピー',
     invalidBackendUrl:
       'http:// または https:// で始まるアドレスを入力してください',
+    invalidPort: '{min} から {max} までの整数を入力してください。',
     openConsole: 'コンソールを開く',
     openInBrowser: 'ブラウザで開く',
+    port: 'ポート',
+    portHint:
+      'このアプリが自身のコンソールと API を提供する、このマシン上のポートです。',
+    portInUseBody:
+      'このマシン上の別のプログラムが 127.0.0.1:{port} を使用しています。別のポートを選ぶか、使用しているプログラムを止めてから再試行してください。',
+    portInUseTitle: 'ポート {port} はすでに使用されています',
     quit: '終了',
     retry: '再試行',
     save: '保存',
     serverVersion: 'サーバーバージョン {version}',
+    settings: '設定…',
     statusFailed: 'ゲートウェイの起動に失敗しました',
+    statusPortBusy: 'ポート {port} は使用中',
     statusRunning: '動作中 · {address}',
     statusStarting: 'ゲートウェイを起動しています…',
     statusUnreachable: 'デプロイに到達できません',
@@ -142,6 +171,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   },
   'zh-CN': {
     about: 'GitHub 上的 CodeBuddy2API',
+    address: '地址',
     appVersion: '版本 {version}',
     backend: '后端',
     backendLocal: '本机',
@@ -157,13 +187,21 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     chooseBackend: '选择后端',
     copyAddress: '复制地址',
     invalidBackendUrl: '请输入以 http:// 或 https:// 开头的地址',
+    invalidPort: '请输入 {min} 到 {max} 之间的整数。',
     openConsole: '打开控制台',
     openInBrowser: '在浏览器中打开',
+    port: '端口',
+    portHint: '本机上应用提供控制台与 API 的端口。',
+    portInUseBody:
+      '本机上已有其他程序占用 127.0.0.1:{port}。请换一个端口，或停掉占用它的程序后重试。',
+    portInUseTitle: '端口 {port} 已被占用',
     quit: '退出',
     retry: '重试',
     save: '保存',
     serverVersion: '服务端版本 {version}',
+    settings: '设置…',
     statusFailed: '网关启动失败',
+    statusPortBusy: '端口 {port} 被占用',
     statusRunning: '运行中 · {address}',
     statusStarting: '正在启动网关…',
     statusUnreachable: '无法访问该服务',
@@ -220,22 +258,27 @@ export const fillText = (
 ): string => fill(template, values);
 
 /**
- * The status line under the menu bar item. The address is the loopback one the
- * bundled gateway is on, which is where the console is served from whether a
- * deployment is configured or not.
+ * What the menu bar item reports, and what it needs to report it: the loopback
+ * address the bundled gateway is on, and the port it wanted when it has none —
+ * a port that is taken is the one number worth naming.
+ *
+ * The address is the bundled gateway's, which is where the console is served
+ * from whether a deployment is configured or not.
  */
 export const statusText = (
   text: DesktopText,
-  status: 'failed' | 'running' | 'starting' | 'unreachable',
-  address: string,
+  status: 'failed' | 'portBusy' | 'running' | 'starting' | 'unreachable',
+  context: { address: string; port: string },
 ): string =>
   status === 'running'
-    ? fill(text.statusRunning, { address })
+    ? fill(text.statusRunning, { address: context.address })
     : status === 'failed'
       ? text.statusFailed
-      : status === 'unreachable'
-        ? text.statusUnreachable
-        : text.statusStarting;
+      : status === 'portBusy'
+        ? fill(text.statusPortBusy, { port: context.port })
+        : status === 'unreachable'
+          ? text.statusUnreachable
+          : text.statusStarting;
 
 /**
  * Token counts compacted for a menu bar, where `1_234_567` is unreadable and

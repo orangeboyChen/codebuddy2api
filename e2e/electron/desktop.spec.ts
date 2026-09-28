@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
+import { DEFAULT_GATEWAY_PORT } from '../../lib/server/electron/ports';
 import {
   _electron as electron,
   expect,
@@ -46,12 +47,76 @@ const childEnv = (): Record<string, string> => {
   return env;
 };
 
-const launchApp = (): Promise<ElectronApplication> =>
+/**
+ * The question the app asks — which backend, which port — is put to the desktop
+ * on a machine that has one: AppKit's dialog, a WinForms form, zenity's. Nothing
+ * a test can click, and nothing a headless runner can draw, so these run with
+ * the app's own window asking instead.
+ */
+const ASK_IN_WINDOW = { CODEBUDDY_DESKTOP_ASK: 'window' };
+
+const launchApp = ({
+  env = {},
+  userData = userDataDir,
+}: {
+  env?: Record<string, string>;
+  userData?: string;
+} = {}): Promise<ElectronApplication> =>
   electron.launch({
-    args: [repoRoot, `--user-data-dir=${userDataDir}`],
+    args: [repoRoot, `--user-data-dir=${userData}`],
     cwd: repoRoot,
-    env: childEnv(),
+    env: { ...childEnv(), ...ASK_IN_WINDOW, ...env },
   });
+
+/**
+ * A user data directory no other test has touched. Whether the app is on its
+ * first launch, and which port it was saved to use, is decided by what sits in
+ * one, so a test that needs its own answer has to have its own.
+ */
+const separateUserDataDir = (name: string): string => {
+  const dir = path.join(userDataDir, name);
+
+  fs.rmSync(dir, { force: true, recursive: true });
+  fs.mkdirSync(dir, { recursive: true });
+
+  return dir;
+};
+
+/** A port nothing is serving, for a test that needs one to hand to the app. */
+const freePort = async (): Promise<number> => {
+  const server = http.createServer();
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const { port } = server.address() as { port: number };
+
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  });
+
+  return port;
+};
+
+/**
+ * Something already serving a port: what a Docker deployment on 8001 looks like
+ * to the app. Given no port, it takes whatever is free.
+ */
+const servePort = async (
+  port = 0,
+): Promise<{ port: number; stop: () => void }> => {
+  const server = http.createServer();
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+
+  const { port: listening } = server.address() as { port: number };
+
+  return { port: listening, stop: () => server.close() };
+};
 
 /**
  * The console window, which only exists once the gateway behind it answers —
@@ -97,6 +162,17 @@ test('asks which backend to use, then opens the console it starts', async () => 
 
   await expect.poll(() => chooser.url()).toContain('backend.html');
   await expect(chooser.locator('#title')).toHaveText('Choose a backend');
+
+  // The port belongs to this machine's gateway, so the local choice — the one
+  // the page opens on — is the one that asks for it.
+  await expect(chooser.locator('#port')).toHaveValue('8001');
+
+  // Naming a deployment settles its address and nothing else: there is no port
+  // of this machine's to ask for, and the saved number is left standing.
+  await chooser.locator('input[value="remote"]').check();
+  await expect(chooser.locator('#port')).toHaveCount(0);
+  await chooser.locator('input[value="local"]').check();
+  await expect(chooser.locator('#port')).toHaveValue('8001');
 
   expect(pageErrors).toEqual([]);
 
@@ -170,16 +246,106 @@ test('opens the console straight away once a backend has been chosen', async () 
   await app.close();
 });
 
+/** The settings the next launch finds on disk, as the window itself would save them. */
+const writeSettings = (settings: unknown, dir: string = userDataDir): void => {
+  fs.writeFileSync(
+    path.join(dir, 'desktop-settings.json'),
+    `${JSON.stringify(settings, null, 2)}\n`,
+  );
+};
+
+test('quits when the window it asks in is closed without an answer', async () => {
+  const dir = separateUserDataDir('first-run-unanswered');
+  const app = await launchApp({ userData: dir });
+
+  // A first launch has nothing behind it yet: no gateway is running, and no
+  // answer is on disk to fall back on.
+  const chooser = await app.firstWindow();
+
+  await expect.poll(() => chooser.url()).toContain('backend.html');
+
+  let closed = false;
+
+  app.on('close', () => {
+    closed = true;
+  });
+
+  await chooser.close();
+
+  // Closed rather than answered: the app goes away instead of starting a
+  // gateway nobody chose, which is the only thing a first launch could start.
+  await expect.poll(() => closed, { timeout: 30_000 }).toBe(true);
+
+  // Nothing was written, so the next launch asks the same question again.
+  expect(fs.existsSync(path.join(dir, 'desktop-settings.json'))).toBe(false);
+});
+
+test('asks for another port when the one it saved is already taken', async () => {
+  // Something else serving the port the app was told to use: what a Docker
+  // deployment already on 8001 looks like from here.
+  const taken = await servePort();
+  const spare = await freePort();
+  const dir = separateUserDataDir('port-taken');
+
+  // A first launch is never reached: the port is already on disk, so the app
+  // tries to start on it and has to say it cannot.
+  writeSettings({ backend: { mode: 'local' }, port: taken.port }, dir);
+
+  const app = await launchApp({ userData: dir });
+  const window = await waitForWindow(app, /backend\.html$/);
+
+  // The number it could not have, and a field to put another one in: a port is
+  // the user's to choose, not the app's to guess around.
+  await expect(window.locator('#portInUse')).toContainText(String(taken.port));
+  await expect(window.locator('#port')).toHaveValue(String(taken.port));
+
+  await window.locator('#port').fill(String(spare));
+  await window.locator('#save').click();
+
+  const consoleWindow = await waitForConsole(app);
+
+  expect(consoleWindow.url()).toBe(`http://127.0.0.1:${spare}/dashboard`);
+
+  await app.close();
+  taken.stop();
+});
+
+test('asks about the default port too, once it has been saved', async () => {
+  // The number the app starts on, taken by something else — a Docker deployment
+  // serving 8001 is the usual reason.
+  const taken = await servePort(DEFAULT_GATEWAY_PORT);
+  const spare = await freePort();
+  const dir = separateUserDataDir('default-port-taken');
+
+  // Saved, so it is a promise and not a starting point: the window that asks
+  // showed this number and Save was pressed with it there, even though it is
+  // the one the app would have picked anyway.
+  writeSettings(
+    { backend: { mode: 'local' }, port: DEFAULT_GATEWAY_PORT },
+    dir,
+  );
+
+  const app = await launchApp({ userData: dir });
+  const window = await waitForWindow(app, /backend\.html$/);
+
+  await expect(window.locator('#portInUse')).toContainText(
+    String(DEFAULT_GATEWAY_PORT),
+  );
+
+  await window.locator('#port').fill(String(spare));
+  await window.locator('#save').click();
+
+  const consoleWindow = await waitForConsole(app);
+
+  expect(consoleWindow.url()).toBe(`http://127.0.0.1:${spare}/dashboard`);
+
+  await app.close();
+  taken.stop();
+});
+
 /** The backend the next launch finds on disk, as the window itself would save it. */
 const writeBackend = (url: string): void => {
-  fs.writeFileSync(
-    path.join(userDataDir, 'desktop-settings.json'),
-    `${JSON.stringify(
-      { backend: { mode: 'remote', url }, port: 8001 },
-      null,
-      2,
-    )}\n`,
-  );
+  writeSettings({ backend: { mode: 'remote', url }, port: 8001 });
 };
 
 /**
@@ -422,6 +588,34 @@ test('shows its own console for a deployment, and takes only the data from it', 
   );
 
   await expect(consoleWindow.locator('#security')).toBeVisible();
+
+  await app.close();
+  deployment.stop();
+});
+
+test('names a deployment in the window, and is asked for no port', async () => {
+  const deployment = await startDeployment();
+
+  // A first launch: nothing on disk, so the window is what asks.
+  const app = await launchApp({ userData: separateUserDataDir('remote-port') });
+  const chooser = await waitForWindow(app, /backend\.html$/);
+
+  await chooser.locator('input[value="remote"]').check();
+
+  // The address is the whole answer: a deployment is reached through it, and
+  // the port the console is served on is not this machine's to settle.
+  await expect(chooser.locator('#port')).toHaveCount(0);
+
+  await chooser.locator('#url').fill(`http://127.0.0.1:${deployment.port}`);
+  await chooser.locator('#save').click();
+
+  // …so the console opens on the port the app would have used anyway, without
+  // the number ever having been asked for.
+  const consoleWindow = await waitForConsole(app);
+
+  expect(consoleWindow.url()).toBe(
+    `http://127.0.0.1:${DEFAULT_GATEWAY_PORT}/dashboard`,
+  );
 
   await app.close();
   deployment.stop();
