@@ -10,15 +10,16 @@ import {
   verifyRegistrationResponse,
 } from '@simplewebauthn/server';
 
+import { ADMIN_SESSION_COOKIE } from './cookie';
 import { readStorageJsonResult, writeStorageJson } from '../storage';
 import { getForwardedHeaderValue } from '../shared/http';
+import { isDesktopMode } from '../electron/settings';
 
 import { getActiveConfig } from '../domain/config';
 import type { UsageRange } from '../domain/usage';
 
 const ADMIN_AUTH_NAMESPACE = 'admin-auth';
 const ADMIN_AUTH_KEY = 'state';
-const ADMIN_SESSION_COOKIE = 'codebuddy_admin_session';
 const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 8;
 const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const PASSWORD_MIN_LENGTH = 8;
@@ -47,6 +48,19 @@ const ADMIN_LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const FORWARDED_PROTO_HEADER = 'x-forwarded-proto';
 const FORWARDED_HOST_HEADER = 'x-forwarded-host';
 let adminAuthMutationQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Whether the console asks for a sign-in at all.
+ *
+ * A desktop install is one person's app: the gateway only listens on loopback,
+ * so the console is already reachable by nobody but the user it runs as, and a
+ * password there would only lock them out of their own machine. A server
+ * deployment keeps requiring one — it is reachable from the network.
+ *
+ * Checked instead of the stored `enabled` flag, so a password left over from a
+ * server deployment, or set by hand, cannot start gating the desktop console.
+ */
+const consoleAuthRequired = (): boolean => !isDesktopMode();
 
 type RequestLike = Request | NextRequest;
 
@@ -795,10 +809,29 @@ export const deleteAdminPasskey = async (
 export const isAdminSessionAuthenticated = async (
   request: RequestLike,
 ): Promise<boolean> => {
+  if (!consoleAuthRequired()) {
+    return true;
+  }
+
   return (await getValidSessionRecord(request)) !== null;
 };
 
 export const getAdminSessionSummary = async (request: RequestLike) => {
+  // No account to configure and nothing to sign in to, so the console never
+  // sends anyone to the login page. The session counts as open, because that
+  // is what it is — what that means for the logout item is the page's call.
+  if (!consoleAuthRequired()) {
+    return {
+      accountConfigured: false,
+      authEnabled: false,
+      authenticated: true,
+      passkeyCount: 0,
+      passwordConfigured: false,
+      usagePreferences: normalizeUsagePreferences(undefined),
+      username: DEFAULT_ADMIN_USER_NAME,
+    };
+  }
+
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
   const session = await getValidSessionRecord(request);
 
@@ -823,6 +856,12 @@ export const updateAdminSessionUsagePreferences = async (
 
   if (!normalizedPreferences) {
     return null;
+  }
+
+  // No session to hang them on, and none needed: the caller keeps them the
+  // same way an install with authentication disabled does.
+  if (!consoleAuthRequired()) {
+    return normalizedPreferences;
   }
 
   if (!token) {
@@ -857,6 +896,10 @@ export const getAdminSessionErrorResponse = (
 ): Promise<Response | null> => {
   return (async () => {
     try {
+      if (!consoleAuthRequired()) {
+        return null;
+      }
+
       if (!(await hasAdminAccountAsync())) {
         return null;
       }
@@ -897,6 +940,19 @@ export const setupAdminPassword = async (
   usernameOrPassword: string,
   password?: string,
 ): Promise<Response> => {
+  // Nothing asks for a password on a desktop install, so there is no account
+  // to create: one stored here would never be checked.
+  if (!consoleAuthRequired()) {
+    return Response.json(
+      {
+        error: {
+          message: 'Admin authentication is not used in the desktop app',
+        },
+      },
+      { status: 404 },
+    );
+  }
+
   const username =
     password === undefined ? DEFAULT_ADMIN_USER_NAME : usernameOrPassword;
   const resolvedPassword = password ?? usernameOrPassword;

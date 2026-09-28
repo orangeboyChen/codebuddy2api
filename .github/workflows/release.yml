@@ -115,6 +115,10 @@ jobs:
     if: ${{ needs.detect-release.outputs.should_release == 'true' }}
     name: Verify Bun / TypeScript / Coverage
     runs-on: ubuntu-latest
+    env:
+      # Typechecking the Electron main process needs the package's types, not
+      # the ~100 MB binary. The desktop jobs below download it for real.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -167,6 +171,71 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
 
+  build-desktop:
+    needs: [detect-release, verify]
+    if: ${{ needs.detect-release.outputs.should_release == 'true' }}
+    name: Desktop ${{ matrix.label }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One runner per architecture: the gateway's native module is
+          # compiled against Electron on the build machine, so an x86 Mac has
+          # to be built on an x86 Mac.
+          - {
+              label: macos-arm64,
+              runs_on: macos-latest,
+              targets: '--mac --arm64',
+            }
+          - {
+              label: macos-x64,
+              runs_on: macos-15-intel,
+              targets: '--mac --x64',
+            }
+          - {
+              label: windows-x64,
+              runs_on: windows-latest,
+              targets: '--win --x64',
+            }
+          - {
+              label: linux-x64,
+              runs_on: ubuntu-latest,
+              targets: '--linux --x64',
+            }
+          - {
+              label: linux-arm64,
+              runs_on: ubuntu-24.04-arm,
+              targets: '--linux --arm64',
+            }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.BUN_CACHE_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-${{ env.BUN_VERSION }}-
+            ${{ runner.os }}-${{ runner.arch }}-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Build desktop app
+        shell: bash
+        run: bun scripts/build-desktop.ts ${{ matrix.targets }}
+      - uses: actions/upload-artifact@v6
+        with:
+          if-no-files-found: error
+          name: desktop-${{ matrix.label }}
+          path: |
+            build/desktop/*.dmg
+            build/desktop/*.exe
+            build/desktop/*.AppImage
+            build/desktop/*.deb
+
   merge-image-manifests:
     needs: [detect-release, publish-image]
     if: ${{ needs.detect-release.outputs.should_release == 'true' }}
@@ -184,13 +253,19 @@ jobs:
         run: docker buildx imagetools create -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" "${IMAGE}:${VERSION}-amd64" "${IMAGE}:${VERSION}-arm64"
 
   release:
-    needs: [detect-release, merge-image-manifests]
+    needs: [detect-release, merge-image-manifests, build-desktop]
     if: ${{ needs.detect-release.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
-      - env:
+      - uses: actions/download-artifact@v6
+        with:
+          merge-multiple: true
+          path: build/desktop
+          pattern: desktop-*
+      - name: Create release
+        env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.detect-release.outputs.release_tag }}
           IMAGE: ${{ needs.detect-release.outputs.image }}:${{ needs.detect-release.outputs.version }}
@@ -206,6 +281,14 @@ jobs:
           {
             echo "Docker image: \`$IMAGE\`"
             echo
+            echo '## Desktop apps'
+            echo
+            echo 'Unsigned builds of the Electron app, one per platform:'
+            echo
+            echo '- macOS: `CodeBuddy2API-<version>-mac-<arch>.dmg` (Apple silicon and Intel)'
+            echo '- Windows: `CodeBuddy2API-<version>-win-x64-setup.exe` and `-portable.exe`'
+            echo '- Linux: `CodeBuddy2API-<version>-linux-<arch>.AppImage` and `codebuddy2api-<version>-linux-<arch>.deb`'
+            echo
             echo '## Commits'
             echo
             if [[ -n "$commits" ]]; then
@@ -215,3 +298,8 @@ jobs:
             fi
           } > "$notes_file"
           gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --latest --notes-file "$notes_file"
+      - name: Attach desktop builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.detect-release.outputs.release_tag }}
+        run: gh release upload "$TAG" build/desktop/* --clobber

@@ -5,6 +5,9 @@ const e2eRoot = path.join('.tmp-e2e', String(process.pid));
 
 export default defineConfig({
   testDir: './e2e',
+  // The desktop runs have their own configs: they need a server started as the
+  // app starts it, or no server at all.
+  testIgnore: ['**/desktop/**', '**/electron/**'],
   fullyParallel: false,
   workers: 1,
   reporter: [['list'], ['html', { open: 'never' }]],

@@ -22,6 +22,7 @@ const createSidebar = (
   configPage: string,
   storagePage: string,
   localPage: string,
+  desktopPage: string,
   labels: string[],
 ) => [
   {
@@ -31,6 +32,7 @@ const createSidebar = (
       { text: configPage, link: `${prefix}/config/docker` },
       { text: storagePage, link: `${prefix}/config/storage` },
       { text: localPage, link: `${prefix}/config/local` },
+      { text: desktopPage, link: `${prefix}/guide/desktop` },
     ],
   },
   {
@@ -50,6 +52,7 @@ const createTheme = (
   configPage: string,
   storagePage: string,
   localPage: string,
+  desktopPage: string,
   labels: string[],
   ui: { footer: string; menu: string; top: string; prev: string; next: string },
 ) => ({
@@ -68,6 +71,7 @@ const createTheme = (
     configPage,
     storagePage,
     localPage,
+    desktopPage,
     labels,
   ),
 });
@@ -88,6 +92,7 @@ export default defineConfig({
         'Docker 与存储',
         '存储选择',
         '本地运行（开发）',
+        '桌面应用',
         ['仪表盘', '用量', '凭据', '账号状态', 'API 测试', '调试', '设置'],
         {
           footer:
@@ -111,6 +116,7 @@ export default defineConfig({
         'Docker and Storage',
         'Storage Choices',
         'Local Development',
+        'Desktop App',
         [
           'Dashboard',
           'Usage',
@@ -142,6 +148,7 @@ export default defineConfig({
         'Docker とストレージ',
         'ストレージの選択',
         'ローカル開発',
+        'デスクトップアプリ',
         [
           'ダッシュボード',
           '利用量',

@@ -128,3 +128,5 @@ empty.
 ## Console security
 
 Set the administrator username, password, and confirmation password under **Console security**, then click **Save**. Disabling authentication makes the console directly accessible.
+
+The desktop app does not show this section while it is using its own gateway — there is no sign-in (see [Desktop App](./desktop.md)). Pointed at a deployment you run, whether a sign-in is needed is that deployment's call.

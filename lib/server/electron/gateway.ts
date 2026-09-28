@@ -1,0 +1,282 @@
+import { spawn as spawnProcess } from 'node:child_process';
+import path from 'node:path';
+
+import { DESKTOP_MODE_ENV, DESKTOP_USER_DATA_ENV } from './settings';
+import type { DesktopPaths } from './paths';
+
+export type GatewayEnvPaths = Pick<
+  DesktopPaths,
+  'credentialsDir' | 'dataDir' | 'sqlitePath' | 'userDataDir'
+>;
+
+export interface GatewayStream {
+  on(event: 'data', listener: (chunk: string | Buffer) => void): unknown;
+  setEncoding(encoding: BufferEncoding): unknown;
+}
+
+export interface GatewayProcess {
+  kill(signal?: NodeJS.Signals): boolean;
+  on(event: 'error' | 'exit', listener: (...args: unknown[]) => void): unknown;
+  pid?: number;
+  stderr: GatewayStream | null;
+  stdout: GatewayStream | null;
+}
+
+export interface GatewaySpawnOptions {
+  args: string[];
+  command: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}
+
+export type GatewaySpawn = (options: GatewaySpawnOptions) => GatewayProcess;
+
+export type HealthRequest = (url: string) => Promise<boolean>;
+
+export interface HealthWaitOptions {
+  intervalMs?: number;
+  request?: HealthRequest;
+  sleep?: (ms: number) => Promise<void>;
+  timeoutMs?: number;
+  url: string;
+}
+
+export interface GatewayHandle {
+  port: number;
+  stop: () => void;
+  url: string;
+}
+
+export interface GatewayEnvOptions {
+  baseEnv?: NodeJS.ProcessEnv;
+  encryptionKey: string;
+  paths: GatewayEnvPaths;
+  port: number;
+}
+
+export interface StartGatewayOptions {
+  env: NodeJS.ProcessEnv;
+  gatewayDir: string;
+  log?: (message: string) => void;
+  nodePath: string;
+  /**
+   * Called when the gateway dies on its own — including long after it became
+   * healthy, which is a crash rather than a failed start. Not called when the
+   * app stopped it.
+   */
+  onUnexpectedExit?: (error: Error) => void;
+  port: number;
+  spawn?: GatewaySpawn;
+  timeoutMs?: number;
+  waitForHealth?: (options: HealthWaitOptions) => Promise<boolean>;
+}
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_INTERVAL_MS = 250;
+const REQUEST_TIMEOUT_MS = 2_000;
+
+const defaultLog = (message: string): void => {
+  console.log(`[gateway] ${message}`);
+};
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const defaultRequest: HealthRequest = async (url) => {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+
+  return response.ok;
+};
+
+const defaultSpawn: GatewaySpawn = (options) =>
+  spawnProcess(options.command, options.args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+/**
+ * The gateway is the same Next.js standalone server the Docker image runs, so
+ * it is configured the same way: through environment variables. Values already
+ * present in the environment win, which lets a desktop install reuse an
+ * encryption key that was provisioned ahead of time.
+ *
+ * Storage is the exception: a desktop install is always sqlite, because it is
+ * the only backend that needs nothing but the `userData` directory, and there
+ * is no second process to share a database with.
+ */
+export const buildGatewayEnv = (
+  options: GatewayEnvOptions,
+): NodeJS.ProcessEnv => {
+  // `NODE_ENV` is read-only once Next has typed `process.env`, so it goes in
+  // with the spread instead of an assignment.
+  const env: NodeJS.ProcessEnv = {
+    ...(options.baseEnv ?? process.env),
+    NODE_ENV: 'production',
+  };
+
+  // A desktop install serves its own console; nothing on the LAN should be
+  // able to reach it.
+  env.HOSTNAME = '127.0.0.1';
+  env.PORT = String(options.port);
+  env.NEXT_TELEMETRY_DISABLED = '1';
+  env.CODEBUDDY_STORAGE_FILE_DIR ??= options.paths.dataDir;
+  env.CODEBUDDY_CREDENTIALS_DIR ??= options.paths.credentialsDir;
+  env.CODEBUDDY_STORAGE_SQLITE_PATH ??= options.paths.sqlitePath;
+  env.CODEBUDDY_STORAGE_ENCRYPTION_KEY ??= options.encryptionKey;
+  env[DESKTOP_MODE_ENV] = '1';
+  env[DESKTOP_USER_DATA_ENV] = options.paths.userDataDir;
+  env.CODEBUDDY_STORAGE_BACKEND = 'sqlite';
+  // An inherited Postgres URL is dropped rather than ignored: the storage layer
+  // falls back to Postgres whenever one is in the environment, so leaving it
+  // here would put the desktop data somewhere the console cannot explain.
+  delete env.CODEBUDDY_STORAGE_PG_URL;
+  delete env.DATABASE_URL;
+
+  return env;
+};
+
+/**
+ * Polls `/health` until the gateway answers. The server migrates its database
+ * on boot, so the first answer can take several seconds on a cold install.
+ */
+export const waitForGatewayHealth = async (
+  options: HealthWaitOptions,
+): Promise<boolean> => {
+  const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const request = options.request ?? defaultRequest;
+  const sleep = options.sleep ?? defaultSleep;
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const healthy = await request(options.url).catch(() => false);
+
+    if (healthy) {
+      return true;
+    }
+
+    if (Date.now() >= deadline) {
+      return false;
+    }
+
+    await sleep(intervalMs);
+  }
+};
+
+const pipeToLog = (
+  stream: GatewayStream | null,
+  log: (message: string) => void,
+): void => {
+  if (!stream) {
+    return;
+  }
+
+  stream.setEncoding('utf8');
+  stream.on('data', (chunk) => {
+    const line = String(chunk).trim();
+
+    if (line) {
+      log(line);
+    }
+  });
+};
+
+/**
+ * Runs the bundled gateway under Electron's own Node — `ELECTRON_RUN_AS_NODE`
+ * turns the app binary into a plain Node process — and resolves once the
+ * gateway reports healthy. The child is detached from the window: it keeps
+ * serving `/v1/*` while the console window is closed, and is killed when the
+ * app quits.
+ */
+export const startGateway = async (
+  options: StartGatewayOptions,
+): Promise<GatewayHandle> => {
+  const log = options.log ?? defaultLog;
+  const spawn = options.spawn ?? defaultSpawn;
+  const waitForHealth = options.waitForHealth ?? waitForGatewayHealth;
+  const url = `http://127.0.0.1:${options.port}`;
+  const child = spawn({
+    args: [path.join(options.gatewayDir, 'server.js')],
+    command: options.nodePath,
+    cwd: options.gatewayDir,
+    env: { ...options.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+
+  pipeToLog(child.stdout, log);
+  pipeToLog(child.stderr, log);
+
+  let stopped = false;
+  let healthy = false;
+  const stop = (): void => {
+    if (stopped) {
+      return;
+    }
+
+    stopped = true;
+    child.kill();
+  };
+
+  // Only an exit after the gateway was healthy is worth reporting: a child
+  // that dies on the way up is already reported by the rejection below, and
+  // the app would otherwise show both dialogs.
+  const notifyExit = (error: Error): void => {
+    if (healthy && !stopped) {
+      options.onUnexpectedExit?.(error);
+    }
+  };
+
+  const exited = new Promise<never>((_resolve, reject) => {
+    child.on('error', (...args: unknown[]) => {
+      const error =
+        args[0] instanceof Error
+          ? args[0]
+          : new Error(`gateway process failed to start: ${String(args[0])}`);
+
+      notifyExit(error);
+      reject(error);
+    });
+    child.on('exit', (...args: unknown[]) => {
+      const [code] = args as [number | null];
+
+      const error = healthy
+        ? new Error(`gateway process exited with code ${code}`)
+        : new Error(
+            `gateway process exited before it became healthy (${code})`,
+          );
+
+      notifyExit(error);
+      reject(error);
+    });
+  });
+
+  // The child also exits long after startup — when the app quits, or when it
+  // crashes. Keep that rejection handled so it never surfaces later as an
+  // unhandled rejection.
+  exited.catch(() => {});
+
+  try {
+    const healthyInTime = await Promise.race([
+      waitForHealth({ timeoutMs: options.timeoutMs, url }),
+      exited,
+    ]);
+
+    if (!healthyInTime) {
+      throw new Error(
+        `gateway did not become healthy within ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`,
+      );
+    }
+
+    healthy = true;
+  } catch (error) {
+    stop();
+    throw error;
+  }
+
+  return { port: options.port, stop, url };
+};

@@ -1,0 +1,15 @@
+import { contextBridge, ipcRenderer } from 'electron';
+
+/**
+ * The bridge the window that picks a backend gets.
+ *
+ * Nothing else in the app needs one: the console is an ordinary web page,
+ * served by whichever backend is in use, and talks to it over HTTP the way any
+ * browser would. The main process validates everything that comes through here
+ * again, so a page cannot smuggle in a backend the app would not accept.
+ */
+contextBridge.exposeInMainWorld('desktop', {
+  getInfo: (): Promise<unknown> => ipcRenderer.invoke('desktop:info'),
+  setBackend: (backend: unknown): Promise<void> =>
+    ipcRenderer.invoke('desktop:set-backend', backend),
+});

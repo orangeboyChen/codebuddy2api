@@ -7,6 +7,7 @@ import AdminPageLayout from '@/app/page-shell';
 import type { TabKey } from '@/app/page-data';
 import { getInitialData } from '@/app/page-loader';
 import { getAdminSessionSummary } from '@/lib/server/admin/session';
+import { isDesktopMode } from '@/lib/server/electron/settings';
 import {
   localeCookieName,
   localePreferenceCookieName,
@@ -37,9 +38,11 @@ export const AdminPage = async ({
     headers: cookieHeader ? { cookie: cookieHeader } : {},
   });
   const session = await getAdminSessionSummary(request);
+  // A desktop install has nothing to sign in to: see `consoleAuthRequired`.
+  const desktop = isDesktopMode();
   const sessionAuthenticated = session.authenticated;
 
-  if (session.accountConfigured && !sessionAuthenticated) {
+  if (!desktop && session.accountConfigured && !sessionAuthenticated) {
     redirect('/login');
   }
 
@@ -61,7 +64,7 @@ export const AdminPage = async ({
         usagePreferences: session.usagePreferences,
       })}
       initialLocalePreference={localePreference}
-      showLogout={sessionAuthenticated}
+      showLogout={!desktop && sessionAuthenticated}
       initialTab={initialTab}
       initialTheme={parseThemeMode(cookieStore.get(themeCookieName)?.value)}
     >

@@ -30,6 +30,7 @@ import {
 } from '@/lib/server/search/backends';
 
 import Security from './security';
+import Desktop from './desktop';
 
 export type SettingsValue = string | number | boolean | null;
 
@@ -614,7 +615,11 @@ const CredentialModels = () => {
   );
 };
 
-const Settings = () => {
+/**
+ * `desktop` comes from the server: a desktop install has no sign-in, so the
+ * panel that would set one up has nothing to offer.
+ */
+const Settings = ({ desktop = false }: { desktop?: boolean }) => {
   const { onChange, onSave, settings } = useSettings();
   const translations = useTranslations('Admin');
   const [clearingUsage, setClearingUsage] = useState(false);
@@ -705,6 +710,7 @@ const Settings = () => {
           </Button>
         </Flexbox>
       </Block>
+      <Desktop />
       <CredentialModels />
       <Block direction="vertical" gap={16} padding={24} variant="outlined">
         <Flexbox align="center" gap={8} horizontal>
@@ -728,7 +734,7 @@ const Settings = () => {
           </Button>
         </Flexbox>
       </Block>
-      <Security />
+      {desktop ? null : <Security />}
     </div>
   );
 };

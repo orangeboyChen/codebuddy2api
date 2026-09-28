@@ -22,6 +22,10 @@ jobs:
     name: Bun / TypeScript / Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # Typechecking the Electron main process needs the package's types, not
+      # the ~100 MB binary.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
     steps:
       - name: Checkout repository
