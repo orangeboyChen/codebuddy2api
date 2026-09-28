@@ -467,7 +467,7 @@ const refreshTray = (): void => {
 };
 
 /**
- * The files shipped next to this bundle: the tray icon, the preload script and
+ * The files shipped next to this bundle: the tray icons, the preload script and
  * the page that asks which backend to use.
  */
 const bundleDir = (): string =>
@@ -479,7 +479,16 @@ const bundleDir = (): string =>
  * open, and otherwise nothing would say so.
  */
 const createTray = (): void => {
-  const iconPath = path.join(bundleDir(), 'tray.png');
+  // macOS draws a menu bar icon from its alpha channel alone and colours it
+  // itself, so it gets the template: one monochrome file, right in every
+  // appearance setting. Windows and Linux draw the bitmap as it is, and a
+  // monochrome one disappears into a dark taskbar, so they get the app's own
+  // icon, which brings its own background and reads on a light tray too.
+  const template = process.platform === 'darwin';
+  const iconPath = path.join(
+    bundleDir(),
+    template ? 'tray-template.png' : 'tray.png',
+  );
 
   if (!fs.existsSync(iconPath)) {
     return;
@@ -494,9 +503,7 @@ const createTray = (): void => {
     return;
   }
 
-  // macOS draws menu bar icons from their alpha channel only, so the icon is
-  // marked as a template instead of shipping a separate monochrome file.
-  if (process.platform === 'darwin') {
+  if (template) {
     icon.setTemplateImage(true);
   }
 
