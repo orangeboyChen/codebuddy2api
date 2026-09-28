@@ -77,20 +77,3 @@ macOS に「壊れているため開けません」と表示される場合は�
 ```sh
 xattr -cr /Applications/CodeBuddy2API.app
 ```
-
-## ソースからビルドする
-
-```bash
-bun install
-bun run build
-bun run desktop:prepare   # ゲートウェイの構成、メインプロセスのバンドル、better-sqlite3 の Electron 向け再ビルド
-bun run desktop:dist      # 上記に加えて electron-builder でパッケージング
-```
-
-`desktop:dist` 以降の引数は electron-builder に渡されます。単一ターゲットをビルドする場合は次のようにします。
-
-```bash
-bun run desktop:dist -- --mac --arm64
-```
-
-成果物は `build/desktop` に出力されます。ネイティブモジュールはビルドしたマシンのアーキテクチャ向けにコンパイルされるため、x86 の Mac は x86 のマシンでビルドする必要があります。

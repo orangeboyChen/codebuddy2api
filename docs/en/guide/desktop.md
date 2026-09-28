@@ -77,20 +77,3 @@ If macOS says the app is damaged and cannot be opened, drag it into `Application
 ```sh
 xattr -cr /Applications/CodeBuddy2API.app
 ```
-
-## Building from source
-
-```bash
-bun install
-bun run build
-bun run desktop:prepare   # assemble the gateway, bundle the main process, rebuild better-sqlite3 for Electron
-bun run desktop:dist      # the same, plus electron-builder packaging
-```
-
-Arguments after `desktop:dist` are forwarded to electron-builder, so a single target looks like this:
-
-```bash
-bun run desktop:dist -- --mac --arm64
-```
-
-Artifacts land in `build/desktop`. Native modules are compiled for the architecture of the machine that builds them, so an x86 Mac has to be built on an x86 Mac.

@@ -77,20 +77,3 @@ Release 中的 macOS 构建已签名并经过 Apple 公证，下载后双击 dmg
 ```sh
 xattr -cr /Applications/CodeBuddy2API.app
 ```
-
-## 从源码构建
-
-```bash
-bun install
-bun run build
-bun run desktop:prepare   # 组装网关、打包主进程、按 Electron 重新编译 better-sqlite3
-bun run desktop:dist      # 以上步骤 + electron-builder 打包
-```
-
-`desktop:dist` 后的参数会传给 electron-builder，例如只构建 macOS arm64：
-
-```bash
-bun run desktop:dist -- --mac --arm64
-```
-
-产物位于 `build/desktop`。原生模块是按构建机器的架构编译的，因此 x86 的 Mac 需要在 x86 的机器上构建。

@@ -21,7 +21,6 @@ const createSidebar = (
   quickStart: string,
   configPage: string,
   storagePage: string,
-  localPage: string,
   desktopPage: string,
   labels: string[],
 ) => [
@@ -31,7 +30,6 @@ const createSidebar = (
       { text: quickStart, link: `${prefix}/guide/quick-start` },
       { text: configPage, link: `${prefix}/config/docker` },
       { text: storagePage, link: `${prefix}/config/storage` },
-      { text: localPage, link: `${prefix}/config/local` },
       { text: desktopPage, link: `${prefix}/guide/desktop` },
     ],
   },
@@ -51,7 +49,6 @@ const createTheme = (
   quickStart: string,
   configPage: string,
   storagePage: string,
-  localPage: string,
   desktopPage: string,
   labels: string[],
   ui: { footer: string; menu: string; top: string; prev: string; next: string },
@@ -70,7 +67,6 @@ const createTheme = (
     quickStart,
     configPage,
     storagePage,
-    localPage,
     desktopPage,
     labels,
   ),
@@ -91,7 +87,6 @@ export default defineConfig({
         '快速开始',
         'Docker 与存储',
         '存储选择',
-        '本地运行（开发）',
         '桌面应用',
         ['仪表盘', '用量', '凭据', '账号状态', 'API 测试', '调试', '设置'],
         {
@@ -115,7 +110,6 @@ export default defineConfig({
         'Quick Start',
         'Docker and Storage',
         'Storage Choices',
-        'Local Development',
         'Desktop App',
         [
           'Dashboard',
@@ -147,7 +141,6 @@ export default defineConfig({
         'クイックスタート',
         'Docker とストレージ',
         'ストレージの選択',
-        'ローカル開発',
         'デスクトップアプリ',
         [
           'ダッシュボード',
