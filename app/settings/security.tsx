@@ -7,6 +7,8 @@ import { Save, ShieldCheck } from 'lucide-react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useTranslations } from 'next-intl';
 
+import DeploymentPasskeyHint from '@/app/deployment-passkey-hint';
+
 interface Passkey {
   id: string;
   name: string;
@@ -45,7 +47,7 @@ const getPasskeyOriginSupport = () => {
 
 const getServerPasskeyOriginSupport = () => false;
 
-const Security = () => {
+const Security = ({ deploymentUrl }: { deploymentUrl?: string }) => {
   const translations = useTranslations('Admin.securityPanel');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -55,11 +57,15 @@ const Security = () => {
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [status, setStatus] = useState('');
   const [username, setUsername] = useState('');
-  const passkeysSupported = useSyncExternalStore(
-    subscribeToPasskeyOrigin,
-    getPasskeyOriginSupport,
-    getServerPasskeyOriginSupport,
-  );
+  // The origin alone is not enough: with a deployment behind the console, a
+  // passkey would be registered for the deployment's host, and this window is
+  // served from loopback — so the browser has no credential to offer here.
+  const passkeysSupported =
+    useSyncExternalStore(
+      subscribeToPasskeyOrigin,
+      getPasskeyOriginSupport,
+      getServerPasskeyOriginSupport,
+    ) && !deploymentUrl;
 
   const loadState = async () => {
     const response = await fetch('/admin-api/auth/session');
@@ -335,9 +341,17 @@ const Security = () => {
             </Button>
           </div>
           {!passkeysSupported ? (
-            <p className="mt-3 text-sm text-secondary">
-              {translations('passkeyUnavailable')}
-            </p>
+            deploymentUrl ? (
+              <DeploymentPasskeyHint
+                deploymentUrl={deploymentUrl}
+                hint={translations('deploymentPasskeyHint')}
+                openLabel={translations('openDeployment')}
+              />
+            ) : (
+              <p className="mt-3 text-sm text-secondary">
+                {translations('passkeyUnavailable')}
+              </p>
+            )
           ) : null}
           {passkeys.length ? (
             <ul className="mt-4 grid gap-2">

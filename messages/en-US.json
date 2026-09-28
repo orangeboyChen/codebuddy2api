@@ -513,6 +513,8 @@
       "passkeyHeading": "Passkeys",
       "passkeyOptionsFailed": "Unable to create a passkey registration request.",
       "passkeyUnavailable": "Passkeys require HTTPS or a localhost origin.",
+      "deploymentPasskeyHint": "Passkeys belong to {host}, so they can only be added and used on the deployment's own page, in a browser.",
+      "openDeployment": "Open {host} in a browser",
       "passwordMismatch": "The passwords do not match."
     },
     "loginPage": {
@@ -528,12 +530,14 @@
       "description": "Sign in with the admin password or a passkey.",
       "descriptionLogin": "Use the existing admin password or a registered passkey. When the browser supports conditional passkeys, the page will try it automatically.",
       "descriptionSetup": "Create the first admin password. The backend will set the admin session cookie immediately after setup succeeds.",
+      "deploymentPasskeyHint": "This is {host}'s sign-in. A passkey saved for it is bound to that address, so it cannot be used from this window — use the password, or open the deployment's own page in a browser.",
       "errorPasskeyFailed": "Passkey sign-in failed. Try again or use your password.",
       "errorPasskeyUnavailable": "Passkey sign-in is unavailable right now.",
       "errorPasswordStatus": "Use your admin password to continue.",
       "headingLogin": "Sign in to CodeBuddy2API",
       "headingSetup": "Set up the admin account",
       "noPasskeysConfigured": "No passkeys are configured for this admin account yet.",
+      "openDeployment": "Open {host} in a browser",
       "orLabel": "or",
       "passkeyAccepted": "Passkey accepted. Redirecting...",
       "passkeyHintLogin": "after the first account is configured.",

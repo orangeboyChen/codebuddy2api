@@ -26,6 +26,8 @@ const userDataDir = path.join(
 
 /** The version the deployment in the last test answers with — never the app's. */
 const DEPLOYMENT_VERSION = '9.9.9';
+/** The password the locked deployment below accepts — the deployment's own. */
+const DEPLOYMENT_PASSWORD = 'the-deployment-password';
 
 /**
  * `ELECTRON_RUN_AS_NODE` turns the Electron binary into plain Node — it is how
@@ -55,15 +57,16 @@ const launchApp = (): Promise<ElectronApplication> =>
  * The console window, which only exists once the gateway behind it answers —
  * the shell opens no window before that.
  */
-const waitForConsole = async (app: ElectronApplication): Promise<Page> => {
+const waitForWindow = async (
+  app: ElectronApplication,
+  pattern: RegExp,
+): Promise<Page> => {
   let found: Page | undefined;
 
   await expect
     .poll(
       () => {
-        found = app
-          .windows()
-          .find((window) => /\/dashboard$/.test(window.url()));
+        found = app.windows().find((window) => pattern.test(window.url()));
 
         return Boolean(found);
       },
@@ -73,6 +76,9 @@ const waitForConsole = async (app: ElectronApplication): Promise<Page> => {
 
   return found as Page;
 };
+
+const waitForConsole = (app: ElectronApplication): Promise<Page> =>
+  waitForWindow(app, /\/dashboard$/);
 
 test.beforeAll(() => {
   fs.mkdirSync(userDataDir, { recursive: true });
@@ -213,6 +219,147 @@ const startDeployment = async (): Promise<{
 
   return { port: address.port, stop: () => server.close() };
 };
+
+/**
+ * A deployment that is locked, standing in for one: nothing answers until the
+ * password is posted to `/admin-api/auth/session`, and it has a passkey saved —
+ * the one thing this app's window cannot use.
+ */
+const startLockedDeployment = async (): Promise<{
+  port: number;
+  stop: () => void;
+}> => {
+  const server = http.createServer((request, response) => {
+    const path = (request.url ?? '/').split('?')[0];
+    const signedIn = (request.headers.cookie ?? '').includes(
+      'deployment-session=let-me-in',
+    );
+    const session = {
+      accountConfigured: true,
+      authEnabled: true,
+      authenticated: signedIn,
+      passkeyCount: 1,
+      passwordConfigured: true,
+      usagePreferences: null,
+      username: 'admin',
+    };
+    const answer = (
+      payload: unknown,
+      headers: Record<string, string> = {},
+    ): void => {
+      response.writeHead(200, {
+        'content-type': 'application/json',
+        ...headers,
+      });
+      response.end(JSON.stringify(payload));
+    };
+
+    if (path === '/health') {
+      answer({
+        service: 'codebuddy2api',
+        status: 'healthy',
+        storage: 'sqlite',
+      });
+
+      return;
+    }
+
+    if (path === '/admin-api/auth/session') {
+      if (request.method !== 'POST') {
+        answer({ session });
+
+        return;
+      }
+
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const { password } = JSON.parse(body || '{}') as { password?: string };
+
+        if (password !== DEPLOYMENT_PASSWORD) {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(
+            JSON.stringify({ error: { message: 'Wrong password' } }),
+          );
+
+          return;
+        }
+
+        answer(
+          { session: { ...session, authenticated: true }, success: true },
+          { 'set-cookie': 'deployment-session=let-me-in; Path=/; HttpOnly' },
+        );
+      });
+
+      return;
+    }
+
+    answer({ authenticated: signedIn });
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address() as { port: number };
+
+  return { port: address.port, stop: () => server.close() };
+};
+
+test('signs in to a deployment with its password, and leaves the passkey to a browser', async () => {
+  const deployment = await startLockedDeployment();
+
+  writeBackend(`http://127.0.0.1:${deployment.port}`);
+
+  const app = await launchApp();
+  const loginWindow = await waitForWindow(app, /\/login$/);
+
+  // A passkey saved for the deployment is bound to its address, so the page
+  // offers none: it says so and points at the deployment's own page instead,
+  // which the shell opens in a browser.
+  await expect(loginWindow.locator('#admin-passkey')).toHaveCount(0);
+  await expect(
+    loginWindow.locator(`a[href="http://127.0.0.1:${deployment.port}"]`),
+  ).toBeVisible();
+
+  // The form is a client component: filled before it hydrates, the value lands
+  // in the DOM and not in React, and the submit button — which waits for both
+  // fields — never enables. Filled again until it does, which is what a user
+  // in front of the same window would do.
+  const submit = loginWindow.locator('button[type="submit"]');
+
+  await expect
+    .poll(
+      async () => {
+        await loginWindow.locator('#admin-username').fill('admin');
+        await loginWindow.locator('#admin-password').fill(DEPLOYMENT_PASSWORD);
+
+        return submit.isEnabled();
+      },
+      { intervals: [1_000], timeout: 60_000 },
+    )
+    .toBe(true);
+
+  await submit.click();
+
+  const consoleWindow = await waitForConsole(app);
+
+  // The password reached the deployment, and the session it set came back:
+  // what it answers now is signed in, and the cookie the console holds is the
+  // one it handed out.
+  const answered = await consoleWindow.evaluate(async () => {
+    const response = await fetch('/admin-api/auth/session');
+
+    return (await response.json()) as { session?: { authenticated?: boolean } };
+  });
+
+  expect(answered.session?.authenticated).toBe(true);
+
+  await app.close();
+  deployment.stop();
+});
 
 test('shows its own console for a deployment, and takes only the data from it', async () => {
   const deployment = await startDeployment();

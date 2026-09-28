@@ -11,7 +11,7 @@ The desktop app is an Electron window plus a backend for the console. What the w
 - With the local backend, the default port is `8001`, and it can be changed under Settings → Desktop app. When it is taken the app walks to the next free port.
 - On macOS the gateway keeps running after the console window is closed, so `/v1/*` stays available; quitting the app stops it.
 - There is only ever one window and one gateway: launching the app again, clicking the dock icon, or clicking the menu bar item just brings the open window forward.
-- There is no sign-in: the console listens on loopback only, so the only processes that can open it are the ones already running as you on this machine. The login page and the Security settings are not shown in the desktop app.
+- There is no sign-in while the backend is this machine: the console listens on loopback only, so the only processes that can open it are the ones already running as you on this machine. No login page, and no Security settings. With a deployment as the backend both come back — see below.
 
 ## Backend
 
@@ -29,7 +29,9 @@ A desktop install has no admin password. The gateway listens on `127.0.0.1` only
 
 Only a self-hosted deployment needs an admin password; `/admin-api/auth/setup` answers 404 in the desktop app.
 
-With a deployment as the backend, the sign-in page and the password are that deployment's. Passkey sign-in cannot work from the desktop app: the browser only issues a credential for the origin it is on, `127.0.0.1`, which does not match the rpId the deployment was configured with. Sign in with the password, or open the deployment in a browser.
+With a deployment as the backend, the sign-in page and the password are that deployment's. Typing the password in the app works: it is sent to the deployment, whose session cookie the console then keeps.
+
+A passkey saved for the deployment cannot be used from the app, and neither can the passwords your browser or your system saved for it: both belong to the deployment's address, while this console is served from `127.0.0.1` — a browser only offers a credential for the origin it is on, and it would not match the rpId the deployment was configured with anyway. The sign-in page says so instead of offering a button that would fail, and links to the deployment's own page; following that link opens it in your browser, where the passkey and the saved passwords do work.
 
 ## Menu bar status
 

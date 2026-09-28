@@ -513,6 +513,8 @@
       "passkeyHeading": "Passkeys",
       "passkeyOptionsFailed": "Passkey 登録リクエストを作成できませんでした。",
       "passkeyUnavailable": "Passkey には HTTPS または localhost のオリジンが必要です。",
+      "deploymentPasskeyHint": "Passkey は {host} のものです。追加と利用はブラウザで開いたそのデプロイのページだけです。",
+      "openDeployment": "ブラウザで {host} を開く",
       "passwordMismatch": "入力したパスワードが一致しません。"
     },
     "loginPage": {
@@ -528,12 +530,14 @@
       "description": "管理者パスワードまたは passkey を使用してサインインします。",
       "descriptionLogin": "既存の管理者パスワードまたは登録済み passkey を使用します。このブラウザが条件付き passkey をサポートしている場合、自動的に試行します。",
       "descriptionSetup": "最初の管理者パスワードを作成します。設定に成功すると、バックエンドが管理者 session cookie を設定します。",
+      "deploymentPasskeyHint": "これは {host} のサインインです。そのホストに紐づく passkey はこのウィンドウでは使えません。パスワードを使うか、ブラウザでそのデプロイのページを開いてください。",
       "errorPasskeyFailed": "passkey サインインに失敗しました。再試行するか、パスワードを使用してください。",
       "errorPasskeyUnavailable": "現在 passkey サインインは利用できません。",
       "errorPasswordStatus": "管理者パスワードを使用して続行してください。",
       "headingLogin": "CodeBuddy2API にログイン",
       "headingSetup": "管理者アカウントをセットアップ",
       "noPasskeysConfigured": "この管理者アカウントにはまだ passkey が設定されていません。",
+      "openDeployment": "ブラウザで {host} を開く",
       "orLabel": "または",
       "passkeyAccepted": "passkey を確認しました。リダイレクトしています...",
       "passkeyHintLogin": "最初のアカウント設定後に使用します。",

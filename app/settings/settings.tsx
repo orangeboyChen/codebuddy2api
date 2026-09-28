@@ -621,7 +621,14 @@ const CredentialModels = () => {
  * to offer. One whose data comes from a deployment is a different case, and
  * gets the panel.
  */
-const Settings = ({ desktop = false }: { desktop?: boolean }) => {
+const Settings = ({
+  deploymentUrl,
+  desktop = false,
+}: {
+  /** Set when the data comes from a deployment: its passkeys are its own. */
+  deploymentUrl?: string;
+  desktop?: boolean;
+}) => {
   const { onChange, onSave, settings } = useSettings();
   const translations = useTranslations('Admin');
   const [clearingUsage, setClearingUsage] = useState(false);
@@ -736,7 +743,7 @@ const Settings = ({ desktop = false }: { desktop?: boolean }) => {
           </Button>
         </Flexbox>
       </Block>
-      {desktop ? null : <Security />}
+      {desktop ? null : <Security deploymentUrl={deploymentUrl} />}
     </div>
   );
 };
