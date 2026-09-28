@@ -11,7 +11,6 @@ import {
   Bug,
   ChartLine,
   CircleUserRound,
-  Info,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -71,7 +70,6 @@ const tabs: Array<{
   icon: typeof LayoutDashboard;
   key: TabKey;
   labelKey:
-    | 'about'
     | 'apiTest'
     | 'credentials'
     | 'dashboard'
@@ -87,7 +85,6 @@ const tabs: Array<{
   { icon: Send, key: 'api-test', labelKey: 'apiTest' },
   { icon: Bug, key: 'debug', labelKey: 'debug' },
   { icon: Settings2, key: 'settings', labelKey: 'settings' },
-  { icon: Info, key: 'about', labelKey: 'about' },
 ];
 
 interface CredentialsResponse {
@@ -2009,7 +2006,6 @@ const AdminPageLayoutContent = ({
               {children}
             </DebugProvider>
           ) : null}
-          {activeTab === 'about' ? children : null}
           {activeTab === 'settings' ? (
             <SettingsProvider
               value={{

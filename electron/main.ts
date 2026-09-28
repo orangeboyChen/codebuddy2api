@@ -30,7 +30,6 @@ import {
 import { findAvailablePort } from '../lib/server/electron/ports';
 import {
   DESKTOP_SETTINGS_FILENAME,
-  DESKTOP_VERSION_COOKIE,
   defaultDesktopSettings,
   desktopSettingsPath,
   isPinnedPort,
@@ -43,6 +42,7 @@ import {
 } from '../lib/server/electron/settings';
 import {
   desktopText,
+  fillText,
   statusText,
   usageText,
   type DesktopText,
@@ -52,6 +52,12 @@ import {
   fetchTodayUsage,
   type DesktopUsage,
 } from '../lib/server/electron/usage';
+import {
+  RELEASES_PAGE_URL,
+  checkForUpdate,
+  type ReleaseAsset,
+} from '../lib/server/electron/updates';
+import { fetchServerVersion } from '../lib/server/electron/version';
 
 const WINDOW_HEIGHT = 880;
 const WINDOW_WIDTH = 1360;
@@ -77,16 +83,18 @@ const RESTART_DEBOUNCE_MS = 750;
  */
 const USAGE_POLL_MS = 60_000;
 /**
- * A day. Long enough that a console still knows which build opened it after the
- * app has been closed and started again.
- */
-const DESKTOP_VERSION_COOKIE_TTL_SECONDS = 24 * 60 * 60;
-/**
  * How long the console is given to load before the shell sends the window there
  * again. Generous: a real first render is expected to beat it, so the second
  * attempt is only ever reached by a load that has stopped making progress.
  */
 const CONSOLE_LOAD_TIMEOUT_MS = 10_000;
+/**
+ * How long the installer download gets. Long enough for a slow connection and
+ * a disk image over a hundred megabytes; not unlimited, because a server that
+ * accepts the request and then stalls would otherwise leave the menu item
+ * saying "Downloading…" until the app is restarted.
+ */
+const INSTALLER_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 
 type GatewayStatus = 'failed' | 'running' | 'starting';
 
@@ -121,6 +129,14 @@ let backend: DesktopBackend = { mode: 'local' };
 /** Today's token counts, once a backend has answered. */
 let todayUsage: DesktopUsage | null = null;
 let usageLoaded = false;
+/**
+ * The version of the deployment serving the console, when it is not this app:
+ * a remote backend is a build of its own. Null for the bundled gateway, which
+ * is the app, and for a deployment that has not answered yet.
+ */
+let serverVersion: string | null = null;
+/** What an update check is doing, which the menu item reports. */
+let updateState: 'checking' | 'downloading' | 'idle' = 'idle';
 /** The locale the console is showing — the menu bar item speaks it too. */
 let locale = 'en-US';
 /**
@@ -235,34 +251,14 @@ const retargetUrl = (window: BrowserWindow, url: string): string => {
 };
 
 /**
- * Tells the console which build of the app is opening it, so its About tab can
- * name the desktop version. Nothing breaks without it: the tab then has no
- * desktop version to show.
- */
-const shareDesktopVersion = async (origin: string): Promise<void> => {
-  try {
-    await session.defaultSession.cookies.set({
-      expirationDate:
-        Math.floor(Date.now() / 1_000) + DESKTOP_VERSION_COOKIE_TTL_SECONDS,
-      name: DESKTOP_VERSION_COOKIE,
-      url: `${origin}/`,
-      value: app.getVersion(),
-    });
-  } catch {
-    // A cookie jar that refuses the write is not worth failing a launch over.
-  }
-};
-
-/**
- * Sends a window to the console, keeping the navigation allow-list and the
- * version cookie in step with where it is going.
+ * Sends a window to the console, keeping the navigation allow-list in step with
+ * where it is going.
  */
 const loadConsole = async (
   window: BrowserWindow,
   url: string,
 ): Promise<void> => {
   consoleOrigin = new URL(url).origin;
-  await shareDesktopVersion(consoleOrigin);
 
   // Twice, because the first navigation of a cold app can stall: it neither
   // finishes nor fails, and a window that never gets a first frame stays
@@ -411,6 +407,25 @@ const buildTrayMenu = (): Menu =>
     { type: 'separator' },
     { enabled: false, label: `${text().backend}: ${backendLabel()}` },
     { click: () => openBackendWindow(), label: text().changeBackend },
+    { type: 'separator' },
+    {
+      enabled: false,
+      label: fillText(text().appVersion, { version: app.getVersion() }),
+    },
+    // Only a backend that is not this app has a version of its own to name.
+    ...(serverVersion
+      ? [
+          {
+            enabled: false,
+            label: fillText(text().serverVersion, { version: serverVersion }),
+          },
+        ]
+      : []),
+    {
+      click: () => void runUpdateCheck(),
+      enabled: updateState === 'idle',
+      label: updateMenuLabel(),
+    },
     { type: 'separator' },
     { click: () => app.quit(), label: text().quit },
   ]);
@@ -634,6 +649,17 @@ const refreshUsage = async (): Promise<void> => {
     cookie: adminCookieHeader(cookies),
   });
   usageLoaded = true;
+
+  // Only worth asking a backend that is not this app: the gateway the app
+  // starts is the app, and its version is the one the menu already names.
+  serverVersion =
+    backend.mode === 'remote'
+      ? await fetchServerVersion({
+          baseUrl,
+          cookie: adminCookieHeader(cookies),
+        })
+      : null;
+
   refreshTray();
 };
 
@@ -645,6 +671,188 @@ const startUsagePolling = (): void => {
   usageTimer = setInterval(() => {
     void refreshUsage();
   }, USAGE_POLL_MS);
+};
+
+/**
+ * What the update item says. It names what it is doing while it is doing it,
+ * because a menu that still looks idle during a download is a menu that gets
+ * clicked twice.
+ */
+const updateMenuLabel = (): string =>
+  updateState === 'checking'
+    ? text().updateChecking
+    : updateState === 'downloading'
+      ? text().updateDownloading
+      : text().checkForUpdates;
+
+/** The installer for a newer release, downloaded to a temporary file. */
+const downloadInstaller = async (asset: ReleaseAsset): Promise<string> => {
+  const target = path.join(app.getPath('temp'), asset.name);
+  const response = await fetch(asset.url, {
+    signal: AbortSignal.timeout(INSTALLER_DOWNLOAD_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} downloading ${asset.name}`);
+  }
+
+  await fs.promises.writeFile(
+    target,
+    Buffer.from(await response.arrayBuffer()),
+  );
+
+  // An AppImage is the program, so it needs to be executable; a Windows
+  // installer inherits its permissions from the file system it lands on.
+  if (process.platform !== 'win32') {
+    await fs.promises.chmod(target, 0o755);
+  }
+
+  return target;
+};
+
+/**
+ * Puts a downloaded AppImage where the running one is.
+ *
+ * An AppImage is the program, so an update means replacing the file, not
+ * opening the download: opening it would run a second copy of the app, which
+ * finds the single-instance lock, quits, and hands the window straight back to
+ * the old build — and even without the lock the new file would sit in a
+ * temporary directory and be gone by the next reboot.
+ *
+ * The copy lands beside the running file and is renamed over it, so a failed
+ * download or a read-only directory leaves the installed AppImage as it was.
+ * Nothing to replace means nothing was started from an AppImage — a distro
+ * package, or an unpacked directory — and the caller says where the file went
+ * instead.
+ */
+const replaceAppImage = async (downloaded: string): Promise<boolean> => {
+  const current = process.env.APPIMAGE?.trim();
+
+  if (!current) {
+    return false;
+  }
+
+  const staged = `${current}.new`;
+
+  try {
+    await fs.promises.copyFile(downloaded, staged);
+    await fs.promises.rename(staged, current);
+    // Relaunched before it quits: the file it starts is the one just written.
+    app.relaunch();
+    app.exit(0);
+  } catch (error) {
+    await fs.promises.rm(staged, { force: true });
+    dialog.showErrorBox(
+      'CodeBuddy2API',
+      `${text().updateFailed}\n\n${describeError(error)}`,
+    );
+
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Whether a newer release exists, and — if the user wants it — the build for
+ * this machine, handed to the platform to install: an installer that runs, a
+ * disk image that mounts.
+ *
+ * The step that replaces the app is the one the user agrees to. Nothing is
+ * downloaded before that, and nothing is replaced behind their back: what runs
+ * is the installer they would have downloaded themselves.
+ */
+const runUpdateCheck = async (): Promise<void> => {
+  if (updateState !== 'idle') {
+    return;
+  }
+
+  updateState = 'checking';
+  refreshTray();
+
+  try {
+    const current = app.getVersion();
+    const update = await checkForUpdate({ currentVersion: current });
+
+    if (update.kind === 'unavailable') {
+      await dialog.showMessageBox({
+        message: text().updateFailed,
+        title: 'CodeBuddy2API',
+      });
+
+      return;
+    }
+
+    if (update.kind === 'up-to-date') {
+      await dialog.showMessageBox({
+        message: fillText(text().updateUpToDate, {
+          version: update.version,
+        }),
+        title: 'CodeBuddy2API',
+      });
+
+      return;
+    }
+
+    // Newer, but not for this platform and architecture: the release page is
+    // where a build for another machine, or the portable one, is.
+    if (!update.asset) {
+      await dialog.showMessageBox({
+        message: fillText(text().updateNoBuild, { version: update.version }),
+        title: 'CodeBuddy2API',
+      });
+      await shell.openExternal(RELEASES_PAGE_URL);
+
+      return;
+    }
+
+    const choice = await dialog.showMessageBox({
+      buttons: [text().updateInstall, text().updateLater],
+      cancelId: 1,
+      defaultId: 0,
+      message: fillText(text().updateAvailableBody, {
+        current,
+        version: update.version,
+      }),
+      title: text().updateAvailableTitle,
+    });
+
+    if (choice.response !== 0) {
+      return;
+    }
+
+    updateState = 'downloading';
+    refreshTray();
+
+    const installer = await downloadInstaller(update.asset);
+
+    // A disk image mounts and a setup program runs, and both are what opening
+    // the file is for. An AppImage has to be put where the running one is
+    // instead, or the "Install" button installs nothing.
+    if (process.platform === 'linux' && installer.endsWith('.AppImage')) {
+      if (!(await replaceAppImage(installer))) {
+        shell.showItemInFolder(installer);
+      }
+
+      return;
+    }
+
+    const notOpened = await shell.openPath(installer);
+
+    // The download happened either way, so show where it went instead of
+    // leaving an installer the user cannot find.
+    if (notOpened) {
+      shell.showItemInFolder(installer);
+    }
+  } catch (error) {
+    dialog.showErrorBox(
+      'CodeBuddy2API',
+      `${text().updateFailed}\n\n${describeError(error)}`,
+    );
+  } finally {
+    updateState = 'idle';
+    refreshTray();
+  }
 };
 
 /**
