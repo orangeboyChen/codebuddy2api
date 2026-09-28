@@ -9,7 +9,7 @@ storage_mode("git")
 # outside the Mac App Store, which is what a dmg is.
 type("developer_id")
 
-app_identifier(["com.orangeboychen.codebuddy2api"])
+app_identifier(["com.nowcent.codebuddy2api"])
 
 # A dmg needs no provisioning profile, and asking Apple for one would mean a
 # login that CI has no way to do.
