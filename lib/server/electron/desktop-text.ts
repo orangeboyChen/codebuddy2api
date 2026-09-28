@@ -7,6 +7,7 @@
  * exists to ask. The console's own locale cookie decides which set is used.
  */
 export interface DesktopText {
+  about: string;
   appVersion: string;
   backend: string;
   backendLocal: string;
@@ -48,6 +49,7 @@ export interface DesktopText {
 
 const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'en-US': {
+    about: 'CodeBuddy2API on GitHub',
     appVersion: 'Version {version}',
     backend: 'Backend',
     backendLocal: 'This machine',
@@ -92,6 +94,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     usageUnavailable: 'Usage unavailable',
   },
   'ja-JP': {
+    about: 'GitHub の CodeBuddy2API',
     appVersion: 'バージョン {version}',
     backend: 'バックエンド',
     backendLocal: 'このマシン',
@@ -138,6 +141,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     usageUnavailable: '使用量を取得できません',
   },
   'zh-CN': {
+    about: 'GitHub 上的 CodeBuddy2API',
     appVersion: '版本 {version}',
     backend: '后端',
     backendLocal: '本机',

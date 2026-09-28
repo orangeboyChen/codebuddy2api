@@ -57,6 +57,7 @@ import {
   type DeploymentProbe,
 } from '../lib/server/electron/deployment';
 import {
+  HOME_PAGE_URL,
   RELEASES_PAGE_URL,
   checkForUpdate,
   type ReleaseAsset,
@@ -443,6 +444,9 @@ const buildTrayMenu = (): Menu =>
       enabled: updateState === 'idle',
       label: updateMenuLabel(),
     },
+    // Where the app lives. The menu bar is the only place the app has to say
+    // so, and the repository is where every other answer about it is.
+    { click: () => openExternally(HOME_PAGE_URL), label: text().about },
     { type: 'separator' },
     { click: () => app.quit(), label: text().quit },
   ]);
