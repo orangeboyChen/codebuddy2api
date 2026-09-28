@@ -560,6 +560,30 @@ const bundleDir = (): string =>
   resolveAppBundleDir({ appPath: app.getAppPath() });
 
 /**
+ * The icon a run from a checkout shows on macOS.
+ *
+ * `electron .` has no bundle to take an icon from, so the app would be drawn
+ * with Electron's own wherever macOS names it — the Dock before the menu bar
+ * item hides it, the Force Quit window, Activity Monitor. A development build
+ * leaves its icon next to the bundled main process, which is where this looks
+ * for it; an install carries its icon in the bundle and is already drawn with
+ * it, so it never gets here.
+ */
+const applyDevelopmentIcon = (): void => {
+  if (process.platform !== 'darwin' || app.isPackaged) {
+    return;
+  }
+
+  const iconPath = path.join(bundleDir(), 'icon-dev.png');
+
+  if (!fs.existsSync(iconPath)) {
+    return;
+  }
+
+  app.dock?.setIcon(nativeImage.createFromPath(iconPath));
+};
+
+/**
  * The menu bar item, which is what makes the app's state visible while the
  * console window is closed — the gateway keeps serving `/v1/*` with no window
  * open, and otherwise nothing would say so.
@@ -1797,6 +1821,7 @@ const bootstrap = async (): Promise<void> => {
   backend = settings.backend;
   backendChosen = !firstRun;
 
+  applyDevelopmentIcon();
   createTray();
   watchDesktopSettings();
   startUsagePolling();

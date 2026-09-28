@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { DEV_ICON_FILENAME } from './dev-icon';
+
 const root = process.cwd();
 const standaloneDir = path.join(root, '.next', 'standalone');
 // The gateway is nested one level deep on purpose: electron-builder always
@@ -18,9 +20,15 @@ const builderConfig = path.join(root, 'electron', 'electron-builder.yml');
 
 const parseArguments = (argv: string[]) => {
   const forwarded: string[] = [];
+  let devIcon = false;
   let prepareOnly = false;
 
   for (const argument of argv) {
+    if (argument === '--dev-icon') {
+      devIcon = true;
+      continue;
+    }
+
     if (argument === '--prepare-only') {
       prepareOnly = true;
       continue;
@@ -29,7 +37,7 @@ const parseArguments = (argv: string[]) => {
     forwarded.push(argument);
   }
 
-  return { forwarded, prepareOnly };
+  return { devIcon, forwarded, prepareOnly };
 };
 
 const bunBinary = () => {
@@ -204,6 +212,29 @@ const bundleElectron = () => {
   console.log(`Electron main bundled at ${path.relative(root, appDir)}`);
 };
 
+/**
+ * The icon a development build carries, written next to the bundled main
+ * process: the app's own mark on an orange plate with a `DEV` badge in the
+ * corner, so a build nobody is meant to install does not look like a release in
+ * the Dock, in an installer or on a menu bar's "About".
+ *
+ * Run as its own process, and not imported, because rasterising an SVG takes a
+ * native image library nothing else in the build needs: a release build has to
+ * succeed on a machine that has none of the development dependencies installed.
+ */
+const renderDevIcon = (): void => {
+  execFileSync(
+    bunBinary(),
+    [
+      'run',
+      path.join(root, 'scripts', 'render-dev-icon.ts'),
+      '--out',
+      path.join(appDir, DEV_ICON_FILENAME),
+    ],
+    { cwd: root, stdio: 'inherit' },
+  );
+};
+
 const readElectronVersion = () => {
   const manifest = path.join(root, 'node_modules', 'electron', 'package.json');
 
@@ -234,28 +265,52 @@ const rebuildNativeModules = () => {
   console.log(`Rebuilt native modules against Electron ${version}`);
 };
 
-const packageDesktop = (forwarded: string[]) => {
+const packageDesktop = (forwarded: string[], devIcon: boolean) => {
   requirePath(
     builderConfig,
     'The electron-builder configuration is missing from electron/.',
   );
   fs.mkdirSync(resourcesDir, { recursive: true });
 
+  /**
+   * The development icon, given to electron-builder on the command line rather
+   * than through a second configuration file: everything else about the build is
+   * the release build's, and the icon is the only thing that differs. One 1024
+   * pixel PNG serves all three platforms — electron-builder makes the `icns` and
+   * the `ico` macOS and Windows ask for out of it.
+   */
+  const iconPath = path.join(appDir, DEV_ICON_FILENAME);
+  const iconArguments = devIcon
+    ? [
+        '-c.mac.icon=' + iconPath,
+        '-c.win.icon=' + iconPath,
+        '-c.linux.icon=' + iconPath,
+      ]
+    : [];
+
   runBin('electron-builder', [
     '--config',
     builderConfig,
+    ...iconArguments,
     '--publish',
     'never',
     ...forwarded,
   ]);
 };
 
-const { forwarded, prepareOnly } = parseArguments(process.argv.slice(2));
+const { devIcon, forwarded, prepareOnly } = parseArguments(
+  process.argv.slice(2),
+);
 
 assembleGateway();
 bundleElectron();
 rebuildNativeModules();
 
+// After the bundle, which empties the directory the icon is written into.
+if (devIcon) {
+  renderDevIcon();
+}
+
 if (!prepareOnly) {
-  packageDesktop(forwarded);
+  packageDesktop(forwarded, devIcon);
 }
