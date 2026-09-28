@@ -35,7 +35,7 @@ Open `http://127.0.0.1:8001/dashboard`, complete CodeBuddy authentication or add
 
 Every release also ships Electron desktop builds — macOS (Apple silicon and Intel), Windows, and Linux (x86_64 and arm64) — as release assets next to the Docker image. The app bundles the same gateway: it starts it on `127.0.0.1:8001` and opens the console in a native window.
 
-Data is written to Electron's `userData` directory rather than the install location, and storage is fixed to SQLite with a key generated on first launch, so nothing has to be configured — deleting that key makes already encrypted data unreadable, so back up the database together with it. The port defaults to `8001` (or the next free one) and can be changed under Settings → Desktop app, which restarts the gateway. A menu bar item shows which port it ended up on.
+Data is written to Electron's `userData` directory rather than the install location, and storage is fixed to SQLite with a key generated on first launch, so nothing has to be configured — deleting that key makes already encrypted data unreadable, so back up the database together with it. The port defaults to `8001` and can be changed in the window the first launch opens, or under Settings → Desktop app, which restarts the gateway. A taken port is not swapped for another one behind your back: the app asks which port to use. A menu bar item shows the state the app is in, and on macOS it is the only icon it has.
 
 The macOS builds are signed and notarized, so the dmg opens on a double-click. On Windows, dismiss the SmartScreen prompt with Run anyway.
 
