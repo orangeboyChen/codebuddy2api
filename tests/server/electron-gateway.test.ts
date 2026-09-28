@@ -359,6 +359,28 @@ describe('startGateway', () => {
     expect(log).not.toHaveBeenCalled();
   });
 
+  it('waits on the health check, and not on the console it is asking about', async () => {
+    const { child } = createChild();
+    const spawn = vi.fn(() => child);
+    const waitForHealth = vi.fn(async () => true);
+
+    await startGateway({
+      env: asEnv(),
+      gatewayDir: '/app/gateway',
+      nodePath: '/Electron',
+      port: 8001,
+      spawn,
+      waitForHealth,
+    });
+
+    // A desktop install answers its pages with 404 to anything that is not the
+    // window, so the origin is not a health check: polling it would wait out the
+    // timeout and stop a gateway that was up all along.
+    expect(waitForHealth).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'http://127.0.0.1:8001/health' }),
+    );
+  });
+
   it('forwards gateway output to the log', async () => {
     const { child, stderr, stdout } = createChild();
     const log = vi.fn();

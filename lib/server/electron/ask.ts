@@ -136,7 +136,7 @@ export const parseAppleScriptAnswer = (stdout: string): AppleScriptAnswer => {
  */
 
 /** Inside a single-quoted PowerShell string, a quote is written twice. */
-const windowsString = (value: string): string =>
+export const windowsString = (value: string): string =>
   `'${value.replace(/'/g, "''")}'`;
 
 /** The width the form's text wraps at, and the fields are drawn to. */
