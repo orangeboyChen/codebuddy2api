@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   BrowserWindow,
@@ -44,6 +45,17 @@ import {
   type AskAnswer,
   type AskForm,
 } from '../lib/server/electron/ask';
+import {
+  appleScriptSettings,
+  parseSettingsAnswer,
+  settingsTabForm,
+  windowsSettingsScript,
+  zenitySettingsNoteArgs,
+  zenitySettingsTabArgs,
+  type SettingsAnswer,
+  type SettingsForm,
+  type SettingsTab,
+} from '../lib/server/electron/settings-dialog';
 import {
   DESKTOP_SETTINGS_FILENAME,
   MAX_PORT,
@@ -548,9 +560,10 @@ const buildTrayMenu = (): Menu =>
     },
     { type: 'separator' },
     { enabled: false, label: `${text().backend}: ${backendLabel()}` },
-    // The window behind this item settles both things the app asks about: the
-    // backend, and the port it serves on.
-    { click: () => void askAboutBackend('choose'), label: text().settings },
+    // The settings dialog: the backend and the port in a tab of their own,
+    // beside one that says where this install keeps its data and one that says
+    // what this app is.
+    { click: () => void openSettings(), label: text().settings },
     { type: 'separator' },
     {
       enabled: false,
@@ -570,9 +583,6 @@ const buildTrayMenu = (): Menu =>
       enabled: updateState === 'idle',
       label: updateMenuLabel(),
     },
-    // Where the app lives. The menu bar is the only place the app has to say
-    // so, and the repository is where every other answer about it is.
-    { click: () => openExternally(HOME_PAGE_URL), label: text().about },
     { type: 'separator' },
     { click: () => app.quit(), label: text().quit },
   ]);
@@ -1648,6 +1658,42 @@ const backendForm = (error: string): AskForm => {
 };
 
 /**
+ * What an answer to the backend question means, whichever dialog asked it.
+ *
+ * An empty string when the answer could be used, and the reason it could not
+ * when it could not: the same two things are asked for by the first-run
+ * question and by the settings dialog, and the answer is read the same way.
+ */
+const applyBackendAnswer = async (
+  option: string | null,
+  values: string[],
+): Promise<string> => {
+  const [url = '', portValue = ''] = values;
+  const port = normalizeDesktopPort(portValue, 0);
+  const remote = option === text().backendRemote;
+
+  if (remote && !isValidBackendUrl(url)) {
+    return text().invalidBackendUrl;
+  }
+
+  // A number is asked for only with the local gateway — the dialog asks for
+  // nothing else when a deployment is named, and the port the console is served
+  // on then stays the one already on disk.
+  if (!remote && !port) {
+    return invalidPortMessage();
+  }
+
+  await applyBackend(
+    normalizeDesktopBackend(
+      remote ? { mode: 'remote', url } : { mode: 'local' },
+    ),
+    { persist: true, port: port || undefined },
+  );
+
+  return '';
+};
+
+/**
  * Which backend, and which port, asked in a dialog of the system's own.
  */
 const askBackendAndPort = async (): Promise<AskOutcome['kind']> => {
@@ -1660,33 +1706,14 @@ const askBackendAndPort = async (): Promise<AskOutcome['kind']> => {
       return outcome.kind;
     }
 
-    const [url = '', portValue = ''] = outcome.answer.values;
-    const port = normalizeDesktopPort(portValue, 0);
-    const remote = outcome.answer.option === text().backendRemote;
-
-    if (remote && !isValidBackendUrl(url)) {
-      error = text().invalidBackendUrl;
-
-      continue;
-    }
-
-    // A number is asked for only with the local gateway — the dialog above asks
-    // for nothing else when a deployment is named, and the port the console is
-    // served on then stays the one already on disk.
-    if (!remote && !port) {
-      error = invalidPortMessage();
-
-      continue;
-    }
-
-    await applyBackend(
-      normalizeDesktopBackend(
-        remote ? { mode: 'remote', url } : { mode: 'local' },
-      ),
-      { persist: true, port: port || undefined },
+    error = await applyBackendAnswer(
+      outcome.answer.option,
+      outcome.answer.values,
     );
 
-    return 'answered';
+    if (!error) {
+      return 'answered';
+    }
   }
 
   // Never answered with a number the app could bind, in a dialog that cannot
@@ -1737,6 +1764,245 @@ const askPortAgain = async (): Promise<AskOutcome['kind']> => {
   }
 
   return 'failed';
+};
+
+/**
+ * The repository, as it is written rather than as it is opened.
+ */
+const homePageLabel = (): string => HOME_PAGE_URL.replace(/^https?:\/\//, '');
+
+/**
+ * The settings, as one dialog of the computer's own with the computer's tabs.
+ *
+ * The question that was all the shell used to have — which backend, which port
+ * — is the first tab, because it is the one that decides what the app is; beside
+ * it, a tab saying where this install keeps its data, and a last one saying what
+ * this app is and where it lives.
+ */
+const settingsForm = (error: string): SettingsForm => {
+  const shell = text();
+  const paths = resolveDesktopPaths(userDataDir);
+  // A deployment is what keeps the data, so this machine's database is not what
+  // the console is showing, and naming it would be naming the wrong thing.
+  const data: SettingsTab =
+    backend.mode === 'remote'
+      ? {
+          label: shell.settingsTabData,
+          links: [{ label: backend.url, url: backend.url }],
+          notes: [fillText(shell.settingsDataRemote, { url: backend.url })],
+        }
+      : {
+          label: shell.settingsTabData,
+          // A link rather than a button: the desktop opens what it names, in the
+          // file manager this desktop uses, and the dialog stays where it is.
+          links: [
+            { label: paths.dataDir, url: pathToFileURL(paths.dataDir).href },
+          ],
+          notes: [
+            fillText(shell.settingsDataDir, { path: paths.dataDir }),
+            fillText(shell.settingsDatabase, { path: paths.sqlitePath }),
+          ],
+        };
+
+  return {
+    cancel: shell.cancel,
+    error,
+    ok: shell.save,
+    tabs: [
+      {
+        fields: [
+          {
+            label: shell.address,
+            message: shell.backendRemoteHint,
+            value: backend.mode === 'remote' ? backend.url : '',
+          },
+          {
+            // Only this machine's gateway is served on a port of this machine's.
+            label: shell.port,
+            message: shell.portHint,
+            value: String(preferredPort()),
+          },
+        ],
+        label: shell.settingsTabGeneral,
+        message: shell.chooseBackend,
+        option: backend.mode === 'remote' ? 1 : 0,
+        options: [shell.backendLocal, shell.backendRemote],
+      },
+      data,
+      {
+        label: shell.settingsTabAbout,
+        links: [{ label: homePageLabel(), url: HOME_PAGE_URL }],
+        notes: [
+          fillText(shell.appVersion, { version: app.getVersion() }),
+          `${shell.backend}: ${backendLabel()}`,
+          // Only a backend that is not this app has a version of its own.
+          ...(serverVersion
+            ? [fillText(shell.serverVersion, { version: serverVersion })]
+            : []),
+        ],
+      },
+    ],
+    title: 'CodeBuddy2API',
+  };
+};
+
+type SettingsOutcome =
+  | { answer: SettingsAnswer; kind: 'answered' }
+  | { kind: 'cancelled' }
+  | { kind: 'failed' };
+
+/** The settings in the dialog AppKit draws: a tab view inside an alert. */
+const askWithSettingsScript = async (
+  form: SettingsForm,
+): Promise<SettingsAnswer | null> => {
+  const { code, stdout } = await runCommand('/usr/bin/osascript', [
+    '-l',
+    'JavaScript',
+    '-e',
+    appleScriptSettings(form),
+  ]);
+
+  return code === 0 ? parseSettingsAnswer(stdout, form) : null;
+};
+
+/** The same dialog as a WinForms form, with the `TabControl` Windows draws. */
+const askWithWindowsSettings = async (
+  form: SettingsForm,
+): Promise<SettingsAnswer | null> => {
+  const args = [
+    '-NoProfile',
+    '-NonInteractive',
+    '-STA',
+    '-EncodedCommand',
+    windowsEncodedCommand(windowsSettingsScript(form)),
+  ];
+  const [command, absolute] = powershellCommands();
+  const { stdout } = await runCommand(command, args).catch(() =>
+    runCommand(absolute, args),
+  );
+
+  return parseSettingsAnswer(stdout, form);
+};
+
+/**
+ * The settings in the dialogs zenity draws, which have no tab control between
+ * them: the section is picked from a list, and the section picked is the one
+ * that is asked about.
+ */
+const askWithZenitySettings = async (
+  form: SettingsForm,
+): Promise<SettingsAnswer | null> => {
+  const { code, stdout } = await runCommand(
+    'zenity',
+    zenitySettingsTabArgs(form),
+  );
+
+  // Cancel in zenity is a non-zero exit, and a section that is none of the tabs
+  // is not an answer either.
+  if (code !== 0) {
+    return null;
+  }
+
+  const picked = form.tabs.findIndex((tab) => tab.label === stdout.trim());
+
+  if (picked < 0) {
+    return null;
+  }
+
+  const answer: SettingsAnswer = {
+    options: form.tabs.map(() => null),
+    values: form.tabs.map(() => []),
+  };
+  const tab = form.tabs[picked];
+
+  if (tab.options?.length || tab.fields?.length) {
+    const outcome = await askWithZenity(settingsTabForm(form, tab));
+
+    if (!outcome) {
+      return null;
+    }
+
+    answer.options[picked] = outcome.option;
+    answer.values[picked] = outcome.values;
+  } else {
+    // A section that only says things: the one dialog zenity has for a text.
+    await runCommand('zenity', zenitySettingsNoteArgs(tab)).catch(() => null);
+  }
+
+  return answer;
+};
+
+const askSettings = async (form: SettingsForm): Promise<SettingsOutcome> => {
+  const ask =
+    process.platform === 'darwin'
+      ? askWithSettingsScript
+      : process.platform === 'win32'
+        ? askWithWindowsSettings
+        : askWithZenitySettings;
+
+  try {
+    const answer = await ask(form);
+
+    return answer ? { answer, kind: 'answered' } : { kind: 'cancelled' };
+  } catch (error) {
+    console.warn(`The desktop could not ask: ${describeError(error)}`);
+
+    return { kind: 'failed' };
+  }
+};
+
+/**
+ * The settings, opened from the menu bar item — not the first-run question
+ * again, which is one tab of a dialog that has the rest of the settings in it.
+ */
+const openSettings = async (): Promise<void> => {
+  if (asking) {
+    return;
+  }
+
+  if (!asksInSystemDialogs()) {
+    // Asked for by name, so it is worth saying out loud.
+    console.warn(
+      'CODEBUDDY_DESKTOP_ASK=window: asking in the app’s own window.',
+    );
+
+    openBackendWindow({ screen: 'choose' });
+
+    return;
+  }
+
+  asking = true;
+
+  try {
+    let error = '';
+
+    for (let attempt = 0; attempt < ASK_ATTEMPTS; attempt += 1) {
+      const outcome = await askSettings(settingsForm(error));
+
+      if (outcome.kind !== 'answered') {
+        if (outcome.kind === 'failed') {
+          dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage('choose'));
+        }
+
+        return;
+      }
+
+      error = await applyBackendAnswer(
+        outcome.answer.options[0] ?? null,
+        outcome.answer.values[0] ?? [],
+      );
+
+      if (!error) {
+        return;
+      }
+    }
+
+    // Never answered with something the app could use, in a dialog that cannot
+    // say what is wrong under a field: said in a dialog of the system's own.
+    dialog.showErrorBox('CodeBuddy2API', couldNotAskMessage('choose'));
+  } finally {
+    asking = false;
+  }
 };
 
 /**
