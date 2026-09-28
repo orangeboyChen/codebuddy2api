@@ -14,6 +14,8 @@ export const UPDATE_REPO = 'orangeboyChen/codebuddy2api';
 export const LATEST_RELEASE_URL = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
 /** Where to send a machine the release has no build for. */
 export const RELEASES_PAGE_URL = `https://github.com/${UPDATE_REPO}/releases`;
+/** The repository itself, which the menu bar's About item opens. */
+export const HOME_PAGE_URL = `https://github.com/${UPDATE_REPO}`;
 /** GitHub refuses an API request with no `user-agent`, and this is not a browser. */
 const USER_AGENT = 'CodeBuddy2API-desktop';
 /** Long enough for an installer over a slow line, short enough to give up. */

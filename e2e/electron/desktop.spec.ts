@@ -100,6 +100,35 @@ test('asks which backend to use, then opens the console it starts', async () => 
 
   expect(pageErrors).toEqual([]);
 
+  // The size of the question it is asking: the page measures its own pane, the
+  // shell follows, and the window ends up neither wider nor narrower than the
+  // text inside it — which is what a hint translated into three languages
+  // needs, on a computer that picked its own font.
+  const pane = chooser.locator('#pane');
+
+  await expect
+    .poll(async () => {
+      const [width] = await app.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+
+        return window ? window.getContentSize() : [0, 0];
+      });
+
+      return Math.abs(
+        width - (await pane.evaluate((it) => it.getBoundingClientRect().width)),
+      );
+    })
+    .toBeLessThan(1);
+
+  const paneWidth = await pane.evaluate(
+    (it) => it.getBoundingClientRect().width,
+  );
+
+  // Wide enough for the two hints, and no wider: the cap in the stylesheet is
+  // what stops a long one from stretching the window across the screen.
+  expect(paneWidth).toBeGreaterThan(360);
+  expect(paneWidth).toBeLessThanOrEqual(480);
+
   await chooser.locator('#save').click();
 
   const consoleWindow = await waitForConsole(app);

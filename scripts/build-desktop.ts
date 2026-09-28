@@ -189,10 +189,13 @@ const bundleElectron = () => {
     )}\n`,
   );
 
-  // The menu bar icon is read from next to the bundled main process, so it
-  // cannot come from `electron/resources` — that directory is only electron-
-  // builder's buildResources, which never reaches the packaged app.
-  copyInto(path.join(resourcesDir, 'tray.png'), path.join(appDir, 'tray.png'));
+  // Both menu bar icons come along: macOS asks for the template, everything
+  // else for the app's own icon — and each is read from next to the bundled
+  // main process, so neither can come from `electron/resources`, which is only
+  // electron-builder's buildResources and never reaches the packaged app.
+  for (const icon of ['tray.png', 'tray-template.png']) {
+    copyInto(path.join(resourcesDir, icon), path.join(appDir, icon));
+  }
   copyInto(
     path.join(root, 'electron', 'backend.html'),
     path.join(appDir, 'backend.html'),

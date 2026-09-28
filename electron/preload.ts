@@ -16,4 +16,8 @@ contextBridge.exposeInMainWorld('desktop', {
     ipcRenderer.invoke('desktop:retry-backend'),
   setBackend: (backend: unknown): Promise<void> =>
     ipcRenderer.invoke('desktop:set-backend', backend),
+  // The window that asks about the backend sizes itself to what it is asking,
+  // and it is the page that knows how much room its own text took.
+  setContentSize: (width: number, height: number): Promise<void> =>
+    ipcRenderer.invoke('desktop:set-content-size', width, height),
 });
