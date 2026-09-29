@@ -2674,10 +2674,23 @@ ipcMain.handle('desktop:retry-backend', async () => {
 
   await restartGateway();
 
-  // Answered this time: the question goes away and the console comes up.
+  // Answered this time: the question goes away and the console comes up. The
+  // window is on its way out, and `showMainWindow` asks whether there is one
+  // still asking — a window `close()` has been called on still says it is
+  // there, so it would be handed the click and the console would never open.
   if (status === 'running') {
+    backendWindow = null;
     window?.close();
     showMainWindow();
+
+    return;
+  }
+
+  // Not answered: the window is still the only thing that can say so, and it is
+  // showing what it was told before — the same screen, the same message, as if
+  // nothing had been asked. Loaded again for the answer it now has.
+  if (window && !window.isDestroyed()) {
+    void window.loadFile(path.join(bundleDir(), 'backend.html'));
   }
 });
 

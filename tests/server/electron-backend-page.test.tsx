@@ -62,7 +62,7 @@ const bridge = () => ({
   getInfo: vi.fn(),
   openHomePage: vi.fn(async () => undefined),
   openInBrowser: vi.fn(async () => undefined),
-  retryBackend: vi.fn(async () => undefined),
+  retryBackend: vi.fn(async (): Promise<void> => undefined),
   setBackend: vi.fn(async () => undefined),
   setContentSize: vi.fn(async () => undefined),
 });
@@ -139,6 +139,23 @@ const save = async (): Promise<void> => {
   await act(async () => {
     fireEvent.click(button);
   });
+};
+
+/**
+ * A retry the page is still waiting for, which is what the button has to say:
+ * the gateway takes seconds to answer, and a press that only looked like
+ * nothing happened is a press the user makes again.
+ */
+const pendingRetry = (): {
+  release: () => void;
+  settle: Promise<void>;
+} => {
+  let release = (): void => undefined;
+  const settle = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return { release, settle };
 };
 
 afterEach(() => {
@@ -243,21 +260,43 @@ describe('the backend screen', () => {
     expect(next.setBackend).not.toHaveBeenCalled();
   });
 
-  it('asks about a port of this machine only while this machine is the backend', async () => {
+  it('asks for no address of a deployment while this machine is the backend', async () => {
     await mount();
 
     await waitFor(() => {
       expect(screen.getByText('选择后端')).toBeTruthy();
     });
 
-    expect(screen.getByLabelText('端口')).toBeTruthy();
+    // Greyed out, it still reads as part of the answer — and holding the
+    // address of a deployment nobody picked, as the one in use.
+    expect(document.getElementById('url')).toBeNull();
+    expect(screen.queryByLabelText(/地址/)).toBeNull();
 
     await pickMode('remote');
 
-    // The address is the whole answer for a deployment, so the port it does not
-    // settle is not asked about.
-    expect(screen.queryByLabelText('端口')).toBeNull();
     expect(document.getElementById('url')).not.toBeNull();
+    expect(screen.getByLabelText('地址')).toBeTruthy();
+    expect(screen.queryByLabelText('端口')).toBeNull();
+  });
+
+  it('sends one answer however many times the button is pressed', async () => {
+    // The answer closes the window, so a second press cannot be taken back —
+    // and it lands long before the answer does: two of them would ask for two
+    // gateways on the way out.
+    const next = await mount();
+
+    await waitFor(() => {
+      expect(screen.getByText('选择后端')).toBeTruthy();
+    });
+
+    await type('port', '8123');
+    await save();
+    await save();
+
+    expect(next.setBackend).toHaveBeenCalledTimes(1);
+    expect(
+      (document.getElementById('save') as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });
 
@@ -406,6 +445,69 @@ describe('the port that was taken', () => {
       port: 8123,
     });
   });
+
+  it('says it is trying, and is pressable again when the answer lands', async () => {
+    const next = await mount({
+      port: 8001,
+      portInUse: { message: '已被其它程序占用。', port: '8001' },
+      screen: 'portInUse',
+    });
+
+    const { release, settle } = pendingRetry();
+
+    next.retryBackend = vi.fn(async () => await settle);
+
+    await waitFor(() => {
+      expect(screen.getByText('端口 8001 已被占用')).toBeTruthy();
+    });
+
+    const retry = screen.getByText('重试') as HTMLButtonElement;
+
+    await act(async () => {
+      fireEvent.click(retry);
+    });
+
+    expect((screen.getByText('重试') as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      release();
+      await settle;
+    });
+
+    await waitFor(() => {
+      expect((screen.getByText('重试') as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
+  });
+
+  it('gives the button back when the retry fails outright', async () => {
+    const next = await mount({
+      port: 8001,
+      portInUse: { message: '已被其它程序占用。', port: '8001' },
+      screen: 'portInUse',
+    });
+
+    next.retryBackend = vi.fn(async () => {
+      throw new Error('the main process is gone');
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('端口 8001 已被占用')).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('重试'));
+    });
+
+    // What went wrong is the main process's to say; the window's job is that
+    // there is still a way out of it.
+    await waitFor(() => {
+      expect((screen.getByText('重试') as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
+  });
 });
 
 describe('the deployment that could not be used', () => {
@@ -440,5 +542,39 @@ describe('the deployment that could not be used', () => {
     });
 
     expect(await screen.findByText('选择后端')).toBeTruthy();
+  });
+
+  it('says it is trying, rather than looking like the press did nothing', async () => {
+    const next = await mount({
+      screen: 'unreachable',
+      unreachable: { host: 'deploy.example.com', message: '没有响应。' },
+    });
+
+    const { release, settle } = pendingRetry();
+
+    next.retryBackend = vi.fn(async () => await settle);
+
+    await waitFor(() => {
+      expect(screen.getByText('无法使用这个服务')).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('重试'));
+    });
+
+    // The gateway takes seconds to answer, and a button that does nothing
+    // meanwhile is one the user presses again — or reads as broken.
+    expect((screen.getByText('重试') as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      release();
+      await settle;
+    });
+
+    await waitFor(() => {
+      expect((screen.getByText('重试') as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
   });
 });
