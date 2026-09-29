@@ -760,7 +760,17 @@ test('gives up the port it was serving when a deployment is named instead', asyn
   deployment.stop();
 });
 
+/*
+  Only where there is a browser to send: this is the one press that opens one, and
+  on a runner with none, `xdg-open` never answers — which hangs the press rather
+  than failing it.
+*/
 test('signs in from its own window, and opens the deployment', async () => {
+  // Only where there is a browser to send: this is the one press that opens one,
+  // and on a runner with none, `xdg-open` never answers, which hangs the press
+  // rather than failing it.
+  test.skip(process.platform !== 'darwin', 'needs a browser to open');
+
   const deployment = await startLockedDeployment();
 
   writeBackend(`http://127.0.0.1:${deployment.port}`);
@@ -838,11 +848,15 @@ test('opens a deployment on its own address, and starts nothing here for it', as
 });
 
 test('names a deployment, is asked for no port, and signs in from the window', async () => {
+  test.skip(process.platform !== 'darwin', 'needs a browser to open');
+
   const deployment = await startDeployment();
 
   writeBackend(`http://127.0.0.1:${deployment.port}`);
 
-  const app = await launchApp({ userData: separateUserDataDir('remote-port') });
+  const app = await launchApp({
+    userData: separateUserDataDir('remote-port'),
+  });
   const chooser = await waitForWindow(app, /backend\.html$/);
 
   await chooser.locator('input[value="remote"]').check();
