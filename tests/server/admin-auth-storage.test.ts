@@ -470,6 +470,43 @@ describe('admin auth and storage', () => {
     expect(signedIn.username).toBe('operator');
   });
 
+  it('counts an account that is opened with a passkey and no password', async () => {
+    await ensureStorageReady();
+    await writeStorageJson('admin-auth', 'state', {
+      enabled: true,
+      passkeys: [{ id: 'passkey-1' }],
+      password: null,
+      pendingChallenges: [],
+      sessions: [],
+      username: 'operator',
+    });
+
+    const summary = await getAdminSessionSummary(
+      makeRequest('/admin-api/auth/session'),
+    );
+
+    // Configured by the passkey alone, so the name is still kept from
+    // somebody who has not opened the account.
+    expect(summary.accountConfigured).toBe(true);
+    expect(summary.passwordConfigured).toBe(false);
+    expect(summary.authenticated).toBe(false);
+    expect(summary.username).toBe('');
+  });
+
+  it('has no password to rotate before there is an account', async () => {
+    const response = await changeAdminPassword(
+      makeRequest('/admin-api/auth/password'),
+      'correct horse battery staple',
+      'a-different-password-long-enough',
+    );
+
+    // Rotation is not first-run setup: with no account there is no session to
+    // hold, so what this says is not "there is no account" but "not
+    // authenticated" — which is what it answered before, and what a caller
+    // with nothing to go on can tell apart.
+    expect(response.status).toBe(401);
+  });
+
   it('requires an admin session before starting or polling OAuth credentials', async () => {
     await setupAdminPassword(
       makeRequest('/admin-api/auth/setup'),
