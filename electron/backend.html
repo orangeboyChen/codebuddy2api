@@ -233,6 +233,35 @@
       button.primary:hover {
         background: color-mix(in srgb, ButtonText 15%, AccentColor);
       }
+
+      /*
+        Pressed and being answered: a ring the computer turns on its own, so a
+        button waiting on a browser says it is still going rather than simply
+        refusing to be pressed.
+      */
+      .spinner {
+        animation: spin 700ms linear infinite;
+        border: 2px solid currentColor;
+        border-radius: 50%;
+        border-top-color: transparent;
+        display: inline-block;
+        height: 11px;
+        margin-right: 6px;
+        vertical-align: -1px;
+        width: 11px;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .spinner {
+          animation-duration: 2s;
+        }
+      }
     </style>
   </head>
   <body>

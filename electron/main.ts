@@ -3164,14 +3164,28 @@ ipcMain.handle('desktop:info', () => ({
   portInUse: portInUseInfo(),
   screen: backendScreen,
   serverVersion,
+  /**
+   * Whether the deployment behind the console has signed this app in.
+   *
+   * What the button under a deployment's address is disabled by: an address
+   * that is already the one saved, to a deployment that has already answered,
+   * has nothing left for the button to do.
+   */
+  signedIn: Boolean(deviceToken),
   text: text(),
   unreachable: unreachableInfo(),
 }));
 
 /**
  * Saves what the window settled: which backend, and which port to serve on.
+ *
+ * Answered only once the choice has been applied — which for a deployment means
+ * once it has been asked to sign this app in and the browser has answered, or
+ * been given up on. The window stays open until then: the button that started
+ * it is the one that says how it went, and a window that closed the moment it
+ * was pressed leaves the answer nowhere to land.
  */
-ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
+ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
   const window = backendWindow;
   const record =
     next && typeof next === 'object' && !Array.isArray(next)
@@ -3181,14 +3195,24 @@ ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
   // Normalized here, at the boundary a page can reach: the window has no say in
   // what counts as a backend or as a port.
   const port = normalizeDesktopPort(record.port, 0);
+  const chosen = normalizeDesktopBackend(record.backend);
 
-  void applyBackend(normalizeDesktopBackend(record.backend), {
+  await applyBackend(chosen, {
     persist: true,
     // A port the page did not settle — one it never showed, or one left blank —
     // leaves the one on disk standing.
     port: port || undefined,
   });
-  closeWindow(window);
+
+  // Closed when there was nothing to wait for: this machine's own gateway is
+  // restarted and the window has said all it had to say. A deployment's is
+  // answered in a browser, on the deployment's own page, and this window is
+  // where what came of it is reported.
+  if (chosen.mode !== 'remote') {
+    closeWindow(window);
+  }
+
+  return { signedIn: Boolean(deviceToken) };
 });
 
 /**

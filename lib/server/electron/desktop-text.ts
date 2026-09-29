@@ -10,6 +10,11 @@ export interface DesktopText {
   /** The address of a deployment, asked for in a dialog of the system's own. */
   address: string;
   appVersion: string;
+  /**
+   * The button under the address of a deployment: it saves the address and then
+   * asks that deployment to sign this app in, which is a browser's to answer.
+   */
+  authenticate: string;
   /** How the console is drawn, in the menu bar item rather than in the window. */
   appearance: string;
   backend: string;
@@ -93,6 +98,7 @@ export interface DesktopText {
 const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'en-US': {
     address: 'Address',
+    authenticate: 'Authenticate',
     appVersion: 'Version {version}',
     appearance: 'Appearance',
     backend: 'Backend',
@@ -177,6 +183,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   },
   'ja-JP': {
     address: 'アドレス',
+    authenticate: '認証する',
     appVersion: 'バージョン {version}',
     appearance: '外観',
     backend: 'バックエンド',
@@ -264,6 +271,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   },
   'zh-CN': {
     address: '地址',
+    authenticate: '去认证',
     appVersion: '版本 {version}',
     appearance: '外观',
     backend: '后端',

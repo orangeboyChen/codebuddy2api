@@ -34,6 +34,11 @@ interface BackendInfo {
   screen?: 'choose' | 'portInUse' | 'settings' | 'unreachable';
   /** Only a backend that is not this app has a version of its own. */
   serverVersion?: string | null;
+  /**
+   * Whether the deployment behind the console has signed this app in: what the
+   * button under its address has nothing left to do about.
+   */
+  signedIn?: boolean;
   text: DesktopText;
   unreachable?: { host: string; message: string } | null;
 }
@@ -45,11 +50,13 @@ interface DesktopBridge {
   openHomePage: () => Promise<void>;
   retryBackend: () => Promise<void>;
   // Everything the window can settle in one call: a backend alone would save
-  // the port it never asked about.
+  // the port it never asked about. Answered once the choice has been applied,
+  // which for a deployment is once the browser has answered it or been given up
+  // on: the button that pressed it waits for this.
   setBackend: (choice: {
     backend: DesktopBackend;
     port?: number;
-  }) => Promise<void>;
+  }) => Promise<{ signedIn: boolean }>;
   setContentSize: (width: number, height: number) => Promise<void>;
 }
 
@@ -147,9 +154,12 @@ const useFitWindow = (pane: HTMLDivElement | null): void => {
  *
  * The answer closes the window, so a second press cannot be taken back — and
  * the press lands long before the answer does. Two of them would ask for two
- * gateways on their way out.
+ * gateways on their way out. The press is taken back when the answer lands
+ * without one: a browser that was closed before it approved anything is a
+ * sign-in that did not happen, and a button stuck spinning is a button that
+ * says it is still waiting for something nobody is doing.
  */
-const useSaving = (): [boolean, () => boolean] => {
+const useSaving = (): [boolean, () => boolean, () => void] => {
   const [saving, setSaving] = useState(false);
 
   return [
@@ -163,6 +173,7 @@ const useSaving = (): [boolean, () => boolean] => {
 
       return true;
     },
+    () => setSaving(false),
   ];
 };
 
@@ -418,9 +429,22 @@ const Settings = ({
   const [url, setUrl] = useState(backend.mode === 'remote' ? backend.url : '');
   const [portValue, setPortValue] = useState(String(port));
   const [error, setError] = useState('');
-  const [saving, startSaving] = useSaving();
+  const [saving, startSaving, stopSaving] = useSaving();
+  /*
+    Whether the deployment behind the console has signed this app in. Kept here
+    rather than read off `info`, because it is the one thing the window itself
+    changes: the button below is what asks for it, and this is what its answer
+    leaves behind.
+  */
+  const [signedIn, setSignedIn] = useState(Boolean(info.signedIn));
+  // What the address was when the button last did something about it: an
+  // address that has been edited since is one the button has to answer again,
+  // and one it is never disabled over.
+  const [settled, setSettled] = useState(
+    backend.mode === 'remote' ? backend.url : '',
+  );
 
-  const save = () => {
+  const save = async () => {
     if (mode === 'local') {
       const nextPort = parsePort(portValue, minPort, maxPort);
 
@@ -434,7 +458,7 @@ const Settings = ({
         return;
       }
 
-      void bridge.setBackend({ backend: { mode: 'local' }, port: nextPort });
+      await bridge.setBackend({ backend: { mode: 'local' }, port: nextPort });
 
       return;
     }
@@ -454,8 +478,34 @@ const Settings = ({
     // A deployment is reached through its address, so nothing on this machine
     // is being settled: the port the console is served on is the one already
     // saved, and the main process leaves it standing.
-    void bridge.setBackend({ backend: { mode: 'remote', url: parsed } });
+    const answer = await bridge
+      .setBackend({ backend: { mode: 'remote', url: parsed } })
+      .catch(() => null);
+
+    // Taken back whether the browser approved it or was closed on: a sign-in
+    // that did not happen is not one to keep waiting for, and the button is
+    // what says so.
+    stopSaving();
+    setSettled(parsed);
+    setSignedIn(Boolean(answer?.signedIn));
   };
+
+  const address = mode === 'remote' ? parseUrl(url) : null;
+  /*
+    A deployment is signed in to in a browser, on its own page, and this button
+    is what opens it — so it is "去认证" from the moment it has an address it has
+    not settled yet, or one it settled without ever being signed in.
+  */
+  const authenticating =
+    mode === 'remote' && (address !== settled || !signedIn);
+  /*
+    And it has nothing left to do about an address that is already the one saved,
+    to a deployment that has already answered: pressing it would ask the same
+    deployment to sign this app in again. Editing the address is what gives it
+    something to do.
+  */
+  const settledAlready =
+    mode === 'remote' && Boolean(address) && address === settled && signedIn;
 
   return (
     <Tabs
@@ -468,7 +518,7 @@ const Settings = ({
                 // Enter presses the button it would press in any other dialog,
                 // instead of submitting a page that has nowhere to go.
                 event.preventDefault();
-                save();
+                void save();
               }}
             >
               <Radio.Group
@@ -528,12 +578,13 @@ const Settings = ({
               <div className="buttons">
                 <button
                   className="primary"
-                  disabled={saving}
+                  disabled={saving || settledAlready}
                   id="save"
-                  onClick={() => save()}
+                  onClick={() => void save()}
                   type="button"
                 >
-                  {text.save}
+                  {saving ? <span className="spinner" /> : null}
+                  {authenticating ? text.authenticate : text.save}
                 </button>
               </div>
             </form>
