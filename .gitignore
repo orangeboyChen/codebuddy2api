@@ -1,11 +1,15 @@
 # Dependencies
-node_modules/
+# Without the trailing slash: a slash matches a directory only, and a worktree
+# whose dependencies are a symlink to another checkout's is a path that is not
+# a directory — one `git add` and the symlink is committed, and every machine
+# that is not this one gets a checkout it cannot install into.
+node_modules
 
 # Next.js / TypeScript build outputs
 .next/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
-docs/node_modules/
+docs/node_modules
 out/
 dist/
 build/
