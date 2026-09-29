@@ -365,6 +365,21 @@ let signingIn = false;
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/**
+ * Loads a bundled page into a window, and says so when it cannot be loaded.
+ *
+ * `loadFile` answers with a promise that rejects: when the page is not in the
+ * bundle, and when the window goes away before the load lands — which is a
+ * window the user closed, not something this app failed at. Neither is worth
+ * crashing over, but a rejection nobody is waiting for is an unhandled one,
+ * and an unhandled rejection is not a warning this app chose to print.
+ */
+const loadBundledPage = (window: BrowserWindow, file: string): void => {
+  void window.loadFile(file).catch((error: unknown) => {
+    console.warn(`Could not load ${file}: ${describeError(error)}`);
+  });
+};
+
 const delay = (ms: number): Promise<null> =>
   new Promise((resolve) => {
     setTimeout(() => {
@@ -539,7 +554,16 @@ const loadConsole = async (
  */
 const stopImageDragging = (window: BrowserWindow): void => {
   window.webContents.on('did-finish-load', () => {
-    void window.webContents.insertCSS(NO_IMAGE_DRAG_CSS);
+    // The window can be closed between the page finishing its load and this
+    // landing, and `insertCSS` rejects on a window that has gone — a rejection
+    // nobody is waiting for, for a window nobody is looking at.
+    void window.webContents
+      .insertCSS(NO_IMAGE_DRAG_CSS)
+      .catch((error: unknown) => {
+        console.warn(
+          `Could not keep pictures from being dragged: ${describeError(error)}`,
+        );
+      });
   });
 };
 
@@ -1870,7 +1894,7 @@ const openBackendWindow = ({
       // Asking something else already: send it to what matters now.
       if (backendScreen !== screen) {
         backendScreen = screen;
-        void backendWindow.loadFile(path.join(bundleDir(), 'backend.html'));
+        loadBundledPage(backendWindow, path.join(bundleDir(), 'backend.html'));
       }
 
       backendWindow.focus();
@@ -1929,7 +1953,7 @@ const openBackendWindow = ({
   backendWindow = window;
   backendScreen = screen;
 
-  void window.loadFile(path.join(bundleDir(), 'backend.html'));
+  loadBundledPage(window, path.join(bundleDir(), 'backend.html'));
 };
 
 /**
@@ -2901,7 +2925,7 @@ ipcMain.handle('desktop:retry-backend', async () => {
   // showing what it was told before — the same screen, the same message, as if
   // nothing had been asked. Loaded again for the answer it now has.
   if (window && !window.isDestroyed()) {
-    void window.loadFile(path.join(bundleDir(), 'backend.html'));
+    loadBundledPage(window, path.join(bundleDir(), 'backend.html'));
   }
 });
 
