@@ -34,13 +34,16 @@ vi.mock('@/lib/server/storage', async (importOriginal) => ({
 
 const {
   beginAdminPasskeyRegistration,
+  changeAdminPassword,
   deleteAdminPasskey,
   disableAdminAuthentication,
   isAdminBrowserSessionAuthenticated,
   isAdminSessionAuthenticated,
   loginWithAdminPassword,
+  logoutAdminSession,
   setupAdminPassword,
 } = await import('@/lib/server/admin/session');
+const { isDeviceTokenAuthorized } = await import('@/lib/server/admin/device');
 const deviceRoute = await import('@/app/admin-api/oauth/device/route');
 const tokenRoute = await import('@/app/admin-api/oauth/token/route');
 const approveRoute = await import('@/app/admin-api/oauth/device/approve/route');
@@ -447,5 +450,78 @@ describe('the credentials a device token is not asked about', () => {
         )
       ).status,
     ).toBe(200);
+  });
+});
+
+/**
+ * What happens to a token when the console is done with it.
+ *
+ * It was good for thirty days and nothing could end it early: rotating the
+ * password threw away every browser session and left the devices signed in, so
+ * the one thing the admin can do about a token that leaked was to wait.
+ */
+describe('the end of a token', () => {
+  beforeEach(async () => {
+    mocks.docs.clear();
+    mocks.readError.value = null;
+    await configureAdmin();
+  });
+
+  it('is the password being rotated', async () => {
+    const authorization = await signedInBearer();
+    const bearer = request('/admin-api/settings', {
+      headers: { authorization },
+    });
+
+    await expect(isDeviceTokenAuthorized(bearer)).resolves.toBe(true);
+
+    const rotated = await changeAdminPassword(
+      request('/admin-api/auth/password', {
+        headers: { cookie: await adminCookie() },
+        method: 'POST',
+      }),
+      PASSWORD,
+      'a-different-password-long-enough',
+    );
+
+    expect(rotated.status).toBe(200);
+    await expect(isDeviceTokenAuthorized(bearer)).resolves.toBe(false);
+  });
+
+  it('is the console stopping asking who anybody is', async () => {
+    const authorization = await signedInBearer();
+    const bearer = request('/admin-api/settings', {
+      headers: { authorization },
+    });
+
+    await expect(isDeviceTokenAuthorized(bearer)).resolves.toBe(true);
+
+    const disabled = await disableAdminAuthentication(
+      request('/admin-api/auth/password', {
+        headers: { cookie: await adminCookie() },
+        method: 'DELETE',
+      }),
+    );
+
+    expect(disabled.status).toBe(200);
+    await expect(isDeviceTokenAuthorized(bearer)).resolves.toBe(false);
+  });
+
+  it('is not the admin signing out of a browser', async () => {
+    const authorization = await signedInBearer();
+    const bearer = request('/admin-api/settings', {
+      headers: { authorization },
+    });
+
+    await logoutAdminSession(
+      request('/admin-api/auth/session', {
+        headers: { cookie: await adminCookie() },
+        method: 'DELETE',
+      }),
+    );
+
+    // What ended was a browser session, which is the admin's own to end. The
+    // token is the app's, and it is the app that asks for it to be forgotten.
+    await expect(isDeviceTokenAuthorized(bearer)).resolves.toBe(true);
   });
 });

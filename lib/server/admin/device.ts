@@ -496,6 +496,23 @@ export const revokeDeviceToken = async (request: {
   });
 };
 
+/**
+ * Forgets every device this console has signed in, and every code it is holding
+ * for one that has not finished.
+ *
+ * What the admin reaches for when a token has leaked: rotating the password, or
+ * turning sign-in off. Both of them threw away the sessions of the browsers
+ * that were signed in, and left these standing — a token is good for thirty
+ * days and nothing on the console's side could end it early, so the answer to
+ * "somebody else has one" was to wait.
+ */
+export const revokeAllDeviceTokens = async (): Promise<void> => {
+  await mutateDeviceStore((store) => {
+    store.grants = [];
+    store.tokens = [];
+  });
+};
+
 export { MAX_POLL_INTERVAL_SECONDS };
 
 /** Whether a grant type is the one this console exchanges a device code for. */
