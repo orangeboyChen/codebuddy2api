@@ -18,6 +18,7 @@ import {
   shell,
 } from 'electron';
 
+import { askingOneAtATime } from './asking';
 import { closeWindow } from './window';
 
 import {
@@ -248,8 +249,16 @@ interface Cookie {
 let gateway: GatewayHandle | null = null;
 let mainWindow: BrowserWindow | null = null;
 let backendWindow: BrowserWindow | null = null;
-/** A question already on the screen: the answer is the one it is waiting for. */
-let asking = false;
+/**
+ * The question about the backend: one at a time, and the one its answer raised.
+ *
+ * Declared before the ask it is given, because that is where a question raised
+ * by an answer comes back to: `askAboutBackend` is what a question reaches the
+ * user through.
+ */
+const backendQuestions = askingOneAtATime<BackendScreen>((screen) => {
+  void askAboutBackend(screen);
+});
 let tray: Tray | null = null;
 let status: GatewayStatus = 'starting';
 let userDataDir = '';
@@ -1269,8 +1278,10 @@ const restartGateway = async (): Promise<void> => {
       status = 'unreachable';
       refreshTray();
       // The console has nothing to show yet, so what the user is asked is how to
-      // get to a deployment that answers.
-      void askAboutBackend('unreachable');
+      // get to a deployment that answers. Raised rather than asked: a start can
+      // be under way because an answer is being applied, and this question came
+      // out of that answer.
+      raiseBackendQuestion('unreachable');
 
       return;
     }
@@ -1301,7 +1312,7 @@ const restartGateway = async (): Promise<void> => {
       portBusy = preferredPort();
       status = 'portBusy';
       refreshTray();
-      void askAboutBackend('portInUse');
+      raiseBackendQuestion('portInUse');
 
       return;
     }
@@ -2272,7 +2283,7 @@ const openSettings = (): void => {
   // A second window asking the same question is one the app cannot be answered
   // twice on — and closing it quits, because a first launch with no backend has
   // nothing to keep running.
-  if (asking) {
+  if (backendQuestions.asking) {
     return;
   }
 
@@ -2503,7 +2514,9 @@ const couldNotAskMessage = (screen: BackendScreen): string =>
 const askAboutBackend = async (
   screen: BackendScreen = pendingScreen(),
 ): Promise<AskOutcome['kind']> => {
-  if (asking) {
+  // A second question on the screen at once is one the user cannot answer
+  // twice: the answer to this one is what the app is waiting for.
+  if (!backendQuestions.begin()) {
     return 'answered';
   }
 
@@ -2519,8 +2532,8 @@ const askAboutBackend = async (
     return 'window';
   }
 
-  asking = true;
-
+  // A question is on the screen from here until the finally below, which is also
+  // what keeps the window from being opened while one is being answered.
   try {
     const kind =
       screen === 'portInUse'
@@ -2537,8 +2550,21 @@ const askAboutBackend = async (
 
     return kind;
   } finally {
-    asking = false;
+    // Says the question is over, which is the moment the one its answer raised
+    // can be put in front of the user.
+    backendQuestions.end();
   }
+};
+
+/**
+ * Puts the question an answer raised in front of the user.
+ *
+ * Kept until the question it came out of is over, and asked then: raised from
+ * inside that ask it would be asking twice at once, and dropped instead it
+ * would be an answer the user never hears about.
+ */
+const raiseBackendQuestion = (screen: BackendScreen): void => {
+  backendQuestions.raise(screen);
 };
 
 /**
