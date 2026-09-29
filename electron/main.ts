@@ -88,6 +88,7 @@ import {
 import {
   desktopText,
   fillText,
+  resolveDesktopLocale,
   statusText,
   usageText,
   type DesktopText,
@@ -484,7 +485,7 @@ const isConsoleUrl = (target: string): boolean => {
  * instead: this window is the admin console, and a `file:` or `javascript:`
  * URL reaching the shell is never what the click meant.
  */
-const openExternally = (target: string): void => {
+const openExternally = async (target: string): Promise<void> => {
   try {
     const parsed = new URL(target);
 
@@ -496,9 +497,24 @@ const openExternally = (target: string): void => {
     // for it, no desktop session behind it. A rejection nobody is waiting for
     // is not a warning this app chose to print, and a link the user clicked is
     // not something to crash over.
-    void shell.openExternal(parsed.href).catch((error: unknown) => {
-      console.warn(`Could not open ${parsed.href}: ${describeError(error)}`);
-    });
+    /*
+      Brought to the front, because a browser opened behind this app's own
+      window is a browser nobody sees: the default is `true`, and macOS does not
+      always honour it.
+
+      And answered with a message when it could not be opened, rather than by
+      rejecting: a browser that never came up has to be said out loud, or a
+      sign-in looks like it happened when it did not.
+    */
+    // Typed `void`, and documented otherwise: it answers with the message when
+    // it could not open it, which is a thing worth saying out loud.
+    const failed = (await shell.openExternal(parsed.href, {
+      activate: true,
+    })) as unknown;
+
+    if (typeof failed === 'string' && failed) {
+      console.warn(`Could not open ${parsed.href}: ${failed}`);
+    }
   } catch {
     // Unparseable target: nothing to open.
   }
@@ -2062,25 +2078,18 @@ const reloadConsole = (): void => {
 };
 
 /**
- * Signs this app in with the device where the console is about to be opened on a
- * deployment that wants one, and does nothing anywhere else.
+ * Whether the console is about to be opened on a deployment nobody has signed
+ * this app in to.
  *
- * A deployment this app is not signed in to answers the console with its own
- * login page — and a passkey saved for the deployment is of no use on one: a
- * browser offers a credential to the origin it is on, which is 127.0.0.1 here.
- * So the sign-in is made the way it is everywhere else in this app: the
- * device's, in a browser, on the page the deployment serves for it.
- *
- * Quietly, because the console is about to be opened either way, and a
- * deployment that does not answer the device flow still has its login page to
- * offer — a password, which a window at 127.0.0.1 can carry to it. Reporting
- * that as a failure would put a dialog in front of the page about to ask.
+ * Which is the one case the console must not be opened at all: what it answers
+ * with is the deployment's own login page, in this app's window, where a
+ * passkey saved for that deployment cannot be used and a password would be
+ * typed into a page this app rendered. The window that asks which backend to
+ * use is what goes in front of the user instead — that is where a deployment is
+ * signed in to, in a browser, on the deployment's own page.
  */
-const signInIfTheDeploymentAsks = async (): Promise<void> => {
-  if (await deploymentNeedsSignIn()) {
-    await signInToDeployment(true);
-  }
-};
+const needsDeploymentSignIn = async (): Promise<boolean> =>
+  backend.mode === 'remote' && !deviceToken && (await deploymentNeedsSignIn());
 
 /**
  * Switches the app to a backend and reopens the console on it.
@@ -2150,10 +2159,20 @@ const applyBackend = async (
       is the deployment's own page in a browser — not a page of its own in this
       window.
     */
+    /*
+      Signed in, when that is what the press asked for. Not otherwise: a
+      deployment is signed in to from the window that asks, in a browser, and a
+      browser opened on this app's own behalf before anybody pressed anything is
+      not something this app does.
+    */
     if (authenticate) {
       await signInToDeployment(true);
-    } else {
-      await signInIfTheDeploymentAsks();
+    }
+
+    if (await needsDeploymentSignIn()) {
+      openBackendWindow({ screen: 'settings' });
+
+      return;
     }
 
     // A window already open holds the page the last backend served — a
@@ -3112,10 +3131,16 @@ const startBackend = async (): Promise<void> => {
   await restartGateway();
 
   if (status === 'running') {
-    // Signed in before the console is opened on it: a deployment that wants one
-    // answers the console with its own login page, and a login page in this
-    // app's window is not one anybody can sign in on.
-    await signInIfTheDeploymentAsks();
+    // Not signed in to the deployment whose data this console shows: the window
+    // that asks is what goes in front of the user, and the console is not opened
+    // at all — what it would answer with is that deployment's own login page, in
+    // this window.
+    if (await needsDeploymentSignIn()) {
+      openBackendWindow({ screen: 'settings' });
+
+      return;
+    }
+
     reloadConsole();
     showMainWindow();
 
@@ -3138,6 +3163,13 @@ const startBackend = async (): Promise<void> => {
 
 const bootstrap = async (): Promise<void> => {
   userDataDir = app.getPath('userData');
+  /*
+    What the shell speaks until the console tells it otherwise: this computer's
+    own language, not English. The window that asks which backend to use is the
+    first thing this app ever shows, and it is shown before there is a console
+    with a locale to read.
+  */
+  locale = resolveDesktopLocale(app.getLocale());
   // Made up here and nowhere else: the gateway gets it through the environment,
   // the window gets it as a cookie, and it dies with this run — a token written
   // down would be one a next run could be made to honour.
@@ -3272,6 +3304,24 @@ ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
     opened at all. Waited for, because a window asked to close is not closed yet
     — and `showMainWindow` looks at whether it is.
   */
+  if (window && !window.isDestroyed()) {
+    const closed = new Promise<void>((resolve) => {
+      window.once('closed', () => resolve());
+    });
+
+    window.close();
+    await closed;
+  }
+
+  /*
+    Not signed in: `applyBackend` has put the window that asks in front of the
+    user, and closing it here would take away the one thing the answer was
+    meant to be shown in.
+  */
+  if (!deviceToken) {
+    return { signedIn: false };
+  }
+
   if (window && !window.isDestroyed()) {
     const closed = new Promise<void>((resolve) => {
       window.once('closed', () => resolve());

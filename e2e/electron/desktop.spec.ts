@@ -424,6 +424,9 @@ const startLockedDeployment = async (): Promise<{
   port: number;
   stop: () => void;
 }> => {
+  // Named before it is bound, so a grant can point the browser at this very
+  // server: the port is only known once it is listening.
+  let port = 0;
   const server = http.createServer((request, response) => {
     const path = (request.url ?? '/').split('?')[0];
     const signedIn = (request.headers.cookie ?? '').includes(
@@ -454,6 +457,34 @@ const startLockedDeployment = async (): Promise<{
         service: 'codebuddy2api',
         status: 'healthy',
         storage: 'sqlite',
+      });
+
+      return;
+    }
+
+    /*
+      A grant, with somewhere for the browser to come back to: the app asks for
+      one and listens, rather than asking again and again.
+    */
+    if (path === '/admin-api/oauth/device') {
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const parsed = JSON.parse(body || '{}') as { redirect_uri?: unknown };
+
+        answer({
+          device_code: 'a-device-code',
+          expires_in: 3,
+          interval: 1,
+          user_code: '2345-6789',
+          verification_uri: `http://127.0.0.1:${port}/device`,
+          verification_uri_complete: `http://127.0.0.1:${port}/device?user_code=2345-6789`,
+          ...(typeof parsed.redirect_uri === 'string'
+            ? { redirect_uri: parsed.redirect_uri }
+            : {}),
+        });
       });
 
       return;
@@ -500,57 +531,65 @@ const startLockedDeployment = async (): Promise<{
 
   const address = server.address() as { port: number };
 
+  port = address.port;
+
   return { port: address.port, stop: () => server.close() };
 };
 
-test('signs in to a deployment with its password, and leaves the passkey to a browser', async () => {
+test('asks from its own window, and sends a browser to the deployment', async () => {
   const deployment = await startLockedDeployment();
 
   writeBackend(`http://127.0.0.1:${deployment.port}`);
 
   const app = await launchApp();
-  const loginWindow = await waitForWindow(app, /\/login$/);
 
-  // A passkey saved for the deployment is bound to its address, so the page
-  // offers none: it says so and points at the deployment's own page instead,
-  // which the shell opens in a browser.
-  await expect(loginWindow.locator('#admin-passkey')).toHaveCount(0);
-  await expect(
-    loginWindow.locator(`a[href="http://127.0.0.1:${deployment.port}"]`),
-  ).toBeVisible();
+  /*
+    A passkey saved for the deployment is bound to its address, and this app is
+    served from 127.0.0.1 — so a page asking for the deployment's password is
+    not what is put in front of the user. The window that asks which backend to
+    use is, and there is no login page anywhere in this app.
+  */
+  const asking = await waitForWindow(app, /backend\.html$/);
 
-  // The form is a client component: filled before it hydrates, the value lands
-  // in the DOM and not in React, and the submit button — which waits for both
-  // fields — never enables. Filled again until it does, which is what a user
-  // in front of the same window would do.
-  const submit = loginWindow.locator('button[type="submit"]');
-
+  await expect(asking.locator('#save')).toBeVisible();
   await expect
-    .poll(
-      async () => {
-        await loginWindow.locator('#admin-username').fill('admin');
-        await loginWindow.locator('#admin-password').fill(DEPLOYMENT_PASSWORD);
-
-        return submit.isEnabled();
-      },
-      { intervals: [1_000], timeout: 60_000 },
+    .poll(() =>
+      app
+        .windows()
+        .map((window) => window.url())
+        .filter((url) => /\/login$/.test(url)),
     )
-    .toBe(true);
+    .toEqual([]);
 
-  await submit.click();
+  /*
+    The browser is what is sent to the deployment, and it is the deployment's
+    own page it is sent to — that is the only address a passkey saved for it is
+    offered on. Recorded rather than opened: a test has no business launching
+    anybody's browser.
+  */
+  await app.evaluate(async ({ shell }) => {
+    const opened: string[] = [];
 
-  const consoleWindow = await waitForConsole(app);
-
-  // The password reached the deployment, and the session it set came back:
-  // what it answers now is signed in, and the cookie the console holds is the
-  // one it handed out.
-  const answered = await consoleWindow.evaluate(async () => {
-    const response = await fetch('/admin-api/auth/session');
-
-    return (await response.json()) as { session?: { authenticated?: boolean } };
+    (globalThis as unknown as Record<string, unknown>).__opened = opened;
+    shell.openExternal = async (url: string) => {
+      opened.push(url);
+    };
   });
 
-  expect(answered.session?.authenticated).toBe(true);
+  await asking.locator('#save').click();
+
+  const opened = await app.evaluate(async () =>
+    (
+      (globalThis as unknown as Record<string, string[]>).__opened ?? []
+    ).slice(),
+  );
+
+  await expect.poll(() => opened.length).toBe(1);
+
+  expect(
+    opened[0].startsWith(`http://127.0.0.1:${deployment.port}/device`),
+  ).toBe(true);
+  expect(opened[0]).toContain('user_code=2345-6789');
 
   await app.close();
   deployment.stop();

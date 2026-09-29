@@ -11,6 +11,7 @@ import {
   unreachableSessionSummary,
 } from '@/lib/server/admin/upstream';
 import { deviceToken } from '@/lib/server/electron/device-token';
+import { isDesktopMode } from '@/lib/server/electron/settings';
 import { getMessages } from '@/lib/i18n/messages';
 import { resolveRequestOrigin } from '@/lib/server/shared/http';
 import {
@@ -29,6 +30,19 @@ const LoginPage = async ({
 }: {
   searchParams: Promise<{ next?: string }>;
 }) => {
+  /*
+    There is no login page in the desktop app.
+
+    This page belongs to a deployment reached in a browser. The app signs in
+    from the window that asks which backend to use, in the browser, on the
+    deployment's own page — so a window of the app's that somehow lands here is
+    sent back to the console rather than shown a form for a password it cannot
+    use.
+  */
+  if (isDesktopMode()) {
+    redirect('/dashboard');
+  }
+
   const { next: nextParam } = await searchParams;
   // Only ever a path on this console: an absolute URL here would be a link
   // someone could hand out that signs a user in and then hands them somewhere
