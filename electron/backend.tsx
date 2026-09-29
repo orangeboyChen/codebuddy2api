@@ -196,7 +196,8 @@ const useCloseOnEscape = (): void => {
 
 interface OptionProps {
   checked: boolean;
-  hint: string;
+  /** Absent where an option needs no explaining: this machine is the one the app is. */
+  hint?: string;
   label: string;
   onChange: () => void;
   value: string;
@@ -213,7 +214,7 @@ const Option = ({ checked, hint, label, onChange, value }: OptionProps) => (
     />
     <span>
       <strong>{label}</strong>
-      <span className="hint">{hint}</span>
+      {hint ? <span className="hint">{hint}</span> : null}
     </span>
   </label>
 );
@@ -330,7 +331,6 @@ const Choose = ({
       <fieldset className="options">
         <Option
           checked={mode === 'local'}
-          hint={text.backendLocalHint}
           label={text.backendLocal}
           onChange={() => {
             setUrlError('');
@@ -458,7 +458,10 @@ const Settings = ({
         return;
       }
 
-      await bridge.setBackend({ backend: { mode: 'local' }, port: nextPort });
+      // Not waited for: this machine's gateway is restarted behind the choice,
+      // and the window is closed on the press. Waiting for a gateway that is
+      // coming up behind a window that is going away is a spinner over nothing.
+      void bridge.setBackend({ backend: { mode: 'local' }, port: nextPort });
 
       return;
     }
@@ -533,7 +536,6 @@ const Settings = ({
                     <Radio value="local" />
                     <span>
                       <strong>{text.backendLocal}</strong>
-                      <span className="hint">{text.backendLocalHint}</span>
                     </span>
                   </label>
                   <label className="option">
@@ -583,7 +585,9 @@ const Settings = ({
                   onClick={() => void save()}
                   type="button"
                 >
-                  {saving ? <span className="spinner" /> : null}
+                  {saving && mode === 'remote' ? (
+                    <span className="spinner" />
+                  ) : null}
                   {authenticating ? text.authenticate : text.save}
                 </button>
               </div>

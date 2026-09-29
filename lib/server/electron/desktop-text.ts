@@ -19,7 +19,6 @@ export interface DesktopText {
   appearance: string;
   backend: string;
   backendLocal: string;
-  backendLocalHint: string;
   backendRemote: string;
   backendRemoteHint: string;
   backendUrlPlaceholder: string;
@@ -103,8 +102,6 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     appearance: 'Appearance',
     backend: 'Backend',
     backendLocal: 'This machine',
-    backendLocalHint:
-      'Runs the gateway bundled into the app on 127.0.0.1. Nothing leaves this computer, and no sign-in is needed.',
     backendRemote: 'A deployment I already run',
     backendRemoteHint:
       'Shows this app’s own console with that deployment’s data, forwarded from there. It may ask you to sign in.',
@@ -188,8 +185,6 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     appearance: '外観',
     backend: 'バックエンド',
     backendLocal: 'このマシン',
-    backendLocalHint:
-      'アプリに同梱されたゲートウェイを 127.0.0.1 で起動します。データはこのコンピュータから外に出ず、サインインも不要です。',
     backendRemote: 'すでに運用しているデプロイ',
     backendRemoteHint:
       'ここで起動せず、このアプリのコンソールにそのデプロイのデータを表示します。サインインを求められる場合があります。',
@@ -276,8 +271,6 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     appearance: '外观',
     backend: '后端',
     backendLocal: '本机',
-    backendLocalHint:
-      '在 127.0.0.1 上运行应用内置的网关。数据不会离开这台电脑，也不需要登录。',
     backendRemote: '我自己部署的服务',
     backendRemoteHint:
       '在本机显示应用自带的控制台，数据从该服务转发而来。它可能会要求登录。',

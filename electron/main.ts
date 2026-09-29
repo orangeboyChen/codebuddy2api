@@ -2045,6 +2045,24 @@ const deploymentNeedsSignIn = async (): Promise<boolean> => {
 };
 
 /**
+ * Loads the console again, into a window that is already open.
+ *
+ * A window is only brought forward once a backend has been applied, and the page
+ * it holds is the one the backend before it served — a deployment's login page
+ * above all, which is a page this machine's own gateway has no use for and
+ * nothing to say on.
+ */
+const reloadConsole = (): void => {
+  const baseUrl = consoleBaseUrl();
+
+  if (!baseUrl || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  void loadConsole(mainWindow, `${baseUrl}/dashboard`);
+};
+
+/**
  * Signs this app in with the device where the console is about to be opened on a
  * deployment that wants one, and does nothing anywhere else.
  *
@@ -2079,7 +2097,16 @@ const signInIfTheDeploymentAsks = async (): Promise<void> => {
  */
 const applyBackend = async (
   next: DesktopBackend,
-  { persist = false, port }: { persist?: boolean; port?: number } = {},
+  {
+    /**
+     * Set when the choice came from the button that says 去认证: the press is a
+     * request to be signed in, so the deployment is asked whatever it answers to
+     * a sign-in, rather than only when it has already said it wants one.
+     */
+    authenticate = false,
+    persist = false,
+    port,
+  }: { authenticate?: boolean; persist?: boolean; port?: number } = {},
 ): Promise<void> => {
   const chosen = normalizeDesktopBackend(next);
 
@@ -2114,10 +2141,26 @@ const applyBackend = async (
   await restartGateway();
 
   if (status === 'running') {
-    // Signed in before the console is opened on it: a deployment that wants one
-    // answers the console with its own login page, and a login page in this
-    // app's window is not one anybody can sign in on.
-    await signInIfTheDeploymentAsks();
+    /*
+      Signed in before the console is opened on it: a deployment that wants one
+      answers the console with its own login page, and a login page in this app's
+      window is not one anybody can sign in on.
+
+      Pressed to be signed in, it is asked outright rather than waited on to ask:
+      the button under its address is the request, and what it is answered with
+      is the deployment's own page in a browser — not a page of its own in this
+      window.
+    */
+    if (authenticate) {
+      await signInToDeployment(true);
+    } else {
+      await signInIfTheDeploymentAsks();
+    }
+
+    // A window already open holds the page the last backend served — a
+    // deployment's login page, most of all — and a window that is merely brought
+    // forward keeps showing it. Loaded again at the console this one serves.
+    reloadConsole();
     showMainWindow();
 
     return;
@@ -3080,6 +3123,7 @@ const startBackend = async (): Promise<void> => {
     // answers the console with its own login page, and a login page in this
     // app's window is not one anybody can sign in on.
     await signInIfTheDeploymentAsks();
+    reloadConsole();
     showMainWindow();
 
     return;
@@ -3197,20 +3241,36 @@ ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
   const port = normalizeDesktopPort(record.port, 0);
   const chosen = normalizeDesktopBackend(record.backend);
 
+  /*
+    This machine's own gateway is restarted behind the choice, and nothing about
+    it is answered in another app: the window closes on the press, the way a
+    dialog does, and the gateway is up by the time the console is asked for.
+
+    Waited for only when the choice is a deployment's. Its sign-in is a
+    browser's to answer, on the deployment's own page, and this window is where
+    what came of it is reported — so it stays open, and the press is answered
+    when the answer lands or the browser is closed on.
+  */
+  if (chosen.mode !== 'remote') {
+    void applyBackend(chosen, {
+      persist: true,
+      // A port the page did not settle — one it never showed, or one left blank
+      // — leaves the one on disk standing.
+      port: port || undefined,
+    });
+    closeWindow(window);
+
+    return { signedIn: false };
+  }
+
+  // Pressed to be authenticated, when it was the button under a deployment's
+  // address that did the pressing: the sign-in is the request, not something the
+  // deployment is waited on to ask for.
   await applyBackend(chosen, {
+    authenticate: true,
     persist: true,
-    // A port the page did not settle — one it never showed, or one left blank —
-    // leaves the one on disk standing.
     port: port || undefined,
   });
-
-  // Closed when there was nothing to wait for: this machine's own gateway is
-  // restarted and the window has said all it had to say. A deployment's is
-  // answered in a browser, on the deployment's own page, and this window is
-  // where what came of it is reported.
-  if (chosen.mode !== 'remote') {
-    closeWindow(window);
-  }
 
   return { signedIn: Boolean(deviceToken) };
 });
