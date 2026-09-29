@@ -158,6 +158,23 @@ const pendingRetry = (): {
   return { release, settle };
 };
 
+/**
+ * `window.close()`, which is how this page asks to be shut: jsdom's own would
+ * shut a window the rest of the file is still using, so what is recorded is
+ * only that the page asked.
+ */
+const stubClose = (): ReturnType<typeof vi.fn> => {
+  const close = vi.fn();
+
+  Object.defineProperty(window, 'close', {
+    configurable: true,
+    value: close,
+    writable: true,
+  });
+
+  return close;
+};
+
 afterEach(() => {
   document.body.innerHTML = '';
 });
@@ -410,6 +427,55 @@ describe('the settings screen', () => {
     expect(await screen.findByText('服务端版本 1.3.0')).toBeTruthy();
     expect(screen.getByText('后端: 我自己部署的服务')).toBeTruthy();
   });
+
+  it('refuses what it could not use, the way the first launch does', async () => {
+    // The same two answers, asked for in a second place: what is saved here is
+    // what the gateway binds and what it reaches, so a number out of the
+    // bounds the main process named and an address that is not one are both
+    // put right here rather than handed over.
+    const next = await mount({ screen: 'settings' });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('端口')).toBeTruthy();
+    });
+
+    await type('port', '80');
+    await save();
+
+    expect(screen.getByText('请输入 1024 到 65535 之间的整数。')).toBeTruthy();
+    expect(next.setBackend).not.toHaveBeenCalled();
+
+    await pickMode('remote');
+    await type('url', 'deploy.example.com');
+    await save();
+
+    expect(
+      screen.getByText('请输入以 http:// 或 https:// 开头的地址'),
+    ).toBeTruthy();
+    expect(next.setBackend).not.toHaveBeenCalled();
+  });
+
+  it('opens the home page from the tab that names the app', async () => {
+    const next = await mount({ screen: 'settings' });
+
+    const about = await waitFor(() =>
+      screen.getByRole('tab', { name: '关于' }),
+    );
+
+    await act(async () => {
+      fireEvent.click(about);
+    });
+
+    // The repository, without the scheme: a button that reads as an address
+    // would be one that promises to open one.
+    await act(async () => {
+      fireEvent.click(
+        await screen.findByText('github.com/orangeboyChen/codebuddy2api'),
+      );
+    });
+
+    expect(next.openHomePage).toHaveBeenCalled();
+  });
 });
 
 describe('the port that was taken', () => {
@@ -576,5 +642,139 @@ describe('the deployment that could not be used', () => {
         false,
       );
     });
+  });
+});
+
+describe('the window itself', () => {
+  it('closes on Escape, and on nothing else', async () => {
+    const close = stubClose();
+
+    await mount();
+
+    await waitFor(() => {
+      expect(screen.getByText('选择后端')).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'a' });
+    });
+
+    expect(close).not.toHaveBeenCalled();
+
+    // What it does in every other dialog. A window the user is typing an
+    // address into is still one they can change their mind about.
+    //
+    // Each mount above leaves its own listener on the window, so what is
+    // counted is this press and not the number of listeners behind it.
+    const before = close.mock.calls.length;
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+
+    expect(close.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it('closes on the button that offers closing', async () => {
+    const close = stubClose();
+
+    await mount({ firstRun: false });
+
+    await waitFor(() => {
+      expect(screen.getByText('选择后端')).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('取消'));
+    });
+
+    // There is a backend and a port in use already, so the window is what
+    // goes: the app keeps running as it was.
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('quits on the button that offers quitting', async () => {
+    const close = stubClose();
+
+    await mount({ firstRun: true });
+
+    await waitFor(() => {
+      expect(screen.getByText('选择后端')).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('退出'));
+    });
+
+    // Closing the window is the app's own quit on a first launch: there is no
+    // backend chosen to keep running, and the main process quits when the
+    // window it asked through closes without one.
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for the size the pane measures, and keeps asking', async () => {
+    // The strings are the main process's, and only this page knows how much
+    // room they took: a hint that fits on one line in English runs to three in
+    // Japanese. So the pane is measured rather than guessed — and watched
+    // rather than measured once, because an answer that turns out to be wrong
+    // grows it: an error under a field, the other tab.
+    const observed: Element[] = [];
+    const onResize: Array<() => void> = [];
+    let size = { height: 300, width: 420 };
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        disconnect = (): void => undefined;
+
+        observe = (element: Element): void => {
+          observed.push(element);
+        };
+
+        unobserve = (): void => undefined;
+
+        constructor(resize: () => void) {
+          onResize.push(resize);
+        }
+      },
+    );
+
+    const rect = HTMLElement.prototype.getBoundingClientRect;
+
+    HTMLElement.prototype.getBoundingClientRect = () =>
+      ({
+        ...size,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        top: 0,
+        x: 0,
+        y: 0,
+      }) as DOMRect;
+
+    try {
+      const next = await mount();
+
+      await waitFor(() => {
+        expect(next.setContentSize).toHaveBeenCalled();
+      });
+
+      expect(next.setContentSize).toHaveBeenLastCalledWith(420, 300);
+      // What is watched is the pane, whose height is the answer, and not the
+      // window around it.
+      expect(observed).toEqual([document.getElementById('pane')]);
+
+      size = { height: 380, width: 520 };
+
+      await act(async () => {
+        for (const resize of onResize) {
+          resize();
+        }
+      });
+
+      expect(next.setContentSize).toHaveBeenLastCalledWith(520, 380);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = rect;
+    }
   });
 });
