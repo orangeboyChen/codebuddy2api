@@ -68,11 +68,14 @@ const DEFAULTS = {
 interface MountOptions {
   backend?: typeof DEFAULTS.backend;
   firstRun?: boolean;
+  /** Whether the deployment has signed this app in, which the button reads. */
+  signedIn?: boolean;
   port?: number;
   portInUse?: { message: string; port: string } | null;
   screen?: 'choose' | 'portInUse' | 'settings' | 'unreachable';
-  serverVersion?: string | null;
+
   unreachable?: { host: string; message: string } | null;
+  serverVersion?: string | null;
 }
 
 const info = (options: MountOptions) => ({
@@ -243,7 +246,7 @@ describe('the backend screen', () => {
     await save();
 
     expect(next.setBackend).toHaveBeenCalledWith({
-      backend: { mode: 'remote', url: 'https://deploy.example.com/' },
+      backend: { mode: 'remote', url: 'https://deploy.example.com' },
     });
   });
 
@@ -369,6 +372,58 @@ describe('the settings screen', () => {
     */
     expect(screen.getByText('本机')).toBeTruthy();
     expect(screen.getByText('其他后端')).toBeTruthy();
+  });
+
+  it('has nothing left to do about an address it has already signed in to', async () => {
+    await mount({
+      backend: { mode: 'remote', url: 'https://deploy.example.com' },
+      screen: 'settings',
+      signedIn: true,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('地址')).toBeTruthy();
+    });
+
+    /*
+      The address is the one on disk and the deployment has already answered, so
+      the button is 保存 and it is disabled: pressing it would ask the same
+      deployment to sign this app in a second time. Editing the address is what
+      gives it something to do again.
+
+      Which only works if the address in the field and the one already settled
+      compare equal — and a bare origin comes back from `new URL` with a slash on
+      the end that the main process does not store.
+    */
+    expect((screen.getByLabelText('地址') as HTMLInputElement).value).toBe(
+      'https://deploy.example.com',
+    );
+
+    const button = screen.getByRole('button', { name: '保存' });
+
+    expect(button).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '去认证' })).toBeNull();
+  });
+
+  it('asks again the moment the address is edited', async () => {
+    await mount({
+      backend: { mode: 'remote', url: 'https://deploy.example.com' },
+      screen: 'settings',
+      signedIn: true,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('地址')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('地址'), {
+      target: { value: 'https://other.example.com' },
+    });
+
+    // Edited, so the button is 去认证 again and can be pressed: this is a
+    // different deployment, and the one signed in to is not it.
+    expect(screen.getByRole('button', { name: '去认证' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
   });
 
   it('puts the port field and the save button in the backend tab', async () => {

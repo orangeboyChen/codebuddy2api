@@ -74,8 +74,13 @@ const parseUrl = (value: string): string | null => {
   try {
     const parsed = new URL(value.trim());
 
+    // Trimmed the way the main process trims it before it saves the choice, so
+    // that the address in the field and the one already settled are the same
+    // string when they are the same address: `new URL` hands back a bare origin
+    // with a slash on the end, and a comparison that saw that slash would say
+    // the address had been edited when it had not.
     return parsed.protocol === 'http:' || parsed.protocol === 'https:'
-      ? parsed.href
+      ? parsed.href.replace(/\/+$/, '')
       : null;
   } catch {
     return null;
