@@ -71,7 +71,10 @@ const askForToken = (
 const openDevicePage = async (page: Page, userCode: string): Promise<void> => {
   await page.goto(`/device?user_code=${encodeURIComponent(userCode)}`);
 
-  await expect(page).toHaveURL(/\/login/);
+  // A dev server compiles a route the first time it is asked for, and this is
+  // the first ask of both: five seconds is the default, and a cold compile of
+  // the page behind a sign-in redirect runs past it.
+  await expect(page).toHaveURL(/\/login/, { timeout: 30_000 });
 
   // The form is a client component: filled before it hydrates, the value lands
   // in the DOM and not in React, and the submit button — which waits for both
@@ -93,7 +96,10 @@ const openDevicePage = async (page: Page, userCode: string): Promise<void> => {
 
   await submit.click();
 
-  await expect(page).toHaveURL(/\/device/);
+  // Back from signing in, with the code still in the address: the console
+  // remembers where it was sending them. The redirect is a client-side one
+  // after a round trip, so it is given the same room the sign-in was.
+  await expect(page).toHaveURL(/\/device/, { timeout: 30_000 });
   await expect(page.getByText('Approve a device')).toBeVisible({
     timeout: 30_000,
   });
@@ -191,9 +197,16 @@ test.describe('A desktop app signing in to a deployment', () => {
     const grant = await askForCode(request);
 
     // Where the app sends the user is this console's own page, with the code
-    // already in it.
-    expect(grant.verification_uri_complete).toContain('/device?user_code=');
-    expect(grant.verification_uri_complete).toContain(grant.user_code);
+    // already in it — on this console's own address. A deployment that handed
+    // out an origin of somebody else's would be handing them the approval the
+    // user is about to give.
+    const sent = new URL(grant.verification_uri_complete);
+
+    expect(sent.origin).toBe(
+      new URL(test.info().project.use.baseURL as string).origin,
+    );
+    expect(sent.pathname).toBe('/device');
+    expect(sent.searchParams.get('user_code')).toBe(grant.user_code);
 
     // Asked before anybody has approved: not yet, rather than a token.
     const pending = await askForToken(request, grant.device_code);
@@ -230,8 +243,22 @@ test.describe('A desktop app signing in to a deployment', () => {
 
     const payload = (await invented.json()) as { error?: string };
 
-    expect(invented.ok()).toBe(false);
-    expect(payload.error).toMatch(/^(expired_token|invalid_grant)$/);
+    expect(invented.status()).toBe(400);
+    // One this console never issued, answered the way one that ran out is:
+    // telling the two apart would only say which codes were handed out. Which
+    // of the two it says is what the client is told to act on — stop asking.
+    expect(payload.error).toBe('expired_token');
+
+    // A request that names no code at all is a different no, and a client that
+    // reads both as "stop asking" is the client that never signs in.
+    const nameless = await request.post('/admin-api/oauth/token', {
+      data: { client_id: DEVICE_CLIENT_ID, grant_type: DEVICE_GRANT_TYPE },
+    });
+
+    expect(nameless.status()).toBe(400);
+    expect(((await nameless.json()) as { error?: string }).error).toBe(
+      'invalid_grant',
+    );
   });
 
   test('approves no code this console never issued', async ({ page }) => {
