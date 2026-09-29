@@ -250,6 +250,9 @@ const rebundleShell = (): void => {
   fs.cpSync(appBundleDir, shellDir, { recursive: true });
 };
 
+/** How long an app asked to stop is given before it is told again, harder. */
+const STOP_GRACE_MS = 5_000;
+
 /** The app, stopped through its whole process group: the gateway is in it too. */
 const stop = async (child: ReturnType<typeof spawn>): Promise<void> => {
   if (child.exitCode !== null || child.signalCode !== null) {
@@ -260,14 +263,39 @@ const stop = async (child: ReturnType<typeof spawn>): Promise<void> => {
     child.once('exit', () => resolve());
   });
 
-  try {
-    // The negative pid is the group: the app started it, and the gateway the
-    // app started is in it. Killed with the app, which is what leaves the port
-    // free for the relaunch behind it.
-    process.kill(-(child.pid ?? 0), 'SIGTERM');
-  } catch {
-    child.kill('SIGTERM');
-  }
+  // A group of its own, so the gateway it started goes with it. And only when
+  // there is a pid to name: signalling group 0 is signalling this script's own
+  // group, which is the one thing here that must never be asked to stop.
+  const group = child.pid && child.pid > 0 ? -child.pid : null;
+
+  const signal = (name: NodeJS.Signals): void => {
+    try {
+      if (group) {
+        process.kill(group, name);
+      } else {
+        child.kill(name);
+      }
+    } catch {
+      // Gone already, which is the same answer.
+    }
+  };
+
+  signal('SIGTERM');
+
+  /*
+    Waited for, but not forever: an app that will not answer a SIGTERM would
+    otherwise hold this watcher here, and a relaunch that never happens is a
+    development loop that has quietly stopped being one.
+  */
+  await Promise.race([
+    exited,
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        signal('SIGKILL');
+        resolve();
+      }, STOP_GRACE_MS);
+    }),
+  ]);
 
   await exited;
 };
