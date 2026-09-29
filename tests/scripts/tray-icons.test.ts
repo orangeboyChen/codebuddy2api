@@ -122,19 +122,32 @@ describe('the menu bar icons', () => {
   });
 
   it('are what is committed, mark for mark', async () => {
+    const noColour = await renderTrays(path.join(scratch, 'committed'));
+
     for (const file of ['tray.png', 'tray-template.png'] as const) {
       const committed = await measure(path.join(RESOURCES, file));
-      const drawn = await measure(
-        (await renderTrays(path.join(scratch, 'committed')))[file],
-      );
+      const drawn = await measure(noColour[file]);
 
       // The script is run by hand, so what is committed is what it last wrote:
       // a mark that has drifted out of the size or the position the menu bar
       // item was written for is a mark nobody would notice until it shipped.
-      // Compared whole, colour and all: a template with colour in it is one
-      // macOS cannot draw from, and the committed files are what a build
-      // copies.
-      expect(committed).toEqual(drawn);
+      // The exact count of coloured pixels is this machine's renderer's, so
+      // what is compared is the mark, and the colour is asked about as the
+      // either-or it is: a template with any colour in it is one macOS
+      // cannot draw a menu bar item from.
+      expect({ ...committed, coloured: 0 }).toEqual({
+        ...drawn,
+        coloured: 0,
+      });
+
+      // macOS draws a template from its alpha alone, so all the count has to
+      // say is whether there is any colour at all — the exact number is this
+      // machine's renderer's, and a committed file is somebody else's.
+      if (file === 'tray-template.png') {
+        expect(committed.coloured).toBe(0);
+      } else {
+        expect(committed.coloured).toBeGreaterThan(0);
+      }
     }
   });
 });
