@@ -95,3 +95,67 @@ jobs:
             build/desktop/*.AppImage
             build/desktop/*.deb
           retention-days: 1
+
+  # Linux alone says nothing about the one platform that reads a bundle: the
+  # name at the top of the screen, the Dock tile, the About panel and the icon in
+  # it all come off the app the desktop is handed, and none of them exist until
+  # electron-builder has packaged one. So a push builds a Mac app too, alongside
+  # the Linux installer rather than after it — nothing waits on anything else.
+  #
+  # Unsigned, like every build here: `CSC_IDENTITY_AUTO_DISCOVERY` above sees to
+  # that, and only a release is ever signed and notarized.
+  desktop-build-macos:
+    name: Desktop Build (macOS app)
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun package downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.BUN_CACHE_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-desktop-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-desktop-bun-${{ env.BUN_VERSION }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Next.js app
+        run: bun run build
+
+      # `--dir`: the app itself, with no installer around it. An installer is
+      # what the release workflow is for; what this one needs is the bundle,
+      # which is where everything macOS reads off this app lives.
+      - name: Build the macOS app
+        run: bun scripts/build-desktop.ts --dev-icon --mac --arm64 --dir
+
+      # Zipped with ditto rather than handed over as a directory: an app is a
+      # bundle, and a bundle carries resource forks, symlinks and an executable
+      # bit that an archive has to keep or the app will not open.
+      - name: Zip the app
+        run: |
+          set -euo pipefail
+          app="$(find build/desktop -name '*.app' -maxdepth 2 -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo '::error::electron-builder left no .app behind'
+            exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$app" 'CodeBuddy2API-mac-arm64-unsigned.zip'
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v6
+        with:
+          if-no-files-found: error
+          name: desktop-macos-app
+          path: '*.zip'
+          retention-days: 1

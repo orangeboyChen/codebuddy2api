@@ -70,6 +70,21 @@ const DeviceClient = ({
         return;
       }
 
+      /*
+        Back to the device, when it asked to be sent back: the token is in the
+        address it is listening on, so the browser is what carries it home and
+        this page is the last thing the user sees of the deployment.
+      */
+      const outcome = (await response.json().catch(() => null)) as {
+        redirect?: unknown;
+      } | null;
+
+      if (typeof outcome?.redirect === 'string' && outcome.redirect) {
+        window.location.assign(outcome.redirect);
+
+        return;
+      }
+
       setApproved(true);
     } catch {
       setError(translations.failed);

@@ -40,7 +40,7 @@ const parseArguments = (argv: string[]) => {
   return { devIcon, forwarded, prepareOnly };
 };
 
-const bunBinary = () => {
+export const bunBinary = () => {
   const basename = path.basename(process.execPath).toLowerCase();
 
   return basename === 'bun' || basename === 'bun.exe'
@@ -76,7 +76,7 @@ const copyInto = (source: string, destination: string) => {
  * copied: a local `next build` leaves the rest of the repository in the
  * standalone directory, which would otherwise be packaged as well.
  */
-const assembleGateway = () => {
+export const assembleGateway = () => {
   requirePath(
     path.join(standaloneDir, 'server.js'),
     'Run `bun run build` before building the desktop app.',
@@ -145,7 +145,7 @@ const bundlePage = (): void => {
   );
 };
 
-const bundleElectron = () => {
+export const bundleElectron = () => {
   fs.rmSync(appDir, { force: true, recursive: true });
   fs.mkdirSync(appDir, { recursive: true });
 
@@ -197,11 +197,20 @@ const bundleElectron = () => {
     )}\n`,
   );
 
-  // Both menu bar icons come along: macOS asks for the template, everything
-  // else for the app's own icon — and each is read from next to the bundled
-  // main process, so neither can come from `electron/resources`, which is only
-  // electron-builder's buildResources and never reaches the packaged app.
-  for (const icon of ['tray.png', 'tray-template.png']) {
+  /*
+    The menu bar icons — macOS asks for the template, everything else for the
+    app's own — and the three the appearance menu carries. All of them are read
+    from next to the bundled main process, so none of them can come from
+    `electron/resources`, which is only electron-builder's buildResources and
+    never reaches the packaged app.
+  */
+  for (const icon of [
+    'tray.png',
+    'tray-template.png',
+    'appearance-light.png',
+    'appearance-dark.png',
+    'appearance-system.png',
+  ]) {
     copyInto(path.join(resourcesDir, icon), path.join(appDir, icon));
   }
   copyInto(
@@ -226,7 +235,7 @@ const readElectronVersion = () => {
  * against Electron's headers. Skipping this makes every storage call fail at
  * startup with an invalid module version error.
  */
-const rebuildNativeModules = () => {
+export const rebuildNativeModules = () => {
   const { version } = readElectronVersion();
 
   runBin('electron-rebuild', [
@@ -280,25 +289,38 @@ const packageDesktop = (forwarded: string[], devIcon: boolean) => {
   ]);
 };
 
-const { devIcon, forwarded, prepareOnly } = parseArguments(
-  process.argv.slice(2),
-);
+/**
+ * Everything a build does before it packages an installer.
+ *
+ * Exported because `scripts/dev-desktop.ts` runs the same steps to make the app
+ * it runs, and then runs the shell's own again — and only that one — every time
+ * a file in `electron/` changes.
+ */
+export const prepareDesktop = (devIcon: boolean): void => {
+  assembleGateway();
+  bundleElectron();
+  rebuildNativeModules();
 
-assembleGateway();
-bundleElectron();
-rebuildNativeModules();
+  // After the bundle, which empties the directory the icon goes into.
+  if (devIcon) {
+    const committed = path.join(resourcesDir, DEV_ICON_FILENAME);
 
-// After the bundle, which empties the directory the icon goes into.
-if (devIcon) {
-  const committed = path.join(resourcesDir, DEV_ICON_FILENAME);
+    requirePath(
+      committed,
+      'The development icon is missing from electron/resources, where it is committed.',
+    );
+    copyInto(committed, path.join(appDir, DEV_ICON_FILENAME));
+  }
+};
 
-  requirePath(
-    committed,
-    'The development icon is missing from electron/resources, where it is committed.',
+if (import.meta.main) {
+  const { devIcon, forwarded, prepareOnly } = parseArguments(
+    process.argv.slice(2),
   );
-  copyInto(committed, path.join(appDir, DEV_ICON_FILENAME));
-}
 
-if (!prepareOnly) {
-  packageDesktop(forwarded, devIcon);
+  prepareDesktop(devIcon);
+
+  if (!prepareOnly) {
+    packageDesktop(forwarded, devIcon);
+  }
 }

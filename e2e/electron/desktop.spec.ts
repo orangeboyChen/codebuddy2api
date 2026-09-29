@@ -118,6 +118,18 @@ const servePort = async (
   return { port: listening, stop: () => server.close() };
 };
 
+/** The browser, coming home: a GET on an address, and nothing else. */
+const browseTo = async (url: string): Promise<void> => {
+  await new Promise<void>((resolve, reject) => {
+    const request = http.get(url, (response) => {
+      response.resume();
+      response.on('end', resolve);
+    });
+
+    request.on('error', reject);
+  });
+};
+
 /**
  * The console window, which only exists once the gateway behind it answers —
  * the shell opens no window before that.
@@ -344,8 +356,13 @@ test('asks about the default port too, once it has been saved', async () => {
 });
 
 /** The backend the next launch finds on disk, as the window itself would save it. */
-const writeBackend = (url: string): void => {
-  writeSettings({ backend: { mode: 'remote', url }, port: 8001 });
+/** This machine, as the window itself would save the choice. */
+const writeLocalBackend = (dir: string = userDataDir): void => {
+  writeSettings({ backend: { mode: 'local' }, port: 8001 }, dir);
+};
+
+const writeBackend = (url: string, dir: string = userDataDir): void => {
+  writeSettings({ backend: { mode: 'remote', url }, port: 8001 }, dir);
 };
 
 /**
@@ -355,8 +372,12 @@ const writeBackend = (url: string): void => {
  */
 const startDeployment = async (): Promise<{
   port: number;
+  /** The loopback address the device asked to be sent back to, once it asked. */
+  redirect: { value: string };
   stop: () => void;
 }> => {
+  let port = 0;
+  const redirect = { value: '' };
   const server = http.createServer((request, response) => {
     const path = (request.url ?? '/').split('?')[0];
     const answer = (payload: unknown): void => {
@@ -369,6 +390,36 @@ const startDeployment = async (): Promise<{
         service: 'codebuddy2api',
         status: 'healthy',
         storage: 'sqlite',
+      });
+
+      return;
+    }
+
+    /*
+      A grant, so a press on the button is a sign-in that can be finished in a
+      browser rather than one that has to be reported: this deployment is
+      already signed in, and it is not the device flow that says so.
+    */
+    if (path === '/admin-api/oauth/device') {
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const parsed = JSON.parse(body || '{}') as { redirect_uri?: unknown };
+
+        if (typeof parsed.redirect_uri === 'string') {
+          redirect.value = parsed.redirect_uri;
+        }
+
+        answer({
+          device_code: 'a-device-code',
+          expires_in: 3,
+          interval: 1,
+          user_code: '2345-6789',
+          verification_uri: `http://127.0.0.1:${port}/device`,
+          verification_uri_complete: `http://127.0.0.1:${port}/device?user_code=2345-6789`,
+        });
       });
 
       return;
@@ -412,7 +463,13 @@ const startDeployment = async (): Promise<{
 
   const address = server.address() as { port: number };
 
-  return { port: address.port, stop: () => server.close() };
+  port = address.port;
+
+  return {
+    port: address.port,
+    redirect,
+    stop: () => server.close(),
+  };
 };
 
 /**
@@ -421,11 +478,22 @@ const startDeployment = async (): Promise<{
  * the one thing this app's window cannot use.
  */
 const startLockedDeployment = async (): Promise<{
+  /** What the app asked this deployment for, in order. */
+  asked: string[];
   port: number;
+  /** The loopback address the device asked to be sent back to, once it asked. */
+  redirect: { value: string };
   stop: () => void;
 }> => {
+  // Named before it is bound, so a grant can point the browser at this very
+  // server: the port is only known once it is listening.
+  let port = 0;
+  const asked: string[] = [];
+  const redirect = { value: '' };
   const server = http.createServer((request, response) => {
     const path = (request.url ?? '/').split('?')[0];
+
+    asked.push(`${request.method} ${path}`);
     const signedIn = (request.headers.cookie ?? '').includes(
       'deployment-session=let-me-in',
     );
@@ -454,6 +522,38 @@ const startLockedDeployment = async (): Promise<{
         service: 'codebuddy2api',
         status: 'healthy',
         storage: 'sqlite',
+      });
+
+      return;
+    }
+
+    /*
+      A grant, with somewhere for the browser to come back to: the app asks for
+      one and listens, rather than asking again and again.
+    */
+    if (path === '/admin-api/oauth/device') {
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const parsed = JSON.parse(body || '{}') as { redirect_uri?: unknown };
+
+        if (typeof parsed.redirect_uri === 'string') {
+          redirect.value = parsed.redirect_uri;
+        }
+
+        answer({
+          device_code: 'a-device-code',
+          expires_in: 3,
+          interval: 1,
+          user_code: '2345-6789',
+          verification_uri: `http://127.0.0.1:${port}/device`,
+          verification_uri_complete: `http://127.0.0.1:${port}/device?user_code=2345-6789`,
+          ...(typeof parsed.redirect_uri === 'string'
+            ? { redirect_uri: parsed.redirect_uri }
+            : {}),
+        });
       });
 
       return;
@@ -500,63 +600,232 @@ const startLockedDeployment = async (): Promise<{
 
   const address = server.address() as { port: number };
 
-  return { port: address.port, stop: () => server.close() };
+  port = address.port;
+
+  return {
+    asked,
+    port: address.port,
+    redirect,
+    stop: () => server.close(),
+  };
 };
 
-test('signs in to a deployment with its password, and leaves the passkey to a browser', async () => {
+/** Whether something on this machine is serving a port right now. */
+const isPortTaken = async (port: number): Promise<boolean> => {
+  const server = http.createServer();
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', resolve);
+    });
+
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+test('names itself at the top of the screen, and puts the console there', async () => {
+  const dir = separateUserDataDir('menu');
+
+  writeLocalBackend(dir);
+
+  const app = await launchApp({ userData: dir });
+
+  await waitForConsole(app);
+
+  /*
+    What macOS reads off the bundle, and what the shell has to answer itself
+    because `electron .` has no bundle: the name at the top of the screen was
+    Electron's, and so was everything else in that menu.
+  */
+  const menu = await app.evaluate(async ({ Menu }) => {
+    const bar = Menu.getApplicationMenu();
+
+    if (!bar) {
+      return null;
+    }
+
+    return bar.items.map((item) => ({ label: item.label }));
+  });
+
+  expect(menu).not.toBeNull();
+
+  const labels = (menu as Array<{ label: string }>).map((item) => item.label);
+
+  /*
+    Only macOS names the app at the top of the screen: that menu is the bundle's,
+    and a bundle is what `electron .` has none of — which is why it said Electron.
+
+    On Linux and Windows there is no menu at the top of the screen, and a
+    window's own menu bar is hidden by default — so those two are in the menu bar
+    item's menu as well there, which is the one menu those platforms always have.
+  */
+  if (process.platform === 'darwin') {
+    expect(labels[0]).toBe('CodeBuddy2API');
+    expect(labels).toContain('Appearance');
+    expect(labels).toContain('Language');
+  }
+
+  expect(labels).not.toContain('Electron');
+
+  await app.close();
+});
+
+test('pictures the three appearances in the menu', async () => {
+  const dir = separateUserDataDir('appearance');
+
+  writeLocalBackend(dir);
+
+  const app = await launchApp({ userData: dir });
+
+  await waitForConsole(app);
+
+  const appearances = await app.evaluate(async ({ Menu }) => {
+    const bar = Menu.getApplicationMenu();
+
+    if (!bar) {
+      return null;
+    }
+
+    const item = bar.items.find((entry) => entry.label === 'Appearance');
+
+    if (!item || !item.submenu) {
+      return null;
+    }
+
+    return item.submenu.items.map((child) => ({
+      label: child.label,
+      /*
+        A picture the desktop colours itself: one of this app's own colours
+        would be the wrong one in whichever appearance it was not drawn for,
+        and a menu with no picture at all is a menu you have to read twice.
+      */
+      pictured: Boolean(
+        child.icon && typeof child.icon !== 'string' && !child.icon.isEmpty(),
+      ),
+    }));
+  });
+
+  expect(appearances).not.toBeNull();
+
+  const items = appearances as Array<{ label: string; pictured: boolean }>;
+
+  expect(items.map((entry) => entry.label)).toEqual([
+    'Light',
+    'Dark',
+    'System',
+  ]);
+  expect(items.every((entry) => entry.pictured)).toBe(true);
+
+  await app.close();
+});
+
+test('gives up the port it was serving when a deployment is named instead', async () => {
+  const dir = separateUserDataDir('give-up-port');
+
+  writeLocalBackend(dir);
+
+  const app = await launchApp({ userData: dir });
+
+  // This machine's own backend: the gateway the app starts is what serves the
+  // console, on a port of this machine's.
+  const consoleWindow = await waitForConsole(app);
+
+  expect(consoleWindow.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/dashboard$/);
+
+  const served = Number(new URL(consoleWindow.url()).port);
+
+  await expect.poll(async () => await isPortTaken(served)).toBe(true);
+
+  /*
+    Named a deployment instead, the app has nothing left to serve here: the
+    console is the deployment's, on the address the deployment is served on, and
+    a gateway on loopback forwarding it is a port given up for nothing.
+  */
+  const deployment = await startDeployment();
+
+  writeBackend(`http://127.0.0.1:${deployment.port}`, dir);
+
+  await expect
+    .poll(async () => await isPortTaken(served), { timeout: 60_000 })
+    .toBe(false);
+
+  await app.close();
+  deployment.stop();
+});
+
+/*
+  Only where there is a browser to send: this is the one press that opens one, and
+  on a runner with none, `xdg-open` never answers — which hangs the press rather
+  than failing it.
+*/
+test('signs in from its own window, and opens the deployment', async () => {
+  // Only where there is a browser to send: this is the one press that opens one,
+  // and on a runner with none, `xdg-open` never answers, which hangs the press
+  // rather than failing it.
+  test.skip(process.platform !== 'darwin', 'needs a browser to open');
+
   const deployment = await startLockedDeployment();
 
   writeBackend(`http://127.0.0.1:${deployment.port}`);
 
   const app = await launchApp();
-  const loginWindow = await waitForWindow(app, /\/login$/);
 
-  // A passkey saved for the deployment is bound to its address, so the page
-  // offers none: it says so and points at the deployment's own page instead,
-  // which the shell opens in a browser.
-  await expect(loginWindow.locator('#admin-passkey')).toHaveCount(0);
-  await expect(
-    loginWindow.locator(`a[href="http://127.0.0.1:${deployment.port}"]`),
-  ).toBeVisible();
+  /*
+    A passkey saved for the deployment is bound to its address, and this app is
+    served from 127.0.0.1 — so a page asking for the deployment's password is not
+    what is put in front of the user. The window that asks which backend to use
+    is, and there is no login page anywhere in this app.
+  */
+  const asking = await waitForWindow(app, /backend\.html$/);
 
-  // The form is a client component: filled before it hydrates, the value lands
-  // in the DOM and not in React, and the submit button — which waits for both
-  // fields — never enables. Filled again until it does, which is what a user
-  // in front of the same window would do.
-  const submit = loginWindow.locator('button[type="submit"]');
-
+  await expect(asking.locator('#save')).toBeVisible();
   await expect
-    .poll(
-      async () => {
-        await loginWindow.locator('#admin-username').fill('admin');
-        await loginWindow.locator('#admin-password').fill(DEPLOYMENT_PASSWORD);
-
-        return submit.isEnabled();
-      },
-      { intervals: [1_000], timeout: 60_000 },
+    .poll(() =>
+      app
+        .windows()
+        .map((window) => window.url())
+        .filter((url) => /\/login$/.test(url)),
     )
-    .toBe(true);
+    .toEqual([]);
 
-  await submit.click();
+  await asking.locator('#save').click();
+
+  /*
+    The deployment is asked for a code, and for somewhere to send the browser
+    back to when the user has approved.
+  */
+  await expect
+    .poll(() =>
+      deployment.asked.filter((entry) => entry.includes('/oauth/device')),
+    )
+    .not.toHaveLength(0);
+  await expect.poll(() => deployment.redirect.value).not.toBe('');
+
+  /*
+    …and the browser comes home with the token, on the address this app is
+    listening on: that is the whole of the sign-in, and it is finished in a
+    browser on the deployment's own page rather than in this window.
+  */
+  await browseTo(`${deployment.redirect.value}&token=a-token`);
 
   const consoleWindow = await waitForConsole(app);
 
-  // The password reached the deployment, and the session it set came back:
-  // what it answers now is signed in, and the cookie the console holds is the
-  // one it handed out.
-  const answered = await consoleWindow.evaluate(async () => {
-    const response = await fetch('/admin-api/auth/session');
-
-    return (await response.json()) as { session?: { authenticated?: boolean } };
-  });
-
-  expect(answered.session?.authenticated).toBe(true);
+  expect(consoleWindow.url()).toBe(
+    `http://127.0.0.1:${deployment.port}/dashboard`,
+  );
 
   await app.close();
   deployment.stop();
 });
 
-test('shows its own console for a deployment, and takes only the data from it', async () => {
+test('opens a deployment on its own address, and starts nothing here for it', async () => {
   const deployment = await startDeployment();
 
   writeBackend(`http://127.0.0.1:${deployment.port}`);
@@ -564,57 +833,50 @@ test('shows its own console for a deployment, and takes only the data from it', 
   const app = await launchApp();
   const consoleWindow = await waitForConsole(app);
 
-  // The console is the app's own build on loopback, not the deployment's page:
-  // the address in the window is the gateway the app started here.
-  expect(consoleWindow.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/dashboard$/);
-  expect(await consoleWindow.title()).not.toContain(
-    'the deployment’s own page',
+  /*
+    The address in the window is the deployment's, not a gateway of this
+    machine's: for a custom backend this app starts nothing and takes no port,
+    because the console is for controlling a backend — the data and the API are
+    the backend's, asked for on the address it is served on.
+  */
+  expect(consoleWindow.url()).toBe(
+    `http://127.0.0.1:${deployment.port}/dashboard`,
   );
-
-  // …and the numbers in it are the deployment's: `/admin-api` is forwarded, so
-  // the version it answers with is the version it has, not the app's.
-  const response = await consoleWindow.request.get(
-    new URL('/admin-api/version', consoleWindow.url()).toString(),
-  );
-
-  expect(response.ok()).toBe(true);
-  expect(await response.json()).toEqual({ version: DEPLOYMENT_VERSION });
-
-  // So is its sign-in: the panel is not something a desktop install has, but
-  // this one is a console for a deployment reachable from a network, whose
-  // password and passkeys are the user's to change.
-  await consoleWindow.goto(
-    new URL('/settings', consoleWindow.url()).toString(),
-  );
-
-  await expect(consoleWindow.locator('#security')).toBeVisible();
 
   await app.close();
   deployment.stop();
 });
 
-test('names a deployment in the window, and is asked for no port', async () => {
+test('names a deployment, is asked for no port, and signs in from the window', async () => {
+  test.skip(process.platform !== 'darwin', 'needs a browser to open');
+
   const deployment = await startDeployment();
 
-  // A first launch: nothing on disk, so the window is what asks.
-  const app = await launchApp({ userData: separateUserDataDir('remote-port') });
+  writeBackend(`http://127.0.0.1:${deployment.port}`);
+
+  const app = await launchApp({
+    userData: separateUserDataDir('remote-port'),
+  });
   const chooser = await waitForWindow(app, /backend\.html$/);
 
   await chooser.locator('input[value="remote"]').check();
 
-  // The address is the whole answer: a deployment is reached through it, and
-  // the port the console is served on is not this machine's to settle.
+  // The address is the whole answer: a deployment is reached through it, and the
+  // port the console is served on is not this machine's to settle.
   await expect(chooser.locator('#port')).toHaveCount(0);
 
   await chooser.locator('#url').fill(`http://127.0.0.1:${deployment.port}`);
   await chooser.locator('#save').click();
 
-  // …so the console opens on the port the app would have used anyway, without
-  // the number ever having been asked for.
+  // Asked for a code, and for somewhere to send the browser home to.
+  await expect.poll(() => deployment.redirect.value).not.toBe('');
+
+  await browseTo(`${deployment.redirect.value}&token=a-token`);
+
   const consoleWindow = await waitForConsole(app);
 
   expect(consoleWindow.url()).toBe(
-    `http://127.0.0.1:${DEFAULT_GATEWAY_PORT}/dashboard`,
+    `http://127.0.0.1:${deployment.port}/dashboard`,
   );
 
   await app.close();

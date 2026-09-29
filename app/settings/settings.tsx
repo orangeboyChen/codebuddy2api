@@ -165,6 +165,25 @@ const settingsPlaceholders: Record<string, string> = {
 };
 
 /**
+ * Settings a desktop install has no answer to, and so does not ask about.
+ *
+ * Web search: CodeBuddy is the only engine an install whose data is this
+ * machine's own can reach, so the search runs through it and there is nothing
+ * to pick — and a picker's config fields go with it, since every one of them
+ * belongs to an engine that cannot be chosen.
+ *
+ * The passkey RP ID: a passkey is offered for the address it was registered on,
+ * and this install's console is served to this app's own window at 127.0.0.1,
+ * where no browser will offer one. There is no domain for the field to name —
+ * a passkey is registered in a browser, on the deployment's own page, which is
+ * what the device sign-in opens.
+ */
+const DESKTOP_HIDDEN_CONFIG_KEYS = new Set([
+  'CODEBUDDY_WEB_SEARCH_BACKEND',
+  'CODEBUDDY_ADMIN_PASSKEY_RP_ID',
+]);
+
+/**
  * Maps a setting key to its helper text.
  *
  * A lookup table rather than the chained ternary it replaced: four keys already
@@ -690,13 +709,8 @@ const Settings = ({
               // A backend's own settings are rendered by its picker, which
               // knows which backend they belong to.
               .filter(([settingKey]) => !BACKEND_CONFIG_KEYS.has(settingKey))
-              // Web search is not a setting here at all: CodeBuddy is the only
-              // engine an install whose data is this machine's own can reach,
-              // so the search runs through it and there is nothing to pick —
-              // and a picker's config fields go with it, since every one of
-              // them belongs to an engine that cannot be chosen.
               .filter(([settingKey]) =>
-                desktop ? settingKey !== 'CODEBUDDY_WEB_SEARCH_BACKEND' : true,
+                desktop ? !DESKTOP_HIDDEN_CONFIG_KEYS.has(settingKey) : true,
               )
               .map(([settingKey, label]) =>
                 settingKey === 'CODEBUDDY_WEB_SEARCH_BACKEND' ? (

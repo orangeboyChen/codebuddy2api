@@ -1,3 +1,5 @@
+import http from 'node:http';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -42,7 +44,7 @@ const { setupAdminPassword, loginWithAdminPassword } =
 const { isDeviceTokenAuthorized } = await import('@/lib/server/admin/device');
 const { DEVICE_CLIENT_ID, DEVICE_GRANT_TYPE } =
   await import('@/lib/server/admin/device-client');
-const { pollForDeviceToken, requestDeviceAuthorization } =
+const { requestDeviceAuthorization, startDeviceRedirectListener } =
   await import('@/lib/server/electron/device-auth');
 const deviceRoute = await import('@/app/admin-api/oauth/device/route');
 const approveRoute = await import('@/app/admin-api/oauth/device/approve/route');
@@ -53,6 +55,20 @@ const PASSWORD = 'a-password-long-enough';
 
 const request = (path: string, init?: RequestInit): Request =>
   new Request(`${ORIGIN}${path}`, init);
+
+/**
+ * The browser, coming home: a GET on the address the app is listening on, which
+ * is what the deployment's own page does once the user has approved.
+ */
+const browseTo = (url: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const request = http.get(url, (response) => {
+      response.resume();
+      response.on('end', resolve);
+    });
+
+    request.on('error', reject);
+  });
 
 const jsonPost = (path: string, body: unknown, init?: RequestInit): Request =>
   request(path, {
@@ -147,9 +163,12 @@ describe('a desktop app signing in to a deployment', () => {
   it('is signed in by the code it showed the user', async () => {
     await configureAdmin();
 
+    const listener = await startDeviceRedirectListener({ state: 'a-state' });
+
     const requested = await requestDeviceAuthorization({
       baseUrl: `${ORIGIN}/`,
       fetchImpl,
+      redirectUri: listener.redirectUri,
     });
 
     expect(requested.kind).toBe('granted');
@@ -170,42 +189,34 @@ describe('a desktop app signing in to a deployment', () => {
     // A code this console never issued is not one it approves.
     expect((await approveInBrowser('XXXX-YYYY')).status).toBe(404);
 
-    // The user approves in the browser while the app is waiting: the first ask
-    // is answered "not yet", and the one after the approval is answered with a
-    // token.
-    let waited = 0;
+    /*
+      The user approves in the browser, and what the browser is given to carry
+      home is this machine's own address with the token in it — which is the
+      whole reason the app is listening instead of asking again.
+    */
+    const approved = await approveInBrowser(grant.userCode);
 
-    const outcome = await pollForDeviceToken({
-      baseUrl: ORIGIN,
-      deviceCode: grant.deviceCode,
-      expiresIn: grant.expiresIn,
-      fetchImpl,
-      intervalSeconds: grant.intervalSeconds,
-      sleep: async () => {
-        waited += 1;
+    expect(approved.ok).toBe(true);
 
-        if (waited === 2) {
-          expect((await approveInBrowser(grant.userCode)).ok).toBe(true);
-        }
-      },
-    });
+    const { redirect } = (await approved.json()) as { redirect?: string };
 
-    expect(waited).toBe(2);
-    expect(statuses[0]).toBe(400);
-    expect(outcome.kind).toBe('signedIn');
+    expect(redirect?.startsWith(listener.redirectUri)).toBe(true);
 
-    if (outcome.kind !== 'signedIn') {
-      return;
-    }
+    const answered = listener.wait(30_000);
 
-    expect(outcome.token.accessToken).not.toBe('');
+    await browseTo(String(redirect));
+
+    const token = await answered;
+    listener.close();
+
+    expect(token?.accessToken ?? '').not.toBe('');
 
     // The token is a credential, not a receipt: it is what the app forwards
     // with everything it asks the deployment for.
     await expect(
       isDeviceTokenAuthorized(
         new Request(`${ORIGIN}/admin-api/usage`, {
-          headers: { authorization: `Bearer ${outcome.token.accessToken}` },
+          headers: { authorization: `Bearer ${token?.accessToken}` },
         }),
       ),
     ).resolves.toBe(true);
@@ -214,9 +225,12 @@ describe('a desktop app signing in to a deployment', () => {
   it('spends the code on the app that asked for it, and no other', async () => {
     await configureAdmin();
 
+    const listener = await startDeviceRedirectListener({ state: 'a-state' });
+
     const requested = await requestDeviceAuthorization({
       baseUrl: ORIGIN,
       fetchImpl,
+      redirectUri: listener.redirectUri,
     });
 
     if (requested.kind !== 'granted') {
@@ -225,17 +239,17 @@ describe('a desktop app signing in to a deployment', () => {
 
     const { grant } = requested;
 
-    expect((await approveInBrowser(grant.userCode)).ok).toBe(true);
+    const approved = await approveInBrowser(grant.userCode);
 
-    const outcome = await pollForDeviceToken({
-      baseUrl: ORIGIN,
-      deviceCode: grant.deviceCode,
-      expiresIn: grant.expiresIn,
-      fetchImpl,
-      sleep: async () => undefined,
-    });
+    expect(approved.ok).toBe(true);
 
-    expect(outcome.kind).toBe('signedIn');
+    const answered = listener.wait(30_000);
+    const { redirect } = (await approved.json()) as { redirect?: string };
+
+    await browseTo(String(redirect));
+
+    expect((await answered)?.accessToken ?? '').not.toBe('');
+    listener.close();
 
     // Asked for again with the code already spent — a second window, or the
     // same one that lost its answer — the deployment says no rather than

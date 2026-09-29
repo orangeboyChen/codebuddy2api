@@ -139,9 +139,6 @@ const Desktop = () => {
           type="text"
           value={port}
         />
-        <p className="mt-2 text-secondary">
-          {translations('portHint', { port: state.port })}
-        </p>
       </div>
       {/*
         No picker for the storage backend: this install is the one place its

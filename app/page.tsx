@@ -69,7 +69,17 @@ export const AdminPage = async ({
     desktop && (headerStore.get('user-agent') ?? '').includes('Macintosh');
   const sessionAuthenticated = session?.authenticated ?? false;
 
-  if (!desktop && session?.accountConfigured && !sessionAuthenticated) {
+  /*
+    Never a login page in this app's own window.
+
+    The window is the console's, and a page in it asking for the deployment's
+    password is a page that cannot be signed in on: a passkey saved for that
+    deployment is bound to its address, and this app is served from 127.0.0.1.
+    What is put in front of the user instead is the window that asks which
+    backend to use, which is where a deployment is signed in to — in a browser,
+    on the deployment's own page.
+  */
+  if (!isDesktopMode() && session?.accountConfigured && !sessionAuthenticated) {
     redirect('/login');
   }
 

@@ -7,6 +7,7 @@ import {
   BrowserWindow,
   Menu,
   MenuItemConstructorOptions,
+  type NativeImage,
   Tray,
   app,
   clipboard,
@@ -35,6 +36,7 @@ import {
   startGateway,
   type GatewayHandle,
   type GatewayProcess,
+  type GatewaySpawn,
 } from '../lib/server/electron/gateway';
 import {
   ensureDesktopDirectories,
@@ -60,9 +62,9 @@ import {
 } from '../lib/server/electron/ask';
 import {
   DEVICE_REQUEST_TIMEOUT_MS,
-  pollForDeviceToken,
   requestDeviceAuthorization,
-  type DeviceGrant,
+  startDeviceRedirectListener,
+  type DeviceRedirectListener,
 } from '../lib/server/electron/device-auth';
 import {
   forgetDeviceToken,
@@ -88,6 +90,7 @@ import {
 import {
   desktopText,
   fillText,
+  resolveDesktopLocale,
   statusText,
   usageText,
   type DesktopText,
@@ -109,9 +112,14 @@ import {
   type UpdateUnavailableReason,
 } from '../lib/server/electron/updates';
 import { fetchServerVersion } from '../lib/server/electron/version';
+import { fetchUpstreamSessionSummary } from '../lib/server/admin/upstream';
 
 /** Every window of the app's own carries this title, and never another. */
 const APP_TITLE = 'CodeBuddy2API';
+/**
+ * How long the window that asked is given to close once it has been told to.
+ */
+const CLOSE_GRACE_MS = 2_000;
 
 /**
  * The app's name, set before `ready` and before anything reads it.
@@ -123,6 +131,25 @@ const APP_TITLE = 'CodeBuddy2API';
  * already written.
  */
 app.setName(APP_TITLE);
+
+/**
+ * What the About panel says.
+ *
+ * Set because the panel is otherwise the bundle's: on macOS it takes its name,
+ * its version and its icon from the app's `.plist`, and a development build —
+ * `electron .` — has no bundle of its own to take them from, so what it shows
+ * is Electron's. `app.setName` above is no help here: it "does not affect the
+ * name that the OS uses".
+ *
+ * The icon is the one thing this cannot fix on macOS: `iconPath` is answered on
+ * Linux and Windows only, and a macOS About panel keeps the bundle's picture —
+ * which is the last reason development runs the app as a bundle of its own
+ * rather than as `electron .`.
+ */
+app.setAboutPanelOptions({
+  applicationName: APP_TITLE,
+  applicationVersion: app.getVersion(),
+});
 
 const WINDOW_HEIGHT = 880;
 const WINDOW_WIDTH = 1360;
@@ -142,14 +169,28 @@ const BACKEND_WINDOW_MIN_WIDTH = 320;
 const BACKEND_WINDOW_HEIGHT = 320;
 const BACKEND_WINDOW_WIDTH = 480;
 /**
- * The colour a window is before the page inside it has drawn anything.
+ * The colour the console is drawn in, which is what a window of this app is
+ * painted behind the page in it.
  *
- * Both the console and the settings are dark on a dark desktop, so a window
- * that comes up white for as long as its page takes to load is a flash of the
- * one thing on the screen that is not — and in dark appearance it is the
- * brightest thing on it.
+ * The console's own two, taken from `--lobe-color-bg-layout` in
+ * `app/globals.scss`: a window that comes up in a colour the page is about to
+ * paint over is a flash of the one thing on the screen that is not the console.
  */
-const WINDOW_BACKGROUND_COLOR = '#16161a';
+const CONSOLE_BACKGROUND: Record<'dark' | 'light', string> = {
+  dark: '#111318',
+  light: '#f7f7f8',
+};
+/**
+ * No colour at all, which is what a window drawn on the desktop's own blur
+ * needs.
+ *
+ * The material is made from what is behind the window, and a background of the
+ * window's own is part of the window: painted in, it is the flat colour the
+ * blur is taken of, and the frost is a pane of `#16161a` instead. Which is why
+ * a macOS window asks for none — and why the vibrancy looked like it had never
+ * been asked for at all.
+ */
+const TRANSPARENT_WINDOW_BACKGROUND = '#00000000';
 /**
  * On macOS the window is drawn on the desktop's own blur, behind the page, the
  * way every other window there is. Nowhere else: Windows and Linux paint a
@@ -419,11 +460,21 @@ const sameSettings = (a: DesktopSettings, b: DesktopSettings): boolean =>
  * shows is this app's own console, and only the data behind `/admin-api` comes
  * from the deployment.
  */
-const consoleBaseUrl = (): string => gateway?.url ?? '';
+const consoleBaseUrl = (): string =>
+  // A deployment's own address: the console it serves is the deployment's, and
+  // so is the data behind it. Nothing of this machine's sits in between, and no
+  // port of this machine's is given up to forward one.
+  backend.mode === 'remote'
+    ? backend.url.trim().replace(/\/+$/, '')
+    : (gateway?.url ?? '');
 
 /** The loopback address the bundled gateway is on, or `…` until it is up. */
 const backendAddress = (): string =>
-  gateway ? `127.0.0.1:${gateway.port}` : '…';
+  backend.mode === 'remote'
+    ? new URL(backend.url).host
+    : gateway
+      ? `127.0.0.1:${gateway.port}`
+      : '…';
 
 const backendLabel = (): string =>
   backend.mode === 'remote' ? new URL(backend.url).host : text().backendLocal;
@@ -450,7 +501,7 @@ const isConsoleUrl = (target: string): boolean => {
  * instead: this window is the admin console, and a `file:` or `javascript:`
  * URL reaching the shell is never what the click meant.
  */
-const openExternally = (target: string): void => {
+const openExternally = async (target: string): Promise<void> => {
   try {
     const parsed = new URL(target);
 
@@ -462,9 +513,23 @@ const openExternally = (target: string): void => {
     // for it, no desktop session behind it. A rejection nobody is waiting for
     // is not a warning this app chose to print, and a link the user clicked is
     // not something to crash over.
-    void shell.openExternal(parsed.href).catch((error: unknown) => {
-      console.warn(`Could not open ${parsed.href}: ${describeError(error)}`);
-    });
+    /*
+      Brought to the front, because a browser opened behind this app's own
+      window is a browser nobody sees: the default is `true`, and macOS does not
+      always honour it.
+
+      And answered with a message when it could not be opened, rather than by
+      rejecting — and typed `void`, though it answers with that message: a
+      browser that never came up has to be said out loud, or a sign-in looks
+      like it happened when it did not.
+    */
+    const failed = (await shell.openExternal(parsed.href, {
+      activate: true,
+    })) as unknown;
+
+    if (typeof failed === 'string' && failed) {
+      console.warn(`Could not open ${parsed.href}: ${failed}`);
+    }
   } catch {
     // Unparseable target: nothing to open.
   }
@@ -530,7 +595,16 @@ const loadConsole = async (
 ): Promise<void> => {
   consoleOrigin = new URL(url).origin;
 
-  await setConsoleCookie(consoleOrigin);
+  /*
+    The token is only for a console this machine serves: the gateway the app
+    starts answers 404 without it, so nothing but its own window gets a page. A
+    deployment's console is the deployment's, and it has no such guard — a
+    cookie handed to that origin would be this app's console token sent to
+    somebody else's server, for a door nobody there is keeping.
+  */
+  if (backend.mode !== 'remote') {
+    await setConsoleCookie(consoleOrigin);
+  }
 
   // Twice, because the first navigation of a cold app can stall: it neither
   // finishes nor fails, and a window that never gets a first frame stays
@@ -603,7 +677,7 @@ const keepWindowTitle = (window: BrowserWindow): void => {
 const createMainWindow = (url: string): BrowserWindow => {
   const window = new BrowserWindow({
     autoHideMenuBar: true,
-    backgroundColor: WINDOW_BACKGROUND_COLOR,
+    backgroundColor: windowBackground(),
     height: WINDOW_HEIGHT,
     icon: windowIcon(),
     minHeight: MIN_WINDOW_HEIGHT,
@@ -899,12 +973,59 @@ const writeConsolePreferences = async (cookies: Cookie[]): Promise<void> => {
     }
   }
 
-  refreshTray();
+  refreshMenus();
 
   // Only a console that is being served can be asked for another page: a paused
   // gateway has no window to reload, and the choice is there next time.
   if (mainWindow && !mainWindow.isDestroyed() && gateway) {
     mainWindow.reload();
+  }
+};
+
+/**
+ * The appearance the console is in, with `system` answered from the computer.
+ *
+ * Resolved here, where the computer's own is known: the cookie is what a
+ * server-rendered page starts from, and a page rendered before the desktop
+ * changes cannot be asked to notice.
+ */
+const resolvedConsoleTheme = (): 'dark' | 'light' =>
+  consoleTheme === 'system'
+    ? nativeTheme.shouldUseDarkColors
+      ? 'dark'
+      : 'light'
+    : consoleTheme;
+
+/**
+ * What a window is painted, behind the page in it and before there is one.
+ *
+ * On macOS, nothing: the window is drawn on the desktop's blur, which is made
+ * from what is behind the window — and a background of its own would be what
+ * the blur was taken of. Everywhere else the desktop paints no such material
+ * and a window is the colour it is painted, so it is painted the console's: a
+ * window that comes up in another colour is a flash of the one thing on the
+ * screen that is not the console.
+ */
+const windowBackground = (): string =>
+  process.platform === 'darwin'
+    ? TRANSPARENT_WINDOW_BACKGROUND
+    : CONSOLE_BACKGROUND[resolvedConsoleTheme()];
+
+/**
+ * Repaints the windows that are already open, in the appearance they are now
+ * in.
+ *
+ * The colour is behind the page, so it is the reload a choice of appearance
+ * causes that shows it: a window painted for a dark console while the page is
+ * being re-rendered light is the flash this exists to prevent.
+ */
+const repaintWindowBackgrounds = (): void => {
+  const colour = windowBackground();
+
+  for (const window of [mainWindow, backendWindow]) {
+    if (window && !window.isDestroyed()) {
+      window.setBackgroundColor(colour);
+    }
   }
 };
 
@@ -919,14 +1040,11 @@ const chooseAppearance = (next: 'dark' | 'light' | 'system'): void => {
       // in is known: the cookie is what a server-rendered page starts from, and
       // a page rendered before the OS changes cannot be asked to notice.
       name: resolvedThemeCookieName,
-      value:
-        next === 'system'
-          ? nativeTheme.shouldUseDarkColors
-            ? 'dark'
-            : 'light'
-          : next,
+      value: resolvedConsoleTheme(),
     },
   ]);
+
+  repaintWindowBackgrounds();
 };
 
 /** Picks the language the console speaks. */
@@ -949,24 +1067,55 @@ const chooseLocale = (next: string): void => {
  * the window is a window of this computer, and a desktop app is dressed from the
  * place its other settings are — not from a picker inside the page.
  */
+/*
+  A picture each, so the three are told apart before they are read: a menu of
+  words alone is a menu you have to read twice, and this is the one thing in
+  the menu at the top of the screen anybody reaches for often.
+
+  Drawn in one colour and no colour of this app's, the way the menu bar icon
+  is: the desktop colours a menu picture itself, and one that carried its own
+  would be the wrong one in whichever appearance it was not drawn for.
+*/
+const appearanceIcon = (name: 'dark' | 'light' | 'system'): NativeImage => {
+  const icon = nativeImage.createFromPath(
+    path.join(bundleDir(), `appearance-${name}.png`),
+  );
+
+  /*
+    A template, which is what makes the one colour above the right one: the
+    desktop draws a template in the colour of the menu it sits in, so a picture
+    drawn in black comes out black on a light menu bar and white on a dark one.
+
+    Left as it is, a black picture on a dark menu bar is a picture nobody can
+    see. Only macOS has an opinion about it, and it is the only platform whose
+    menu bar changes appearance.
+  */
+  icon.setTemplateImage(true);
+
+  return icon;
+};
+
 const appearanceMenu = (): MenuItemConstructorOptions => ({
   label: text().appearance,
   submenu: [
     {
       checked: consoleTheme === 'light',
       click: () => chooseAppearance('light'),
+      icon: appearanceIcon('light'),
       label: text().themeLight,
       type: 'radio',
     },
     {
       checked: consoleTheme === 'dark',
       click: () => chooseAppearance('dark'),
+      icon: appearanceIcon('dark'),
       label: text().themeDark,
       type: 'radio',
     },
     {
       checked: consoleTheme === 'system',
       click: () => chooseAppearance('system'),
+      icon: appearanceIcon('system'),
       label: text().themeSystem,
       type: 'radio',
     },
@@ -1039,9 +1188,13 @@ const buildTrayMenu = (): Menu =>
     // needs no approval from anybody.
     ...(backend.mode === 'remote' ? [deviceMenu()] : []),
     { type: 'separator' },
-    // How the console looks and what language it speaks: the desktop's to
-    // decide, so the window carries no pickers of its own.
-    ...(consoleOrigin
+    /*
+      The appearance and the language, where there is nowhere else for them to
+      go: on macOS they are at the top of the screen, with every other app's, and
+      putting them here as well would be a menu with two of everything. On Linux
+      and Windows this is the only menu there is.
+    */
+    ...(consoleOrigin && process.platform !== 'darwin'
       ? [appearanceMenu(), languageMenu(), { type: 'separator' as const }]
       : []),
     {
@@ -1066,7 +1219,42 @@ const buildTrayMenu = (): Menu =>
     { click: () => app.quit(), label: text().quit },
   ]);
 
-const refreshTray = (): void => {
+/**
+ * The menu at the top of the screen on macOS, and the one a window carries
+ * everywhere else.
+ *
+ * Built and set rather than left to Electron's own, which is named for the
+ * process that is running — "Electron" — and carries nothing of this app's. The
+ * one here is named for the app and carries the two settings a desktop app is
+ * dressed from, so the console needs no pickers of its own: the same two the
+ * menu bar item has, and for the same reason — the window is a window of this
+ * computer.
+ *
+ * The rest is the menus every windowed app on the platform has, taken whole
+ * from Electron: the Edit menu, without which a console window has no copy and
+ * paste at all, and on macOS the Window one, which is how a window is put away
+ * and brought back.
+ */
+const buildApplicationMenu = (): Menu =>
+  Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+    { role: 'editMenu' as const },
+    /*
+      Carried here on every platform, and in the menu bar item's menu as well
+      where there is no menu at the top of the screen: Linux and Windows hide a
+      window's own menu bar by default, so on those two the menu bar item is the
+      only place anybody would think to look.
+    */
+    ...(consoleOrigin ? [appearanceMenu(), languageMenu()] : []),
+    ...(process.platform === 'darwin' ? [{ role: 'windowMenu' as const }] : []),
+  ]);
+
+const refreshMenus = (): void => {
+  // Set whether or not a menu bar item could be drawn: the menu at the top of
+  // the screen is this app's name and its settings, and an icon that never
+  // appeared is no reason to go by the process's instead.
+  Menu.setApplicationMenu(buildApplicationMenu());
+
   if (!tray) {
     return;
   }
@@ -1128,6 +1316,16 @@ const applyDevelopmentIcon = (): void => {
 
   app.dock?.setIcon(icon);
 };
+
+/*
+  Drawn at module scope, before `ready` and before anything is awaited: macOS
+  puts the tile in the Dock as soon as the process starts, which is before a
+  line of this file runs, and every moment between the two is a moment the Dock
+  says "Electron". Shortening that is all this can do — the tile is the
+  bundle's, and a bundle is what `scripts/build-desktop.ts` builds for
+  development to run.
+*/
+applyDevelopmentIcon();
 
 // Where a platform draws a window's icon at all — the title bar, the taskbar.
 // macOS draws it in none of them, and there it is the Dock.
@@ -1213,7 +1411,76 @@ const createTray = (): void => {
   // the dock and out of Cmd+Tab, so an open console could only ever be reached
   // again from the menu bar item. A development build is no exception: on macOS
   // its own icon is drawn in the Dock, which is the one place it shows.
-  refreshTray();
+  refreshMenus();
+};
+
+/**
+ * What makes a run a development one, and where the console it serves lives.
+ *
+ * Set by `scripts/dev-desktop.ts`, which is the only thing that can say: the app
+ * is a bundle with no repository beside it, and nothing in it knows what ran it.
+ */
+const DEV_CONSOLE_ENV = 'CODEBUDDY_DESKTOP_DEV';
+const DEV_CONSOLE_ROOT_ENV = 'CODEBUDDY_DESKTOP_DEV_ROOT';
+const DEV_CONSOLE_RUNTIME_ENV = 'CODEBUDDY_DESKTOP_DEV_RUNTIME';
+/**
+ * How long a console compiled on demand is given to answer its first request.
+ *
+ * `next dev` builds a page when it is asked for, so the first answer is a
+ * compile and not a read — several of them, one after another, on a cold cache.
+ */
+const DEV_CONSOLE_TIMEOUT_MS = 180_000;
+
+/** The repository the console is served from, when it is served from one. */
+const devConsole = (): { root: string; runtime: string } | null => {
+  if (process.env[DEV_CONSOLE_ENV]?.trim() !== '1') {
+    return null;
+  }
+
+  const root = process.env[DEV_CONSOLE_ROOT_ENV]?.trim();
+  const runtime = process.env[DEV_CONSOLE_RUNTIME_ENV]?.trim();
+
+  return root && runtime ? { root, runtime } : null;
+};
+
+/**
+ * The gateway as `next dev`, in the repository, on the port the shell picked.
+ *
+ * Everything the built gateway is given — the console's token, the storage, the
+ * deployment to forward to — reaches it through the environment either way, so
+ * the only thing this changes is where the pages come from: the source, watched
+ * by Next and pushed into the window over Fast Refresh, instead of a build the
+ * app has to be restarted to pick up.
+ *
+ * Undefined outside a development run, which leaves `startGateway` spawning the
+ * bundled server as it always has.
+ */
+const devConsoleSpawn = (port: number): GatewaySpawn | undefined => {
+  const dev = devConsole();
+
+  if (!dev) {
+    return undefined;
+  }
+
+  return ({ env }) => {
+    const childEnv: NodeJS.ProcessEnv = { ...env, NODE_ENV: 'development' };
+
+    // The built gateway runs on this app's own binary, switched into Node by
+    // this; the one in the repository is an ordinary runtime, to which the
+    // switch means nothing.
+    delete childEnv.ELECTRON_RUN_AS_NODE;
+
+    return spawn(
+      dev.runtime,
+      ['run', 'dev', '--port', String(port), '--hostname', '127.0.0.1'],
+      {
+        cwd: dev.root,
+        env: childEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+  };
 };
 
 const launchGateway = async (
@@ -1247,13 +1514,27 @@ const launchGateway = async (
       directory: app.getPath('temp'),
       executable: process.execPath,
     }),
+    /*
+      Where the console itself comes from: the source, when the app was started
+      by `scripts/dev-desktop.ts`, and the build it ships otherwise.
+
+      A development run gets `next dev` in the repository instead, which is the
+      only thing that answers a changed page with the page: Fast Refresh takes
+      the window's own connection, so a save to the console is a save the window
+      shows, with no build behind it and no relaunch.
+    */
+    spawn: devConsoleSpawn(port),
+    // Compiled on demand, so a cold development console takes longer than a
+    // built one to answer its first request — and a first request is what the
+    // health check is.
+    timeoutMs: devConsole() ? DEV_CONSOLE_TIMEOUT_MS : undefined,
     // The gateway can also die later — a crash, or a database that stops
     // answering. Nothing restarts it then, but the menu bar must stop claiming
     // it is running.
     onUnexpectedExit: (error) => {
       gateway = null;
       status = 'failed';
-      refreshTray();
+      refreshMenus();
       dialog.showErrorBox(
         APP_TITLE,
         `The local gateway stopped unexpectedly.\n\n${describeError(error)}`,
@@ -1396,7 +1677,7 @@ const restartGateway = async (): Promise<void> => {
   if (paused) {
     await stopGatewayAndWait();
     status = 'paused';
-    refreshTray();
+    refreshMenus();
     // Forgotten rather than left waiting: the console is not coming up, and a
     // click remembered here is a window that opens by itself minutes later,
     // when the gateway is resumed for something else entirely.
@@ -1413,7 +1694,7 @@ const restartGateway = async (): Promise<void> => {
 
   restarting = true;
   status = 'starting';
-  refreshTray();
+  refreshMenus();
 
   const startedFor = backend;
   const upstream = backend.mode === 'remote' ? backend.url : null;
@@ -1425,7 +1706,7 @@ const restartGateway = async (): Promise<void> => {
       restarting = false;
       await stopGatewayAndWait();
       status = 'unreachable';
-      refreshTray();
+      refreshMenus();
       // Dropped here rather than in the `finally` below, which this return is
       // above: a click waiting for a console is waiting for one that is not
       // coming, and left set it is a window that opens on its own the next
@@ -1459,7 +1740,7 @@ const restartGateway = async (): Promise<void> => {
     if (port === null) {
       portBusy = preferredPort();
       status = 'portBusy';
-      refreshTray();
+      refreshMenus();
       raiseBackendQuestion('portInUse');
 
       return;
@@ -1487,7 +1768,7 @@ const restartGateway = async (): Promise<void> => {
     if (paused) {
       await stopGatewayAndWait();
       status = 'paused';
-      refreshTray();
+      refreshMenus();
 
       return;
     }
@@ -1495,11 +1776,11 @@ const restartGateway = async (): Promise<void> => {
     consoleOrigin = new URL(gateway.url).origin;
     portBusy = null;
     status = 'running';
-    refreshTray();
+    refreshMenus();
   } catch (error) {
     gateway = null;
     status = 'failed';
-    refreshTray();
+    refreshMenus();
     dialog.showErrorBox(
       APP_TITLE,
       `The local gateway failed to start.\n\n${describeError(error)}`,
@@ -1584,6 +1865,7 @@ const refreshUsage = async (): Promise<void> => {
   todayUsage = await fetchTodayUsage({
     baseUrl,
     cookie: adminCookieHeader(cookies),
+    token: deviceToken ?? undefined,
   });
   usageLoaded = true;
 
@@ -1594,10 +1876,11 @@ const refreshUsage = async (): Promise<void> => {
       ? await fetchServerVersion({
           baseUrl,
           cookie: adminCookieHeader(cookies),
+          token: deviceToken ?? undefined,
         })
       : null;
 
-  refreshTray();
+  refreshMenus();
 };
 
 const startUsagePolling = (): void => {
@@ -1723,7 +2006,7 @@ const runUpdateCheck = async (): Promise<void> => {
   }
 
   updateState = 'checking';
-  refreshTray();
+  refreshMenus();
 
   try {
     const current = app.getVersion();
@@ -1784,7 +2067,7 @@ const runUpdateCheck = async (): Promise<void> => {
     }
 
     updateState = 'downloading';
-    refreshTray();
+    refreshMenus();
 
     const installer = await downloadInstaller(update.asset);
 
@@ -1813,8 +2096,114 @@ const runUpdateCheck = async (): Promise<void> => {
     );
   } finally {
     updateState = 'idle';
-    refreshTray();
+    refreshMenus();
   }
+};
+
+/**
+ * Whether the deployment behind the console wants this app signed in to it.
+ *
+ * Asked of the deployment, which is the one that owns the password: a desktop
+ * install has none of its own, and a console showing a deployment's data is
+ * signed in — or not — there. This machine's own gateway is reachable by
+ * nothing but this app's own window, which needs no approval from anybody.
+ *
+ * A deployment that could not be asked is one that is not made to answer twice:
+ * the console comes up and says what it can, which is what it does already.
+ */
+const deploymentNeedsSignIn = async (): Promise<boolean> => {
+  if (backend.mode !== 'remote') {
+    return false;
+  }
+
+  const session = await fetchUpstreamSessionSummary({
+    deviceToken,
+    upstream: backend.url,
+  });
+
+  return session === null
+    ? false
+    : session.accountConfigured && !session.authenticated;
+};
+
+/**
+ * Loads the console again, into a window that is already open.
+ *
+ * A window is only brought forward once a backend has been applied, and the page
+ * it holds is the one the backend before it served — a deployment's login page
+ * above all, which is a page this machine's own gateway has no use for and
+ * nothing to say on.
+ */
+const reloadConsole = (): void => {
+  const baseUrl = consoleBaseUrl();
+
+  if (!baseUrl || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  void loadConsole(mainWindow, `${baseUrl}/dashboard`);
+};
+
+/**
+ * Whether the console is about to be opened on a deployment nobody has signed
+ * this app in to.
+ *
+ * Which is the one case the console must not be opened at all: what it answers
+ * with is the deployment's own login page, in this app's window, where a
+ * passkey saved for that deployment cannot be used and a password would be
+ * typed into a page this app rendered. The window that asks which backend to
+ * use is what goes in front of the user instead — that is where a deployment is
+ * signed in to, in a browser, on the deployment's own page.
+ */
+const needsDeploymentSignIn = async (): Promise<boolean> =>
+  backend.mode === 'remote' && !deviceToken && (await deploymentNeedsSignIn());
+
+/**
+ * Opens the console of a deployment, in this app's own window, on the
+ * deployment's own address.
+ *
+ * No gateway of this machine's is started for it. The window is this app's, and
+ * what is in it is the deployment's console, asked for on the address it is
+ * served on — which is also where its data and its API are. A gateway on
+ * loopback forwarding the two is a port this machine gave up and an API nobody
+ * asked this app to run: the console is for controlling a backend, not for
+ * being one.
+ */
+const openDeploymentConsole = async ({
+  authenticate = false,
+}: { authenticate?: boolean } = {}): Promise<void> => {
+  const target = backend;
+
+  if (target.mode !== 'remote') {
+    return;
+  }
+
+  lastProbe = await probeDeployment({ url: target.url });
+
+  if (lastProbe.kind !== 'ready') {
+    status = 'unreachable';
+    refreshMenus();
+    raiseBackendQuestion('unreachable');
+
+    return;
+  }
+
+  if (authenticate) {
+    await signInToDeployment();
+  }
+
+  if (await needsDeploymentSignIn()) {
+    status = 'running';
+    refreshMenus();
+    openBackendWindow({ screen: 'settings' });
+
+    return;
+  }
+
+  status = 'running';
+  refreshMenus();
+  reloadConsole();
+  showMainWindow();
 };
 
 /**
@@ -1831,7 +2220,16 @@ const runUpdateCheck = async (): Promise<void> => {
  */
 const applyBackend = async (
   next: DesktopBackend,
-  { persist = false, port }: { persist?: boolean; port?: number } = {},
+  {
+    /**
+     * Set when the choice came from the button that says 去认证: the press is a
+     * request to be signed in, so the deployment is asked whatever it answers to
+     * a sign-in, rather than only when it has already said it wants one.
+     */
+    authenticate = false,
+    persist = false,
+    port,
+  }: { authenticate?: boolean; persist?: boolean; port?: number } = {},
 ): Promise<void> => {
   const chosen = normalizeDesktopBackend(next);
 
@@ -1861,11 +2259,39 @@ const applyBackend = async (
   todayUsage = null;
   usageLoaded = false;
   serverVersion = null;
-  refreshTray();
+  refreshMenus();
+
+  /*
+    A deployment is served on its own address, and this machine starts nothing
+    for it: the console in this window is the deployment's, and so is the data
+    and the API behind it. A gateway on loopback forwarding the two is a port
+    this machine gave up and an API nobody asked this app to run — the console
+    is for controlling a backend, not for being one.
+  */
+  if (backend.mode === 'remote') {
+    // Stopped, including one still coming up: a start in flight is a child
+    // holding the port, and `stopGatewayAndWait` only knows about a gateway
+    // that has already answered.
+    await stopGatewayAndWait();
+
+    if (pendingChild) {
+      const child = pendingChild;
+
+      pendingChild = null;
+      child.kill();
+
+      await Promise.race([childGone(child), delay(GATEWAY_EXIT_GRACE_MS)]);
+    }
+
+    await openDeploymentConsole({ authenticate });
+
+    return;
+  }
 
   await restartGateway();
 
   if (status === 'running') {
+    reloadConsole();
     showMainWindow();
 
     return;
@@ -1962,7 +2388,7 @@ const openBackendWindow = ({
 
   const window = new BrowserWindow({
     autoHideMenuBar: true,
-    backgroundColor: WINDOW_BACKGROUND_COLOR,
+    backgroundColor: windowBackground(),
     height: BACKEND_WINDOW_HEIGHT,
     icon: windowIcon(),
     resizable: false,
@@ -2428,7 +2854,7 @@ const setPaused = async (next: boolean): Promise<void> => {
     // the one that is already coming up.
     if (!restarting) {
       status = 'paused';
-      refreshTray();
+      refreshMenus();
     }
 
     return;
@@ -2467,21 +2893,6 @@ const openSettings = (): void => {
   openBackendWindow({ screen: 'settings' });
 };
 
-const deviceCodeForm = (grant: DeviceGrant): AskForm => {
-  const shell = text();
-
-  return {
-    cancel: shell.cancel,
-    message: fillText(shell.deviceCodeMessage, {
-      code: grant.userCode,
-      url: grant.verificationUri || grant.verificationUriComplete,
-    }),
-    ok: shell.deviceOpenBrowser,
-    options: [shell.deviceOpenBrowser],
-    title: APP_TITLE,
-  };
-};
-
 /**
  * Signing this app in to the deployment whose data it shows.
  *
@@ -2495,7 +2906,7 @@ const deviceCodeForm = (grant: DeviceGrant): AskForm => {
  * everything it forwards: the window is signed in without a password ever having
  * been typed into this machine's console.
  */
-const signInToDeployment = async (): Promise<void> => {
+const signInToDeployment = async (quiet = false): Promise<void> => {
   // This machine's own gateway is served to nobody but this app's window: there
   // is no deployment to be approved by, and so no sign-in to make.
   if (backend.mode !== 'remote' || signingIn) {
@@ -2503,6 +2914,30 @@ const signInToDeployment = async (): Promise<void> => {
   }
 
   const shell = text();
+  /*
+    Said in a dialog of the computer's own, unless the sign-in was this app's
+    own idea rather than a click on the menu bar item.
+
+    Quiet, because a deployment that does not answer the device flow is not a
+    failure to report when nobody asked for it: what it answers the console with
+    is the login page it would have shown anyway, which is the only way in it
+    offers — a password, typed in this window — and a dialog in front of a page
+    about to explain itself is a dialog that hides the explanation.
+  */
+  const say = (message: string): void => {
+    if (!quiet) {
+      /*
+        Not `showErrorBox`, which stops this process where it stands until
+        somebody dismisses it. That is true of Linux and Windows, and a sign-in
+        is answered from inside a press the window is waiting on: a box that
+        blocks is a press that never comes back, and an app that looks hung
+        rather than one that said what went wrong.
+      */
+      void dialog
+        .showMessageBox({ message, title: APP_TITLE, type: 'error' })
+        .catch(() => undefined);
+    }
+  };
   // Named before anything is asked of it: the grant is that deployment's, and
   // the token that comes back is a promise it made. The backend can be pointed
   // somewhere else while the user is still approving, and a token saved under
@@ -2513,55 +2948,139 @@ const signInToDeployment = async (): Promise<void> => {
   // is a second sign-in — two codes on two screens, the one the user did not
   // approve left to run out, and a second gateway restart behind it.
   signingIn = true;
-  refreshTray();
+  refreshMenus();
 
-  const requested = await requestDeviceAuthorization({ baseUrl: issuedBy });
+  /*
+    Everything below answers the same way, whatever goes wrong: the sign-in did
+    not happen, and the console is opened without one. A deployment that cannot
+    be asked, or a machine with no port to listen on, is not a reason to leave
+    the app with no window at all — that answer belongs to the console, which is
+    what shows the deployment's own login page.
+  */
+  /*
+    Whether the address is a deployment at all, asked before anything is asked
+    of it. A name that resolves to nothing, or to something that answers with
+    somebody else's page, is not a sign-in that failed — it is an address that
+    was never going to sign anything in, and saying so is the whole point of
+    asking.
+  */
+  const probe = await probeDeployment({ url: issuedBy });
 
-  if (requested.kind === 'notConfigured') {
-    dialog.showErrorBox(APP_TITLE, shell.deviceNotConfigured);
-
-    return;
-  }
-
-  if (requested.kind !== 'granted') {
-    dialog.showErrorBox(APP_TITLE, shell.deviceSignInFailed);
-
-    return;
-  }
-
-  const { grant } = requested;
-
-  if (asksInSystemDialogs()) {
-    const outcome = await askSystem(deviceCodeForm(grant));
-
-    if (outcome.kind !== 'answered') {
-      return;
-    }
-  } else {
-    // Asked for by name, so it is worth saying out loud: the code is shown on the
-    // page the browser opens, which is where it is typed in as well.
-    console.warn(
-      'CODEBUDDY_DESKTOP_ASK=window: not asking in the system’s dialog.',
+  if (probe.kind !== 'ready') {
+    say(
+      fillText(
+        probe.kind === 'unreachable'
+          ? shell.unreachableBodyUnreachable
+          : shell.unreachableBodyForeign,
+        { host: new URL(issuedBy).host },
+      ),
     );
+
+    return;
   }
 
-  openExternally(grant.verificationUriComplete || grant.verificationUri);
+  /*
+    Named out here, so the port it is holding is given back in the `finally`
+    whatever happens below: a listener left listening is a port this machine is
+    still holding for a sign-in that is already over.
+  */
+  let listener: DeviceRedirectListener | null = null;
 
   try {
-    const outcome = await pollForDeviceToken({
-      baseUrl: issuedBy,
-      deviceCode: grant.deviceCode,
-      expiresIn: grant.expiresIn,
-      intervalSeconds: grant.intervalSeconds,
+    /*
+      Listening before the code is asked for: the address the deployment sends
+      the browser back to has to be named in the request, and a port this
+      machine has going is only known once it is bound.
+    */
+    listener = await startDeviceRedirectListener({
+      state: randomBytes(16).toString('hex'),
     });
 
-    if (outcome.kind !== 'signedIn') {
-      dialog.showErrorBox(
-        APP_TITLE,
-        outcome.kind === 'expired'
-          ? shell.deviceSignInExpired
-          : shell.deviceSignInFailed,
+    const requested = await requestDeviceAuthorization({
+      baseUrl: issuedBy,
+      redirectUri: listener.redirectUri,
+    });
+
+    if (requested.kind !== 'granted') {
+      listener.close();
+
+      /*
+        Said with what the deployment answered, because "it did not sign this
+        app in" is true of a wrong address, of another desktop install refusing
+        the request, and of a proxy answering for the host — and the three are
+        told apart only by what came back.
+      */
+      const said =
+        requested.kind === 'failed'
+          ? `${issuedBy} answered ${requested.status || 'nothing'}${requested.message ? ` — ${requested.message}` : ''}`
+          : '';
+
+      console.warn(`Could not sign in to ${issuedBy}: ${said || 'no account'}`);
+      say(
+        requested.kind === 'notConfigured'
+          ? shell.deviceNotConfigured
+          : said
+            ? `${shell.deviceSignInFailed}\n\n${said}`
+            : shell.deviceSignInFailed,
       );
+
+      return;
+    }
+
+    const { grant } = requested;
+    /*
+      Where the user approves: the deployment's own page, in the browser, with
+      the code already in its address — so there is nothing to show them first,
+      and no code to carry across by hand.
+
+      And where they come back from: this machine, on the address above, with
+      the token in it. Which is why nothing here asks again — a native app has
+      no secret to keep and no reason to be polling for an answer the browser is
+      already on its way back with.
+    */
+    openExternally(grant.verificationUriComplete || grant.verificationUri);
+
+    /*
+      Waited for, but not past the user's own answer to it. Closing the window
+      that asked is the one way out of a sign-in that is never going to be
+      approved — a browser closed on, or a deployment that grants a code and
+      never sends the browser home with it — and a spinner nobody can stop for
+      as long as the code is good is worse than one that ends when the user
+      walks away.
+
+      Only when there was a window to close: from the menu bar item there is
+      none, and a sign-in asked from there is waited for to the end.
+    */
+    const asking = backendWindow;
+    let watching: NodeJS.Timeout | null = null;
+
+    const abandoned = asking
+      ? new Promise<null>((resolve) => {
+          watching = setInterval(() => {
+            if (asking.isDestroyed()) {
+              resolve(null);
+            }
+          }, 500);
+        })
+      : new Promise<null>(() => undefined);
+
+    const token = await Promise.race([
+      listener.wait(grant.expiresIn * 1000),
+      abandoned,
+    ]);
+
+    if (watching) {
+      clearInterval(watching);
+    }
+
+    listener.close();
+
+    if (!token) {
+      // Said unless the user closed the window themselves: that is an answer of
+      // its own, and one that needs no explaining.
+      if (!asking || !asking.isDestroyed()) {
+        say(shell.deviceSignInExpired);
+      }
 
       return;
     }
@@ -2570,38 +3089,45 @@ const signInToDeployment = async (): Promise<void> => {
     // the code was shown for the old address, and this token opens its door.
     // Keeping it would present one deployment's introduction to another.
     if (backend.mode !== 'remote' || backend.url !== issuedBy) {
-      dialog.showErrorBox(APP_TITLE, shell.deviceSignInFailed);
+      say(shell.deviceSignInFailed);
 
       return;
     }
 
     try {
       writeDeviceToken(userDataDir, {
-        token: outcome.token.accessToken,
+        token: token.accessToken,
         url: issuedBy,
       });
     } catch (error) {
       // Approved by the user, in their browser, and then dropped on the floor
       // because this machine would not take the file: said in a dialog of the
       // computer's own, the way every other failure to save a setting is.
-      dialog.showErrorBox(
-        APP_TITLE,
-        `${shell.deviceSignInFailed}\n\n${describeError(error)}`,
-      );
+      say(`${shell.deviceSignInFailed}\n\n${describeError(error)}`);
 
       return;
     }
 
-    deviceToken = outcome.token.accessToken;
-    refreshTray();
+    deviceToken = token.accessToken;
+    refreshMenus();
 
-    // Restarted because the token reaches the gateway in its environment: the
-    // console the window already holds is a page that was signed out, and the one
-    // it gets after this is signed in.
-    await restartGateway();
+    /*
+      No gateway to restart: this only ever runs for a deployment, and a
+      deployment is served from its own address — the token goes with the
+      requests this app makes of it, not into the environment of a gateway of
+      this machine's. Restarting one here would start serving a deployment
+      through a port this machine had no reason to give up.
+
+      What the console needs is to be asked again, signed in this time, which is
+      what the caller does behind this.
+    */
+  } catch (error) {
+    console.warn(`Could not sign in to ${issuedBy}: ${describeError(error)}`);
+    say(shell.deviceSignInFailed);
   } finally {
+    listener?.close();
     signingIn = false;
-    refreshTray();
+    refreshMenus();
   }
 };
 
@@ -2622,7 +3148,7 @@ const signOutOfDeployment = async (): Promise<void> => {
 
   deviceToken = null;
   forgetDeviceToken(userDataDir);
-  refreshTray();
+  refreshMenus();
 
   if (token) {
     try {
@@ -2808,11 +3334,19 @@ const watchDesktopSettings = (): void => {
 };
 
 const startBackend = async (): Promise<void> => {
-  // A deployment configured or not, this starts the gateway that serves the
-  // console; the deployment only decides where its data comes from.
+  // A deployment is served on its own address, and this machine starts nothing
+  // for it; only this machine's own data needs a gateway of this machine's.
+  if (backend.mode === 'remote') {
+    await openDeploymentConsole();
+
+    return;
+  }
+
+  // This machine's own gateway serves the console; its data is this machine's.
   await restartGateway();
 
   if (status === 'running') {
+    reloadConsole();
     showMainWindow();
 
     return;
@@ -2834,6 +3368,24 @@ const startBackend = async (): Promise<void> => {
 
 const bootstrap = async (): Promise<void> => {
   userDataDir = app.getPath('userData');
+  /*
+    What the shell speaks until the console tells it otherwise: this computer's
+    own language, not English. The window that asks which backend to use is the
+    first thing this app ever shows, and it is shown before there is a console
+    with a locale to read.
+  */
+  locale = resolveDesktopLocale(app.getLocale());
+
+  /*
+    And what the console is asked in, which is what it answers in: a window
+    takes its Accept-Language from Chromium's own default, which is not this
+    computer's language — so a console that answered in English wrote a cookie
+    the shell then read back and spoke English from, whatever the machine said.
+  */
+  session.defaultSession.setUserAgent(
+    session.defaultSession.getUserAgent(),
+    [app.getLocale(), 'en-US'].join(','),
+  );
   // Made up here and nowhere else: the gateway gets it through the environment,
   // the window gets it as a cookie, and it dies with this run — a token written
   // down would be one a next run could be made to honour.
@@ -2853,7 +3405,6 @@ const bootstrap = async (): Promise<void> => {
       ? readDeviceToken(userDataDir, backend.url)
       : null;
 
-  applyDevelopmentIcon();
   createTray();
   watchDesktopSettings();
   startUsagePolling();
@@ -2898,14 +3449,28 @@ ipcMain.handle('desktop:info', () => ({
   portInUse: portInUseInfo(),
   screen: backendScreen,
   serverVersion,
+  /**
+   * Whether the deployment behind the console has signed this app in.
+   *
+   * What the button under a deployment's address is disabled by: an address
+   * that is already the one saved, to a deployment that has already answered,
+   * has nothing left for the button to do.
+   */
+  signedIn: Boolean(deviceToken),
   text: text(),
   unreachable: unreachableInfo(),
 }));
 
 /**
  * Saves what the window settled: which backend, and which port to serve on.
+ *
+ * Answered only once the choice has been applied — which for a deployment means
+ * once it has been asked to sign this app in and the browser has answered, or
+ * been given up on. The window stays open until then: the button that started
+ * it is the one that says how it went, and a window that closed the moment it
+ * was pressed leaves the answer nowhere to land.
  */
-ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
+ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
   const window = backendWindow;
   const record =
     next && typeof next === 'object' && !Array.isArray(next)
@@ -2915,14 +3480,87 @@ ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
   // Normalized here, at the boundary a page can reach: the window has no say in
   // what counts as a backend or as a port.
   const port = normalizeDesktopPort(record.port, 0);
+  const chosen = normalizeDesktopBackend(record.backend);
 
-  void applyBackend(normalizeDesktopBackend(record.backend), {
+  /*
+    This machine's own gateway is restarted behind the choice, and nothing about
+    it is answered in another app: the window closes on the press, the way a
+    dialog does, and the gateway is up by the time the console is asked for.
+
+    Waited for only when the choice is a deployment's. Its sign-in is a
+    browser's to answer, on the deployment's own page, and this window is where
+    what came of it is reported — so it stays open, and the press is answered
+    when the answer lands or the browser is closed on.
+  */
+  if (chosen.mode !== 'remote') {
+    void applyBackend(chosen, {
+      persist: true,
+      // A port the page did not settle — one it never showed, or one left blank
+      // — leaves the one on disk standing.
+      port: port || undefined,
+    });
+    closeWindow(window);
+
+    return { signedIn: false };
+  }
+
+  // Pressed to be authenticated, when it was the button under a deployment's
+  // address that did the pressing: the sign-in is the request, not something the
+  // deployment is waited on to ask for.
+  await applyBackend(chosen, {
+    authenticate: true,
     persist: true,
-    // A port the page did not settle — one it never showed, or one left blank —
-    // leaves the one on disk standing.
     port: port || undefined,
   });
-  closeWindow(window);
+
+  /*
+    The ask is out of the way before the console is opened: a window of this
+    app's own still being open is what the console is brought forward into, so a
+    console asked for while this one was closing was a console that never
+    opened at all. Waited for, because a window asked to close is not closed yet
+    — and `showMainWindow` looks at whether it is.
+  */
+  if (window && !window.isDestroyed()) {
+    const closed = new Promise<void>((resolve) => {
+      window.once('closed', () => resolve());
+    });
+
+    window.close();
+
+    /*
+      Waited for, but not forever: a window that will not close would otherwise
+      hold the press here, and a press that never comes back is an app that looks
+      hung rather than one that is a window short. The console is opened whatever
+      became of it.
+    */
+    await Promise.race([closed, delay(CLOSE_GRACE_MS)]);
+  }
+
+  /*
+    Not signed in to a deployment that wants one: `applyBackend` has put the
+    window that asks in front of the user, and closing it here would take away
+    the one thing the answer was meant to be shown in.
+
+    A deployment this app is already signed in to — or one that asks for no
+    sign-in at all — is answered the way a save always was: the ask closes, and
+    the console opens.
+  */
+  if (await needsDeploymentSignIn()) {
+    return { signedIn: false };
+  }
+
+  if (window && !window.isDestroyed()) {
+    const closed = new Promise<void>((resolve) => {
+      window.once('closed', () => resolve());
+    });
+
+    window.close();
+    await closed;
+  }
+
+  showMainWindow();
+
+  return { signedIn: Boolean(deviceToken) };
 });
 
 /**
@@ -3122,7 +3760,7 @@ if (!app.requestSingleInstanceLock()) {
     } catch (error) {
       gateway?.stop();
       status = 'failed';
-      refreshTray();
+      refreshMenus();
       dialog.showErrorBox(
         APP_TITLE,
         `The local gateway failed to start.\n\n${describeError(error)}`,

@@ -10,11 +10,15 @@ export interface DesktopText {
   /** The address of a deployment, asked for in a dialog of the system's own. */
   address: string;
   appVersion: string;
+  /**
+   * The button under the address of a deployment: it saves the address and then
+   * asks that deployment to sign this app in, which is a browser's to answer.
+   */
+  authenticate: string;
   /** How the console is drawn, in the menu bar item rather than in the window. */
   appearance: string;
   backend: string;
   backendLocal: string;
-  backendLocalHint: string;
   backendRemote: string;
   backendRemoteHint: string;
   backendUrlPlaceholder: string;
@@ -23,10 +27,7 @@ export interface DesktopText {
   checkForUpdates: string;
   chooseBackend: string;
   copyAddress: string;
-  /** What the dialog that shows a device code says. */
-  deviceCodeMessage: string;
   deviceNotConfigured: string;
-  deviceOpenBrowser: string;
   deviceSignInExpired: string;
   deviceSignInFailed: string;
   invalidBackendUrl: string;
@@ -93,25 +94,21 @@ export interface DesktopText {
 const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   'en-US': {
     address: 'Address',
+    authenticate: 'Authenticate',
     appVersion: 'Version {version}',
     appearance: 'Appearance',
     backend: 'Backend',
     backendLocal: 'This machine',
-    backendLocalHint:
-      'Runs the gateway bundled into the app on 127.0.0.1. Nothing leaves this computer, and no sign-in is needed.',
-    backendRemote: 'A deployment I already run',
+    backendRemote: 'Other backend',
     backendRemoteHint:
-      'Shows this app’s own console with that deployment’s data, forwarded from there. It may ask you to sign in.',
+      'Shows the console that deployment serves, on the address it is served on — the pages and the data are both its own. It may ask you to sign in.',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: 'Cancel',
     changeBackend: 'Change backend…',
     checkForUpdates: 'Check for updates…',
     chooseBackend: 'Choose a backend',
     copyAddress: 'Copy address',
-    deviceCodeMessage:
-      'Sign this app in at {url}, with the code {code}. The browser opens on the page that asks for it.',
     deviceNotConfigured: 'That deployment does not ask for a sign-in.',
-    deviceOpenBrowser: 'Open the browser',
     deviceSignInExpired: 'The code ran out before it was approved.',
     deviceSignInFailed: 'The deployment did not sign this app in.',
     invalidBackendUrl: 'Enter an address starting with http:// or https://',
@@ -177,25 +174,21 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   },
   'ja-JP': {
     address: 'アドレス',
+    authenticate: '認証する',
     appVersion: 'バージョン {version}',
     appearance: '外観',
     backend: 'バックエンド',
     backendLocal: 'このマシン',
-    backendLocalHint:
-      'アプリに同梱されたゲートウェイを 127.0.0.1 で起動します。データはこのコンピュータから外に出ず、サインインも不要です。',
-    backendRemote: 'すでに運用しているデプロイ',
+    backendRemote: '他のバックエンド',
     backendRemoteHint:
-      'ここで起動せず、このアプリのコンソールにそのデプロイのデータを表示します。サインインを求められる場合があります。',
+      'そのデプロイが配信するコンソールを、そのアドレスのまま表示します。画面もデータもそのデプロイのものです。サインインを求められる場合があります。',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: 'キャンセル',
     changeBackend: 'バックエンドを変更…',
     checkForUpdates: 'アップデートを確認…',
     chooseBackend: 'バックエンドを選択',
     copyAddress: 'アドレスをコピー',
-    deviceCodeMessage:
-      'このアプリを {url} でコード {code} を使ってサインインさせます。ブラウザーでそのページが開きます。',
     deviceNotConfigured: 'そのデプロイはサインインを求めません。',
-    deviceOpenBrowser: 'ブラウザーを開く',
     deviceSignInExpired: 'コードは承認される前に期限切れになりました。',
     deviceSignInFailed: 'デプロイはこのアプリをサインインさせませんでした。',
     invalidBackendUrl:
@@ -264,25 +257,21 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
   },
   'zh-CN': {
     address: '地址',
+    authenticate: '去认证',
     appVersion: '版本 {version}',
     appearance: '外观',
     backend: '后端',
     backendLocal: '本机',
-    backendLocalHint:
-      '在 127.0.0.1 上运行应用内置的网关。数据不会离开这台电脑，也不需要登录。',
-    backendRemote: '我自己部署的服务',
+    backendRemote: '其他后端',
     backendRemoteHint:
-      '在本机显示应用自带的控制台，数据从该服务转发而来。它可能会要求登录。',
+      '显示该服务自己的控制台，页面和数据都来自它本身。它可能会要求登录。',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: '取消',
     changeBackend: '切换后端…',
     checkForUpdates: '检查更新…',
     chooseBackend: '选择后端',
     copyAddress: '复制地址',
-    deviceCodeMessage:
-      '在 {url} 用验证码 {code} 登录这个应用。浏览器会打开要求输入它的那一页。',
     deviceNotConfigured: '那个部署不要求登录。',
-    deviceOpenBrowser: '打开浏览器',
     deviceSignInExpired: '验证码在被批准之前就过期了。',
     deviceSignInFailed: '部署没有让这个应用登录。',
     invalidBackendUrl: '请输入以 http:// 或 https:// 开头的地址',

@@ -77,6 +77,29 @@ describe('fetchTodayUsage', () => {
   const jsonResponse = (body: unknown, status = 200): Response =>
     Response.json(body, { status });
 
+  it('carries the token a deployment handed this app, when there is one', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(analytics([{ inputTokens: 10, outputTokens: 1 }])),
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchTodayUsage({
+      baseUrl: 'https://api.example.com',
+      token: 'a-device-token',
+    });
+
+    // The same request, asked without a session to hold: a sign-in made as a
+    // device is a token, not a cookie.
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.example.com/admin-api/usage?range=today',
+      {
+        headers: { authorization: 'Bearer a-device-token' },
+        signal: expect.anything(),
+      },
+    );
+  });
+
   it('asks for today and sums what comes back', async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse(analytics([{ inputTokens: 900, outputTokens: 100 }])),
