@@ -131,7 +131,10 @@ describe('the menu bar icons', () => {
       // The script is run by hand, so what is committed is what it last wrote:
       // a mark that has drifted out of the size or the position the menu bar
       // item was written for is a mark nobody would notice until it shipped.
-      expect({ ...committed, coloured: drawn.coloured }).toEqual({ ...drawn });
+      // Compared whole, colour and all: a template with colour in it is one
+      // macOS cannot draw from, and the committed files are what a build
+      // copies.
+      expect(committed).toEqual(drawn);
     }
   });
 });
