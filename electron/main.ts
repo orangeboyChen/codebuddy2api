@@ -2810,45 +2810,54 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
   refreshMenus();
 
   /*
-    Listening before the code is asked for: the address the deployment sends the
-    browser back to has to be named in the request, and a port this machine has
-    going is only known once it is bound.
+    Everything below answers the same way, whatever goes wrong: the sign-in did
+    not happen, and the console is opened without one. A deployment that cannot
+    be asked, or a machine with no port to listen on, is not a reason to leave
+    the app with no window at all — that answer belongs to the console, which is
+    what shows the deployment's own login page.
   */
-  const listener = await startDeviceRedirectListener({
-    state: randomBytes(16).toString('hex'),
-  });
-
-  const requested = await requestDeviceAuthorization({
-    baseUrl: issuedBy,
-    redirectUri: listener.redirectUri,
-  });
-
-  if (requested.kind !== 'granted') {
-    listener.close();
-    say(
-      requested.kind === 'notConfigured'
-        ? shell.deviceNotConfigured
-        : shell.deviceSignInFailed,
-    );
-
-    return;
-  }
-
-  const { grant } = requested;
-  /*
-    Where the user approves: the deployment's own page, in the browser, with the
-    code already in its address — so there is nothing to show them first, and no
-    code to carry across by hand.
-
-    And where they come back from: this machine, on the address above, with the
-    token in it. Which is why nothing here asks again — a native app has no
-    secret to keep and no reason to be polling for an answer the browser is
-    already on its way back with.
-  */
-  openExternally(grant.verificationUriComplete || grant.verificationUri);
-
   try {
+    /*
+      Listening before the code is asked for: the address the deployment sends
+      the browser back to has to be named in the request, and a port this
+      machine has going is only known once it is bound.
+    */
+    const listener = await startDeviceRedirectListener({
+      state: randomBytes(16).toString('hex'),
+    });
+
+    const requested = await requestDeviceAuthorization({
+      baseUrl: issuedBy,
+      redirectUri: listener.redirectUri,
+    });
+
+    if (requested.kind !== 'granted') {
+      listener.close();
+      say(
+        requested.kind === 'notConfigured'
+          ? shell.deviceNotConfigured
+          : shell.deviceSignInFailed,
+      );
+
+      return;
+    }
+
+    const { grant } = requested;
+    /*
+      Where the user approves: the deployment's own page, in the browser, with
+      the code already in its address — so there is nothing to show them first,
+      and no code to carry across by hand.
+
+      And where they come back from: this machine, on the address above, with
+      the token in it. Which is why nothing here asks again — a native app has
+      no secret to keep and no reason to be polling for an answer the browser is
+      already on its way back with.
+    */
+    openExternally(grant.verificationUriComplete || grant.verificationUri);
+
     const token = await listener.wait(grant.expiresIn * 1000);
+
+    listener.close();
 
     if (!token) {
       say(shell.deviceSignInExpired);
@@ -2883,9 +2892,12 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
     refreshMenus();
 
     // Restarted because the token reaches the gateway in its environment: the
-    // console the window already holds is a page that was signed out, and the one
-    // it gets after this is signed in.
+    // console the window already holds is a page that was signed out, and the
+    // one it gets after this is signed in.
     await restartGateway();
+  } catch (error) {
+    console.warn(`Could not sign in to ${issuedBy}: ${describeError(error)}`);
+    say(shell.deviceSignInFailed);
   } finally {
     signingIn = false;
     refreshMenus();
@@ -3252,6 +3264,24 @@ ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
     persist: true,
     port: port || undefined,
   });
+
+  /*
+    The ask is out of the way before the console is opened: a window of this
+    app's own still being open is what the console is brought forward into, so a
+    console asked for while this one was closing was a console that never
+    opened at all. Waited for, because a window asked to close is not closed yet
+    — and `showMainWindow` looks at whether it is.
+  */
+  if (window && !window.isDestroyed()) {
+    const closed = new Promise<void>((resolve) => {
+      window.once('closed', () => resolve());
+    });
+
+    window.close();
+    await closed;
+  }
+
+  showMainWindow();
 
   return { signedIn: Boolean(deviceToken) };
 });
