@@ -64,6 +64,7 @@ import {
   DEVICE_REQUEST_TIMEOUT_MS,
   requestDeviceAuthorization,
   startDeviceRedirectListener,
+  type DeviceRedirectListener,
 } from '../lib/server/electron/device-auth';
 import {
   forgetDeviceToken,
@@ -514,11 +515,10 @@ const openExternally = async (target: string): Promise<void> => {
       always honour it.
 
       And answered with a message when it could not be opened, rather than by
-      rejecting: a browser that never came up has to be said out loud, or a
-      sign-in looks like it happened when it did not.
+      rejecting — and typed `void`, though it answers with that message: a
+      browser that never came up has to be said out loud, or a sign-in looks
+      like it happened when it did not.
     */
-    // Typed `void`, and documented otherwise: it answers with the message when
-    // it could not open it, which is a thing worth saying out loud.
     const failed = (await shell.openExternal(parsed.href, {
       activate: true,
     })) as unknown;
@@ -591,7 +591,16 @@ const loadConsole = async (
 ): Promise<void> => {
   consoleOrigin = new URL(url).origin;
 
-  await setConsoleCookie(consoleOrigin);
+  /*
+    The token is only for a console this machine serves: the gateway the app
+    starts answers 404 without it, so nothing but its own window gets a page. A
+    deployment's console is the deployment's, and it has no such guard — a
+    cookie handed to that origin would be this app's console token sent to
+    somebody else's server, for a door nobody there is keeping.
+  */
+  if (backend.mode !== 'remote') {
+    await setConsoleCookie(consoleOrigin);
+  }
 
   // Twice, because the first navigation of a cold app can stall: it neither
   // finishes nor fails, and a window that never gets a first frame stays
@@ -2230,8 +2239,18 @@ const applyBackend = async (
     is for controlling a backend, not for being one.
   */
   if (backend.mode === 'remote') {
-    if (gateway || pendingChild) {
-      await stopGatewayAndWait();
+    // Stopped, including one still coming up: a start in flight is a child
+    // holding the port, and `stopGatewayAndWait` only knows about a gateway
+    // that has already answered.
+    await stopGatewayAndWait();
+
+    if (pendingChild) {
+      const child = pendingChild;
+
+      pendingChild = null;
+      child.kill();
+
+      await Promise.race([childGone(child), delay(GATEWAY_EXIT_GRACE_MS)]);
     }
 
     await openDeploymentConsole({ authenticate });
@@ -2921,13 +2940,20 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
     return;
   }
 
+  /*
+    Named out here, so the port it is holding is given back in the `finally`
+    whatever happens below: a listener left listening is a port this machine is
+    still holding for a sign-in that is already over.
+  */
+  let listener: DeviceRedirectListener | null = null;
+
   try {
     /*
       Listening before the code is asked for: the address the deployment sends
       the browser back to has to be named in the request, and a port this
       machine has going is only known once it is bound.
     */
-    const listener = await startDeviceRedirectListener({
+    listener = await startDeviceRedirectListener({
       state: randomBytes(16).toString('hex'),
     });
 
@@ -2975,12 +3001,47 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
     */
     openExternally(grant.verificationUriComplete || grant.verificationUri);
 
-    const token = await listener.wait(grant.expiresIn * 1000);
+    /*
+      Waited for, but not past the user's own answer to it. Closing the window
+      that asked is the one way out of a sign-in that is never going to be
+      approved — a browser closed on, or a deployment that grants a code and
+      never sends the browser home with it — and a spinner nobody can stop for
+      as long as the code is good is worse than one that ends when the user
+      walks away.
+
+      Only when there was a window to close: from the menu bar item there is
+      none, and a sign-in asked from there is waited for to the end.
+    */
+    const asking = backendWindow;
+    let watching: NodeJS.Timeout | null = null;
+
+    const abandoned = asking
+      ? new Promise<null>((resolve) => {
+          watching = setInterval(() => {
+            if (asking.isDestroyed()) {
+              resolve(null);
+            }
+          }, 500);
+        })
+      : new Promise<null>(() => undefined);
+
+    const token = await Promise.race([
+      listener.wait(grant.expiresIn * 1000),
+      abandoned,
+    ]);
+
+    if (watching) {
+      clearInterval(watching);
+    }
 
     listener.close();
 
     if (!token) {
-      say(shell.deviceSignInExpired);
+      // Said unless the user closed the window themselves: that is an answer of
+      // its own, and one that needs no explaining.
+      if (!asking || !asking.isDestroyed()) {
+        say(shell.deviceSignInExpired);
+      }
 
       return;
     }
@@ -3011,14 +3072,21 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
     deviceToken = token.accessToken;
     refreshMenus();
 
-    // Restarted because the token reaches the gateway in its environment: the
-    // console the window already holds is a page that was signed out, and the
-    // one it gets after this is signed in.
-    await restartGateway();
+    /*
+      No gateway to restart: this only ever runs for a deployment, and a
+      deployment is served from its own address — the token goes with the
+      requests this app makes of it, not into the environment of a gateway of
+      this machine's. Restarting one here would start serving a deployment
+      through a port this machine had no reason to give up.
+
+      What the console needs is to be asked again, signed in this time, which is
+      what the caller does behind this.
+    */
   } catch (error) {
     console.warn(`Could not sign in to ${issuedBy}: ${describeError(error)}`);
     say(shell.deviceSignInFailed);
   } finally {
+    listener?.close();
     signingIn = false;
     refreshMenus();
   }

@@ -133,13 +133,6 @@ export const deviceTokenFromPayload = (
     : null;
 };
 
-/**
- * The first half: two codes, neither of which is a credential.
- *
- * `notConfigured` is a deployment that has no administrator account at all — a
- * console with no sign-in has nothing for this app to be signed in to, which is
- * an answer worth saying out loud rather than a failure to report.
- */
 /** What a deployment that answered nothing usable said, as much of it as is worth carrying. */
 const whatItSaid = async (response: {
   status: number;
@@ -156,6 +149,13 @@ const whatItSaid = async (response: {
   return { message, status: response.status };
 };
 
+/**
+ * The first half: a code, and nothing that is a credential.
+ *
+ * `notConfigured` is a deployment that has no administrator account at all — a
+ * console with no sign-in has nothing for this app to be signed in to, which is
+ * an answer worth saying out loud rather than a failure to report.
+ */
 export const requestDeviceAuthorization = async ({
   baseUrl,
   clientId = DEVICE_CLIENT_ID,
