@@ -40,6 +40,27 @@ describe('a question in front of the user', () => {
     expect(questions.begin()).toBe(false);
   });
 
+  it('is the one being asked, and not the one being kept', () => {
+    const { questions } = queue();
+
+    // Read by the app to say whether the backend is already being asked about:
+    // a question that is only being kept is not in front of anybody yet, and
+    // one that is over is not in front of anybody any more.
+    expect(questions.asking).toBe(false);
+
+    questions.begin();
+
+    expect(questions.asking).toBe(true);
+
+    questions.raise('portInUse');
+
+    expect(questions.asking).toBe(true);
+
+    questions.end();
+
+    expect(questions.asking).toBe(false);
+  });
+
   it('is what the second question waits for', () => {
     const { asked, questions } = queue();
 
@@ -48,6 +69,23 @@ describe('a question in front of the user', () => {
 
     expect(asked).toEqual([]);
 
+    questions.end();
+
+    expect(asked).toEqual(['portInUse']);
+  });
+
+  it('is asked once, and not again by the question that comes after', () => {
+    const { asked, questions } = queue();
+
+    questions.begin();
+    questions.raise('portInUse');
+    questions.end();
+
+    expect(asked).toEqual(['portInUse']);
+
+    // Forgotten once it has been asked: a question kept after its own asking
+    // is one the user is asked twice, the second time about something the app
+    // has already decided.
     questions.end();
 
     expect(asked).toEqual(['portInUse']);
