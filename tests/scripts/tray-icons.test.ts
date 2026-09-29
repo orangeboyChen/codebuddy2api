@@ -10,6 +10,7 @@ import {
   MARK,
   PAD,
   TITLE_MARGIN,
+  asTemplate,
   renderTrays,
 } from '../../scripts/render-tray-icons';
 
@@ -39,6 +40,7 @@ const measure = async (png: Buffer | string) => {
   let maxX = -1;
   let maxY = -1;
   let coloured = 0;
+  let covered = 0;
 
   for (let y = 0; y < info.height; y += 1) {
     for (let x = 0; x < info.width; x += 1) {
@@ -53,6 +55,8 @@ const measure = async (png: Buffer | string) => {
       maxX = Math.max(maxX, x);
       maxY = Math.max(maxY, y);
 
+      covered += 1;
+
       if (
         Math.abs(data[at] - data[at + 1]) > 8 ||
         Math.abs(data[at + 1] - data[at + 2]) > 8
@@ -64,12 +68,26 @@ const measure = async (png: Buffer | string) => {
 
   return {
     coloured,
+    covered,
     height: maxY - minY + 1,
     left: minX,
     size: [info.width, info.height] as [number, number],
     top: minY,
     width: maxX - minX + 1,
   };
+};
+
+/**
+ * Where an edge of the mark falls, which is a pixel either way.
+ *
+ * What sits on the mark's own boundary is the antialiasing's, and the
+ * antialiasing is this machine's renderer's — so a box is pinned to the pixel
+ * it is drawn to, and not to the one a sharper or a softer renderer would
+ * leave. A mark that has crept a pixel smaller every run is caught by the
+ * comparison against the mark beside it, which has no tolerance at all.
+ */
+const expectEdge = (actual: number, expected: number): void => {
+  expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1);
 };
 
 afterAll(() => {
@@ -95,9 +113,13 @@ describe('the menu bar icons', () => {
       const box = await measure(png);
 
       expect(box.size).toEqual([CANVAS, CANVAS]);
-      expect(box.width).toBe(MARK);
-      expect(box.height).toBe(MARK);
-      expect(box.top).toBe(PAD);
+      // The plate reaches the edge of the mark; the glyph the template is cut
+      // to stops a pixel short of it, because a glyph's own edge is the
+      // antialiasing's. Either way the mark is the size of the rest of the row
+      // and not the size of the canvas, which is what it was before.
+      expectEdge(box.width, MARK);
+      expectEdge(box.height, MARK);
+      expectEdge(box.top, PAD);
     }
   });
 
@@ -106,8 +128,9 @@ describe('the menu bar icons', () => {
 
     // Only the macOS icon carries a title, so only it carries the margin: the
     // others are centred.
-    expect((await measure(drawn['tray.png'])).left).toBe(PAD);
-    expect((await measure(drawn['tray-template.png'])).left).toBe(
+    expectEdge((await measure(drawn['tray.png'])).left, PAD);
+    expectEdge(
+      (await measure(drawn['tray-template.png'])).left,
       CANVAS - MARK - TITLE_MARGIN,
     );
   });
@@ -121,6 +144,21 @@ describe('the menu bar icons', () => {
     expect((await measure(drawn['tray.png'])).coloured).toBeGreaterThan(0);
   });
 
+  it('is the glyph, and not the plate it sits on', async () => {
+    const drawn = await renderTrays(path.join(scratch, 'plate'));
+
+    // macOS draws a template from a picture's alpha alone, and the mark's alpha
+    // is the plate's all the way across — its shape is in its colour. Dropping
+    // the colour, which is what a template is, leaves the plate and loses the
+    // glyph: a menu bar item that is a black rounded rectangle. So the
+    // template's alpha is the mark's light, and what is left of the plate is
+    // nothing — not even the tenth of it a plate kept at its own darkness
+    // would be, which is a square the glyph shows faintly through.
+    expect((await measure(drawn['tray.png'])).covered).toBeGreaterThan(
+      (await measure(drawn['tray-template.png'])).covered * 2,
+    );
+  });
+
   it('are what is committed, mark for mark', async () => {
     const noColour = await renderTrays(path.join(scratch, 'committed'));
 
@@ -131,14 +169,11 @@ describe('the menu bar icons', () => {
       // The script is run by hand, so what is committed is what it last wrote:
       // a mark that has drifted out of the size or the position the menu bar
       // item was written for is a mark nobody would notice until it shipped.
-      // The exact count of coloured pixels is this machine's renderer's, so
-      // what is compared is the mark, and the colour is asked about as the
-      // either-or it is: a template with any colour in it is one macOS
-      // cannot draw a menu bar item from.
-      expect({ ...committed, coloured: 0 }).toEqual({
-        ...drawn,
-        coloured: 0,
-      });
+      expect(committed.size).toEqual(drawn.size);
+      expectEdge(committed.width, drawn.width);
+      expectEdge(committed.height, drawn.height);
+      expectEdge(committed.left, drawn.left);
+      expectEdge(committed.top, drawn.top);
 
       // macOS draws a template from its alpha alone, so all the count has to
       // say is whether there is any colour at all — the exact number is this
@@ -149,5 +184,26 @@ describe('the menu bar icons', () => {
         expect(committed.coloured).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe('a mark made into a template', () => {
+  /** Two pixels: the first clear with a colour left in it, the second white. */
+  const twoPixels = async (): Promise<Buffer> =>
+    await sharp(Buffer.from([255, 255, 255, 0, 255, 255, 255, 255]), {
+      raw: { channels: 4, height: 1, width: 2 },
+    })
+      .png()
+      .toBuffer();
+
+  it('is nothing at all where the mark is clear', async () => {
+    // A pixel the mark leaves clear has no light of its own, but a decoder is
+    // free to leave a colour in it, and a bright one behind a clear pixel is a
+    // stray dot in the corner of the menu bar item.
+    const template = await measure(await asTemplate(await twoPixels()));
+
+    expect(template.covered).toBe(1);
+    expect(template.left).toBe(1);
+    expect(template.coloured).toBe(0);
   });
 });
