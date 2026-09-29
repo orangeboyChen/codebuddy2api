@@ -189,6 +189,19 @@ textarea {
   }
 }
 
+/*
+  The dots are taken away where the window is drawn over the desktop.
+
+  A header painted in a 4px grid of them is a texture of this console's own,
+  over a page the console paints. On macOS the window is drawn on the frost
+  instead, and the tab over the header is a translucent fill — so what comes
+  through it is the grid, as speckles on the tab. Behind a transparent window
+  the desktop is the texture, and the blur above is all the header needs.
+*/
+.console-workspace[data-vibrancy] .admin-header {
+  background-image: none !important;
+}
+
 .admin-header-brand {
   flex: 0 0 auto;
   margin: 0;
