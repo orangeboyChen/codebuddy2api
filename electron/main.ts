@@ -1250,6 +1250,10 @@ const resolveStartPort = async (): Promise<number | null> => {
  */
 const restartGateway = async (): Promise<void> => {
   if (quitting) {
+    // Nothing after this starts a gateway, so nothing can answer a click that
+    // was waiting for one.
+    consoleRequestPending = false;
+
     return;
   }
 
@@ -1260,6 +1264,10 @@ const restartGateway = async (): Promise<void> => {
     gateway = null;
     status = 'paused';
     refreshTray();
+    // Forgotten rather than left waiting: the console is not coming up, and a
+    // click remembered here is a window that opens by itself minutes later,
+    // when the gateway is resumed for something else entirely.
+    consoleRequestPending = false;
 
     return;
   }
@@ -1286,6 +1294,11 @@ const restartGateway = async (): Promise<void> => {
       gateway = null;
       status = 'unreachable';
       refreshTray();
+      // Dropped here rather than in the `finally` below, which this return is
+      // above: a click waiting for a console is waiting for one that is not
+      // coming, and left set it is a window that opens on its own the next
+      // time anything starts successfully.
+      consoleRequestPending = false;
       // The console has nothing to show yet, so what the user is asked is how to
       // get to a deployment that answers. Raised rather than asked: a start can
       // be under way because an answer is being applied, and this question came
@@ -1369,17 +1382,24 @@ const restartGateway = async (): Promise<void> => {
     );
   } finally {
     restarting = false;
-  }
 
-  // Somebody asked for the console while there was none to open. Answered now
-  // that there is one, and dropped when there is not — a start that failed has
-  // already been put in front of them, and a window opening on top of that is
-  // not what they asked for.
-  if (consoleRequestPending) {
-    consoleRequestPending = false;
+    // Somebody asked for the console while there was none to open. Answered now
+    // that there is one, and dropped when there is not — a start that failed
+    // has already been put in front of them, and a window opening on top of
+    // that is not what they asked for.
+    //
+    // Dropped on every way out, not only on the ones that got as far as the
+    // end: a start that gave up — a deployment that did not answer, a port
+    // something else is serving, a backend that changed underneath it — is
+    // answered by the question it put on the screen, and a click left waiting
+    // behind it is a console that opens on its own the next time anything
+    // starts successfully.
+    if (consoleRequestPending) {
+      consoleRequestPending = false;
 
-    if (status === 'running') {
-      showMainWindow();
+      if (status === 'running') {
+        showMainWindow();
+      }
     }
   }
 
