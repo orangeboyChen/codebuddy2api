@@ -197,14 +197,13 @@ export const bundleElectron = () => {
     )}\n`,
   );
 
-  // Both menu bar icons come along: macOS asks for the template, everything
-  // else for the app's own icon — and each is read from next to the bundled
-  // main process, so neither can come from `electron/resources`, which is only
-  // electron-builder's buildResources and never reaches the packaged app.
-  // The menu bar icons, and the three the appearance menu carries: all of them
-  // are read from next to the bundled main process, so none of them can come
-  // from `electron/resources`, which is only electron-builder's buildResources
-  // and never reaches the packaged app.
+  /*
+    The menu bar icons — macOS asks for the template, everything else for the
+    app's own — and the three the appearance menu carries. All of them are read
+    from next to the bundled main process, so none of them can come from
+    `electron/resources`, which is only electron-builder's buildResources and
+    never reaches the packaged app.
+  */
   for (const icon of [
     'tray.png',
     'tray-template.png',

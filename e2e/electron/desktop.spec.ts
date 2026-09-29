@@ -568,6 +568,26 @@ const startLockedDeployment = async (): Promise<{
   return { asked, port: address.port, stop: () => server.close() };
 };
 
+/** Whether something on this machine is serving a port right now. */
+const isPortTaken = async (port: number): Promise<boolean> => {
+  const server = http.createServer();
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', resolve);
+    });
+
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+
+    return false;
+  } catch {
+    return true;
+  }
+};
+
 test('names itself at the top of the screen, and puts the console there', async () => {
   const dir = separateUserDataDir('menu');
 
@@ -691,26 +711,6 @@ test('gives up the port it was serving when a deployment is named instead', asyn
   await app.close();
   deployment.stop();
 });
-
-/** Whether something on this machine is serving a port right now. */
-const isPortTaken = async (port: number): Promise<boolean> => {
-  const server = http.createServer();
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(port, '127.0.0.1', resolve);
-    });
-
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
-
-    return false;
-  } catch {
-    return true;
-  }
-};
 
 test('asks from its own window, and takes the sign-in to the deployment', async () => {
   const deployment = await startLockedDeployment();
