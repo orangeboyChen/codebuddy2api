@@ -916,7 +916,11 @@ export const getAdminSessionSummary = async (request: RequestLike) => {
     authenticated: session !== null,
     passkeyCount: state.passkeys.length,
     passwordConfigured: Boolean(state.password),
-    username: state.username,
+    // Half of the pair the account is opened with, and the key the sign-in is
+    // throttled by — so it is said to somebody who has opened it, and to
+    // nobody else. The login page has never needed it: it asks for it, and
+    // whether there is an account to ask about is all it reads.
+    username: session ? state.username : '',
     usagePreferences: normalizeUsagePreferences(session?.usagePreferences),
   };
 };
