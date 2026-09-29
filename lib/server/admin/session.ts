@@ -1372,20 +1372,23 @@ export const changeAdminPassword = async (
   nextPassword: string,
   nextUsername?: string,
 ): Promise<Response> => {
-  const authError = await getAdminSessionErrorResponse(request);
+  // How the admin gets in is a browser session's to change, which is why this
+  // is the gate the passkeys and the door itself use and not the one the
+  // console reads its data through. What a device token is for is the
+  // console: it is handed over by an admin who has already opened the
+  // account, and it is not another way to open it.
+  const authError = await getAdminBrowserSessionErrorResponse(request);
 
   if (authError) {
     return authError;
   }
 
-  // `getAdminSessionErrorResponse` deliberately lets everything through before
-  // an admin account exists, so that first-run setup is reachable. Rotation is
-  // not: otherwise an unauthenticated caller could rewrite the password record
-  // of a deployment that has not finished setup.
+  // Rotation is not first-run setup: with no admin account there is nothing
+  // to hold a session to, so from the caller's side this is simply "not
+  // authenticated" — which is also what this endpoint answered before.
   if (!(await hasAdminAccountAsync())) {
-    // 401 rather than 409: with no admin account there is no session to hold,
-    // so from the caller's side this is simply "not authenticated", which is
-    // also what this endpoint answered before.
+    // 401 rather than 409: a caller with no session cannot tell them apart,
+    // and 401 is what this endpoint answered before.
     return Response.json(
       { error: { message: 'Admin session required' } },
       { status: 401 },
