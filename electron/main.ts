@@ -821,7 +821,11 @@ const statusLabel = (): string =>
  * the user would have to distrust.
  */
 const usageLabel = (): string =>
-  usageLoaded ? usageText(text(), todayUsage, locale) : '';
+  // Counts belong to a gateway that is serving them: a gateway that has been
+  // paused, or has died, or has been handed back because the backend changed
+  // underneath it, has no today to report — and a menu that keeps saying it
+  // disagrees with the title above it, which says the gateway is gone.
+  usageLoaded && gateway ? usageText(text(), todayUsage, locale) : '';
 
 /**
  * The row that says whether this app is signed in to the deployment, and the one
