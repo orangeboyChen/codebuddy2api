@@ -31,6 +31,7 @@
     "desktop:dist": "bun scripts/build-desktop.ts",
     "desktop:dev-dist": "bun scripts/build-desktop.ts --dev-icon",
     "desktop:start": "bun run desktop:prepare --dev-icon && electron .",
+    "desktop:dev": "bun scripts/dev-desktop.ts",
     "icons:tray": "bun scripts/render-tray-icons.ts"
   },
   "dependencies": {
