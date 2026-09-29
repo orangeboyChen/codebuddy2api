@@ -11,7 +11,7 @@ import {
 } from '@simplewebauthn/server';
 
 import { ADMIN_SESSION_COOKIE } from './cookie';
-import { isDeviceTokenAuthorized } from './device';
+import { isDeviceTokenAuthorized, revokeAllDeviceTokens } from './device';
 import { readStorageJsonResult, writeStorageJson } from '../storage';
 import { getForwardedHeaderValue } from '../shared/http';
 import { isDesktopMode } from '../electron/settings';
@@ -1472,6 +1472,13 @@ export const changeAdminPassword = async (
     );
   }
 
+  // The other sessions this rotation threw away had a device beside them: a
+  // token is good for thirty days whatever happens to the password, and
+  // rotating the password is what the admin does because a credential may
+  // have leaked — which is the one case where leaving the devices signed in
+  // is the wrong answer.
+  await revokeAllDeviceTokens();
+
   return Response.json({ success: true });
 };
 
@@ -1496,6 +1503,11 @@ export const disableAdminAuthentication = async (
     state.sessions = [];
     state.username = DEFAULT_ADMIN_USER_NAME;
   });
+
+  // Nothing is signed in any more, and nothing is waiting to be: a device
+  // still holding a token would keep reading and writing this console for
+  // thirty days after the console stopped asking anybody who they were.
+  await revokeAllDeviceTokens();
 
   return attachLogoutCookie(request, Response.json({ success: true }));
 };
