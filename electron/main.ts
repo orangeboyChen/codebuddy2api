@@ -2628,6 +2628,14 @@ const askAboutUnreachable = async (): Promise<AskOutcome['kind']> => {
   if (choice.response === 0) {
     await restartGateway();
 
+    // Answered this time, and the console comes up: a deployment that was
+    // merely cold is running now, and an app that says so only in the menu bar
+    // item is an app the user has to know to click. The window's own retry says
+    // the same thing, and so does changing the backend.
+    if (status === 'running') {
+      showMainWindow();
+    }
+
     return 'answered';
   }
 
