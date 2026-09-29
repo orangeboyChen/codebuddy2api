@@ -14,6 +14,30 @@ import { desktopText } from '@/lib/server/electron/desktop-text';
 vi.setConfig({ testTimeout: 60_000 });
 
 /**
+ * The roots the page renders into, kept so that a test can take the page down
+ * again: the pane is watched for as long as it is there, and what ends the
+ * watching is the page going away — which in this app is the window closing.
+ */
+const { roots } = vi.hoisted(() => ({
+  roots: [] as Array<{ unmount: () => void }>,
+}));
+
+vi.mock('react-dom/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-dom/client')>();
+
+  return {
+    ...actual,
+    createRoot: (container: Element) => {
+      const root = actual.createRoot(container);
+
+      roots.push(root);
+
+      return root;
+    },
+  };
+});
+
+/**
  * The window the desktop opens for a backend, rendered the way it is in the app:
  * a page that mounts itself into `#root` and asks the main process for
  * everything it shows.
@@ -720,12 +744,16 @@ describe('the window itself', () => {
     // grows it: an error under a field, the other tab.
     const observed: Element[] = [];
     const onResize: Array<() => void> = [];
-    let size = { height: 300, width: 420 };
+    // What the pane measures is not a whole number of pixels and does not have
+    // to be: a font the computer chose, at a size the computer chose. Asked
+    // for a window that rounds down, the last row of the answer is cut off.
+    const disconnected = vi.fn();
+    let size = { height: 300.6, width: 420.4 };
 
     vi.stubGlobal(
       'ResizeObserver',
       class {
-        disconnect = (): void => undefined;
+        disconnect = disconnected;
 
         observe = (element: Element): void => {
           observed.push(element);
@@ -759,12 +787,12 @@ describe('the window itself', () => {
         expect(next.setContentSize).toHaveBeenCalled();
       });
 
-      expect(next.setContentSize).toHaveBeenLastCalledWith(420, 300);
+      expect(next.setContentSize).toHaveBeenLastCalledWith(421, 301);
       // What is watched is the pane, whose height is the answer, and not the
       // window around it.
       expect(observed).toEqual([document.getElementById('pane')]);
 
-      size = { height: 380, width: 520 };
+      size = { height: 380.2, width: 520.7 };
 
       await act(async () => {
         for (const resize of onResize) {
@@ -772,7 +800,18 @@ describe('the window itself', () => {
         }
       });
 
-      expect(next.setContentSize).toHaveBeenLastCalledWith(520, 380);
+      expect(next.setContentSize).toHaveBeenLastCalledWith(521, 381);
+
+      await act(async () => {
+        for (const root of roots) {
+          root.unmount();
+        }
+      });
+
+      // Watched for as long as the pane is there, and no longer: a pane that
+      // has gone is still being measured otherwise, and the window it belongs
+      // to is sized after it.
+      expect(disconnected).toHaveBeenCalled();
     } finally {
       HTMLElement.prototype.getBoundingClientRect = rect;
     }
