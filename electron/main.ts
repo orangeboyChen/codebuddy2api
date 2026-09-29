@@ -3055,7 +3055,11 @@ if (!app.requestSingleInstanceLock()) {
         usageTimer = null;
       }
 
-      gateway?.stop();
+      // Stopped and waited for, the way it is everywhere else: `stop()` is a
+      // signal and not an exit, and `app.exit()` does not wait for the child
+      // to go. A gateway that has been asked to stop is still holding its
+      // port, and the launch after this one is the one that finds it taken.
+      await stopGatewayAndWait();
 
       // A gateway that is still starting has already spawned a child, but the
       // handle that could stop it does not exist until it is healthy. Wait for
