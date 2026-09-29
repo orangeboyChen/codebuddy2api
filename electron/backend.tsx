@@ -141,6 +141,31 @@ const useFitWindow = (pane: HTMLDivElement | null): void => {
   }, [pane]);
 };
 
+/**
+ * Whether a save is already on its way to the main process, and the one press
+ * that is allowed to start it.
+ *
+ * The answer closes the window, so a second press cannot be taken back — and
+ * the press lands long before the answer does. Two of them would ask for two
+ * gateways on their way out.
+ */
+const useSaving = (): [boolean, () => boolean] => {
+  const [saving, setSaving] = useState(false);
+
+  return [
+    saving,
+    () => {
+      if (saving) {
+        return false;
+      }
+
+      setSaving(true);
+
+      return true;
+    },
+  ];
+};
+
 /** Escape closes the window, which is what it does in every other dialog. */
 const useCloseOnEscape = (): void => {
   useEffect(() => {
@@ -232,6 +257,7 @@ const Choose = ({
   const [urlError, setUrlError] = useState('');
   const [portValue, setPortValue] = useState(String(port));
   const [portError, setPortError] = useState('');
+  const [saving, startSaving] = useSaving();
   const field = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -252,6 +278,10 @@ const Choose = ({
         return;
       }
 
+      if (!startSaving()) {
+        return;
+      }
+
       void bridge.setBackend({ backend: { mode: 'local' }, port: nextPort });
 
       return;
@@ -262,6 +292,10 @@ const Choose = ({
     if (!parsed) {
       setUrlError(text.invalidBackendUrl);
 
+      return;
+    }
+
+    if (!startSaving()) {
       return;
     }
 
@@ -304,27 +338,30 @@ const Choose = ({
           value="remote"
         />
       </fieldset>
-      <div className="field">
-        <input
-          disabled={mode !== 'remote'}
-          id="url"
-          onChange={(event) => {
-            setUrlError('');
-            setUrl(event.target.value);
-          }}
-          placeholder={text.backendUrlPlaceholder}
-          ref={field}
-          type="text"
-          value={url}
-        />
-        {urlError ? <p className="error">{urlError}</p> : null}
-      </div>
       {/*
-        Only this machine's gateway is served on a port of this machine's: with
-        a deployment named, the address is the whole answer and the port stays
-        the one already saved.
+        The port belongs to this machine and the address to a deployment: each
+        is asked for only while its own option is the one picked, because a
+        field that is greyed out still looks like part of the answer — and one
+        holding the address of a deployment nobody has picked reads like the one
+        that is in use.
       */}
-      {mode === 'local' ? (
+      {mode === 'remote' ? (
+        <div className="field">
+          <label htmlFor="url">{text.address}</label>
+          <input
+            id="url"
+            onChange={(event) => {
+              setUrlError('');
+              setUrl(event.target.value);
+            }}
+            placeholder={text.backendUrlPlaceholder}
+            ref={field}
+            type="text"
+            value={url}
+          />
+          {urlError ? <p className="error">{urlError}</p> : null}
+        </div>
+      ) : (
         <PortField
           error={portError}
           onChange={(value) => {
@@ -334,7 +371,7 @@ const Choose = ({
           text={text}
           value={portValue}
         />
-      ) : null}
+      )}
       <div className="buttons">
         {/*
           A first launch that gets no answer quits: the app has nothing else to
@@ -344,7 +381,7 @@ const Choose = ({
         <button onClick={() => window.close()} type="button">
           {firstRun ? text.quit : text.cancel}
         </button>
-        <button className="primary" id="save" type="submit">
+        <button className="primary" disabled={saving} id="save" type="submit">
           {text.save}
         </button>
       </div>
@@ -381,6 +418,7 @@ const Settings = ({
   const [url, setUrl] = useState(backend.mode === 'remote' ? backend.url : '');
   const [portValue, setPortValue] = useState(String(port));
   const [error, setError] = useState('');
+  const [saving, startSaving] = useSaving();
 
   const save = () => {
     if (mode === 'local') {
@@ -389,6 +427,10 @@ const Settings = ({
       if (!nextPort) {
         setError(invalidPort(text, minPort, maxPort));
 
+        return;
+      }
+
+      if (!startSaving()) {
         return;
       }
 
@@ -402,6 +444,10 @@ const Settings = ({
     if (!parsed) {
       setError(text.invalidBackendUrl);
 
+      return;
+    }
+
+    if (!startSaving()) {
       return;
     }
 
@@ -482,6 +528,7 @@ const Settings = ({
               <div className="buttons">
                 <button
                   className="primary"
+                  disabled={saving}
                   id="save"
                   onClick={() => save()}
                   type="button"
@@ -552,6 +599,7 @@ const PortInUse = ({
   const [port, setPort] = useState(portInUse.port);
   const [error, setError] = useState('');
   const [retrying, setRetrying] = useState(false);
+  const [saving, startSaving] = useSaving();
 
   const save = () => {
     const nextPort = parsePort(port, minPort, maxPort);
@@ -562,13 +610,27 @@ const PortInUse = ({
       return;
     }
 
+    if (!startSaving()) {
+      return;
+    }
+
     void bridge.setBackend({ backend, port: nextPort });
   };
 
   const retry = async () => {
     setRetrying(true);
-    await bridge.retryBackend();
-    setRetrying(false);
+
+    // Whatever the answer is, the button comes back: a retry that threw has
+    // still finished, and a window whose only way out is greyed out is a
+    // window with no way out. What went wrong is the main process's to say —
+    // it is the half that talks to the gateway, and it says so in the window.
+    try {
+      await bridge.retryBackend();
+    } catch {
+      // Nothing to add: the screen this window is on is the answer.
+    } finally {
+      setRetrying(false);
+    }
   };
 
   return (
@@ -597,7 +659,7 @@ const PortInUse = ({
         <button disabled={retrying} onClick={() => void retry()} type="button">
           {text.retry}
         </button>
-        <button className="primary" id="save" type="submit">
+        <button className="primary" disabled={saving} id="save" type="submit">
           {text.save}
         </button>
       </div>
@@ -611,28 +673,52 @@ interface UnreachableProps {
   unreachable: { host: string; message: string };
 }
 
-const Unreachable = ({ onChoose, text, unreachable }: UnreachableProps) => (
-  <div className="stack">
-    <h1>{text.unreachableTitle}</h1>
-    {/* The main process already filled the host into this one. */}
-    <p className="message">{unreachable.message}</p>
-    <div className="buttons">
-      <button onClick={onChoose} type="button">
-        {text.changeBackend}
-      </button>
-      <button onClick={() => void bridge.openInBrowser()} type="button">
-        {text.openInBrowser}
-      </button>
-      <button
-        className="primary"
-        onClick={() => void bridge.retryBackend()}
-        type="button"
-      >
-        {text.retry}
-      </button>
+const Unreachable = ({ onChoose, text, unreachable }: UnreachableProps) => {
+  const [retrying, setRetrying] = useState(false);
+
+  const retry = async () => {
+    setRetrying(true);
+
+    try {
+      await bridge.retryBackend();
+    } catch {
+      // Nothing to add: the screen this window is on is the answer.
+    } finally {
+      // The main process answers this window with the outcome — the same
+      // screen again when the deployment still does not answer — so what is
+      // left to do here is give the buttons back.
+      setRetrying(false);
+    }
+  };
+
+  return (
+    <div className="stack">
+      <h1>{text.unreachableTitle}</h1>
+      {/* The main process already filled the host into this one. */}
+      <p className="message">{unreachable.message}</p>
+      <div className="buttons">
+        <button disabled={retrying} onClick={onChoose} type="button">
+          {text.changeBackend}
+        </button>
+        <button
+          disabled={retrying}
+          onClick={() => void bridge.openInBrowser()}
+          type="button"
+        >
+          {text.openInBrowser}
+        </button>
+        <button
+          className="primary"
+          disabled={retrying}
+          onClick={() => void retry()}
+          type="button"
+        >
+          {text.retry}
+        </button>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 /**
  * The appearance the computer is in, which is the one this window is drawn in.
