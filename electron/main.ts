@@ -250,6 +250,17 @@ let gateway: GatewayHandle | null = null;
 let mainWindow: BrowserWindow | null = null;
 let backendWindow: BrowserWindow | null = null;
 /**
+ * Whether the window that just closed was the one that asks about the backend.
+ *
+ * On Windows and Linux this app quits when it has no windows left — which is
+ * right for the console, and wrong for the question: that window is opened from
+ * the menu bar item to be looked at and closed again, while the app goes on in
+ * the tray. Asked about in `window-all-closed`, `backendWindow` is already
+ * `null`, because the window's own `closed` has run by then — so it is
+ * remembered here instead.
+ */
+let backendWindowWasLast = false;
+/**
  * The question about the backend: one at a time, and the one its answer raised.
  *
  * Declared before the ask it is given, because that is where a question raised
@@ -630,6 +641,7 @@ const createMainWindow = (url: string): BrowserWindow => {
   });
   window.on('closed', () => {
     mainWindow = null;
+    backendWindowWasLast = false;
   });
 
   stopImageDragging(window);
@@ -1934,6 +1946,7 @@ const openBackendWindow = ({
 
   window.on('closed', () => {
     backendWindow = null;
+    backendWindowWasLast = true;
 
     // A first launch that never got its answer has nothing to fall back on, so
     // it quits: the gateway is the thing the answer decides, and starting one
@@ -2958,7 +2971,11 @@ if (!app.requestSingleInstanceLock()) {
   // still asking which backend to use, or still starting a gateway, has a
   // window of its own to lose first.
   app.on('window-all-closed', () => {
-    if (process.platform === 'darwin' || backendWindow || restarting) {
+    const askedLast = backendWindowWasLast;
+
+    backendWindowWasLast = false;
+
+    if (process.platform === 'darwin' || askedLast || restarting) {
       return;
     }
 
