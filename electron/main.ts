@@ -35,6 +35,7 @@ import {
   startGateway,
   type GatewayHandle,
   type GatewayProcess,
+  type GatewaySpawn,
 } from '../lib/server/electron/gateway';
 import {
   ensureDesktopDirectories,
@@ -1333,6 +1334,75 @@ const createTray = (): void => {
   refreshMenus();
 };
 
+/**
+ * What makes a run a development one, and where the console it serves lives.
+ *
+ * Set by `scripts/dev-desktop.ts`, which is the only thing that can say: the app
+ * is a bundle with no repository beside it, and nothing in it knows what ran it.
+ */
+const DEV_CONSOLE_ENV = 'CODEBUDDY_DESKTOP_DEV';
+const DEV_CONSOLE_ROOT_ENV = 'CODEBUDDY_DESKTOP_DEV_ROOT';
+const DEV_CONSOLE_RUNTIME_ENV = 'CODEBUDDY_DESKTOP_DEV_RUNTIME';
+/**
+ * How long a console compiled on demand is given to answer its first request.
+ *
+ * `next dev` builds a page when it is asked for, so the first answer is a
+ * compile and not a read — several of them, one after another, on a cold cache.
+ */
+const DEV_CONSOLE_TIMEOUT_MS = 180_000;
+
+/** The repository the console is served from, when it is served from one. */
+const devConsole = (): { root: string; runtime: string } | null => {
+  if (process.env[DEV_CONSOLE_ENV]?.trim() !== '1') {
+    return null;
+  }
+
+  const root = process.env[DEV_CONSOLE_ROOT_ENV]?.trim();
+  const runtime = process.env[DEV_CONSOLE_RUNTIME_ENV]?.trim();
+
+  return root && runtime ? { root, runtime } : null;
+};
+
+/**
+ * The gateway as `next dev`, in the repository, on the port the shell picked.
+ *
+ * Everything the built gateway is given — the console's token, the storage, the
+ * deployment to forward to — reaches it through the environment either way, so
+ * the only thing this changes is where the pages come from: the source, watched
+ * by Next and pushed into the window over Fast Refresh, instead of a build the
+ * app has to be restarted to pick up.
+ *
+ * Undefined outside a development run, which leaves `startGateway` spawning the
+ * bundled server as it always has.
+ */
+const devConsoleSpawn = (port: number): GatewaySpawn | undefined => {
+  const dev = devConsole();
+
+  if (!dev) {
+    return undefined;
+  }
+
+  return ({ env }) => {
+    const childEnv: NodeJS.ProcessEnv = { ...env, NODE_ENV: 'development' };
+
+    // The built gateway runs on this app's own binary, switched into Node by
+    // this; the one in the repository is an ordinary runtime, to which the
+    // switch means nothing.
+    delete childEnv.ELECTRON_RUN_AS_NODE;
+
+    return spawn(
+      dev.runtime,
+      ['run', 'dev', '--port', String(port), '--hostname', '127.0.0.1'],
+      {
+        cwd: dev.root,
+        env: childEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+  };
+};
+
 const launchGateway = async (
   port: number,
   upstream: string | null,
@@ -1364,6 +1434,20 @@ const launchGateway = async (
       directory: app.getPath('temp'),
       executable: process.execPath,
     }),
+    /*
+      Where the console itself comes from: the source, when the app was started
+      by `scripts/dev-desktop.ts`, and the build it ships otherwise.
+
+      A development run gets `next dev` in the repository instead, which is the
+      only thing that answers a changed page with the page: Fast Refresh takes
+      the window's own connection, so a save to the console is a save the window
+      shows, with no build behind it and no relaunch.
+    */
+    spawn: devConsoleSpawn(port),
+    // Compiled on demand, so a cold development console takes longer than a
+    // built one to answer its first request — and a first request is what the
+    // health check is.
+    timeoutMs: devConsole() ? DEV_CONSOLE_TIMEOUT_MS : undefined,
     // The gateway can also die later — a crash, or a database that stops
     // answering. Nothing restarts it then, but the menu bar must stop claiming
     // it is running.
@@ -1961,19 +2045,23 @@ const deploymentNeedsSignIn = async (): Promise<boolean> => {
 };
 
 /**
- * Signs this app in where the console is about to be opened on a deployment
- * that wants it, and does nothing anywhere else.
+ * Signs this app in with the device where the console is about to be opened on a
+ * deployment that wants one, and does nothing anywhere else.
  *
  * A deployment this app is not signed in to answers the console with its own
- * login page — and a login page drawn in this app's window is not one anybody
- * can sign in on: the password, and a passkey saved for the deployment, are the
- * deployment's address's, and a browser offers a credential to the origin it is
- * on. So the sign-in is the device's, made in the browser on the page the
- * deployment serves for it, which is how this app signs in everywhere else.
+ * login page — and a passkey saved for the deployment is of no use on one: a
+ * browser offers a credential to the origin it is on, which is 127.0.0.1 here.
+ * So the sign-in is made the way it is everywhere else in this app: the
+ * device's, in a browser, on the page the deployment serves for it.
+ *
+ * Quietly, because the console is about to be opened either way, and a
+ * deployment that does not answer the device flow still has its login page to
+ * offer — a password, which a window at 127.0.0.1 can carry to it. Reporting
+ * that as a failure would put a dialog in front of the page about to ask.
  */
 const signInIfTheDeploymentAsks = async (): Promise<void> => {
   if (await deploymentNeedsSignIn()) {
-    await signInToDeployment();
+    await signInToDeployment(true);
   }
 };
 
@@ -2659,7 +2747,7 @@ const deviceCodeForm = (grant: DeviceGrant): AskForm => {
  * everything it forwards: the window is signed in without a password ever having
  * been typed into this machine's console.
  */
-const signInToDeployment = async (): Promise<void> => {
+const signInToDeployment = async (quiet = false): Promise<void> => {
   // This machine's own gateway is served to nobody but this app's window: there
   // is no deployment to be approved by, and so no sign-in to make.
   if (backend.mode !== 'remote' || signingIn) {
@@ -2667,6 +2755,21 @@ const signInToDeployment = async (): Promise<void> => {
   }
 
   const shell = text();
+  /*
+    Said in a dialog of the computer's own, unless the sign-in was this app's
+    own idea rather than a click on the menu bar item.
+
+    Quiet, because a deployment that does not answer the device flow is not a
+    failure to report when nobody asked for it: what it answers the console with
+    is the login page it would have shown anyway, which is the only way in it
+    offers — a password, typed in this window — and a dialog in front of a page
+    about to explain itself is a dialog that hides the explanation.
+  */
+  const say = (message: string): void => {
+    if (!quiet) {
+      dialog.showErrorBox(APP_TITLE, message);
+    }
+  };
   // Named before anything is asked of it: the grant is that deployment's, and
   // the token that comes back is a promise it made. The backend can be pointed
   // somewhere else while the user is still approving, and a token saved under
@@ -2682,13 +2785,13 @@ const signInToDeployment = async (): Promise<void> => {
   const requested = await requestDeviceAuthorization({ baseUrl: issuedBy });
 
   if (requested.kind === 'notConfigured') {
-    dialog.showErrorBox(APP_TITLE, shell.deviceNotConfigured);
+    say(shell.deviceNotConfigured);
 
     return;
   }
 
   if (requested.kind !== 'granted') {
-    dialog.showErrorBox(APP_TITLE, shell.deviceSignInFailed);
+    say(shell.deviceSignInFailed);
 
     return;
   }
@@ -2720,8 +2823,7 @@ const signInToDeployment = async (): Promise<void> => {
     });
 
     if (outcome.kind !== 'signedIn') {
-      dialog.showErrorBox(
-        APP_TITLE,
+      say(
         outcome.kind === 'expired'
           ? shell.deviceSignInExpired
           : shell.deviceSignInFailed,
@@ -2734,7 +2836,7 @@ const signInToDeployment = async (): Promise<void> => {
     // the code was shown for the old address, and this token opens its door.
     // Keeping it would present one deployment's introduction to another.
     if (backend.mode !== 'remote' || backend.url !== issuedBy) {
-      dialog.showErrorBox(APP_TITLE, shell.deviceSignInFailed);
+      say(shell.deviceSignInFailed);
 
       return;
     }
@@ -2748,10 +2850,7 @@ const signInToDeployment = async (): Promise<void> => {
       // Approved by the user, in their browser, and then dropped on the floor
       // because this machine would not take the file: said in a dialog of the
       // computer's own, the way every other failure to save a setting is.
-      dialog.showErrorBox(
-        APP_TITLE,
-        `${shell.deviceSignInFailed}\n\n${describeError(error)}`,
-      );
+      say(`${shell.deviceSignInFailed}\n\n${describeError(error)}`);
 
       return;
     }

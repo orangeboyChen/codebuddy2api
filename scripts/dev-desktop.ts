@@ -1,5 +1,5 @@
 /**
- * Runs the app in development, and keeps it running as the shell changes.
+ * Runs the app in development, and keeps it running as it changes.
  *
  * `electron .` is not this app: it is Electron's own bundle, running this app's
  * files, and everything macOS reads off a bundle — the name at the top of the
@@ -9,13 +9,13 @@
  * its own, built by electron-builder with the development icon and with no
  * archive inside it, so the shell in it can be replaced in place.
  *
- * Which is what the watcher does. Every save under `electron/` is re-bundled,
- * copied into the app, and answered by a relaunch: Electron has no way to load a
- * second main process, so a changed shell is a restarted app — a second or two,
- * rather than a build.
+ * The console is hot: the app is started on `next dev` in the repository, so a
+ * save to a page is a page the window is already showing, pushed into it over
+ * Fast Refresh — no build behind it, and no relaunch.
  *
- * The gateway is left as `bun run desktop:prepare` built it: the console's pages
- * are the production build the app ships, and changing one still wants a build.
+ * The shell is not, because it cannot be: Electron has no way to load a second
+ * main process. A save under `electron/` is re-bundled, copied into the app and
+ * answered by a relaunch, which takes a second or two.
  *
  * Usage: `bun run desktop:dev [--app]`
  */
@@ -32,6 +32,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appBundleDir = path.join(root, 'build', 'electron-app');
 const desktopOutput = path.join(root, 'build', 'desktop');
 const builderConfig = path.join(root, 'electron', 'electron-builder.yml');
+const standaloneServer = path.join(root, '.next', 'standalone', 'server.js');
 const APP_NAME = 'CodeBuddy2API';
 /** How long a save is given to finish before the shell is bundled again. */
 const SETTLE_MS = 120;
@@ -127,6 +128,7 @@ const runBin = (binary: string, args: string[]): void => {
  * watcher that has to build the whole app again.
  */
 const buildDevApp = (): void => {
+  ensureGatewayBuild();
   prepareDesktop(true);
 
   runBin('electron-builder', [
@@ -138,6 +140,34 @@ const buildDevApp = (): void => {
     '--publish',
     'never',
   ]);
+};
+
+/**
+ * The one build a development run cannot do without, and only when there is
+ * none.
+ *
+ * The app has to *carry* a gateway to be packaged, and packaging copies one out
+ * of `.next/standalone` — so a build has to have happened once. It is never the
+ * one that runs: the app is started with `next dev` in the repository, which
+ * serves the console from the source and pushes a changed page into the window.
+ * A build older than the source is therefore fine, and only a missing one is
+ * worth a minute of this command's time.
+ */
+const ensureGatewayBuild = (): void => {
+  if (fs.existsSync(standaloneServer)) {
+    return;
+  }
+
+  console.log('[dev] no build to package — running bun run build');
+
+  const { status } = spawnSync(bunBinary(), ['run', 'build'], {
+    cwd: root,
+    stdio: 'inherit',
+  });
+
+  if (status !== 0) {
+    throw new Error('bun run build failed.');
+  }
 };
 
 /** The shell, re-bundled and put where the app about to be relaunched reads it. */
@@ -183,7 +213,18 @@ const spawnDev = (): ReturnType<typeof spawn> => {
     cwd: root,
     // Its own group, so one signal takes the app and the gateway it started.
     detached: true,
-    env: process.env,
+    /*
+      Where the console comes from, and what runs it. The app is a bundle with no
+      repository beside it, so this is the only way it is told: `next dev` in the
+      repository serves the console from the source, which is what makes a save
+      to a page a page the window already shows.
+    */
+    env: {
+      ...process.env,
+      CODEBUDDY_DESKTOP_DEV: '1',
+      CODEBUDDY_DESKTOP_DEV_ROOT: root,
+      CODEBUDDY_DESKTOP_DEV_RUNTIME: bunBinary(),
+    },
     stdio: 'inherit',
   });
 };
@@ -219,7 +260,9 @@ const main = async (): Promise<void> => {
     }, SETTLE_MS);
   });
 
-  console.log('[dev] watching electron/ — Ctrl-C to stop');
+  console.log(
+    '[dev] watching electron/ — the console is next dev, and refreshes itself',
+  );
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
