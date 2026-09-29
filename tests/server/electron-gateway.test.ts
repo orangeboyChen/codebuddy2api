@@ -423,6 +423,7 @@ describe('startGateway', () => {
     // meanwhile would leave the child holding the port the next launch wants.
     const { child } = createChild();
     const onChild = vi.fn();
+    let handedOverWhileStarting = false;
 
     await startGateway({
       env: asEnv(),
@@ -431,10 +432,18 @@ describe('startGateway', () => {
       onChild,
       port: 8001,
       spawn: () => child,
-      waitForHealth: async () => true,
+      waitForHealth: async () => {
+        // Asked from where the gateway is only coming up: handed over once it
+        // is healthy instead, an app that quits meanwhile has nothing to stop
+        // the child with, and the port goes with the child.
+        handedOverWhileStarting = onChild.mock.calls.length === 1;
+
+        return true;
+      },
     });
 
     expect(onChild).toHaveBeenCalledWith(child);
+    expect(handedOverWhileStarting).toBe(true);
   });
 
   it('waits on the health check, and not on the console it is asking about', async () => {
