@@ -505,6 +505,15 @@ const loadConsole = async (
   // hidden, so the launch would leave nothing at all to look at. A second
   // attempt is what gets it moving.
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    // The cookie above is awaited, and the attempt below is given ten seconds:
+    // both are long enough for the window to be closed by the user, and
+    // `loadURL` on a window that has gone throws rather than answers — a throw
+    // that is not a failed load, and would take the console's opening down with
+    // it on its way out. Nothing to load into, so nothing to wait for.
+    if (window.isDestroyed()) {
+      return;
+    }
+
     const outcome = await Promise.race([
       window
         .loadURL(url)
