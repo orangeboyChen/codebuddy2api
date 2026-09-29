@@ -1222,6 +1222,23 @@ const launchGateway = async (
   });
 };
 
+/**
+ * Hands the gateway back now, rather than when this process is done with it.
+ *
+ * `app.exit()` is the one way out that does not run `before-quit`, which is
+ * where the gateway is normally stopped — so anything that leaves through it
+ * leaves the gateway behind: a child that keeps the port, and a build that
+ * starts beside it only to find its own port taken by the build it replaced.
+ */
+const stopGatewayNow = (): void => {
+  gateway?.stop();
+  gateway = null;
+  // A start that has not landed has no handle to stop, and it is the child —
+  // not the handle — that is holding the port.
+  pendingChild?.kill();
+  pendingChild = null;
+};
+
 const scheduleRestart = (): void => {
   if (restartTimer) {
     clearTimeout(restartTimer);
@@ -1588,6 +1605,12 @@ const replaceAppImage = async (downloaded: string): Promise<boolean> => {
   try {
     await fs.promises.copyFile(downloaded, staged);
     await fs.promises.rename(staged, current);
+    // Given back before this process is: `app.exit` does not run `before-quit`,
+    // which is the only place the gateway is stopped, so a child that outlives
+    // the app that spawned it keeps the port — and the build that starts next
+    // finds its own port taken by the build it replaced, and asks the user to
+    // name another one the moment it has been updated.
+    stopGatewayNow();
     // Relaunched before it quits: the file it starts is the one just written.
     app.relaunch();
     app.exit(0);
