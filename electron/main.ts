@@ -255,6 +255,14 @@ let paused = false;
 /** The gateway being started: its child exists, its handle does not yet. */
 let pendingStart: Promise<GatewayHandle> | null = null;
 /**
+ * A console somebody asked for while there was none to open.
+ *
+ * The click that asks for it — the menu bar item, the Dock, a second launch —
+ * can land while the gateway is still coming up. It is kept rather than
+ * dropped, and answered by the start that is already under way.
+ */
+let consoleRequestPending = false;
+/**
  * The origin the console is served from, which is the bundled gateway's: the
  * pages are this app's own whether a deployment is configured or not. It still
  * moves — the gateway takes a new port when the port setting changes.
@@ -670,6 +678,16 @@ const showMainWindow = (): void => {
 const openConsoleOnRequest = (): void => {
   if (status === 'paused') {
     void askToStartPausedGateway();
+
+    return;
+  }
+
+  // The gateway is on its way up and there is no console to open yet — but
+  // there will be in a second or two, and a click that does nothing at all is
+  // a click the user makes again, or reads as a broken app. Remembered, and
+  // answered by the restart that is already running.
+  if (status === 'starting') {
+    consoleRequestPending = true;
 
     return;
   }
@@ -1270,6 +1288,20 @@ const restartGateway = async (): Promise<void> => {
       return;
     }
 
+    // The gateway takes seconds to come up, and Pause can be pressed while it
+    // does. A pause is a stop the user asked for: the handle this start is
+    // holding is handed back, rather than left running behind a tray that says
+    // it is paused — and rather than being killed by the next restart, which
+    // is what happens to a gateway nobody knows is up.
+    if (paused) {
+      gateway.stop();
+      gateway = null;
+      status = 'paused';
+      refreshTray();
+
+      return;
+    }
+
     consoleOrigin = new URL(gateway.url).origin;
     portBusy = null;
     status = 'running';
@@ -1284,6 +1316,18 @@ const restartGateway = async (): Promise<void> => {
     );
   } finally {
     restarting = false;
+  }
+
+  // Somebody asked for the console while there was none to open. Answered now
+  // that there is one, and dropped when there is not — a start that failed has
+  // already been put in front of them, and a window opening on top of that is
+  // not what they asked for.
+  if (consoleRequestPending) {
+    consoleRequestPending = false;
+
+    if (status === 'running') {
+      showMainWindow();
+    }
   }
 
   // The console is served by the gateway, so it has to follow it. Kept out of
@@ -2191,6 +2235,14 @@ const setPaused = async (next: boolean): Promise<void> => {
  * asked in, on a screen of its own.
  */
 const openSettings = (): void => {
+  // The desktop is already asking which backend to use, in a dialog of its own.
+  // A second window asking the same question is one the app cannot be answered
+  // twice on — and closing it quits, because a first launch with no backend has
+  // nothing to keep running.
+  if (asking) {
+    return;
+  }
+
   openBackendWindow({ screen: 'settings' });
 };
 
