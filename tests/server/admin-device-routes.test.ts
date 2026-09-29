@@ -33,6 +33,9 @@ vi.mock('@/lib/server/storage', async (importOriginal) => ({
 }));
 
 const {
+  beginAdminPasskeyRegistration,
+  deleteAdminPasskey,
+  disableAdminAuthentication,
   isAdminBrowserSessionAuthenticated,
   isAdminSessionAuthenticated,
   loginWithAdminPassword,
@@ -354,5 +357,95 @@ describe('approving a code with a token rather than a browser', () => {
     );
 
     vi.unstubAllEnvs();
+  });
+});
+
+/**
+ * What a device token is not asked about: how the admin signs in.
+ *
+ * The token was approved so the app could read and write this console's data as
+ * the admin. It was not approved to hand out credentials — a passkey outlives
+ * the token, is not evicted by the cap on tokens and is not taken back by
+ * signing out — nor to take the door off its hinges, which is what turning
+ * authentication off does: every gate answers "nothing to ask" afterwards, and
+ * the console is open to anybody who can reach it.
+ */
+describe('the credentials a device token is not asked about', () => {
+  beforeEach(async () => {
+    mocks.docs.clear();
+    mocks.readError.value = null;
+    await configureAdmin();
+  });
+
+  it('is not who adds a way to sign in', async () => {
+    const response = await beginAdminPasskeyRegistration(
+      request('/admin-api/auth/passkeys/registration/options', {
+        headers: { authorization: await signedInBearer() },
+        method: 'POST',
+      }),
+      'A key',
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it('is not who takes one away', async () => {
+    const response = await deleteAdminPasskey(
+      request('/admin-api/auth/passkeys/passkey-1', {
+        headers: { authorization: await signedInBearer() },
+        method: 'DELETE',
+      }),
+      'passkey-1',
+    );
+
+    // Refused rather than not found: the answer comes before the console goes
+    // looking for the key, so it says nothing about which keys there are.
+    expect(response.status).toBe(401);
+  });
+
+  it('is not who takes the door off its hinges', async () => {
+    const response = await disableAdminAuthentication(
+      request('/admin-api/auth/password', {
+        headers: { authorization: await signedInBearer() },
+        method: 'DELETE',
+      }),
+    );
+
+    expect(response.status).toBe(401);
+
+    // Still a console somebody has to sign in to: what was refused is not a
+    // request that merely failed.
+    await expect(
+      isAdminSessionAuthenticated(request('/admin-api/settings')),
+    ).resolves.toBe(false);
+  });
+
+  it('is the admin in a browser who decides', async () => {
+    // The refusal above is not these endpoints being closed to everybody: with
+    // the cookie of the session the admin signed in with, both are answered.
+    const cookie = await adminCookie();
+
+    expect(
+      (
+        await beginAdminPasskeyRegistration(
+          request('/admin-api/auth/passkeys/registration/options', {
+            headers: { cookie },
+            method: 'POST',
+          }),
+          'A key',
+        )
+      ).status,
+    ).toBe(200);
+
+    expect(
+      (
+        await disableAdminAuthentication(
+          request('/admin-api/auth/password', {
+            headers: { cookie },
+            method: 'DELETE',
+          }),
+        )
+      ).status,
+    ).toBe(200);
   });
 });
