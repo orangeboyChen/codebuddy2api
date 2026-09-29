@@ -344,8 +344,13 @@ test('asks about the default port too, once it has been saved', async () => {
 });
 
 /** The backend the next launch finds on disk, as the window itself would save it. */
-const writeBackend = (url: string): void => {
-  writeSettings({ backend: { mode: 'remote', url }, port: 8001 });
+/** This machine, as the window itself would save the choice. */
+const writeLocalBackend = (dir: string = userDataDir): void => {
+  writeSettings({ backend: { mode: 'local' }, port: 8001 }, dir);
+};
+
+const writeBackend = (url: string, dir: string = userDataDir): void => {
+  writeSettings({ backend: { mode: 'remote', url }, port: 8001 }, dir);
 };
 
 /**
@@ -561,6 +566,150 @@ const startLockedDeployment = async (): Promise<{
   port = address.port;
 
   return { asked, port: address.port, stop: () => server.close() };
+};
+
+test('names itself at the top of the screen, and puts the console there', async () => {
+  const dir = separateUserDataDir('menu');
+
+  writeLocalBackend(dir);
+
+  const app = await launchApp({ userData: dir });
+
+  await waitForConsole(app);
+
+  /*
+    What macOS reads off the bundle, and what the shell has to answer itself
+    because `electron .` has no bundle: the name at the top of the screen was
+    Electron's, and so was everything else in that menu.
+  */
+  const menu = await app.evaluate(async ({ Menu }) => {
+    const bar = Menu.getApplicationMenu();
+
+    if (!bar) {
+      return null;
+    }
+
+    return bar.items.map((item) => ({ label: item.label }));
+  });
+
+  expect(menu).not.toBeNull();
+
+  const labels = (menu as Array<{ label: string }>).map((item) => item.label);
+
+  expect(labels[0]).toBe('CodeBuddy2API');
+  expect(labels).not.toContain('Electron');
+
+  /*
+    The appearance and the language are here: they are the desktop's to decide,
+    and the menu at the top of the screen is where every other app's are.
+  */
+  expect(labels).toContain('Appearance');
+  expect(labels).toContain('Language');
+
+  await app.close();
+});
+
+test('pictures the three appearances in the menu', async () => {
+  const dir = separateUserDataDir('appearance');
+
+  writeLocalBackend(dir);
+
+  const app = await launchApp({ userData: dir });
+
+  await waitForConsole(app);
+
+  const appearances = await app.evaluate(async ({ Menu }) => {
+    const bar = Menu.getApplicationMenu();
+
+    if (!bar) {
+      return null;
+    }
+
+    const item = bar.items.find((entry) => entry.label === 'Appearance');
+
+    if (!item || !item.submenu) {
+      return null;
+    }
+
+    return item.submenu.items.map((child) => ({
+      label: child.label,
+      /*
+        A picture the desktop colours itself: one of this app's own colours
+        would be the wrong one in whichever appearance it was not drawn for,
+        and a menu with no picture at all is a menu you have to read twice.
+      */
+      pictured: Boolean(
+        child.icon && typeof child.icon !== 'string' && !child.icon.isEmpty(),
+      ),
+    }));
+  });
+
+  expect(appearances).not.toBeNull();
+
+  const items = appearances as Array<{ label: string; pictured: boolean }>;
+
+  expect(items.map((entry) => entry.label)).toEqual([
+    'Light',
+    'Dark',
+    'System',
+  ]);
+  expect(items.every((entry) => entry.pictured)).toBe(true);
+
+  await app.close();
+});
+
+test('gives up the port it was serving when a deployment is named instead', async () => {
+  const dir = separateUserDataDir('give-up-port');
+
+  writeLocalBackend(dir);
+
+  const app = await launchApp({ userData: dir });
+
+  // This machine's own backend: the gateway the app starts is what serves the
+  // console, on a port of this machine's.
+  const consoleWindow = await waitForConsole(app);
+
+  expect(consoleWindow.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/dashboard$/);
+
+  const served = Number(new URL(consoleWindow.url()).port);
+
+  await expect.poll(async () => await isPortTaken(served)).toBe(true);
+
+  /*
+    Named a deployment instead, the app has nothing left to serve here: the
+    console is the deployment's, on the address the deployment is served on, and
+    a gateway on loopback forwarding it is a port given up for nothing.
+  */
+  const deployment = await startDeployment();
+
+  writeBackend(`http://127.0.0.1:${deployment.port}`, dir);
+
+  await expect
+    .poll(async () => await isPortTaken(served), { timeout: 60_000 })
+    .toBe(false);
+
+  await app.close();
+  deployment.stop();
+});
+
+/** Whether something on this machine is serving a port right now. */
+const isPortTaken = async (port: number): Promise<boolean> => {
+  const server = http.createServer();
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', resolve);
+    });
+
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+
+    return false;
+  } catch {
+    return true;
+  }
 };
 
 test('asks from its own window, and takes the sign-in to the deployment', async () => {

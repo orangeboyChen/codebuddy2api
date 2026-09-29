@@ -7,6 +7,7 @@ import {
   BrowserWindow,
   Menu,
   MenuItemConstructorOptions,
+  type NativeImage,
   Tray,
   app,
   clipboard,
@@ -1062,8 +1063,8 @@ const chooseLocale = (next: string): void => {
   is: the desktop colours a menu picture itself, and one that carried its own
   would be the wrong one in whichever appearance it was not drawn for.
 */
-const appearanceIcon = (name: 'dark' | 'light' | 'system'): string =>
-  path.join(bundleDir(), `appearance-${name}.png`);
+const appearanceIcon = (name: 'dark' | 'light' | 'system'): NativeImage =>
+  nativeImage.createFromPath(path.join(bundleDir(), `appearance-${name}.png`));
 
 const appearanceMenu = (): MenuItemConstructorOptions => ({
   label: text().appearance,
