@@ -1072,8 +1072,24 @@ const chooseLocale = (next: string): void => {
   is: the desktop colours a menu picture itself, and one that carried its own
   would be the wrong one in whichever appearance it was not drawn for.
 */
-const appearanceIcon = (name: 'dark' | 'light' | 'system'): NativeImage =>
-  nativeImage.createFromPath(path.join(bundleDir(), `appearance-${name}.png`));
+const appearanceIcon = (name: 'dark' | 'light' | 'system'): NativeImage => {
+  const icon = nativeImage.createFromPath(
+    path.join(bundleDir(), `appearance-${name}.png`),
+  );
+
+  /*
+    A template, which is what makes the one colour above the right one: the
+    desktop draws a template in the colour of the menu it sits in, so a picture
+    drawn in black comes out black on a light menu bar and white on a dark one.
+
+    Left as it is, a black picture on a dark menu bar is a picture nobody can
+    see. Only macOS has an opinion about it, and it is the only platform whose
+    menu bar changes appearance.
+  */
+  icon.setTemplateImage(true);
+
+  return icon;
+};
 
 const appearanceMenu = (): MenuItemConstructorOptions => ({
   label: text().appearance,
