@@ -1133,11 +1133,11 @@ const buildTrayMenu = (): Menu =>
     // needs no approval from anybody.
     ...(backend.mode === 'remote' ? [deviceMenu()] : []),
     { type: 'separator' },
-    // How the console looks and what language it speaks: the desktop's to
-    // decide, so the window carries no pickers of its own.
-    ...(consoleOrigin
-      ? [appearanceMenu(), languageMenu(), { type: 'separator' as const }]
-      : []),
+    /*
+      Not the appearance or the language: those are at the top of the screen,
+      where every other app's are. This menu is a status, and a status menu
+      that carries another menu's settings is a menu with two of everything.
+    */
     {
       enabled: false,
       label: fillText(text().appVersion, { version: app.getVersion() }),
@@ -2165,8 +2165,12 @@ const applyBackend = async (
       browser opened on this app's own behalf before anybody pressed anything is
       not something this app does.
     */
+    /*
+      Pressed, so it answers out loud: a press that does nothing and says
+      nothing is a press nobody can tell apart from one on a broken button.
+    */
     if (authenticate) {
-      await signInToDeployment(true);
+      await signInToDeployment();
     }
 
     if (await needsDeploymentSignIn()) {
@@ -2835,6 +2839,28 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
     the app with no window at all — that answer belongs to the console, which is
     what shows the deployment's own login page.
   */
+  /*
+    Whether the address is a deployment at all, asked before anything is asked
+    of it. A name that resolves to nothing, or to something that answers with
+    somebody else's page, is not a sign-in that failed — it is an address that
+    was never going to sign anything in, and saying so is the whole point of
+    asking.
+  */
+  const probe = await probeDeployment({ url: issuedBy });
+
+  if (probe.kind !== 'ready') {
+    say(
+      fillText(
+        probe.kind === 'unreachable'
+          ? shell.unreachableBodyUnreachable
+          : shell.unreachableBodyForeign,
+        { host: new URL(issuedBy).host },
+      ),
+    );
+
+    return;
+  }
+
   try {
     /*
       Listening before the code is asked for: the address the deployment sends

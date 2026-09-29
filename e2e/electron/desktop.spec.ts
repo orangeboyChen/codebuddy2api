@@ -357,6 +357,7 @@ const startDeployment = async (): Promise<{
   port: number;
   stop: () => void;
 }> => {
+  let port = 0;
   const server = http.createServer((request, response) => {
     const path = (request.url ?? '/').split('?')[0];
     const answer = (payload: unknown): void => {
@@ -369,6 +370,24 @@ const startDeployment = async (): Promise<{
         service: 'codebuddy2api',
         status: 'healthy',
         storage: 'sqlite',
+      });
+
+      return;
+    }
+
+    /*
+      A grant, so a press on the button is a sign-in that can be finished in a
+      browser rather than one that has to be reported: this deployment is
+      already signed in, and it is not the device flow that says so.
+    */
+    if (path === '/admin-api/oauth/device') {
+      answer({
+        device_code: 'a-device-code',
+        expires_in: 3,
+        interval: 1,
+        user_code: '2345-6789',
+        verification_uri: `http://127.0.0.1:${port}/device`,
+        verification_uri_complete: `http://127.0.0.1:${port}/device?user_code=2345-6789`,
       });
 
       return;
@@ -411,6 +430,8 @@ const startDeployment = async (): Promise<{
   });
 
   const address = server.address() as { port: number };
+
+  port = address.port;
 
   return { port: address.port, stop: () => server.close() };
 };
@@ -625,7 +646,7 @@ test('shows its own console for a deployment, and takes only the data from it', 
   deployment.stop();
 });
 
-test('names a deployment in the window, and is asked for no port', async () => {
+test('names a deployment, is asked for no port, and asks to be signed in', async () => {
   const deployment = await startDeployment();
 
   // A first launch: nothing on disk, so the window is what asks.
@@ -641,13 +662,22 @@ test('names a deployment in the window, and is asked for no port', async () => {
   await chooser.locator('#url').fill(`http://127.0.0.1:${deployment.port}`);
   await chooser.locator('#save').click();
 
-  // …so the console opens on the port the app would have used anyway, without
-  // the number ever having been asked for.
-  const consoleWindow = await waitForConsole(app);
+  /*
+    …so there is no number to ask for. And nobody is signed in to this
+    deployment, so the console is not opened either: what it would answer with
+    is the deployment's own login page, in this app's window. The window that
+    asks is what goes in front of the user instead.
+  */
+  await waitForWindow(app, /backend\.html$/);
 
-  expect(consoleWindow.url()).toBe(
-    `http://127.0.0.1:${DEFAULT_GATEWAY_PORT}/dashboard`,
-  );
+  await expect
+    .poll(() =>
+      app
+        .windows()
+        .map((window) => window.url())
+        .filter((url) => /\/dashboard$/.test(url)),
+    )
+    .toEqual([]);
 
   await app.close();
   deployment.stop();
