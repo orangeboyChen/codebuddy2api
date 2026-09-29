@@ -101,7 +101,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     backendLocal: 'This machine',
     backendRemote: 'Other backend',
     backendRemoteHint:
-      'Shows this app’s own console with that deployment’s data, forwarded from there. It may ask you to sign in.',
+      'Shows the console that deployment serves, on the address it is served on — the pages and the data are both its own. It may ask you to sign in.',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: 'Cancel',
     changeBackend: 'Change backend…',
@@ -181,7 +181,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     backendLocal: 'このマシン',
     backendRemote: '他のバックエンド',
     backendRemoteHint:
-      'ここで起動せず、このアプリのコンソールにそのデプロイのデータを表示します。サインインを求められる場合があります。',
+      'そのデプロイが配信するコンソールを、そのアドレスのまま表示します。画面もデータもそのデプロイのものです。サインインを求められる場合があります。',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: 'キャンセル',
     changeBackend: 'バックエンドを変更…',
@@ -264,7 +264,7 @@ const texts: Record<'en-US' | 'ja-JP' | 'zh-CN', DesktopText> = {
     backendLocal: '本机',
     backendRemote: '其他后端',
     backendRemoteHint:
-      '在本机显示应用自带的控制台，数据从该服务转发而来。它可能会要求登录。',
+      '显示该服务自己的控制台，页面和数据都来自它本身。它可能会要求登录。',
     backendUrlPlaceholder: 'https://codebuddy.example.com',
     cancel: '取消',
     changeBackend: '切换后端…',
