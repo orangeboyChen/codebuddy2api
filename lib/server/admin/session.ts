@@ -755,16 +755,26 @@ const canRegisterAdminPasskeys = async (
   );
 };
 
+/**
+ * What a passkey may be added or removed under: the admin, in a browser.
+ *
+ * Not a device token. These are the endpoints that decide *how* the admin signs
+ * in, which is a different thing from the console's data a token was approved
+ * to read and write: a token that could add a passkey would be handing itself
+ * a credential that outlives it — a passkey does not expire, is not evicted by
+ * the cap on tokens, and is not taken back by signing out — and one that could
+ * delete the admin's would be taking away the way back in.
+ */
 const getAdminPasskeyRegistrationError = async (
   request: RequestLike,
 ): Promise<Response | null> => {
-  const authError = await getAdminSessionErrorResponse(request);
+  const authError = await getAdminBrowserSessionErrorResponse(request);
 
   if (authError) {
     return authError;
   }
 
-  if (await isAdminSessionAuthenticated(request)) {
+  if (await isAdminBrowserSessionAuthenticated(request)) {
     return null;
   }
 
@@ -807,7 +817,9 @@ export const deleteAdminPasskey = async (
   request: RequestLike,
   id: string,
 ): Promise<Response> => {
-  const authError = await getAdminSessionErrorResponse(request);
+  // The admin in a browser, for the reason registration is: removing a way in
+  // is a decision about who can sign in, not about the console's data.
+  const authError = await getAdminBrowserSessionErrorResponse(request);
 
   if (authError) {
     return authError;
@@ -1466,7 +1478,11 @@ export const changeAdminPassword = async (
 export const disableAdminAuthentication = async (
   request: RequestLike,
 ): Promise<Response> => {
-  const authError = await getAdminSessionErrorResponse(request);
+  // The admin in a browser, and nobody carrying a token: this takes the door
+  // off its hinges rather than opening it, and every gate in the console
+  // answers "no question to ask" once it has been taken off — so a device
+  // token that could do this could make the whole console answer anybody.
+  const authError = await getAdminBrowserSessionErrorResponse(request);
 
   if (authError) {
     return authError;
