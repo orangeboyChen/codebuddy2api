@@ -612,29 +612,31 @@ const deviceSessionRecord = (): StoredSessionRecord => ({
   tokenHash: '',
 });
 
-const getValidSessionRecord = async (
+/**
+ * The session the admin signed in to in a browser, and only that one.
+ *
+ * A device token is the admin too — it was approved in a browser — but it is a
+ * credential rather than a person: what it is for is reading and writing the
+ * console's data from the app. Handing out further credentials is not, so the
+ * endpoints that do that ask for the session instead.
+ */
+const getValidBrowserSessionRecord = async (
   request: RequestLike,
 ): Promise<StoredSessionRecord | null> => {
   const token = getSessionToken(request);
 
   if (!token) {
-    return (await isDeviceTokenAuthorized(request))
-      ? deviceSessionRecord()
-      : null;
+    return null;
   }
 
   const tokenHash = hashSessionToken(token);
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
   const matched = findSessionByTokenHash(state, tokenHash);
 
-  // A cookie this deployment no longer knows — signed out in another window, or
-  // a session that expired — is not a reason to ignore the token the user
-  // approved in a browser: the app sends both, and the browser keeps a cookie
-  // nobody took back.
   if (!matched) {
-    return (await isDeviceTokenAuthorized(request))
-      ? deviceSessionRecord()
-      : null;
+    // A cookie this deployment no longer knows, or one that expired. The device
+    // token the same caller may be carrying falls back in below, not here.
+    return null;
   }
 
   // Recognising a session needs no write, and rewriting the whole document on
@@ -658,6 +660,20 @@ const getValidSessionRecord = async (
 
     return target;
   });
+};
+
+const getValidSessionRecord = async (
+  request: RequestLike,
+): Promise<StoredSessionRecord | null> => {
+  const session = await getValidBrowserSessionRecord(request);
+
+  if (session) {
+    return session;
+  }
+
+  return (await isDeviceTokenAuthorized(request))
+    ? deviceSessionRecord()
+    : null;
 };
 
 const clearChallengeType = (
@@ -843,6 +859,25 @@ export const isAdminSessionAuthenticated = async (
   return (await getValidSessionRecord(request)) !== null;
 };
 
+/**
+ * Whether this is the admin, sitting in front of a browser, rather than
+ * something carrying a credential the admin once approved.
+ *
+ * The two are the same person for the endpoints that read and write the
+ * console. They are not for the one that approves a device: a token that could
+ * approve would be a token that could mint its own replacement, forever, and
+ * signing out would only revoke the one the app happens to be holding.
+ */
+export const isAdminBrowserSessionAuthenticated = async (
+  request: RequestLike,
+): Promise<boolean> => {
+  if (!consoleAuthRequired()) {
+    return true;
+  }
+
+  return (await getValidBrowserSessionRecord(request)) !== null;
+};
+
 export const getAdminSessionSummary = async (request: RequestLike) => {
   // No account to configure and nothing to sign in to, so the console never
   // sends anyone to the login page. The session counts as open, because that
@@ -925,8 +960,17 @@ export const updateAdminSessionUsagePreferences = async (
   });
 };
 
-export const getAdminSessionErrorResponse = (
+/**
+ * The gate on the admin's own endpoints: a response to send back when this is
+ * not the admin, and `null` when it is.
+ *
+ * `authenticated` is the one thing the two gates differ by, and none of the
+ * rest — an account that does not exist yet, storage that cannot be read —
+ * reads either way.
+ */
+const adminSessionErrorResponse = (
   request: RequestLike,
+  authenticated: () => Promise<boolean>,
 ): Promise<Response | null> => {
   return (async () => {
     try {
@@ -938,7 +982,7 @@ export const getAdminSessionErrorResponse = (
         return null;
       }
 
-      if (await isAdminSessionAuthenticated(request)) {
+      if (await authenticated()) {
         return null;
       }
 
@@ -968,6 +1012,26 @@ export const getAdminSessionErrorResponse = (
     }
   })();
 };
+
+export const getAdminSessionErrorResponse = (
+  request: RequestLike,
+): Promise<Response | null> =>
+  adminSessionErrorResponse(request, () =>
+    isAdminSessionAuthenticated(request),
+  );
+
+/**
+ * The same gate, for what hands credentials out rather than what reads data.
+ *
+ * A device token is not a browser session: the app holds one so it can read
+ * this console, not so it can decide who else may.
+ */
+export const getAdminBrowserSessionErrorResponse = (
+  request: RequestLike,
+): Promise<Response | null> =>
+  adminSessionErrorResponse(request, () =>
+    isAdminBrowserSessionAuthenticated(request),
+  );
 
 export const setupAdminPassword = async (
   request: RequestLike,
