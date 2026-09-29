@@ -196,13 +196,13 @@ describe('asking a deployment for a code', () => {
         baseUrl: BASE,
         fetchImpl: incomplete.fetchImpl,
       }),
-    ).resolves.toEqual({ kind: 'failed' });
+    ).resolves.toMatchObject({ kind: 'failed' });
     await expect(
       requestDeviceAuthorization({
         baseUrl: BASE,
         fetchImpl: failing.fetchImpl,
       }),
-    ).resolves.toEqual({ kind: 'failed' });
+    ).resolves.toMatchObject({ kind: 'failed' });
   });
 
   it('has failed when the deployment cannot be reached', async () => {
@@ -211,7 +211,7 @@ describe('asking a deployment for a code', () => {
         baseUrl: BASE,
         fetchImpl: unreachable().fetchImpl,
       }),
-    ).resolves.toEqual({ kind: 'failed' });
+    ).resolves.toMatchObject({ kind: 'failed' });
   });
 });
 

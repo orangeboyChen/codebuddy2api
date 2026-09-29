@@ -2852,10 +2852,25 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
 
     if (requested.kind !== 'granted') {
       listener.close();
+
+      /*
+        Said with what the deployment answered, because "it did not sign this
+        app in" is true of a wrong address, of another desktop install refusing
+        the request, and of a proxy answering for the host — and the three are
+        told apart only by what came back.
+      */
+      const said =
+        requested.kind === 'failed'
+          ? `${issuedBy} answered ${requested.status || 'nothing'}${requested.message ? ` — ${requested.message}` : ''}`
+          : '';
+
+      console.warn(`Could not sign in to ${issuedBy}: ${said || 'no account'}`);
       say(
         requested.kind === 'notConfigured'
           ? shell.deviceNotConfigured
-          : shell.deviceSignInFailed,
+          : said
+            ? `${shell.deviceSignInFailed}\n\n${said}`
+            : shell.deviceSignInFailed,
       );
 
       return;
@@ -3170,6 +3185,17 @@ const bootstrap = async (): Promise<void> => {
     with a locale to read.
   */
   locale = resolveDesktopLocale(app.getLocale());
+
+  /*
+    And what the console is asked in, which is what it answers in: a window
+    takes its Accept-Language from Chromium's own default, which is not this
+    computer's language — so a console that answered in English wrote a cookie
+    the shell then read back and spoke English from, whatever the machine said.
+  */
+  session.defaultSession.setUserAgent(
+    session.defaultSession.getUserAgent(),
+    [app.getLocale(), 'en-US'].join(','),
+  );
   // Made up here and nowhere else: the gateway gets it through the environment,
   // the window gets it as a cookie, and it dies with this run — a token written
   // down would be one a next run could be made to honour.

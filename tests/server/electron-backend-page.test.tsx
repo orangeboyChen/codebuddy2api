@@ -355,6 +355,22 @@ describe('the settings screen', () => {
     ]);
   });
 
+  it('names both backends, in the language the shell handed it', async () => {
+    await mount({ screen: 'settings' });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: '后端' })).toBeTruthy();
+    });
+
+    /*
+      Both of them, and both out of the shell's own strings: this machine, and
+      a backend that is not. A label written into the page would be a label
+      that stayed English however the computer was set.
+    */
+    expect(screen.getByText('本机')).toBeTruthy();
+    expect(screen.getByText('其他后端')).toBeTruthy();
+  });
+
   it('puts the port field and the save button in the backend tab', async () => {
     await mount({ screen: 'settings' });
 

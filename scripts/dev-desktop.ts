@@ -116,6 +116,64 @@ const devTarget = (): {
   return { args: ['.'], command: binary, shellDir: null };
 };
 
+/**
+ * What the app is packaged out of, besides the shell.
+ *
+ * The shell is put inside the app on every launch, so it is not what makes an
+ * app stale — but the icon, the manifest, the packaging configuration and the
+ * gateway it carries are all baked in once, and an app left from a launch last
+ * week was the one that opened, in last week's icon and with last week's
+ * gateway inside it.
+ */
+const PACKAGE_SOURCES = [
+  'package.json',
+  'electron/electron-builder.yml',
+  'electron/resources/icon-dev.png',
+  'build/bundle/gateway',
+];
+
+/** The newest file under a path, or 0 when there is nothing there. */
+const newestFileTime = (target: string, newest: number): number => {
+  if (!fs.existsSync(target)) {
+    return newest;
+  }
+
+  if (fs.statSync(target).isFile()) {
+    return Math.max(newest, fs.statSync(target).mtimeMs);
+  }
+
+  for (const entry of fs.readdirSync(target)) {
+    if (entry.startsWith('.') || entry === 'node_modules') {
+      continue;
+    }
+
+    newest = newestFileTime(path.join(target, entry), newest);
+  }
+
+  return newest;
+};
+
+/**
+ * Whether the app in the development output was packaged before something it is
+ * packaged out of changed.
+ */
+const appIsStale = (): boolean => {
+  const app = devApp();
+
+  if (!app) {
+    return true;
+  }
+
+  const binary = path.join(app, 'Contents', 'MacOS', APP_NAME);
+  const packaged = fs.existsSync(binary) ? fs.statSync(binary).mtimeMs : 0;
+  const newest = PACKAGE_SOURCES.reduce(
+    (soFar, source) => newestFileTime(path.join(root, source), soFar),
+    0,
+  );
+
+  return newest > packaged;
+};
+
 const runBin = (binary: string, args: string[]): void => {
   const { status } = spawnSync(bunBinary(), ['run', binary, '--', ...args], {
     cwd: root,
@@ -240,7 +298,7 @@ const spawnDev = (): ReturnType<typeof spawn> => {
 const main = async (): Promise<void> => {
   const forceApp = process.argv.includes('--app');
 
-  if (forceApp || !devApp()) {
+  if (forceApp || appIsStale()) {
     buildDevApp();
   }
 

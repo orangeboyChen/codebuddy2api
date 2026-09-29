@@ -42,7 +42,15 @@ export type DeviceRequest =
   | { grant: DeviceGrant; kind: 'granted' }
   /** A deployment with no administrator account, so nothing to sign in to. */
   | { kind: 'notConfigured' }
-  | { kind: 'failed' };
+  /**
+   * A deployment that answered, or did not, without anything to sign in with.
+   *
+   * What it said is carried back: "the deployment did not sign this app in" is
+   * true of a wrong address, of another desktop install refusing the request,
+   * and of a proxy answering for the host — and none of those can be told apart
+   * from the message alone.
+   */
+  | { kind: 'failed'; message: string; status: number };
 
 type FetchLike = (
   input: string,
@@ -56,6 +64,7 @@ type FetchLike = (
   json: () => Promise<unknown>;
   ok: boolean;
   status: number;
+  text: () => Promise<string>;
 }>;
 
 const stringField = (payload: unknown, name: string): string => {
@@ -131,6 +140,22 @@ export const deviceTokenFromPayload = (
  * console with no sign-in has nothing for this app to be signed in to, which is
  * an answer worth saying out loud rather than a failure to report.
  */
+/** What a deployment that answered nothing usable said, as much of it as is worth carrying. */
+const whatItSaid = async (response: {
+  status: number;
+  text: () => Promise<string>;
+}): Promise<{ message: string; status: number }> => {
+  let message = '';
+
+  try {
+    message = (await response.text()).trim().slice(0, 200);
+  } catch {
+    // A body that cannot be read is not worth failing the sign-in over.
+  }
+
+  return { message, status: response.status };
+};
+
 export const requestDeviceAuthorization = async ({
   baseUrl,
   clientId = DEVICE_CLIENT_ID,
@@ -163,14 +188,16 @@ export const requestDeviceAuthorization = async ({
     }
 
     if (!response.ok) {
-      return { kind: 'failed' };
+      return { ...(await whatItSaid(response)), kind: 'failed' };
     }
 
     const grant = deviceGrantFromPayload(await response.json());
 
-    return grant ? { grant, kind: 'granted' } : { kind: 'failed' };
+    return grant
+      ? { grant, kind: 'granted' }
+      : { ...(await whatItSaid(response)), kind: 'failed' };
   } catch {
-    return { kind: 'failed' };
+    return { kind: 'failed', message: '', status: 0 };
   }
 };
 
