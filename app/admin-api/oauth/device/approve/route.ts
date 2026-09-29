@@ -1,6 +1,6 @@
 import { readJsonBodyOrFailure } from '@/lib/server/shared/http';
 import { approveDeviceGrant } from '@/lib/server/admin/device';
-import { getAdminSessionErrorResponse } from '@/lib/server/admin/session';
+import { getAdminBrowserSessionErrorResponse } from '@/lib/server/admin/session';
 
 /**
  * The approval itself, which is the one part of this that needs a sign-in: the
@@ -10,12 +10,17 @@ import { getAdminSessionErrorResponse } from '@/lib/server/admin/session';
  * That is also why the desktop app sends people here rather than asking for
  * their password: a passkey works on this address, in a browser, and would not
  * work in the app's window at `127.0.0.1` however the password were asked for.
+ *
+ * And why it is a browser session and not any credential the admin has: a
+ * device token that could approve one code could approve its own successor, so
+ * one token would be enough to be this console's admin for as long as anybody
+ * wanted, and signing out would only take back the copy the app is holding.
  */
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export const POST = async (request: Request): Promise<Response> => {
-  const authError = await getAdminSessionErrorResponse(request);
+  const authError = await getAdminBrowserSessionErrorResponse(request);
 
   if (authError) {
     return authError;

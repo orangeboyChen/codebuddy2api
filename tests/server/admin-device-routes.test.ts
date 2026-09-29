@@ -32,8 +32,12 @@ vi.mock('@/lib/server/storage', async (importOriginal) => ({
   writeStorageJson: mocks.writeStorageJson,
 }));
 
-const { setupAdminPassword, loginWithAdminPassword } =
-  await import('@/lib/server/admin/session');
+const {
+  isAdminBrowserSessionAuthenticated,
+  isAdminSessionAuthenticated,
+  loginWithAdminPassword,
+  setupAdminPassword,
+} = await import('@/lib/server/admin/session');
 const deviceRoute = await import('@/app/admin-api/oauth/device/route');
 const tokenRoute = await import('@/app/admin-api/oauth/token/route');
 const approveRoute = await import('@/app/admin-api/oauth/device/approve/route');
@@ -259,5 +263,96 @@ describe('approving a code', () => {
     );
 
     expect(response.status).toBe(404);
+  });
+});
+
+/**
+ * A token the app is holding, which is what an approval is supposed to need a
+ * browser for: the app reads this console with its token, and that is all the
+ * token is for.
+ */
+const signedInBearer = async (): Promise<string> => {
+  const { device_code: deviceCode, user_code: userCode } = await askForCode();
+
+  const approved = await approveRoute.POST(
+    jsonPost(
+      '/admin-api/oauth/device/approve',
+      { user_code: userCode },
+      { headers: { cookie: await adminCookie() } },
+    ),
+  );
+
+  expect(approved.status).toBe(200);
+
+  const exchanged = await tokenRoute.POST(
+    jsonPost('/admin-api/oauth/token', {
+      client_id: DEVICE_CLIENT_ID,
+      device_code: deviceCode,
+      grant_type: DEVICE_GRANT_TYPE,
+    }),
+  );
+
+  expect(exchanged.status).toBe(200);
+
+  const { access_token: token } = (await exchanged.json()) as {
+    access_token: string;
+  };
+
+  return `Bearer ${token}`;
+};
+
+describe('approving a code with a token rather than a browser', () => {
+  beforeEach(async () => {
+    mocks.docs.clear();
+    mocks.readError.value = null;
+    await configureAdmin();
+  });
+
+  it('is refused, because a token that could approve could replace itself', async () => {
+    const authorization = await signedInBearer();
+    const { user_code: userCode } = await askForCode();
+
+    const response = await approveRoute.POST(
+      jsonPost(
+        '/admin-api/oauth/device/approve',
+        { user_code: userCode },
+        { headers: { authorization } },
+      ),
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it('is still the admin everywhere the token is what the app reads with', async () => {
+    const authorization = await signedInBearer();
+    const bearer = request('/admin-api/settings', {
+      headers: { authorization },
+    });
+
+    // The refusal above is not the token being worthless: it still opens the
+    // console's data, and it is only the handing out of credentials it is not
+    // asked about.
+    await expect(isAdminSessionAuthenticated(bearer)).resolves.toBe(true);
+    await expect(isAdminBrowserSessionAuthenticated(bearer)).resolves.toBe(
+      false,
+    );
+  });
+
+  it('is nobody in particular on a console that asks for no sign-in', async () => {
+    vi.stubEnv('CODEBUDDY_DESKTOP', '1');
+
+    const bearer = request('/admin-api/settings', {
+      headers: { authorization: 'Bearer nothing' },
+    });
+
+    // This machine's own console is not one anybody signs in to, so there is no
+    // session to be the admin of: both gates are open, and neither a token nor
+    // a cookie is what opened them.
+    await expect(isAdminSessionAuthenticated(bearer)).resolves.toBe(true);
+    await expect(isAdminBrowserSessionAuthenticated(bearer)).resolves.toBe(
+      true,
+    );
+
+    vi.unstubAllEnvs();
   });
 });
