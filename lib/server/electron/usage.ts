@@ -1,5 +1,6 @@
 import { ADMIN_SESSION_COOKIE } from '../admin/cookie';
 import { DESKTOP_CONSOLE_COOKIE } from './console-token';
+import { authHeaders } from './request-headers';
 
 /**
  * Today's token counts, as the menu bar item shows them: what went in and what
@@ -64,14 +65,17 @@ export const fetchTodayUsage = async ({
   baseUrl,
   cookie = '',
   signal = AbortSignal.timeout(USAGE_TIMEOUT_MS),
+  token = '',
 }: {
   baseUrl: string;
   cookie?: string;
   signal?: AbortSignal;
+  /** The token a deployment handed this app, when the data is a deployment's. */
+  token?: string;
 }): Promise<DesktopUsage | null> => {
   try {
     const response = await fetch(`${baseUrl}/admin-api/usage?range=today`, {
-      headers: cookie ? { cookie } : {},
+      headers: authHeaders({ cookie, token }),
       signal,
     });
 

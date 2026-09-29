@@ -6,6 +6,8 @@
  * deployment is a build of its own and can be ahead of or behind the app, which
  * is exactly what makes the number worth a row in the menu.
  */
+import { authHeaders } from './request-headers';
+
 const VERSION_TIMEOUT_MS = 5_000;
 
 /** Null for a payload that is not one: no version is better than a wrong one. */
@@ -23,14 +25,17 @@ export const fetchServerVersion = async ({
   baseUrl,
   cookie = '',
   signal = AbortSignal.timeout(VERSION_TIMEOUT_MS),
+  token = '',
 }: {
   baseUrl: string;
   cookie?: string;
   signal?: AbortSignal;
+  /** The token a deployment handed this app, when the version is a deployment's. */
+  token?: string;
 }): Promise<string | null> => {
   try {
     const response = await fetch(`${baseUrl}/admin-api/version`, {
-      headers: cookie ? { cookie } : {},
+      headers: authHeaders({ cookie, token }),
       signal,
     });
 

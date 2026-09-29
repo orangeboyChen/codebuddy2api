@@ -609,7 +609,7 @@ test('asks from its own window, and takes the sign-in to the deployment', async 
   deployment.stop();
 });
 
-test('shows its own console for a deployment, and takes only the data from it', async () => {
+test('opens a deployment on its own address, and starts nothing here for it', async () => {
   const deployment = await startDeployment();
 
   writeBackend(`http://127.0.0.1:${deployment.port}`);
@@ -617,30 +617,15 @@ test('shows its own console for a deployment, and takes only the data from it', 
   const app = await launchApp();
   const consoleWindow = await waitForConsole(app);
 
-  // The console is the app's own build on loopback, not the deployment's page:
-  // the address in the window is the gateway the app started here.
-  expect(consoleWindow.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/dashboard$/);
-  expect(await consoleWindow.title()).not.toContain(
-    'the deployment’s own page',
+  /*
+    The address in the window is the deployment's, not a gateway of this
+    machine's: for a custom backend this app starts nothing and takes no port,
+    because the console is for controlling a backend — the data and the API are
+    the backend's, asked for on the address it is served on.
+  */
+  expect(consoleWindow.url()).toBe(
+    `http://127.0.0.1:${deployment.port}/dashboard`,
   );
-
-  // …and the numbers in it are the deployment's: `/admin-api` is forwarded, so
-  // the version it answers with is the version it has, not the app's.
-  const response = await consoleWindow.request.get(
-    new URL('/admin-api/version', consoleWindow.url()).toString(),
-  );
-
-  expect(response.ok()).toBe(true);
-  expect(await response.json()).toEqual({ version: DEPLOYMENT_VERSION });
-
-  // So is its sign-in: the panel is not something a desktop install has, but
-  // this one is a console for a deployment reachable from a network, whose
-  // password and passkeys are the user's to change.
-  await consoleWindow.goto(
-    new URL('/settings', consoleWindow.url()).toString(),
-  );
-
-  await expect(consoleWindow.locator('#security')).toBeVisible();
 
   await app.close();
   deployment.stop();

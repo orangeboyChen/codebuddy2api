@@ -201,7 +201,17 @@ export const bundleElectron = () => {
   // else for the app's own icon — and each is read from next to the bundled
   // main process, so neither can come from `electron/resources`, which is only
   // electron-builder's buildResources and never reaches the packaged app.
-  for (const icon of ['tray.png', 'tray-template.png']) {
+  // The menu bar icons, and the three the appearance menu carries: all of them
+  // are read from next to the bundled main process, so none of them can come
+  // from `electron/resources`, which is only electron-builder's buildResources
+  // and never reaches the packaged app.
+  for (const icon of [
+    'tray.png',
+    'tray-template.png',
+    'appearance-light.png',
+    'appearance-dark.png',
+    'appearance-system.png',
+  ]) {
     copyInto(path.join(resourcesDir, icon), path.join(appDir, icon));
   }
   copyInto(

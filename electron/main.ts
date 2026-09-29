@@ -454,11 +454,21 @@ const sameSettings = (a: DesktopSettings, b: DesktopSettings): boolean =>
  * shows is this app's own console, and only the data behind `/admin-api` comes
  * from the deployment.
  */
-const consoleBaseUrl = (): string => gateway?.url ?? '';
+const consoleBaseUrl = (): string =>
+  // A deployment's own address: the console it serves is the deployment's, and
+  // so is the data behind it. Nothing of this machine's sits in between, and no
+  // port of this machine's is given up to forward one.
+  backend.mode === 'remote'
+    ? backend.url.trim().replace(/\/+$/, '')
+    : (gateway?.url ?? '');
 
 /** The loopback address the bundled gateway is on, or `…` until it is up. */
 const backendAddress = (): string =>
-  gateway ? `127.0.0.1:${gateway.port}` : '…';
+  backend.mode === 'remote'
+    ? new URL(backend.url).host
+    : gateway
+      ? `127.0.0.1:${gateway.port}`
+      : '…';
 
 const backendLabel = (): string =>
   backend.mode === 'remote' ? new URL(backend.url).host : text().backendLocal;
@@ -1043,24 +1053,39 @@ const chooseLocale = (next: string): void => {
  * the window is a window of this computer, and a desktop app is dressed from the
  * place its other settings are — not from a picker inside the page.
  */
+/*
+  A picture each, so the three are told apart before they are read: a menu of
+  words alone is a menu you have to read twice, and this is the one thing in
+  the menu at the top of the screen anybody reaches for often.
+
+  Drawn in one colour and no colour of this app's, the way the menu bar icon
+  is: the desktop colours a menu picture itself, and one that carried its own
+  would be the wrong one in whichever appearance it was not drawn for.
+*/
+const appearanceIcon = (name: 'dark' | 'light' | 'system'): string =>
+  path.join(bundleDir(), `appearance-${name}.png`);
+
 const appearanceMenu = (): MenuItemConstructorOptions => ({
   label: text().appearance,
   submenu: [
     {
       checked: consoleTheme === 'light',
       click: () => chooseAppearance('light'),
+      icon: appearanceIcon('light'),
       label: text().themeLight,
       type: 'radio',
     },
     {
       checked: consoleTheme === 'dark',
       click: () => chooseAppearance('dark'),
+      icon: appearanceIcon('dark'),
       label: text().themeDark,
       type: 'radio',
     },
     {
       checked: consoleTheme === 'system',
       click: () => chooseAppearance('system'),
+      icon: appearanceIcon('system'),
       label: text().themeSystem,
       type: 'radio',
     },
@@ -1800,6 +1825,7 @@ const refreshUsage = async (): Promise<void> => {
   todayUsage = await fetchTodayUsage({
     baseUrl,
     cookie: adminCookieHeader(cookies),
+    token: deviceToken ?? undefined,
   });
   usageLoaded = true;
 
@@ -1810,6 +1836,7 @@ const refreshUsage = async (): Promise<void> => {
       ? await fetchServerVersion({
           baseUrl,
           cookie: adminCookieHeader(cookies),
+          token: deviceToken ?? undefined,
         })
       : null;
 
@@ -2092,6 +2119,54 @@ const needsDeploymentSignIn = async (): Promise<boolean> =>
   backend.mode === 'remote' && !deviceToken && (await deploymentNeedsSignIn());
 
 /**
+ * Opens the console of a deployment, in this app's own window, on the
+ * deployment's own address.
+ *
+ * No gateway of this machine's is started for it. The window is this app's, and
+ * what is in it is the deployment's console, asked for on the address it is
+ * served on — which is also where its data and its API are. A gateway on
+ * loopback forwarding the two is a port this machine gave up and an API nobody
+ * asked this app to run: the console is for controlling a backend, not for
+ * being one.
+ */
+const openDeploymentConsole = async ({
+  authenticate = false,
+}: { authenticate?: boolean } = {}): Promise<void> => {
+  const target = backend;
+
+  if (target.mode !== 'remote') {
+    return;
+  }
+
+  lastProbe = await probeDeployment({ url: target.url });
+
+  if (lastProbe.kind !== 'ready') {
+    status = 'unreachable';
+    refreshMenus();
+    raiseBackendQuestion('unreachable');
+
+    return;
+  }
+
+  if (authenticate) {
+    await signInToDeployment();
+  }
+
+  if (await needsDeploymentSignIn()) {
+    status = 'running';
+    refreshMenus();
+    openBackendWindow({ screen: 'settings' });
+
+    return;
+  }
+
+  status = 'running';
+  refreshMenus();
+  reloadConsole();
+  showMainWindow();
+};
+
+/**
  * Switches the app to a backend and reopens the console on it.
  *
  * `persist` is set when the choice came from the window that asks: the settings
@@ -2146,42 +2221,26 @@ const applyBackend = async (
   serverVersion = null;
   refreshMenus();
 
+  /*
+    A deployment is served on its own address, and this machine starts nothing
+    for it: the console in this window is the deployment's, and so is the data
+    and the API behind it. A gateway on loopback forwarding the two is a port
+    this machine gave up and an API nobody asked this app to run — the console
+    is for controlling a backend, not for being one.
+  */
+  if (backend.mode === 'remote') {
+    if (gateway || pendingChild) {
+      await stopGatewayAndWait();
+    }
+
+    await openDeploymentConsole({ authenticate });
+
+    return;
+  }
+
   await restartGateway();
 
   if (status === 'running') {
-    /*
-      Signed in before the console is opened on it: a deployment that wants one
-      answers the console with its own login page, and a login page in this app's
-      window is not one anybody can sign in on.
-
-      Pressed to be signed in, it is asked outright rather than waited on to ask:
-      the button under its address is the request, and what it is answered with
-      is the deployment's own page in a browser — not a page of its own in this
-      window.
-    */
-    /*
-      Signed in, when that is what the press asked for. Not otherwise: a
-      deployment is signed in to from the window that asks, in a browser, and a
-      browser opened on this app's own behalf before anybody pressed anything is
-      not something this app does.
-    */
-    /*
-      Pressed, so it answers out loud: a press that does nothing and says
-      nothing is a press nobody can tell apart from one on a broken button.
-    */
-    if (authenticate) {
-      await signInToDeployment();
-    }
-
-    if (await needsDeploymentSignIn()) {
-      openBackendWindow({ screen: 'settings' });
-
-      return;
-    }
-
-    // A window already open holds the page the last backend served — a
-    // deployment's login page, most of all — and a window that is merely brought
-    // forward keeps showing it. Loaded again at the console this one serves.
     reloadConsole();
     showMainWindow();
 
@@ -3167,21 +3226,18 @@ const watchDesktopSettings = (): void => {
 };
 
 const startBackend = async (): Promise<void> => {
-  // A deployment configured or not, this starts the gateway that serves the
-  // console; the deployment only decides where its data comes from.
+  // A deployment is served on its own address, and this machine starts nothing
+  // for it; only this machine's own data needs a gateway of this machine's.
+  if (backend.mode === 'remote') {
+    await openDeploymentConsole();
+
+    return;
+  }
+
+  // This machine's own gateway serves the console; its data is this machine's.
   await restartGateway();
 
   if (status === 'running') {
-    // Not signed in to the deployment whose data this console shows: the window
-    // that asks is what goes in front of the user, and the console is not opened
-    // at all — what it would answer with is that deployment's own login page, in
-    // this window.
-    if (await needsDeploymentSignIn()) {
-      openBackendWindow({ screen: 'settings' });
-
-      return;
-    }
-
     reloadConsole();
     showMainWindow();
 
