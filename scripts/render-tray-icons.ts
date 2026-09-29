@@ -63,9 +63,26 @@ const mark = async (): Promise<Buffer> => {
 };
 
 /**
+ * The darkest a pixel can be and still be the glyph, and not the plate.
+ *
+ * The plate is the app's own dark, which is near black but not black, and a
+ * template has no greys to tell the two apart: a plate left in at a tenth of
+ * the alpha is a square the glyph shows faintly through. Everything darker than
+ * this is the plate, and drops out of the template.
+ */
+const GLYPH_LIGHT = 64;
+
+/**
  * The same mark as a template, which is what macOS asks a menu bar item for:
  * it draws one from the picture's alpha alone, so the shape is kept and every
  * colour in it is dropped. A coloured mark is the only one in the row.
+ *
+ * Which is why the template is the glyph and not the whole mark: the mark is a
+ * dark plate with a lighter glyph on it, so its alpha is the plate's all the
+ * way across and its shape is in its colour. Dropping the colour alone leaves
+ * the plate and loses the glyph — a menu bar item that is a black rounded
+ * rectangle — so the template's alpha is made from the mark's light, which is
+ * where the glyph is.
  */
 export const asTemplate = async (png: Buffer): Promise<Buffer> => {
   const { data, info } = await sharp(png)
@@ -74,9 +91,19 @@ export const asTemplate = async (png: Buffer): Promise<Buffer> => {
     .toBuffer({ resolveWithObject: true });
 
   for (let at = 0; at < data.length; at += info.channels) {
+    const light =
+      0.299 * data[at] + 0.587 * data[at + 1] + 0.114 * data[at + 2];
+    const alpha =
+      light <= GLYPH_LIGHT
+        ? 0
+        : Math.round(((light - GLYPH_LIGHT) / (255 - GLYPH_LIGHT)) * 255);
+
     data[at] = 0;
     data[at + 1] = 0;
     data[at + 2] = 0;
+    // Kept inside the mark: a pixel the mark leaves clear is whatever the
+    // decoder left in it, and has no light of its own.
+    data[at + 3] = Math.round((alpha * data[at + 3]) / 255);
   }
 
   return await sharp(data, {
