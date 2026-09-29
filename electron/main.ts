@@ -3340,11 +3340,15 @@ ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
   }
 
   /*
-    Not signed in: `applyBackend` has put the window that asks in front of the
-    user, and closing it here would take away the one thing the answer was
-    meant to be shown in.
+    Not signed in to a deployment that wants one: `applyBackend` has put the
+    window that asks in front of the user, and closing it here would take away
+    the one thing the answer was meant to be shown in.
+
+    A deployment this app is already signed in to — or one that asks for no
+    sign-in at all — is answered the way a save always was: the ask closes, and
+    the console opens.
   */
-  if (!deviceToken) {
+  if (await needsDeploymentSignIn()) {
     return { signedIn: false };
   }
 
