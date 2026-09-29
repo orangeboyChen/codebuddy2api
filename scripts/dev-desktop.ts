@@ -30,7 +30,14 @@ import { bundleElectron, bunBinary, prepareDesktop } from './build-desktop';
 /** Where the repository is, whichever directory this is run from. */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appBundleDir = path.join(root, 'build', 'electron-app');
-const desktopOutput = path.join(root, 'build', 'desktop');
+/*
+  Its own output directory, which is what keeps the two apart: electron-builder
+  writes a release to `build/desktop`, and an app left there by one is not an
+  app this command can tell from its own — so a release built after a
+  development run, or before it, was the one development then launched, in the
+  release's icon.
+*/
+const devOutput = path.join(root, 'build', 'desktop-dev');
 const builderConfig = path.join(root, 'electron', 'electron-builder.yml');
 const standaloneServer = path.join(root, '.next', 'standalone', 'server.js');
 const APP_NAME = 'CodeBuddy2API';
@@ -39,16 +46,16 @@ const SETTLE_MS = 120;
 
 /** What electron-builder unpacked, on the platform that has a bundle to unpack. */
 const devApp = (): string | null => {
-  if (process.platform !== 'darwin' || !fs.existsSync(desktopOutput)) {
+  if (process.platform !== 'darwin' || !fs.existsSync(devOutput)) {
     return null;
   }
 
-  for (const entry of fs.readdirSync(desktopOutput)) {
+  for (const entry of fs.readdirSync(devOutput)) {
     if (!entry.startsWith('mac')) {
       continue;
     }
 
-    const candidate = path.join(desktopOutput, entry, `${APP_NAME}.app`);
+    const candidate = path.join(devOutput, entry, `${APP_NAME}.app`);
 
     if (fs.existsSync(candidate)) {
       return candidate;
@@ -135,6 +142,7 @@ const buildDevApp = (): void => {
     '--config',
     builderConfig,
     '--dir',
+    `-c.directories.output=${devOutput}`,
     '-c.asar=false',
     `-c.mac.icon=${path.join(appBundleDir, 'icon-dev.png')}`,
     '--publish',
