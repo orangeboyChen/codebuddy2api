@@ -63,7 +63,6 @@ import {
   DEVICE_REQUEST_TIMEOUT_MS,
   pollForDeviceToken,
   requestDeviceAuthorization,
-  type DeviceGrant,
 } from '../lib/server/electron/device-auth';
 import {
   forgetDeviceToken,
@@ -2762,21 +2761,6 @@ const openSettings = (): void => {
   openBackendWindow({ screen: 'settings' });
 };
 
-const deviceCodeForm = (grant: DeviceGrant): AskForm => {
-  const shell = text();
-
-  return {
-    cancel: shell.cancel,
-    message: fillText(shell.deviceCodeMessage, {
-      code: grant.userCode,
-      url: grant.verificationUri || grant.verificationUriComplete,
-    }),
-    ok: shell.deviceOpenBrowser,
-    options: [shell.deviceOpenBrowser],
-    title: APP_TITLE,
-  };
-};
-
 /**
  * Signing this app in to the deployment whose data it shows.
  *
@@ -2840,21 +2824,17 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
   }
 
   const { grant } = requested;
+  /*
+    Where the user approves: the deployment's own page, in the browser, with the
+    code already in its address. So there is nothing to show them first, and no
+    code to carry across by hand — the approval is a click on that page, which is
+    the only place a passkey saved for the deployment's address is ever offered.
 
-  if (asksInSystemDialogs()) {
-    const outcome = await askSystem(deviceCodeForm(grant));
-
-    if (outcome.kind !== 'answered') {
-      return;
-    }
-  } else {
-    // Asked for by name, so it is worth saying out loud: the code is shown on the
-    // page the browser opens, which is where it is typed in as well.
-    console.warn(
-      'CODEBUDDY_DESKTOP_ASK=window: not asking in the system’s dialog.',
-    );
-  }
-
+    A sign-in that asked in a dialog first was one that never opened a browser
+    at all when that dialog could not be drawn or was answered with nothing, and
+    what was left behind was the deployment's own login page — in this window,
+    where it cannot be signed in on.
+  */
   openExternally(grant.verificationUriComplete || grant.verificationUri);
 
   try {
