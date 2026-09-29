@@ -45,6 +45,15 @@ export interface HealthWaitOptions {
 }
 
 export interface GatewayHandle {
+  /**
+   * Resolves once the gateway's process has gone.
+   *
+   * `stop()` is a signal, not an exit: a process that has been asked to stop
+   * still holds the port it was serving until it has actually finished. A
+   * restart that does not wait for it finds its own dying gateway answering,
+   * and reads that as the port being taken by something else.
+   */
+  exited: Promise<void>;
   port: number;
   stop: () => void;
   url: string;
@@ -83,6 +92,12 @@ export interface StartGatewayOptions {
    * app stopped it.
    */
   onUnexpectedExit?: (error: Error) => void;
+  /**
+   * The process, the moment it exists — before it is healthy, and before there
+   * is a handle to stop it. An app that quits while the gateway is still coming
+   * up has nothing else that could take the child with it.
+   */
+  onChild?: (child: GatewayProcess) => void;
   port: number;
   spawn?: GatewaySpawn;
   timeoutMs?: number;
@@ -260,6 +275,15 @@ export const startGateway = async (
   pipeToLog(child.stdout, log);
   pipeToLog(child.stderr, log);
 
+  // The other end of `stop()`: a promise that settles when the process is
+  // really gone, which is when the port it held is free again.
+  const gone = new Promise<void>((resolve) => {
+    child.on('exit', () => resolve());
+    child.on('error', () => resolve());
+  });
+
+  options.onChild?.(child);
+
   let stopped = false;
   let healthy = false;
   const stop = (): void => {
@@ -327,5 +351,5 @@ export const startGateway = async (
     throw error;
   }
 
-  return { port: options.port, stop, url };
+  return { exited: gone, port: options.port, stop, url };
 };

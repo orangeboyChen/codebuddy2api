@@ -386,6 +386,57 @@ describe('startGateway', () => {
     expect(log).not.toHaveBeenCalled();
   });
 
+  it('says when the gateway is really gone, which is not when it was asked to go', async () => {
+    // `stop()` is a signal, and a process that has been signalled keeps
+    // answering for a moment — long enough for a restart to find its own dying
+    // gateway on the port and take it for somebody else's.
+    const { child, emit } = createChild();
+    const handle = await startGateway({
+      env: asEnv(),
+      gatewayDir: '/app/gateway',
+      nodePath: '/Electron',
+      port: 8001,
+      spawn: () => child,
+      waitForHealth: async () => true,
+    });
+
+    let gone = false;
+
+    void handle.exited.then(() => {
+      gone = true;
+    });
+
+    handle.stop();
+
+    await Promise.resolve();
+
+    expect(gone).toBe(false);
+
+    emit('exit', 0);
+    await handle.exited;
+
+    expect(gone).toBe(true);
+  });
+
+  it('hands the process over before there is anything to hand a handle from', async () => {
+    // A start that has not landed has no handle to stop, and an app that quits
+    // meanwhile would leave the child holding the port the next launch wants.
+    const { child } = createChild();
+    const onChild = vi.fn();
+
+    await startGateway({
+      env: asEnv(),
+      gatewayDir: '/app/gateway',
+      nodePath: '/Electron',
+      onChild,
+      port: 8001,
+      spawn: () => child,
+      waitForHealth: async () => true,
+    });
+
+    expect(onChild).toHaveBeenCalledWith(child);
+  });
+
   it('waits on the health check, and not on the console it is asking about', async () => {
     const { child } = createChild();
     const spawn = vi.fn(() => child);
