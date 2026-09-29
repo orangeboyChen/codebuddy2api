@@ -116,6 +116,10 @@ import { fetchUpstreamSessionSummary } from '../lib/server/admin/upstream';
 
 /** Every window of the app's own carries this title, and never another. */
 const APP_TITLE = 'CodeBuddy2API';
+/**
+ * How long the window that asked is given to close once it has been told to.
+ */
+const CLOSE_GRACE_MS = 2_000;
 
 /**
  * The app's name, set before `ready` and before anything reads it.
@@ -1236,15 +1240,12 @@ const buildApplicationMenu = (): Menu =>
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
     { role: 'editMenu' as const },
     /*
-      macOS only: this is the menu at the top of the screen, which is where every
-      other app's appearance and language are. Linux and Windows have no such
-      menu — and a window's own menu bar is hidden by default there — so those two
-      go in the menu bar item's menu instead, which is the one menu both of them
-      always have.
+      Carried here on every platform, and in the menu bar item's menu as well
+      where there is no menu at the top of the screen: Linux and Windows hide a
+      window's own menu bar by default, so on those two the menu bar item is the
+      only place anybody would think to look.
     */
-    ...(process.platform === 'darwin' && consoleOrigin
-      ? [appearanceMenu(), languageMenu()]
-      : []),
+    ...(consoleOrigin ? [appearanceMenu(), languageMenu()] : []),
     ...(process.platform === 'darwin' ? [{ role: 'windowMenu' as const }] : []),
   ]);
 
@@ -3525,7 +3526,14 @@ ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
     });
 
     window.close();
-    await closed;
+
+    /*
+      Waited for, but not forever: a window that will not close would otherwise
+      hold the press here, and a press that never comes back is an app that looks
+      hung rather than one that is a window short. The console is opened whatever
+      became of it.
+    */
+    await Promise.race([closed, delay(CLOSE_GRACE_MS)]);
   }
 
   /*

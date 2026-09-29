@@ -662,17 +662,14 @@ test('names itself at the top of the screen, and puts the console there', async 
     Only macOS names the app at the top of the screen: that menu is the bundle's,
     and a bundle is what `electron .` has none of — which is why it said Electron.
 
-    On Linux and Windows there is no such menu, so the appearance and the language
-    live in the menu bar item's menu instead, which is the one menu those
-    platforms always have.
+    On Linux and Windows there is no menu at the top of the screen, and a
+    window's own menu bar is hidden by default — so those two are in the menu bar
+    item's menu as well there, which is the one menu those platforms always have.
   */
   if (process.platform === 'darwin') {
     expect(labels[0]).toBe('CodeBuddy2API');
     expect(labels).toContain('Appearance');
     expect(labels).toContain('Language');
-  } else {
-    expect(labels).not.toContain('Appearance');
-    expect(labels).not.toContain('Language');
   }
 
   expect(labels).not.toContain('Electron');
