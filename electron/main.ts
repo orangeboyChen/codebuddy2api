@@ -33,6 +33,7 @@ import {
   buildGatewayEnv,
   startGateway,
   type GatewayHandle,
+  type GatewayProcess,
 } from '../lib/server/electron/gateway';
 import {
   ensureDesktopDirectories,
@@ -189,6 +190,14 @@ const QUIT_GRACE_MS = 2_000;
  */
 const RESTART_DEBOUNCE_MS = 750;
 /**
+ * How long a restart waits for the gateway it just stopped to let go of its
+ * port. `stop()` is a signal and not an exit, and a process that has been
+ * signalled keeps answering for a moment: long enough for the probe below to
+ * find this app's own gateway still serving, and to report the port the app is
+ * already on as taken by somebody else.
+ */
+const GATEWAY_EXIT_GRACE_MS = 2_000;
+/**
  * How often the menu bar item asks for today's token counts. A minute: the
  * console is where the numbers are watched, the menu bar is where they are
  * glanced at.
@@ -256,6 +265,15 @@ let quitting = false;
 let paused = false;
 /** The gateway being started: its child exists, its handle does not yet. */
 let pendingStart: Promise<GatewayHandle> | null = null;
+/**
+ * The process of a gateway that is still coming up.
+ *
+ * A start that has not landed has no handle to stop, and it is the process —
+ * not the handle — that holds the port: an app that quits while the gateway is
+ * starting would leave the child behind, and the next launch would find the
+ * port taken by this app's own gateway from last time.
+ */
+let pendingChild: GatewayProcess | null = null;
 /**
  * A console somebody asked for while there was none to open.
  *
@@ -1151,6 +1169,11 @@ const launchGateway = async (
         `The local gateway stopped unexpectedly.\n\n${describeError(error)}`,
       );
     },
+    // Held only until this start has landed: a quit in the meantime has no
+    // handle to stop the gateway with, and the child is what holds the port.
+    onChild: (child) => {
+      pendingChild = child;
+    },
     port,
   });
 };
@@ -1258,8 +1281,15 @@ const restartGateway = async (): Promise<void> => {
   try {
     // The gateway that is running still holds its port, so probing before
     // stopping it would reject the port the app is already on — the one just
-    // saved included — and settle on the next one instead. Release it first.
+    // saved included — and settle on the next one instead. Release it first,
+    // and wait for the release: a gateway that has been asked to stop is still
+    // answering a moment later, and the probe cannot tell it from a stranger.
     gateway?.stop();
+
+    if (gateway) {
+      await Promise.race([gateway.exited, delay(GATEWAY_EXIT_GRACE_MS)]);
+    }
+
     gateway = null;
 
     const port = await resolveStartPort();
@@ -1279,6 +1309,7 @@ const restartGateway = async (): Promise<void> => {
     pendingStart = launchGateway(port, upstream);
     gateway = await pendingStart;
     pendingStart = null;
+    pendingChild = null;
 
     // The port probe and the health check take seconds, and the backend can
     // change meanwhile — give this gateway back instead of steering the console
@@ -2823,7 +2854,14 @@ if (!app.requestSingleInstanceLock()) {
           delay(QUIT_GRACE_MS),
         ]);
 
-        started?.stop();
+        // Stopped through the handle when the start landed, and through the
+        // process when it did not: a gateway still coming up has no handle
+        // yet, and it is the child — not the app — that would keep the port.
+        if (started) {
+          started.stop();
+        } else {
+          pendingChild?.kill();
+        }
       }
 
       app.exit();
