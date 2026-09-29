@@ -432,6 +432,34 @@ describe('admin auth and storage', () => {
     ).toBeNull();
   });
 
+  it('says nothing about the account to somebody who has not opened it', async () => {
+    const setupResponse = await setupAdminPassword(
+      makeRequest('/admin-api/auth/setup'),
+      'operator',
+      'correct horse battery staple',
+    );
+    const sessionCookie = getCookieHeader(setupResponse);
+
+    const anonymous = await getAdminSessionSummary(
+      makeRequest('/admin-api/auth/session'),
+    );
+
+    // What the login page reads is whether there is an account, and what it
+    // can be opened with — not the name it is opened with, which is half the
+    // pair and the key the sign-in is throttled by.
+    expect(anonymous.accountConfigured).toBe(true);
+    expect(anonymous.passwordConfigured).toBe(true);
+    expect(anonymous.authenticated).toBe(false);
+    expect(anonymous.username).toBe('');
+
+    const signedIn = await getAdminSessionSummary(
+      makeRequest('/admin-api/auth/session', { cookie: sessionCookie }),
+    );
+
+    expect(signedIn.authenticated).toBe(true);
+    expect(signedIn.username).toBe('operator');
+  });
+
   it('requires an admin session before starting or polling OAuth credentials', async () => {
     await setupAdminPassword(
       makeRequest('/admin-api/auth/setup'),
