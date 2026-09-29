@@ -2925,7 +2925,16 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
   */
   const say = (message: string): void => {
     if (!quiet) {
-      dialog.showErrorBox(APP_TITLE, message);
+      /*
+        Not `showErrorBox`, which stops this process where it stands until
+        somebody dismisses it. That is true of Linux and Windows, and a sign-in
+        is answered from inside a press the window is waiting on: a box that
+        blocks is a press that never comes back, and an app that looks hung
+        rather than one that said what went wrong.
+      */
+      void dialog
+        .showMessageBox({ message, title: APP_TITLE, type: 'error' })
+        .catch(() => undefined);
     }
   };
   // Named before anything is asked of it: the grant is that deployment's, and
