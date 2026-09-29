@@ -2470,6 +2470,13 @@ const signInToDeployment = async (): Promise<void> => {
   // somewhere else while the user is still approving, and a token saved under
   // the new address would be carried to a deployment that never issued it.
   const issuedBy = backend.url;
+  // Named before anything is asked of it, and before the first await: the menu
+  // bar item is rebuilt while this waits, and an item that still says "Sign in"
+  // is a second sign-in — two codes on two screens, the one the user did not
+  // approve left to run out, and a second gateway restart behind it.
+  signingIn = true;
+  refreshTray();
+
   const requested = await requestDeviceAuthorization({ baseUrl: issuedBy });
 
   if (requested.kind === 'notConfigured') {
@@ -2501,9 +2508,6 @@ const signInToDeployment = async (): Promise<void> => {
   }
 
   openExternally(grant.verificationUriComplete || grant.verificationUri);
-
-  signingIn = true;
-  refreshTray();
 
   try {
     const outcome = await pollForDeviceToken({
