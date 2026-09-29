@@ -691,17 +691,35 @@ const showMainWindow = (): void => {
     return;
   }
 
-  // No console to open: the gateway behind it is not up, and in both cases the
-  // question the user has to settle is the one to put back in front of them.
+  // No console to open: the gateway behind it is not up. What is put in front
+  // of the user is the question they can settle — which backend, which port —
+  // and raised rather than asked, because this can be reached from inside an
+  // answer being applied, where an ask is one the guard would refuse.
   if (status === 'unreachable') {
-    void askAboutBackend('unreachable');
+    raiseBackendQuestion('unreachable');
 
     return;
   }
 
   if (status === 'portBusy') {
-    void askAboutBackend('portInUse');
+    raiseBackendQuestion('portInUse');
+
+    return;
   }
+
+  // A gateway that failed to start is this app's own failure, already put in
+  // front of the user in a dialog of the computer's own when it happened — and
+  // not a question they can settle here. What they asked for is a console,
+  // whether by clicking the menu bar item or by answering "Resume"; the only
+  // way to one is a gateway that starts, and a port freed since, or a
+  // deployment that has come back, is answered by trying again. Left as it
+  // was, the click did nothing at all, which is what reads as broken.
+  //
+  // Remembered the way a click made during a start is, so the try is what
+  // opens the console it was asked for — and forgets the click if there is
+  // still none to open.
+  consoleRequestPending = true;
+  void restartGateway();
 };
 
 /**
