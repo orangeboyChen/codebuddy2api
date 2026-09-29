@@ -236,6 +236,16 @@ const main = async (): Promise<void> => {
     buildDevApp();
   }
 
+  /*
+    The app already there carries whatever `electron/` held when it was built,
+    which is not what it holds now — and an app left over from yesterday's run
+    was the one that opened, running yesterday's shell on yesterday's console.
+
+    Bundled again before every launch, so the app is always this repository's:
+    a second or two, against a console that would otherwise be a build behind.
+  */
+  rebundleShell();
+
   let child = spawnDev();
 
   let timer: NodeJS.Timeout | null = null;
