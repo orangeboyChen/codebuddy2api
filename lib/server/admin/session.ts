@@ -908,19 +908,21 @@ export const getAdminSessionSummary = async (request: RequestLike) => {
 
   const state = pruneExpiredState(await loadAdminAuthStateAsync());
   const session = await getValidSessionRecord(request);
+  const configured =
+    state.enabled && (Boolean(state.password) || state.passkeys.length > 0);
 
   return {
-    accountConfigured:
-      state.enabled && (Boolean(state.password) || state.passkeys.length > 0),
+    accountConfigured: configured,
     authEnabled: state.enabled,
     authenticated: session !== null,
     passkeyCount: state.passkeys.length,
     passwordConfigured: Boolean(state.password),
     // Half of the pair the account is opened with, and the key the sign-in is
     // throttled by — so it is said to somebody who has opened it, and to
-    // nobody else. The login page has never needed it: it asks for it, and
-    // whether there is an account to ask about is all it reads.
-    username: session ? state.username : '',
+    // nobody else. Before there is an account there is no name to keep: the
+    // page that reads it is the one about to name it, and an empty field
+    // there is a setup that answers 400.
+    username: session || !configured ? state.username : '',
     usagePreferences: normalizeUsagePreferences(session?.usagePreferences),
   };
 };

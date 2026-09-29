@@ -433,6 +433,16 @@ describe('admin auth and storage', () => {
   });
 
   it('says nothing about the account to somebody who has not opened it', async () => {
+    // Before there is an account, the page that reads the name is the one
+    // about to name it: an empty field there is a setup that answers 400.
+    const beforeSetup = await getAdminSessionSummary(
+      makeRequest('/admin-api/auth/session'),
+    );
+
+    expect(beforeSetup.accountConfigured).toBe(false);
+    expect(beforeSetup.authenticated).toBe(false);
+    expect(beforeSetup.username).toBe('admin');
+
     const setupResponse = await setupAdminPassword(
       makeRequest('/admin-api/auth/setup'),
       'operator',

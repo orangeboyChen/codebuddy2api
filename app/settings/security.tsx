@@ -72,7 +72,10 @@ const Security = ({ deploymentUrl }: { deploymentUrl?: string }) => {
     const payload = (await response.json()) as { session?: SessionSummary };
     const nextSession = payload.session ?? null;
     setSession(nextSession);
-    setUsername(nextSession?.username ?? 'admin');
+    // An empty name is no name at all for the field below: what it posts is
+    // what the account is created or renamed to, and posting nothing is a
+    // setup that answers 400.
+    setUsername(nextSession?.username || 'admin');
 
     if (!nextSession?.authEnabled) {
       setPasskeys([]);
