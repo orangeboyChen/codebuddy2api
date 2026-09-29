@@ -1276,9 +1276,35 @@ const launchGateway = async (
  * leaves the gateway behind: a child that keeps the port, and a build that
  * starts beside it only to find its own port taken by the build it replaced.
  */
-const stopGatewayNow = (): void => {
-  gateway?.stop();
+/**
+ * Stops the gateway, and waits until it has let go of what it was holding.
+ *
+ * `stop()` is a signal and not an exit: the gateway finishes what it is doing
+ * and goes, and while it is going it is still serving. Asked whether the port
+ * is free before it has gone, it answers no — and the app reports the port the
+ * user asked for as taken by somebody else, and asks them to name another.
+ *
+ * So the port is only ever asked about once the gateway that had it is gone,
+ * which is also why the wait is bounded: a gateway that will not go is not
+ * something this app can wait for.
+ */
+const stopGatewayAndWait = async (): Promise<void> => {
+  const stopping = gateway;
+
   gateway = null;
+
+  if (!stopping) {
+    return;
+  }
+
+  stopping.stop();
+
+  await Promise.race([stopping.exited, delay(GATEWAY_EXIT_GRACE_MS)]);
+};
+
+const stopGatewayNow = async (): Promise<void> => {
+  await stopGatewayAndWait();
+
   // A start that has not landed has no handle to stop, and it is the child —
   // not the handle — that is holding the port.
   pendingChild?.kill();
@@ -1349,8 +1375,7 @@ const restartGateway = async (): Promise<void> => {
   // Paused is a stop the user asked for, so nothing that would start the
   // gateway — a setting saved in the console, a device signed in — starts it.
   if (paused) {
-    gateway?.stop();
-    gateway = null;
+    await stopGatewayAndWait();
     status = 'paused';
     refreshTray();
     // Forgotten rather than left waiting: the console is not coming up, and a
@@ -1379,8 +1404,7 @@ const restartGateway = async (): Promise<void> => {
 
     if (lastProbe.kind !== 'ready') {
       restarting = false;
-      gateway?.stop();
-      gateway = null;
+      await stopGatewayAndWait();
       status = 'unreachable';
       refreshTray();
       // Dropped here rather than in the `finally` below, which this return is
@@ -1403,16 +1427,10 @@ const restartGateway = async (): Promise<void> => {
   try {
     // The gateway that is running still holds its port, so probing before
     // stopping it would reject the port the app is already on — the one just
-    // saved included — and settle on the next one instead. Release it first,
-    // and wait for the release: a gateway that has been asked to stop is still
-    // answering a moment later, and the probe cannot tell it from a stranger.
-    gateway?.stop();
-
-    if (gateway) {
-      await Promise.race([gateway.exited, delay(GATEWAY_EXIT_GRACE_MS)]);
-    }
-
-    gateway = null;
+    // saved included — and settle on the next one instead. Released first, and
+    // waited for: a gateway that has been asked to stop is still answering a
+    // moment later, and the probe cannot tell it from a stranger.
+    await stopGatewayAndWait();
 
     const port = await resolveStartPort();
 
@@ -1437,8 +1455,7 @@ const restartGateway = async (): Promise<void> => {
     // change meanwhile — give this gateway back instead of steering the console
     // to a build started for a backend the app has already walked away from.
     if (quitting || !sameBackend(backend, startedFor)) {
-      gateway.stop();
-      gateway = null;
+      await stopGatewayAndWait();
 
       return;
     }
@@ -1449,8 +1466,7 @@ const restartGateway = async (): Promise<void> => {
     // it is paused — and rather than being killed by the next restart, which
     // is what happens to a gateway nobody knows is up.
     if (paused) {
-      gateway.stop();
-      gateway = null;
+      await stopGatewayAndWait();
       status = 'paused';
       refreshTray();
 
@@ -1656,7 +1672,7 @@ const replaceAppImage = async (downloaded: string): Promise<boolean> => {
     // the app that spawned it keeps the port — and the build that starts next
     // finds its own port taken by the build it replaced, and asks the user to
     // name another one the moment it has been updated.
-    stopGatewayNow();
+    await stopGatewayNow();
     // Relaunched before it quits: the file it starts is the one just written.
     app.relaunch();
     app.exit(0);
@@ -2383,8 +2399,7 @@ const setPaused = async (next: boolean): Promise<void> => {
   paused = next;
 
   if (paused) {
-    gateway?.stop();
-    gateway = null;
+    await stopGatewayAndWait();
 
     // A start already running is the one that says it is paused: it reads
     // `paused` again after every await, and stops the gateway it was bringing
