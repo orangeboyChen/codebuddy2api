@@ -458,7 +458,13 @@ const openExternally = (target: string): void => {
       return;
     }
 
-    void shell.openExternal(parsed.href);
+    // Rejects on a computer that has nothing to open a URL with — no handler
+    // for it, no desktop session behind it. A rejection nobody is waiting for
+    // is not a warning this app chose to print, and a link the user clicked is
+    // not something to crash over.
+    void shell.openExternal(parsed.href).catch((error: unknown) => {
+      console.warn(`Could not open ${parsed.href}: ${describeError(error)}`);
+    });
   } catch {
     // Unparseable target: nothing to open.
   }
