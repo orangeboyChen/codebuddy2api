@@ -1302,6 +1302,25 @@ const stopGatewayAndWait = async (): Promise<void> => {
   await Promise.race([stopping.exited, delay(GATEWAY_EXIT_GRACE_MS)]);
 };
 
+/**
+ * When a child that has been killed is actually gone.
+ *
+ * A child is stopped through the process when there is no handle to stop it
+ * with, and `kill()` is a signal like any other: it is gone later, and it is
+ * holding its port until then.
+ */
+const childGone = (child: GatewayProcess | null): Promise<void> =>
+  new Promise((resolve) => {
+    if (!child) {
+      resolve();
+
+      return;
+    }
+
+    child.on('exit', () => resolve());
+    child.on('error', () => resolve());
+  });
+
 const stopGatewayNow = async (): Promise<void> => {
   await stopGatewayAndWait();
 
@@ -3074,11 +3093,23 @@ if (!app.requestSingleInstanceLock()) {
         // Stopped through the handle when the start landed, and through the
         // process when it did not: a gateway still coming up has no handle
         // yet, and it is the child — not the app — that would keep the port.
+        const child = started ? null : pendingChild;
+
         if (started) {
           started.stop();
         } else {
-          pendingChild?.kill();
+          child?.kill();
         }
+
+        // Waited for through whichever of the two was stopped, and not
+        // through `gateway`: a start that lands while the app is quitting is
+        // already being stopped by the restart it came out of, which has
+        // taken the handle back out of that slot — waiting on the slot there
+        // waits for nothing at all.
+        await Promise.race([
+          started ? started.exited : childGone(child),
+          delay(GATEWAY_EXIT_GRACE_MS),
+        ]);
       }
 
       app.exit();
