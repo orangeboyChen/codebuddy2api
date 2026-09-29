@@ -1,16 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import http from 'node:http';
+
+import { describe, expect, it } from 'vitest';
 
 import {
   deviceGrantFromPayload,
-  devicePollError,
   deviceTokenFromPayload,
-  pollForDeviceToken,
   requestDeviceAuthorization,
+  startDeviceRedirectListener,
 } from '@/lib/server/electron/device-auth';
-import {
-  DEVICE_CLIENT_ID,
-  DEVICE_GRANT_TYPE,
-} from '@/lib/server/admin/device-client';
+import { DEVICE_CLIENT_ID } from '@/lib/server/admin/device-client';
 
 /**
  * The desktop half of a device sign-in: what it makes of what a deployment says.
@@ -73,7 +71,19 @@ const unreachable = (): { calls: Call[]; fetchImpl: never } => {
   };
 };
 
-const sleepNow = (): Promise<void> => Promise.resolve();
+/**
+ * The browser, coming home: a GET on the address the app is listening on, which
+ * is what the deployment's own page does once the user has approved.
+ */
+const browseTo = (url: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const request = http.get(url, (response) => {
+      response.resume();
+      response.on('end', resolve);
+    });
+
+    request.on('error', reject);
+  });
 
 describe('what a deployment answered with', () => {
   it('reads the two codes it needs', () => {
@@ -142,22 +152,6 @@ describe('what a deployment answered with', () => {
     ).toBe(600);
   });
 
-  it('names the errors a token endpoint answers with', () => {
-    expect(devicePollError({ error: 'authorization_pending' })).toBe(
-      'authorization_pending',
-    );
-    expect(devicePollError({ error: 'slow_down' })).toBe('slow_down');
-    expect(devicePollError({ error: 'expired_token' })).toBe('expired_token');
-    expect(devicePollError({ error: 'invalid_grant' })).toBe('invalid_grant');
-    // An error it does not know is not one it knows how to wait through.
-    expect(devicePollError({ error: 'access_denied' })).toBeNull();
-    expect(devicePollError({})).toBeNull();
-    expect(devicePollError('nope')).toBeNull();
-    expect(devicePollError({ error: { message: 'expired_token' } })).toBe(
-      'expired_token',
-    );
-  });
-
   it('reads a token, and no token out of an answer with none in it', () => {
     expect(
       deviceTokenFromPayload({ access_token: 'token', expires_in: 100 }),
@@ -221,114 +215,55 @@ describe('asking a deployment for a code', () => {
   });
 });
 
-describe('waiting for the user to approve', () => {
-  it('is signed in the moment the deployment has a token', async () => {
-    const { calls, fetchImpl } = fetchStub([
-      { payload: { error: 'authorization_pending' }, status: 400 },
-      { payload: { access_token: 'token', expires_in: 100 } },
-    ]);
-    const outcome = await pollForDeviceToken({
-      baseUrl: BASE,
-      deviceCode: 'device-code',
-      expiresIn: 600,
-      fetchImpl,
-      intervalSeconds: 1,
-      sleep: sleepNow,
-    });
-
-    expect(outcome).toEqual({
-      kind: 'signedIn',
-      token: { accessToken: 'token', expiresIn: 100 },
-    });
-    expect(calls).toHaveLength(2);
-    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({
-      client_id: DEVICE_CLIENT_ID,
-      device_code: 'device-code',
-      grant_type: DEVICE_GRANT_TYPE,
-    });
-  });
-
-  it('waits longer when the deployment asks it to slow down', async () => {
-    const waited: number[] = [];
-    const { calls, fetchImpl } = fetchStub([
-      { payload: { error: 'slow_down' }, status: 400 },
-      { payload: { access_token: 'token' } },
-    ]);
-    const outcome = await pollForDeviceToken({
-      baseUrl: BASE,
-      deviceCode: 'device-code',
-      expiresIn: 600,
-      fetchImpl,
-      intervalSeconds: 2,
-      sleep: async (ms) => {
-        waited.push(ms);
-      },
-    });
-
-    expect(outcome.kind).toBe('signedIn');
-    // Two seconds as it was told, then five more: `slow_down` is answered by
-    // waiting longer, not by giving up.
-    expect(waited).toEqual([2000, 7000]);
-    expect(calls).toHaveLength(2);
-  });
-
-  it('stops asking when the code has run out', async () => {
-    const { fetchImpl } = fetchStub([
-      { payload: { error: 'expired_token' }, status: 400 },
-    ]);
-
-    await expect(
-      pollForDeviceToken({
-        baseUrl: BASE,
-        deviceCode: 'device-code',
-        expiresIn: 600,
-        fetchImpl,
-        sleep: sleepNow,
-      }),
-    ).resolves.toEqual({ kind: 'expired' });
-  });
-
-  it.each([
-    { error: 'invalid_grant', why: 'a code that is not one' },
-    { error: 'access_denied', why: 'an answer it does not know' },
-  ])('stops asking at $why', async ({ error }) => {
-    const { fetchImpl } = fetchStub([{ payload: { error }, status: 400 }]);
-
-    await expect(
-      pollForDeviceToken({
-        baseUrl: BASE,
-        deviceCode: 'device-code',
-        expiresIn: 600,
-        fetchImpl,
-        sleep: sleepNow,
-      }),
-    ).resolves.toEqual({ kind: 'failed' });
-  });
-
-  it('asks again while the deployment is silent, until the code runs out', async () => {
-    const start = Date.now();
-    let now = start;
-    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
-    const { calls, fetchImpl } = unreachable();
+describe('listening for the browser to come back', () => {
+  it('is signed in by the token the browser brings home', async () => {
+    const listener = await startDeviceRedirectListener({ state: 'a-state' });
 
     try {
-      const outcome = await pollForDeviceToken({
-        baseUrl: BASE,
-        deviceCode: 'device-code',
-        expiresIn: 1,
-        fetchImpl,
-        intervalSeconds: 1,
-        sleep: async () => {
-          now += 1_000;
-        },
-      });
+      // The address the deployment is told to send the browser back to, and the
+      // one the token is checked against: a token is a credential, and any page
+      // on this machine could otherwise ask this address for one.
+      expect(listener.redirectUri).toContain('127.0.0.1');
+      expect(listener.redirectUri).toContain(encodeURIComponent('a-state'));
 
-      expect(outcome).toEqual({ kind: 'expired' });
-      // Once a second for the second the code was good for, then the five it is
-      // given on top of that.
-      expect(calls).toHaveLength(6);
+      const answered = listener.wait(30_000);
+
+      await browseTo(`${listener.redirectUri}&token=a-token`);
+
+      expect(await answered).toEqual({ accessToken: 'a-token', expiresIn: 0 });
     } finally {
-      clock.mockRestore();
+      listener.close();
+    }
+  });
+
+  it('takes no token from a browser this app did not open', async () => {
+    const listener = await startDeviceRedirectListener({ state: 'a-state' });
+
+    try {
+      const answered = listener.wait(400);
+
+      await browseTo(
+        `${listener.redirectUri}&token=somebody-elses`.replace(
+          'a-state',
+          'another-state',
+        ),
+      );
+
+      // Answered with nothing rather than with the wrong token: the wait runs
+      // out, which is the same answer a browser closed on gets.
+      expect(await answered).toBeNull();
+    } finally {
+      listener.close();
+    }
+  });
+
+  it('answers with nothing when the browser never comes back', async () => {
+    const listener = await startDeviceRedirectListener({ state: 'a-state' });
+
+    try {
+      expect(await listener.wait(50)).toBeNull();
+    } finally {
+      listener.close();
     }
   });
 });

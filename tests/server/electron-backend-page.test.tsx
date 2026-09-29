@@ -449,7 +449,7 @@ describe('the settings screen', () => {
     });
 
     expect(await screen.findByText('服务端版本 1.3.0')).toBeTruthy();
-    expect(screen.getByText('后端: 我自己部署的服务')).toBeTruthy();
+    expect(screen.getByText('后端: 其他后端')).toBeTruthy();
   });
 
   it('refuses what it could not use, the way the first launch does', async () => {

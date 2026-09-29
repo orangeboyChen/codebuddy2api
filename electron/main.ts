@@ -61,8 +61,8 @@ import {
 } from '../lib/server/electron/ask';
 import {
   DEVICE_REQUEST_TIMEOUT_MS,
-  pollForDeviceToken,
   requestDeviceAuthorization,
+  startDeviceRedirectListener,
 } from '../lib/server/electron/device-auth';
 import {
   forgetDeviceToken,
@@ -2809,16 +2809,27 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
   signingIn = true;
   refreshMenus();
 
-  const requested = await requestDeviceAuthorization({ baseUrl: issuedBy });
+  /*
+    Listening before the code is asked for: the address the deployment sends the
+    browser back to has to be named in the request, and a port this machine has
+    going is only known once it is bound.
+  */
+  const listener = await startDeviceRedirectListener({
+    state: randomBytes(16).toString('hex'),
+  });
 
-  if (requested.kind === 'notConfigured') {
-    say(shell.deviceNotConfigured);
-
-    return;
-  }
+  const requested = await requestDeviceAuthorization({
+    baseUrl: issuedBy,
+    redirectUri: listener.redirectUri,
+  });
 
   if (requested.kind !== 'granted') {
-    say(shell.deviceSignInFailed);
+    listener.close();
+    say(
+      requested.kind === 'notConfigured'
+        ? shell.deviceNotConfigured
+        : shell.deviceSignInFailed,
+    );
 
     return;
   }
@@ -2826,31 +2837,21 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
   const { grant } = requested;
   /*
     Where the user approves: the deployment's own page, in the browser, with the
-    code already in its address. So there is nothing to show them first, and no
-    code to carry across by hand — the approval is a click on that page, which is
-    the only place a passkey saved for the deployment's address is ever offered.
+    code already in its address — so there is nothing to show them first, and no
+    code to carry across by hand.
 
-    A sign-in that asked in a dialog first was one that never opened a browser
-    at all when that dialog could not be drawn or was answered with nothing, and
-    what was left behind was the deployment's own login page — in this window,
-    where it cannot be signed in on.
+    And where they come back from: this machine, on the address above, with the
+    token in it. Which is why nothing here asks again — a native app has no
+    secret to keep and no reason to be polling for an answer the browser is
+    already on its way back with.
   */
   openExternally(grant.verificationUriComplete || grant.verificationUri);
 
   try {
-    const outcome = await pollForDeviceToken({
-      baseUrl: issuedBy,
-      deviceCode: grant.deviceCode,
-      expiresIn: grant.expiresIn,
-      intervalSeconds: grant.intervalSeconds,
-    });
+    const token = await listener.wait(grant.expiresIn * 1000);
 
-    if (outcome.kind !== 'signedIn') {
-      say(
-        outcome.kind === 'expired'
-          ? shell.deviceSignInExpired
-          : shell.deviceSignInFailed,
-      );
+    if (!token) {
+      say(shell.deviceSignInExpired);
 
       return;
     }
@@ -2866,7 +2867,7 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
 
     try {
       writeDeviceToken(userDataDir, {
-        token: outcome.token.accessToken,
+        token: token.accessToken,
         url: issuedBy,
       });
     } catch (error) {
@@ -2878,7 +2879,7 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
       return;
     }
 
-    deviceToken = outcome.token.accessToken;
+    deviceToken = token.accessToken;
     refreshMenus();
 
     // Restarted because the token reaches the gateway in its environment: the

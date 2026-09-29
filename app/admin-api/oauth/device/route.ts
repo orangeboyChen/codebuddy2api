@@ -1,6 +1,9 @@
 import { resolveRequestOrigin } from '@/lib/server/shared/http';
 import { hasAdminAccountAsync } from '@/lib/server/admin/session';
-import { requestDeviceAuthorization } from '@/lib/server/admin/device';
+import {
+  isLoopbackRedirectUri,
+  requestDeviceAuthorization,
+} from '@/lib/server/admin/device';
 
 /**
  * Where a device begins: it asks for a code, and gets nothing but codes back.
@@ -50,9 +53,33 @@ export const POST = async (request: Request): Promise<Response> => {
     );
   }
 
+  // Where the browser is sent back to once the user has approved, when the
+  // device named one. Read off the request rather than assumed: a device on
+  // someone's machine is the only thing that knows which address it listens on.
+  const body = (await request.json().catch(() => null)) as {
+    redirect_uri?: unknown;
+  } | null;
+  const redirectUri =
+    typeof body?.redirect_uri === 'string' ? body.redirect_uri : '';
+
+  if (redirectUri && !isLoopbackRedirectUri(redirectUri)) {
+    return Response.json(
+      {
+        error: {
+          code: 'admin_device_redirect_not_loopback',
+          message: 'The redirect address has to be a loopback one',
+        },
+      },
+      { status: 400 },
+    );
+  }
+
   try {
     return Response.json(
-      await requestDeviceAuthorization({ origin: `${protocol}://${host}` }),
+      await requestDeviceAuthorization({
+        origin: `${protocol}://${host}`,
+        redirectUri,
+      }),
     );
   } catch {
     return Response.json(

@@ -96,6 +96,12 @@ export interface DeviceTokenResponse {
 
 interface StoredGrant {
   clientId: string;
+  /**
+   * Where the browser is sent once the user has approved, when the device asked
+   * for one: a loopback address of its own, which is the only place a token can
+   * be handed to it without a secret to keep.
+   */
+  redirectUri?: string;
   createdAt: string;
   deviceCodeHash: string;
   expiresAt: string;
@@ -163,6 +169,13 @@ const normalizeStore = (input: unknown): DeviceStore => {
             : new Date(0).toISOString(),
         deviceCodeHash: entry.deviceCodeHash,
         expiresAt: entry.expiresAt,
+        // Kept only when it is a loopback address and nothing else: it is where
+        // a token is about to be sent, and a stored document is not a place to
+        // keep an address this console would push a credential at.
+        ...(typeof entry.redirectUri === 'string' &&
+        isLoopbackRedirectUri(entry.redirectUri)
+          ? { redirectUri: entry.redirectUri }
+          : {}),
         status:
           entry.status === 'approved'
             ? ('approved' as const)
@@ -271,18 +284,70 @@ export const normalizeUserCode = (value: unknown): string => {
 };
 
 /**
+ * Whether an address is one this console will send a browser back to.
+ *
+ * Loopback only, which is what makes it safe to hand a token to: a token in a
+ * URL is a token anybody who can read that URL can use, and the only address a
+ * native app is the sole listener on is its own machine's — see RFC 8252. A
+ * deployment's own page, or a name that resolves somewhere else, is not a place
+ * this console gets to push a credential at.
+ */
+export const isLoopbackRedirectUri = (value: string): boolean => {
+  let parsed: URL;
+
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return false;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+
+  return (
+    host === '127.0.0.1' ||
+    host === 'localhost' ||
+    host === '::1' ||
+    host === '[::1]'
+  );
+};
+
+/**
+ * The token, put on the address the device is listening on.
+ *
+ * Everything already in that address is kept — the `state` the device put there
+ * to know the answer is the answer to its own question, most of all.
+ */
+const withToken = (redirectUri: string, token: string): string => {
+  const parsed = new URL(redirectUri);
+
+  parsed.searchParams.set('token', token);
+
+  return parsed.toString();
+};
+
+/**
  * The codes a device starts from.
  *
  * `origin` is whatever address this console was reached on, because the browser
  * the user approves in has to be sent to the address the passkey was saved for
  * — a guess of `localhost` here would send them somewhere the passkey is not.
+ *
+ * `redirectUri` is the loopback address the browser is sent back to once the
+ * user has approved, carrying the token with it, so that a device is told it has
+ * been signed in instead of having to ask again and again until it is.
  */
 export const requestDeviceAuthorization = async ({
   clientId = DEVICE_CLIENT_ID,
   origin,
+  redirectUri = '',
 }: {
   clientId?: string;
   origin: string;
+  redirectUri?: string;
 }): Promise<DeviceAuthorization> => {
   const deviceCode = randomBytes(DEVICE_CODE_BYTES).toString('base64url');
   const userCode = newUserCode();
@@ -293,6 +358,9 @@ export const requestDeviceAuthorization = async ({
     createdAt: new Date(now).toISOString(),
     deviceCodeHash: hashDeviceSecret(deviceCode),
     expiresAt: new Date(now + GRANT_TTL_MS).toISOString(),
+    ...(isLoopbackRedirectUri(redirectUri)
+      ? { redirectUri: redirectUri.trim() }
+      : {}),
     status: 'pending',
     userCodeHash: hashDeviceSecret(normalizeUserCode(userCode)),
   };
@@ -326,7 +394,12 @@ export const approveDeviceGrant = async ({
   userCode,
 }: {
   userCode: string;
-}): Promise<{ clientId: string; status: 'approved' | 'missing' }> => {
+}): Promise<{
+  clientId: string;
+  /** Where the browser goes next, carrying the token, when the device asked. */
+  redirect?: string;
+  status: 'approved' | 'missing';
+}> => {
   const wanted = normalizeUserCode(userCode);
 
   if (!wanted) {
@@ -344,9 +417,42 @@ export const approveDeviceGrant = async ({
       return { clientId: '', status: 'missing' as const };
     }
 
-    grant.status = 'approved';
+    /*
+      A device that named a loopback address of its own is told it has been
+      signed in, rather than left to ask: the token is minted here and handed to
+      the browser to carry home, which is what RFC 8252 is for — a native app
+      with no secret to keep, and no reason to be polling for an answer somebody
+      has already given.
 
-    return { clientId: grant.clientId, status: 'approved' as const };
+      One that did not name one keeps asking, which is the only way it has of
+      finding out.
+    */
+    if (!grant.redirectUri) {
+      grant.status = 'approved';
+
+      return { clientId: grant.clientId, status: 'approved' as const };
+    }
+
+    const token = randomBytes(ACCESS_TOKEN_BYTES).toString('base64url');
+    const now = Date.now();
+    const redirect = withToken(grant.redirectUri, token);
+
+    store.tokens = capped(
+      [
+        ...store.tokens,
+        {
+          clientId: grant.clientId,
+          createdAt: new Date(now).toISOString(),
+          expiresAt: new Date(now + TOKEN_TTL_MS).toISOString(),
+          id: randomBytes(12).toString('hex'),
+          tokenHash: hashDeviceSecret(token),
+        },
+      ],
+      MAX_TOKENS,
+    );
+    store.grants = store.grants.filter((entry) => entry !== grant);
+
+    return { clientId: grant.clientId, redirect, status: 'approved' as const };
   });
 };
 

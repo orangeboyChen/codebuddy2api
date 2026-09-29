@@ -51,7 +51,13 @@ export const POST = async (request: Request): Promise<Response> => {
       );
     }
 
-    return Response.json({ clientId: outcome.clientId, success: true });
+    // Sent home with the token, when the device asked to be: the browser
+    // carries it to the loopback address the device is listening on.
+    return Response.json({
+      clientId: outcome.clientId,
+      ...(outcome.redirect ? { redirect: outcome.redirect } : {}),
+      success: true,
+    });
   } catch {
     return Response.json(
       { error: { message: 'Admin device storage is unwritable' } },
