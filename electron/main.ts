@@ -719,6 +719,14 @@ const showMainWindow = (): void => {
   // opens the console it was asked for — and forgets the click if there is
   // still none to open.
   consoleRequestPending = true;
+
+  // A start already running is the one that answers this: the click waits for
+  // it rather than scheduling a second one behind it, which would stop the
+  // gateway it is bringing up and start it again.
+  if (restarting) {
+    return;
+  }
+
   void restartGateway();
 };
 
@@ -2307,9 +2315,27 @@ const setPaused = async (next: boolean): Promise<void> => {
   if (paused) {
     gateway?.stop();
     gateway = null;
-    status = 'paused';
-    refreshTray();
 
+    // A start already running is the one that says it is paused: it reads
+    // `paused` again after every await, and stops the gateway it was bringing
+    // up when it lands. Written here as well, `paused` is a status the click
+    // that follows answers with the question it has just answered — a Resume
+    // that opens the same dialog again, and starts a second gateway behind
+    // the one that is already coming up.
+    if (!restarting) {
+      status = 'paused';
+      refreshTray();
+    }
+
+    return;
+  }
+
+  // A start already running answers the resume by itself: it reads `paused`
+  // again after every await, before it calls the gateway up. Scheduling a
+  // second one here is a gateway stopped and started again a moment later —
+  // and a console window sent to a new address for no reason the user can
+  // see — which is what a Pause pressed and taken back during a start got.
+  if (restarting) {
     return;
   }
 
