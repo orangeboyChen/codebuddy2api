@@ -257,6 +257,22 @@ describe('listening for the browser to come back', () => {
     }
   });
 
+  it('takes nothing from a browser that brings no token', async () => {
+    const listener = await startDeviceRedirectListener({ state: 'a-state' });
+
+    try {
+      const answered = listener.wait(400);
+
+      // The right address, asked by something on this machine, with nothing in
+      // it: a token is not something to invent for whoever comes knocking.
+      await browseTo(listener.redirectUri);
+
+      expect(await answered).toBeNull();
+    } finally {
+      listener.close();
+    }
+  });
+
   it('answers with nothing when the browser never comes back', async () => {
     const listener = await startDeviceRedirectListener({ state: 'a-state' });
 

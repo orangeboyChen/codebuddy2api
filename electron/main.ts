@@ -1185,10 +1185,14 @@ const buildTrayMenu = (): Menu =>
     ...(backend.mode === 'remote' ? [deviceMenu()] : []),
     { type: 'separator' },
     /*
-      Not the appearance or the language: those are at the top of the screen,
-      where every other app's are. This menu is a status, and a status menu
-      that carries another menu's settings is a menu with two of everything.
+      The appearance and the language, where there is nowhere else for them to
+      go: on macOS they are at the top of the screen, with every other app's, and
+      putting them here as well would be a menu with two of everything. On Linux
+      and Windows this is the only menu there is.
     */
+    ...(consoleOrigin && process.platform !== 'darwin'
+      ? [appearanceMenu(), languageMenu(), { type: 'separator' as const }]
+      : []),
     {
       enabled: false,
       label: fillText(text().appVersion, { version: app.getVersion() }),
@@ -1231,7 +1235,16 @@ const buildApplicationMenu = (): Menu =>
   Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
     { role: 'editMenu' as const },
-    ...(consoleOrigin ? [appearanceMenu(), languageMenu()] : []),
+    /*
+      macOS only: this is the menu at the top of the screen, which is where every
+      other app's appearance and language are. Linux and Windows have no such
+      menu — and a window's own menu bar is hidden by default there — so those two
+      go in the menu bar item's menu instead, which is the one menu both of them
+      always have.
+    */
+    ...(process.platform === 'darwin' && consoleOrigin
+      ? [appearanceMenu(), languageMenu()]
+      : []),
     ...(process.platform === 'darwin' ? [{ role: 'windowMenu' as const }] : []),
   ]);
 

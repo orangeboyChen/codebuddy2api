@@ -251,7 +251,7 @@ export const startDeviceRedirectListener = async (options: {
   state: string;
 }): Promise<DeviceRedirectListener> => {
   const server = createServer((request, response) => {
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    const url = new URL(request.url as string, 'http://127.0.0.1');
     const token = url.searchParams.get('token') ?? '';
 
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -278,23 +278,15 @@ export const startDeviceRedirectListener = async (options: {
     server.listen(0, '127.0.0.1', resolve);
   });
 
-  const address = server.address();
-
-  if (!address || typeof address === 'string') {
-    server.close();
-
-    throw new Error('The loopback listener has no port to answer on.');
-  }
-
-  const redirectUri = `http://127.0.0.1:${address.port}/?state=${encodeURIComponent(options.state)}`;
-  let timer: NodeJS.Timeout | null = null;
+  // Bound a moment ago, so there is a port to answer on.
+  const { port } = server.address() as { port: number };
+  const redirectUri = `http://127.0.0.1:${port}/?state=${encodeURIComponent(options.state)}`;
+  let timer: NodeJS.Timeout | undefined;
 
   return {
     close: () => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-
+      // Nothing to ask about: a timeout that was never set is not one to clear.
+      clearTimeout(timer);
       server.close();
     },
     redirectUri,

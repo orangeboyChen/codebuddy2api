@@ -51,6 +51,7 @@ const {
   approveDeviceGrant,
   isDeviceGrantType,
   isDeviceTokenAuthorized,
+  isLoopbackRedirectUri,
   normalizeUserCode,
   requestDeviceAuthorization,
   revokeDeviceToken,
@@ -115,6 +116,38 @@ const issueAndApprove = async (): Promise<{
 
   return { deviceCode, token: exchanged.access_token, userCode };
 };
+
+describe('isLoopbackRedirectUri', () => {
+  it.each([
+    { value: 'http://127.0.0.1:54321/', why: 'the loopback address' },
+    { value: 'https://127.0.0.1/', why: 'a loopback address over https' },
+    { value: 'http://localhost:54321/', why: 'localhost' },
+    { value: 'http://[::1]:54321/', why: 'the loopback address in IPv6' },
+  ])('takes $why', ({ value }) => {
+    expect(isLoopbackRedirectUri(value)).toBe(true);
+  });
+
+  it.each([
+    { value: 'not an address', why: 'something that is not one' },
+    { value: '', why: 'nothing at all' },
+    { value: 'file:///tmp/token', why: 'a scheme that is not http' },
+    { value: 'javascript:alert(1)', why: 'a scheme that runs something' },
+    {
+      value: 'http://127.0.0.1.evil.example/',
+      why: 'a name that only starts with the loopback address',
+    },
+    {
+      value: 'http://localhost.evil.example/',
+      why: 'a name that only starts with localhost',
+    },
+    {
+      value: 'http://127.0.0.1:54321@evil.example/',
+      why: 'the loopback address put where a user name goes',
+    },
+  ])('refuses $why', ({ value }) => {
+    expect(isLoopbackRedirectUri(value)).toBe(false);
+  });
+});
 
 describe('the codes a device starts from', () => {
   beforeEach(() => {
