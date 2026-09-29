@@ -18,6 +18,8 @@ import {
   shell,
 } from 'electron';
 
+import { closeWindow } from './window';
+
 import {
   localeCookieName,
   localePreferenceCookieName,
@@ -2661,7 +2663,7 @@ ipcMain.handle('desktop:set-backend', (_event, next: unknown) => {
     // leaves the one on disk standing.
     port: port || undefined,
   });
-  window?.close();
+  closeWindow(window);
 });
 
 /**
@@ -2732,7 +2734,11 @@ ipcMain.handle('desktop:retry-backend', async () => {
   // there, so it would be handed the click and the console would never open.
   if (status === 'running') {
     backendWindow = null;
-    window?.close();
+
+    // The restart was seconds long, and the user may have closed the window
+    // while it was being asked: `close()` throws on a window that is gone, and
+    // the console below would never open.
+    closeWindow(window);
     showMainWindow();
 
     return;
