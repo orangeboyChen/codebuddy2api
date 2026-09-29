@@ -2533,10 +2533,23 @@ const signInToDeployment = async (): Promise<void> => {
       return;
     }
 
-    writeDeviceToken(userDataDir, {
-      token: outcome.token.accessToken,
-      url: issuedBy,
-    });
+    try {
+      writeDeviceToken(userDataDir, {
+        token: outcome.token.accessToken,
+        url: issuedBy,
+      });
+    } catch (error) {
+      // Approved by the user, in their browser, and then dropped on the floor
+      // because this machine would not take the file: said in a dialog of the
+      // computer's own, the way every other failure to save a setting is.
+      dialog.showErrorBox(
+        APP_TITLE,
+        `${shell.deviceSignInFailed}\n\n${describeError(error)}`,
+      );
+
+      return;
+    }
+
     deviceToken = outcome.token.accessToken;
     refreshTray();
 
