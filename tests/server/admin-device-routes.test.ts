@@ -423,6 +423,27 @@ describe('the credentials a device token is not asked about', () => {
     ).resolves.toBe(false);
   });
 
+  it('is not who changes the password the door is opened with', async () => {
+    const response = await changeAdminPassword(
+      request('/admin-api/auth/password', {
+        headers: { authorization: await signedInBearer() },
+        method: 'POST',
+      }),
+      PASSWORD,
+      'a-different-password-long-enough',
+    );
+
+    expect(response.status).toBe(401);
+    // Refused by the gate, and not by the rotation getting as far as the
+    // session it is asked to keep: both answer 401, so what says which is the
+    // code the gate answers with. What kept a token from rotating the
+    // password was a line that only meant to name the session that survives
+    // it — so the refusal is the gate's to make.
+    expect(
+      ((await response.json()) as { error?: { code?: string } }).error?.code,
+    ).toBe('admin_auth_required');
+  });
+
   it('is the admin in a browser who decides', async () => {
     // The refusal above is not these endpoints being closed to everybody: with
     // the cookie of the session the admin signed in with, both are answered.
