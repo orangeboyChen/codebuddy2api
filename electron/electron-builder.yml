@@ -38,6 +38,13 @@ mac:
   # imports from `CSC_LINK`, and skips signing when there is none — the same
   # unsigned build this produced before. `identity: null` would forbid signing
   # even with a certificate, and Gatekeeper then refuses the dmg.
+  #
+  # Notarized by the release workflow instead, which is the only way the ticket
+  # can be stapled: what electron-builder notarizes is the app bundle it has
+  # just signed — zipped, and handed to notarytool — so the ticket it gets back
+  # belongs to the app. The dmg built around that app afterwards has no ticket
+  # of its own, and `stapler` has nothing to staple to it.
+  notarize: false
   target:
     - dmg
 
