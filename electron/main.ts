@@ -34,6 +34,7 @@ import {
 import {
   buildGatewayEnv,
   startGateway,
+  waitForConsolePage,
   type GatewayHandle,
   type GatewayProcess,
   type GatewaySpawn,
@@ -3345,6 +3346,32 @@ const watchDesktopSettings = (): void => {
   }
 };
 
+/**
+ * The console page, asked for before the window is sent to it.
+ *
+ * A development run serves the console out of the repository, where the first
+ * page is a compile and not a read — so `/health` answers well before
+ * `/dashboard` does, and a window sent to it in between is a blank one.
+ *
+ * Asked with the console's token, the way the window asks: without it the
+ * console answers 404 to everything, and the wait would be for a page that is
+ * never coming. And given up on rather than reported: the window is opened
+ * either way, and says what it has to say about a console that will not come up.
+ */
+const warmConsole = async (): Promise<void> => {
+  const baseUrl = consoleBaseUrl();
+
+  if (!baseUrl) {
+    return;
+  }
+
+  await waitForConsolePage({
+    headers: { cookie: `${DESKTOP_CONSOLE_COOKIE}=${consoleToken}` },
+    timeoutMs: devConsole() ? DEV_CONSOLE_TIMEOUT_MS : undefined,
+    url: `${baseUrl}/dashboard`,
+  });
+};
+
 const startBackend = async (): Promise<void> => {
   // A deployment is served on its own address, and this machine starts nothing
   // for it; only this machine's own data needs a gateway of this machine's.
@@ -3358,6 +3385,15 @@ const startBackend = async (): Promise<void> => {
   await restartGateway();
 
   if (status === 'running') {
+    /*
+      Asked for before the window is sent to it, and not only asked of
+      `/health`: in a development run the console is served out of the
+      repository, where the first page is a compile and not a read, and health
+      answers seconds before `/dashboard` exists at all. A window sent to it in
+      between comes up empty, which reads as an app that never opened a console
+      — and stays empty for as long as the compile takes.
+    */
+    await warmConsole();
     reloadConsole();
     showMainWindow();
 
