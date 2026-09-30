@@ -1,4 +1,50 @@
 /**
+ * Whether the deployment would answer its console to this app.
+ *
+ * Asked of the deployment every time, and not only when no token is held, which
+ * is the whole point of asking: a token is good for thirty days on the
+ * deployment's side and is kept here without one, so an expired one is still a
+ * token — sent with everything the console asks for, and answered with the
+ * deployment's own login page in this app's window, which is the one thing the
+ * device flow exists to keep out of it.
+ *
+ * `unknown` is a deployment that did not answer, or not with a session: not a
+ * sign-in that is missing, and not one to claim either. The console is opened
+ * and says whatever it has to say about it.
+ */
+export type DeploymentSignIn =
+  /** Signed in — or a console with no account to sign in to at all. */
+  | { kind: 'ready' }
+  /** It answered, and it wants this app signed in before its console opens. */
+  | { kind: 'needsSignIn' }
+  /** It did not answer, or not with anything to read a session off. */
+  | { kind: 'unknown' };
+
+export interface DeploymentSignInOptions {
+  /** The token the deployment handed this app, when the user approved one. */
+  deviceToken?: string | null;
+  url: string;
+}
+
+export const deploymentSignIn = async ({
+  deviceToken = null,
+  url,
+}: DeploymentSignInOptions): Promise<DeploymentSignIn> => {
+  const session = await fetchUpstreamSessionSummary({
+    deviceToken,
+    upstream: url,
+  });
+
+  if (!session) {
+    return { kind: 'unknown' };
+  }
+
+  return session.accountConfigured && !session.authenticated
+    ? { kind: 'needsSignIn' }
+    : { kind: 'ready' };
+};
+
+/**
  * Whether the address the user named is a deployment of this app at all.
  *
  * Asked before the app does anything with it. The console the app renders is
@@ -6,6 +52,8 @@
  * app's own window — and a page that answers is not the same as a deployment
  * this app can talk to.
  */
+
+import { fetchUpstreamSessionSummary } from '../admin/upstream';
 
 /**
  * How long the deployment gets to answer. Long enough for a cold deployment

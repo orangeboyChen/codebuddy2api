@@ -1,6 +1,6 @@
 {
   "name": "codebuddy2api",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "private": true,
   "description": "Desktop and self-hosted gateway that proxies CodeBuddy with OpenAI- and Anthropic-compatible APIs.",
   "author": "orangeboyChen",

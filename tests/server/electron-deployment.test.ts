@@ -1,4 +1,7 @@
-import { probeDeployment } from '@/lib/server/electron/deployment';
+import {
+  deploymentSignIn,
+  probeDeployment,
+} from '@/lib/server/electron/deployment';
 
 const respondWith = (
   body: () => Promise<unknown>,
@@ -136,5 +139,123 @@ describe('probeDeployment', () => {
         url: 'https://codebuddy.example.com',
       }),
     ).resolves.toEqual({ kind: 'unreachable' });
+  });
+});
+
+describe('deploymentSignIn', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const answered = (
+    session: unknown,
+    init: { ok?: boolean } = {},
+  ): typeof fetch =>
+    vi.fn(async () => ({
+      json: async () => ({ session }),
+      ok: init.ok ?? true,
+    })) as unknown as typeof fetch;
+
+  it('says the console is ready for a deployment this app is signed in to', async () => {
+    vi.stubGlobal(
+      'fetch',
+      answered({ accountConfigured: true, authenticated: true }),
+    );
+
+    await expect(
+      deploymentSignIn({ url: 'https://codebuddy.example.com' }),
+    ).resolves.toEqual({ kind: 'ready' });
+  });
+
+  it('asks no more of a console that has no account to sign in to', async () => {
+    vi.stubGlobal(
+      'fetch',
+      answered({ accountConfigured: false, authenticated: false }),
+    );
+
+    await expect(
+      deploymentSignIn({ url: 'https://codebuddy.example.com' }),
+    ).resolves.toEqual({ kind: 'ready' });
+  });
+
+  it('sends the token it holds, so the answer is about that token', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      json: async () => ({ session: { authenticated: true } }),
+      ok: true,
+    })) as unknown as typeof fetch;
+
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await deploymentSignIn({
+      deviceToken: 'token-the-browser-brought-back',
+      url: 'https://codebuddy.example.com',
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://codebuddy.example.com/admin-api/auth/session',
+      expect.objectContaining({
+        headers: { authorization: 'Bearer token-the-browser-brought-back' },
+      }),
+    );
+  });
+
+  /**
+   * A token is good for thirty days and is kept here without one, so a dead one
+   * is still a token: asked about rather than assumed, which is what sends a
+   * run-out token back to the window that signs this app in instead of on to
+   * the deployment's own login page.
+   */
+  it('asks for a sign-in when the deployment refuses the token it holds', async () => {
+    vi.stubGlobal(
+      'fetch',
+      answered({ accountConfigured: true, authenticated: false }),
+    );
+
+    await expect(
+      deploymentSignIn({
+        deviceToken: 'a-token-that-ran-out',
+        url: 'https://codebuddy.example.com',
+      }),
+    ).resolves.toEqual({ kind: 'needsSignIn' });
+  });
+
+  it('asks for a sign-in when there is no token at all', async () => {
+    vi.stubGlobal(
+      'fetch',
+      answered({ accountConfigured: true, authenticated: false }),
+    );
+
+    await expect(
+      deploymentSignIn({ url: 'https://codebuddy.example.com' }),
+    ).resolves.toEqual({ kind: 'needsSignIn' });
+  });
+
+  it('claims nothing about a deployment that did not answer', async () => {
+    vi.stubGlobal('fetch', answered({}, { ok: false }));
+
+    await expect(
+      deploymentSignIn({ url: 'https://codebuddy.example.com' }),
+    ).resolves.toEqual({ kind: 'unknown' });
+  });
+
+  it('claims nothing about an answer with no session in it', async () => {
+    vi.stubGlobal('fetch', answered(undefined));
+
+    await expect(
+      deploymentSignIn({ url: 'https://codebuddy.example.com' }),
+    ).resolves.toEqual({ kind: 'unknown' });
+  });
+
+  it('claims nothing about a deployment that does not answer at all', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('getaddrinfo ENOTFOUND');
+      }) as unknown as typeof fetch,
+    );
+
+    await expect(
+      deploymentSignIn({ url: 'https://codebuddy.example.com' }),
+    ).resolves.toEqual({ kind: 'unknown' });
   });
 });

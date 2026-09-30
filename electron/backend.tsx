@@ -537,19 +537,13 @@ const Settings = ({
                 value={mode}
               >
                 <fieldset className="options">
-                  <label className="option">
-                    <Radio value="local" />
-                    <span>
-                      <strong>{text.backendLocal}</strong>
-                    </span>
-                  </label>
-                  <label className="option">
-                    <Radio value="remote" />
-                    <span>
-                      <strong>{text.backendRemote}</strong>
-                      <span className="hint">{text.backendRemoteHint}</span>
-                    </span>
-                  </label>
+                  <Radio value="local">
+                    <strong>{text.backendLocal}</strong>
+                  </Radio>
+                  <Radio value="remote">
+                    <strong>{text.backendRemote}</strong>
+                    <span className="hint">{text.backendRemoteHint}</span>
+                  </Radio>
                 </fieldset>
               </Radio.Group>
               {/*

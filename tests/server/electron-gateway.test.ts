@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   buildGatewayEnv,
   startGateway,
+  waitForConsolePage,
   waitForGatewayHealth,
   type GatewayProcess,
   type GatewayStream,
@@ -269,6 +270,85 @@ describe('waitForGatewayHealth', () => {
       }),
     ).resolves.toBe(false);
     expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe('waitForConsolePage', () => {
+  /**
+   * A development run serves the console out of the repository, where the first
+   * page is a compile and not a read: `/health` answers long before
+   * `/dashboard` does, and a window sent to it in between comes up empty.
+   */
+  it('resolves as soon as the page answers', async () => {
+    const request = vi.fn().mockResolvedValue(true);
+    const sleep = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      waitForConsolePage({
+        request,
+        sleep,
+        url: 'http://127.0.0.1:1/dashboard',
+      }),
+    ).resolves.toBe(true);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('waits out the compile rather than giving up on the first try', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const sleep = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      waitForConsolePage({
+        request,
+        sleep,
+        url: 'http://127.0.0.1:1/dashboard',
+      }),
+    ).resolves.toBe(true);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks with the token, the way the window asks', async () => {
+    const request = vi.fn().mockResolvedValue(true);
+
+    await waitForConsolePage({
+      headers: { cookie: 'codebuddy_console=the-token' },
+      request,
+      url: 'http://127.0.0.1:1/dashboard',
+    });
+
+    expect(request).toHaveBeenCalledWith('http://127.0.0.1:1/dashboard', {
+      cookie: 'codebuddy_console=the-token',
+    });
+  });
+
+  it('treats a failed request as a page that is not there yet', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+      .mockResolvedValue(true);
+
+    await expect(
+      waitForConsolePage({ request, url: 'http://127.0.0.1:1/dashboard' }),
+    ).resolves.toBe(true);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up once the deadline has passed, and says it did', async () => {
+    const request = vi.fn().mockResolvedValue(false);
+
+    await expect(
+      waitForConsolePage({
+        request,
+        timeoutMs: 0,
+        url: 'http://127.0.0.1:1/dashboard',
+      }),
+    ).resolves.toBe(false);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });
 
