@@ -21,10 +21,10 @@ export const dynamic = 'force-dynamic';
 /**
  * Where a device's sign-in is approved.
  *
- * The desktop app opens this page in the browser and shows the code in a dialog:
- * the sign-in it sits behind is this console's own, on the address the user's
- * passkey and saved passwords belong to — which is exactly what the app's window
- * at `127.0.0.1` cannot offer them.
+ * The desktop app opens this page in the browser, with the code already in the
+ * address — the sign-in it sits behind is this console's own, on the address the
+ * user's passkey and saved passwords belong to — which is exactly what the app's
+ * window at `127.0.0.1` cannot offer them.
  */
 const DevicePage = async ({
   searchParams,
