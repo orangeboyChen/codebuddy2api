@@ -330,6 +330,33 @@ jobs:
           if [[ -z "$APPLE_API_KEY" ]]; then
             echo '::warning::The app is signed but was never notarized — APPLE_API_KEY, APPLE_API_KEY_ID or APPLE_API_ISSUER is missing'
           fi
+      # Notarization answers with a ticket, and leaves it on Apple's servers:
+      # Gatekeeper asks Apple for it the first time the app is opened, so a Mac
+      # that is not online gets "cannot be verified" for an app Apple has
+      # already passed. Stapling puts the ticket in the dmg itself, which is
+      # what opens offline.
+      - name: Staple the notarization ticket
+        if: ${{ matrix.macos && env.APPLE_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in build/desktop/*.dmg; do
+            if [[ ! -e "$image" ]]; then
+              echo '::error::electron-builder left no dmg behind'
+              exit 1
+            fi
+            # The ticket is on Apple's servers as soon as notarization answers,
+            # but not always by the moment after: a few tries before one is
+            # called a failure, rather than one try and a red release.
+            for attempt in 1 2 3 4 5; do
+              if xcrun stapler staple "$image"; then
+                continue 2
+              fi
+              sleep 15
+            done
+            echo "::error::$image carries no notarization ticket — check APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER"
+            exit 1
+          done
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error
