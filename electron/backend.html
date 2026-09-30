@@ -133,11 +133,27 @@
         font-weight: 600;
       }
 
-      .option .hint {
+      .hint {
         color: GrayText;
         display: block;
         font-size: 12px;
         font-weight: 400;
+      }
+
+      /*
+        antd draws these radios, and its group drops the font size to nothing to
+        close the gap between the rows — so the label is given one back here, or
+        it renders at zero and there is no title to read. `align-items: start`
+        is for the option that has a hint under it: two lines of label belong
+        against the top of the dot, not centred on it.
+      */
+      .options .ant-radio-wrapper {
+        align-items: start;
+        font-size: 13px;
+      }
+
+      .options strong {
+        font-weight: 600;
       }
 
       /*
@@ -173,11 +189,6 @@
       /* Dimmed with the choice it belongs to: only a deployment has an address. */
       .field input:disabled {
         opacity: 0.5;
-      }
-
-      .field .hint {
-        color: GrayText;
-        font-size: 12px;
       }
 
       .message {

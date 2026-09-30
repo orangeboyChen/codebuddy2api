@@ -101,6 +101,7 @@ import {
   type DesktopUsage,
 } from '../lib/server/electron/usage';
 import {
+  deploymentSignIn,
   probeDeployment,
   type DeploymentProbe,
 } from '../lib/server/electron/deployment';
@@ -112,7 +113,6 @@ import {
   type UpdateUnavailableReason,
 } from '../lib/server/electron/updates';
 import { fetchServerVersion } from '../lib/server/electron/version';
-import { fetchUpstreamSessionSummary } from '../lib/server/admin/upstream';
 
 /** Every window of the app's own carries this title, and never another. */
 const APP_TITLE = 'CodeBuddy2API';
@@ -855,7 +855,7 @@ const showMainWindow = (): void => {
  * has no console to open: what is meant by the click is starting it, so that is
  * what is offered instead of a window that would load nothing.
  */
-const openConsoleOnRequest = (): void => {
+const openConsoleOnRequest = async (): Promise<void> => {
   if (status === 'paused') {
     void askToStartPausedGateway();
 
@@ -868,6 +868,22 @@ const openConsoleOnRequest = (): void => {
   // answered by the restart that is already running.
   if (status === 'starting') {
     consoleRequestPending = true;
+
+    return;
+  }
+
+  /*
+    A deployment's console is that deployment's own, so a click while this app
+    is not signed in to it lands on that deployment's login page — in this
+    window, where a passkey saved for the deployment cannot be used and a
+    password would be typed into a page this app rendered. What the click should
+    reach is the window that asks which backend to use, which is where a
+    deployment is signed in to, in a browser, on the deployment's own page — and
+    a click on a deployment that is signed in is answered there too, by probing
+    it once more and saying so when it has stopped answering.
+  */
+  if (backend.mode === 'remote') {
+    await openDeploymentConsole();
 
     return;
   }
@@ -1166,7 +1182,7 @@ const buildTrayMenu = (): Menu =>
           },
         ]
       : []),
-    { click: () => openConsoleOnRequest(), label: text().openConsole },
+    { click: () => void openConsoleOnRequest(), label: text().openConsole },
     {
       click: () => {
         const baseUrl = consoleBaseUrl();
@@ -1399,7 +1415,7 @@ const createTray = (): void => {
   // without one, so the click opens the console instead.
   if (process.platform !== 'darwin') {
     tray.on('click', () => {
-      openConsoleOnRequest();
+      void openConsoleOnRequest();
     });
   }
 
@@ -2101,32 +2117,6 @@ const runUpdateCheck = async (): Promise<void> => {
 };
 
 /**
- * Whether the deployment behind the console wants this app signed in to it.
- *
- * Asked of the deployment, which is the one that owns the password: a desktop
- * install has none of its own, and a console showing a deployment's data is
- * signed in — or not — there. This machine's own gateway is reachable by
- * nothing but this app's own window, which needs no approval from anybody.
- *
- * A deployment that could not be asked is one that is not made to answer twice:
- * the console comes up and says what it can, which is what it does already.
- */
-const deploymentNeedsSignIn = async (): Promise<boolean> => {
-  if (backend.mode !== 'remote') {
-    return false;
-  }
-
-  const session = await fetchUpstreamSessionSummary({
-    deviceToken,
-    upstream: backend.url,
-  });
-
-  return session === null
-    ? false
-    : session.accountConfigured && !session.authenticated;
-};
-
-/**
  * Loads the console again, into a window that is already open.
  *
  * A window is only brought forward once a backend has been applied, and the page
@@ -2154,9 +2144,16 @@ const reloadConsole = (): void => {
  * typed into a page this app rendered. The window that asks which backend to
  * use is what goes in front of the user instead — that is where a deployment is
  * signed in to, in a browser, on the deployment's own page.
+ *
+ * Asked of the deployment every time, and not only when no token is held: a
+ * token is good for thirty days there and is kept here without one, so one that
+ * has run out is still a token — sent with everything the console asks for, and
+ * answered with the very login page this is here to keep out of the window.
  */
 const needsDeploymentSignIn = async (): Promise<boolean> =>
-  backend.mode === 'remote' && !deviceToken && (await deploymentNeedsSignIn());
+  backend.mode === 'remote' &&
+  (await deploymentSignIn({ deviceToken, url: backend.url })).kind ===
+    'needsSignIn';
 
 /**
  * Opens the console of a deployment, in this app's own window, on the
@@ -2193,6 +2190,21 @@ const openDeploymentConsole = async ({
   }
 
   if (await needsDeploymentSignIn()) {
+    /*
+      A token the deployment no longer answers for is not one to keep. Left
+      where it is, it says this app is signed in — in the menu bar, and on the
+      settings screen, where it leaves the very button that would sign the app
+      back in greyed out — and it goes on being sent with everything the console
+      asks for until then.
+
+      Forgotten here rather than revoked there: what the deployment was asked
+      is whether this token opens its door, and it said no.
+    */
+    if (deviceToken) {
+      deviceToken = null;
+      forgetDeviceToken(userDataDir);
+    }
+
     status = 'running';
     refreshMenus();
     openBackendWindow({ screen: 'settings' });
@@ -3670,7 +3682,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    openConsoleOnRequest();
+    void openConsoleOnRequest();
   });
 
   // On macOS the gateway keeps serving API clients after the console window is
@@ -3690,7 +3702,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('activate', () => {
-    openConsoleOnRequest();
+    void openConsoleOnRequest();
   });
 
   app.on('before-quit', (event) => {
