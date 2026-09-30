@@ -3526,6 +3526,21 @@ ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
   });
 
   /*
+    A deployment that stopped answering is not one to open the console on, and
+    not one to close the window over: `applyBackend` has sent the window to the
+    screen that says so, and a console opened behind a window that just went
+    away is a console nobody asked for — over an address this app has already
+    said it cannot reach.
+
+    Asked before anything is asked of the deployment again, which is the whole
+    point of asking it here: a wait for an answer from an address that is not
+    answering is a press that looks hung.
+  */
+  if (status === 'unreachable') {
+    return { signedIn: false };
+  }
+
+  /*
     Asked before the window is closed, and not after: `applyBackend` has already
     put the window that asks in front of the user when a sign-in is still needed,
     and closing it here would take away the one thing the answer was meant to be
