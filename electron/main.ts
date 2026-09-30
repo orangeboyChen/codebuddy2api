@@ -3526,48 +3526,37 @@ ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
   });
 
   /*
-    The ask is out of the way before the console is opened: a window of this
-    app's own still being open is what the console is brought forward into, so a
-    console asked for while this one was closing was a console that never
-    opened at all. Waited for, because a window asked to close is not closed yet
-    — and `showMainWindow` looks at whether it is.
-  */
-  if (window && !window.isDestroyed()) {
-    const closed = new Promise<void>((resolve) => {
-      window.once('closed', () => resolve());
-    });
-
-    window.close();
-
-    /*
-      Waited for, but not forever: a window that will not close would otherwise
-      hold the press here, and a press that never comes back is an app that looks
-      hung rather than one that is a window short. The console is opened whatever
-      became of it.
-    */
-    await Promise.race([closed, delay(CLOSE_GRACE_MS)]);
-  }
-
-  /*
-    Not signed in to a deployment that wants one: `applyBackend` has put the
-    window that asks in front of the user, and closing it here would take away
-    the one thing the answer was meant to be shown in.
-
-    A deployment this app is already signed in to — or one that asks for no
-    sign-in at all — is answered the way a save always was: the ask closes, and
-    the console opens.
+    Asked before the window is closed, and not after: `applyBackend` has already
+    put the window that asks in front of the user when a sign-in is still needed,
+    and closing it here would take away the one thing the answer was meant to be
+    shown in — a press answered with the dialog the sign-in failed in, and then
+    with a window that is gone. The button that asked is what comes back, where
+    the user can press it again.
   */
   if (await needsDeploymentSignIn()) {
     return { signedIn: false };
   }
 
+  /*
+    The ask is out of the way before the console is opened: a window of this
+    app's own still being open is what the console is brought forward into, so a
+    console asked for while this one was closing was a console that never
+    opened at all. Waited for, because a window asked to close is not closed yet
+    — and `showMainWindow` looks at whether it is.
+
+    Waited for, but not forever: a window that will not close would otherwise
+    hold the press here, and a press that never comes back is an app that looks
+    hung rather than one that is a window short. The console is opened whatever
+    became of it.
+  */
   if (window && !window.isDestroyed()) {
     const closed = new Promise<void>((resolve) => {
       window.once('closed', () => resolve());
     });
 
     window.close();
-    await closed;
+
+    await Promise.race([closed, delay(CLOSE_GRACE_MS)]);
   }
 
   showMainWindow();
