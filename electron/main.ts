@@ -34,6 +34,7 @@ import {
 import {
   buildGatewayEnv,
   startGateway,
+  waitForConsolePage,
   type GatewayHandle,
   type GatewayProcess,
   type GatewaySpawn,
@@ -101,6 +102,7 @@ import {
   type DesktopUsage,
 } from '../lib/server/electron/usage';
 import {
+  deploymentSignIn,
   probeDeployment,
   type DeploymentProbe,
 } from '../lib/server/electron/deployment';
@@ -112,7 +114,6 @@ import {
   type UpdateUnavailableReason,
 } from '../lib/server/electron/updates';
 import { fetchServerVersion } from '../lib/server/electron/version';
-import { fetchUpstreamSessionSummary } from '../lib/server/admin/upstream';
 
 /** Every window of the app's own carries this title, and never another. */
 const APP_TITLE = 'CodeBuddy2API';
@@ -855,7 +856,7 @@ const showMainWindow = (): void => {
  * has no console to open: what is meant by the click is starting it, so that is
  * what is offered instead of a window that would load nothing.
  */
-const openConsoleOnRequest = (): void => {
+const openConsoleOnRequest = async (): Promise<void> => {
   if (status === 'paused') {
     void askToStartPausedGateway();
 
@@ -868,6 +869,22 @@ const openConsoleOnRequest = (): void => {
   // answered by the restart that is already running.
   if (status === 'starting') {
     consoleRequestPending = true;
+
+    return;
+  }
+
+  /*
+    A deployment's console is that deployment's own, so a click while this app
+    is not signed in to it lands on that deployment's login page — in this
+    window, where a passkey saved for the deployment cannot be used and a
+    password would be typed into a page this app rendered. What the click should
+    reach is the window that asks which backend to use, which is where a
+    deployment is signed in to, in a browser, on the deployment's own page — and
+    a click on a deployment that is signed in is answered there too, by probing
+    it once more and saying so when it has stopped answering.
+  */
+  if (backend.mode === 'remote') {
+    await openDeploymentConsole();
 
     return;
   }
@@ -1166,7 +1183,7 @@ const buildTrayMenu = (): Menu =>
           },
         ]
       : []),
-    { click: () => openConsoleOnRequest(), label: text().openConsole },
+    { click: () => void openConsoleOnRequest(), label: text().openConsole },
     {
       click: () => {
         const baseUrl = consoleBaseUrl();
@@ -1399,7 +1416,7 @@ const createTray = (): void => {
   // without one, so the click opens the console instead.
   if (process.platform !== 'darwin') {
     tray.on('click', () => {
-      openConsoleOnRequest();
+      void openConsoleOnRequest();
     });
   }
 
@@ -2101,32 +2118,6 @@ const runUpdateCheck = async (): Promise<void> => {
 };
 
 /**
- * Whether the deployment behind the console wants this app signed in to it.
- *
- * Asked of the deployment, which is the one that owns the password: a desktop
- * install has none of its own, and a console showing a deployment's data is
- * signed in — or not — there. This machine's own gateway is reachable by
- * nothing but this app's own window, which needs no approval from anybody.
- *
- * A deployment that could not be asked is one that is not made to answer twice:
- * the console comes up and says what it can, which is what it does already.
- */
-const deploymentNeedsSignIn = async (): Promise<boolean> => {
-  if (backend.mode !== 'remote') {
-    return false;
-  }
-
-  const session = await fetchUpstreamSessionSummary({
-    deviceToken,
-    upstream: backend.url,
-  });
-
-  return session === null
-    ? false
-    : session.accountConfigured && !session.authenticated;
-};
-
-/**
  * Loads the console again, into a window that is already open.
  *
  * A window is only brought forward once a backend has been applied, and the page
@@ -2154,9 +2145,16 @@ const reloadConsole = (): void => {
  * typed into a page this app rendered. The window that asks which backend to
  * use is what goes in front of the user instead — that is where a deployment is
  * signed in to, in a browser, on the deployment's own page.
+ *
+ * Asked of the deployment every time, and not only when no token is held: a
+ * token is good for thirty days there and is kept here without one, so one that
+ * has run out is still a token — sent with everything the console asks for, and
+ * answered with the very login page this is here to keep out of the window.
  */
 const needsDeploymentSignIn = async (): Promise<boolean> =>
-  backend.mode === 'remote' && !deviceToken && (await deploymentNeedsSignIn());
+  backend.mode === 'remote' &&
+  (await deploymentSignIn({ deviceToken, url: backend.url })).kind ===
+    'needsSignIn';
 
 /**
  * Opens the console of a deployment, in this app's own window, on the
@@ -2193,6 +2191,21 @@ const openDeploymentConsole = async ({
   }
 
   if (await needsDeploymentSignIn()) {
+    /*
+      A token the deployment no longer answers for is not one to keep. Left
+      where it is, it says this app is signed in — in the menu bar, and on the
+      settings screen, where it leaves the very button that would sign the app
+      back in greyed out — and it goes on being sent with everything the console
+      asks for until then.
+
+      Forgotten here rather than revoked there: what the deployment was asked
+      is whether this token opens its door, and it said no.
+    */
+    if (deviceToken) {
+      deviceToken = null;
+      forgetDeviceToken(userDataDir);
+    }
+
     status = 'running';
     refreshMenus();
     openBackendWindow({ screen: 'settings' });
@@ -3333,6 +3346,32 @@ const watchDesktopSettings = (): void => {
   }
 };
 
+/**
+ * The console page, asked for before the window is sent to it.
+ *
+ * A development run serves the console out of the repository, where the first
+ * page is a compile and not a read — so `/health` answers well before
+ * `/dashboard` does, and a window sent to it in between is a blank one.
+ *
+ * Asked with the console's token, the way the window asks: without it the
+ * console answers 404 to everything, and the wait would be for a page that is
+ * never coming. And given up on rather than reported: the window is opened
+ * either way, and says what it has to say about a console that will not come up.
+ */
+const warmConsole = async (): Promise<void> => {
+  const baseUrl = consoleBaseUrl();
+
+  if (!baseUrl) {
+    return;
+  }
+
+  await waitForConsolePage({
+    headers: { cookie: `${DESKTOP_CONSOLE_COOKIE}=${consoleToken}` },
+    timeoutMs: devConsole() ? DEV_CONSOLE_TIMEOUT_MS : undefined,
+    url: `${baseUrl}/dashboard`,
+  });
+};
+
 const startBackend = async (): Promise<void> => {
   // A deployment is served on its own address, and this machine starts nothing
   // for it; only this machine's own data needs a gateway of this machine's.
@@ -3346,6 +3385,15 @@ const startBackend = async (): Promise<void> => {
   await restartGateway();
 
   if (status === 'running') {
+    /*
+      Asked for before the window is sent to it, and not only asked of
+      `/health`: in a development run the console is served out of the
+      repository, where the first page is a compile and not a read, and health
+      answers seconds before `/dashboard` exists at all. A window sent to it in
+      between comes up empty, which reads as an app that never opened a console
+      — and stays empty for as long as the compile takes.
+    */
+    await warmConsole();
     reloadConsole();
     showMainWindow();
 
@@ -3514,48 +3562,52 @@ ipcMain.handle('desktop:set-backend', async (_event, next: unknown) => {
   });
 
   /*
-    The ask is out of the way before the console is opened: a window of this
-    app's own still being open is what the console is brought forward into, so a
-    console asked for while this one was closing was a console that never
-    opened at all. Waited for, because a window asked to close is not closed yet
-    — and `showMainWindow` looks at whether it is.
+    A deployment that stopped answering is not one to open the console on, and
+    not one to close the window over: `applyBackend` has sent the window to the
+    screen that says so, and a console opened behind a window that just went
+    away is a console nobody asked for — over an address this app has already
+    said it cannot reach.
+
+    Asked before anything is asked of the deployment again, which is the whole
+    point of asking it here: a wait for an answer from an address that is not
+    answering is a press that looks hung.
   */
-  if (window && !window.isDestroyed()) {
-    const closed = new Promise<void>((resolve) => {
-      window.once('closed', () => resolve());
-    });
-
-    window.close();
-
-    /*
-      Waited for, but not forever: a window that will not close would otherwise
-      hold the press here, and a press that never comes back is an app that looks
-      hung rather than one that is a window short. The console is opened whatever
-      became of it.
-    */
-    await Promise.race([closed, delay(CLOSE_GRACE_MS)]);
+  if (status === 'unreachable') {
+    return { signedIn: false };
   }
 
   /*
-    Not signed in to a deployment that wants one: `applyBackend` has put the
-    window that asks in front of the user, and closing it here would take away
-    the one thing the answer was meant to be shown in.
-
-    A deployment this app is already signed in to — or one that asks for no
-    sign-in at all — is answered the way a save always was: the ask closes, and
-    the console opens.
+    Asked before the window is closed, and not after: `applyBackend` has already
+    put the window that asks in front of the user when a sign-in is still needed,
+    and closing it here would take away the one thing the answer was meant to be
+    shown in — a press answered with the dialog the sign-in failed in, and then
+    with a window that is gone. The button that asked is what comes back, where
+    the user can press it again.
   */
   if (await needsDeploymentSignIn()) {
     return { signedIn: false };
   }
 
+  /*
+    The ask is out of the way before the console is opened: a window of this
+    app's own still being open is what the console is brought forward into, so a
+    console asked for while this one was closing was a console that never
+    opened at all. Waited for, because a window asked to close is not closed yet
+    — and `showMainWindow` looks at whether it is.
+
+    Waited for, but not forever: a window that will not close would otherwise
+    hold the press here, and a press that never comes back is an app that looks
+    hung rather than one that is a window short. The console is opened whatever
+    became of it.
+  */
   if (window && !window.isDestroyed()) {
     const closed = new Promise<void>((resolve) => {
       window.once('closed', () => resolve());
     });
 
     window.close();
-    await closed;
+
+    await Promise.race([closed, delay(CLOSE_GRACE_MS)]);
   }
 
   showMainWindow();
@@ -3670,7 +3722,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    openConsoleOnRequest();
+    void openConsoleOnRequest();
   });
 
   // On macOS the gateway keeps serving API clients after the console window is
@@ -3690,7 +3742,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('activate', () => {
-    openConsoleOnRequest();
+    void openConsoleOnRequest();
   });
 
   app.on('before-quit', (event) => {

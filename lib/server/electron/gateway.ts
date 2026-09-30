@@ -107,6 +107,12 @@ export interface StartGatewayOptions {
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_INTERVAL_MS = 250;
 const REQUEST_TIMEOUT_MS = 2_000;
+/**
+ * How long one page is given to answer, which is longer than a health check
+ * gets: a compile is not a read, and a request cut short mid-compile is a
+ * compile started again from nothing on the next one.
+ */
+const CONSOLE_PAGE_REQUEST_TIMEOUT_MS = 30_000;
 
 const defaultLog = (message: string): void => {
   console.log(`[gateway] ${message}`);
@@ -198,6 +204,72 @@ export const buildGatewayEnv = (
   }
 
   return env;
+};
+
+export type ConsolePageRequest = (
+  url: string,
+  headers: Record<string, string>,
+) => Promise<boolean>;
+
+export interface ConsolePageWaitOptions {
+  /**
+   * What the console is asked with, which is how the window asks: without the
+   * token the console answers 404 to everything, so a request that left it out
+   * would wait for a page that is never going to come.
+   */
+  headers?: Record<string, string>;
+  intervalMs?: number;
+  request?: ConsolePageRequest;
+  sleep?: (ms: number) => Promise<void>;
+  timeoutMs?: number;
+  url: string;
+}
+
+const defaultConsoleRequest: ConsolePageRequest = async (url, headers) => {
+  const response = await fetch(url, {
+    headers,
+    signal: AbortSignal.timeout(CONSOLE_PAGE_REQUEST_TIMEOUT_MS),
+  });
+
+  return response.ok;
+};
+
+/**
+ * Asks the console for the page the window is about to be sent to, and waits
+ * until it answers.
+ *
+ * `/health` is answered by the server and not by the pages. A development run
+ * serves the console out of the repository, where the first page is a compile
+ * and not a read — so health answers seconds before `/dashboard` exists at all,
+ * and a window sent to it in between is a blank one, which reads as an app that
+ * never opened a console.
+ *
+ * Answering false is not a failure to report: the window is opened either way,
+ * and then says whatever it has to say about a console that will not come up.
+ */
+export const waitForConsolePage = async (
+  options: ConsolePageWaitOptions,
+): Promise<boolean> => {
+  const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const request = options.request ?? defaultConsoleRequest;
+  const sleep = options.sleep ?? defaultSleep;
+  const headers = options.headers ?? {};
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const answered = await request(options.url, headers).catch(() => false);
+
+    if (answered) {
+      return true;
+    }
+
+    if (Date.now() >= deadline) {
+      return false;
+    }
+
+    await sleep(intervalMs);
+  }
 };
 
 /**
