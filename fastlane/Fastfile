@@ -70,5 +70,16 @@ lane :mac do |options|
     ENV["CSC_KEYCHAIN"] = File.expand_path(lane_context[SharedValues::KEYCHAIN_PATH])
   end
 
-  sh("bun", "scripts/build-desktop.ts", *targets)
+  # Where the repository is, named from this Fastfile rather than from the
+  # working directory: `match` clones the certificate repository, and what it
+  # leaves behind is a process standing somewhere else — so a script named by a
+  # path relative to the directory the lane was started from is one bun answers
+  # with `Module not found`, and the release build fails after the certificate
+  # it was waiting for has already been imported.
+  #
+  # Run from there, which is also where `build-desktop.ts` expects to be: it
+  # names every path of its own off this same root.
+  Dir.chdir(File.expand_path("..", __dir__)) do
+    sh("bun", "scripts/build-desktop.ts", *targets)
+  end
 end
