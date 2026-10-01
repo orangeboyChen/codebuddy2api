@@ -15,6 +15,7 @@ import {
   ipcMain,
   nativeImage,
   nativeTheme,
+  net,
   session,
   shell,
 } from 'electron';
@@ -457,14 +458,11 @@ const sameSettings = (a: DesktopSettings, b: DesktopSettings): boolean =>
  * The address the console is served from, or an empty string while there is
  * none — a gateway that has not started yet.
  *
- * Always the bundled gateway's, a deployment configured or not: what the window
- * shows is this app's own console, and only the data behind `/admin-api` comes
- * from the deployment.
+ * A deployment's own address: the console it serves is the deployment's, and
+ * so is the data behind it. Nothing of this machine's sits in between, and no
+ * port of this machine's is given up to forward one.
  */
 const consoleBaseUrl = (): string =>
-  // A deployment's own address: the console it serves is the deployment's, and
-  // so is the data behind it. Nothing of this machine's sits in between, and no
-  // port of this machine's is given up to forward one.
   backend.mode === 'remote'
     ? backend.url.trim().replace(/\/+$/, '')
     : (gateway?.url ?? '');
@@ -586,6 +584,29 @@ const setConsoleCookie = async (origin: string): Promise<void> => {
   }
 };
 
+/** Adds the device grant to requests made directly to the remote console. */
+const installRemoteAuthHeaders = (): void => {
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    if (backend.mode === 'remote' && deviceToken) {
+      try {
+        if (new URL(details.url).origin === new URL(backend.url).origin) {
+          const hasAuthorization = Object.keys(details.requestHeaders).some(
+            (name) => name.toLowerCase() === 'authorization',
+          );
+
+          if (!hasAuthorization) {
+            details.requestHeaders.Authorization = `Bearer ${deviceToken}`;
+          }
+        }
+      } catch {
+        // Invalid navigation targets are handled by the normal allow-list.
+      }
+    }
+
+    callback({ requestHeaders: details.requestHeaders });
+  });
+};
+
 /**
  * Sends a window to the console, keeping the navigation allow-list in step with
  * where it is going.
@@ -596,13 +617,6 @@ const loadConsole = async (
 ): Promise<void> => {
   consoleOrigin = new URL(url).origin;
 
-  /*
-    The token is only for a console this machine serves: the gateway the app
-    starts answers 404 without it, so nothing but its own window gets a page. A
-    deployment's console is the deployment's, and it has no such guard — a
-    cookie handed to that origin would be this app's console token sent to
-    somebody else's server, for a door nobody there is keeping.
-  */
   if (backend.mode !== 'remote') {
     await setConsoleCookie(consoleOrigin);
   }
@@ -992,9 +1006,7 @@ const writeConsolePreferences = async (cookies: Cookie[]): Promise<void> => {
 
   refreshMenus();
 
-  // Only a console that is being served can be asked for another page: a paused
-  // gateway has no window to reload, and the choice is there next time.
-  if (mainWindow && !mainWindow.isDestroyed() && gateway) {
+  if (mainWindow && !mainWindow.isDestroyed() && consoleOrigin) {
     mainWindow.reload();
   }
 };
@@ -1480,7 +1492,11 @@ const devConsoleSpawn = (port: number): GatewaySpawn | undefined => {
   }
 
   return ({ env }) => {
-    const childEnv: NodeJS.ProcessEnv = { ...env, NODE_ENV: 'development' };
+    const childEnv: NodeJS.ProcessEnv = {
+      ...env,
+      CODEBUDDY_DESKTOP_DEV: '1',
+      NODE_ENV: 'development',
+    };
 
     // The built gateway runs on this app's own binary, switched into Node by
     // this; the one in the repository is an ordinary runtime, to which the
@@ -1643,12 +1659,10 @@ const scheduleRestart = (): void => {
  * The port the next gateway should bind, or null when the app cannot have one
  * without asking.
  *
- * A port the app promised — one the settings file holds, or
- * `CODEBUDDY_DESKTOP_PORT` — is not its to give up: a client config, a firewall
- * rule or a bookmark points at that number, so the app asks instead of answering
- * on another one. Only a port nobody has settled walks upwards, which is what
- * keeps an install that has never been asked usable next to a deployment already
- * serving 8001.
+ * A local backend may promise a fixed port through settings or
+ * `CODEBUDDY_DESKTOP_PORT`. A remote backend has no such promise: its port is
+ * only an internal loopback detail used to carry the authenticated console, so
+ * it always walks upwards when the preferred port is occupied.
  *
  * Probed with the gateway stopped: the one that was running still holds its
  * port, and would otherwise reject the number the app is already on — the one
@@ -1675,12 +1689,18 @@ const resolveStartPort = async (): Promise<number | null> => {
  * sends the open window to its new address. Reached when the console saves a
  * port, and reused for the first launch.
  *
- * The gateway runs either way: it is what serves the console. A deployment only
- * decides where the data behind it comes from, so it is asked first — a console
- * pointed at a deployment that is not there would otherwise come up quiet and
- * empty, and look like the app's own failure.
+ * Only the local backend runs a gateway. A remote backend is opened directly at
+ * its own address and never consumes a loopback port.
  */
 const restartGateway = async (): Promise<void> => {
+  if (backend.mode === 'remote') {
+    await stopGatewayAndWait();
+    status = 'running';
+    refreshMenus();
+
+    return;
+  }
+
   if (quitting) {
     // Nothing after this starts a gateway, so nothing can answer a click that
     // was waiting for one.
@@ -1714,32 +1734,7 @@ const restartGateway = async (): Promise<void> => {
   refreshMenus();
 
   const startedFor = backend;
-  const upstream = backend.mode === 'remote' ? backend.url : null;
-
-  if (upstream) {
-    lastProbe = await probeDeployment({ url: upstream });
-
-    if (lastProbe.kind !== 'ready') {
-      restarting = false;
-      await stopGatewayAndWait();
-      status = 'unreachable';
-      refreshMenus();
-      // Dropped here rather than in the `finally` below, which this return is
-      // above: a click waiting for a console is waiting for one that is not
-      // coming, and left set it is a window that opens on its own the next
-      // time anything starts successfully.
-      consoleRequestPending = false;
-      // The console has nothing to show yet, so what the user is asked is how to
-      // get to a deployment that answers. Raised rather than asked: a start can
-      // be under way because an answer is being applied, and this question came
-      // out of that answer.
-      raiseBackendQuestion('unreachable');
-
-      return;
-    }
-  } else {
-    lastProbe = null;
-  }
+  lastProbe = null;
 
   try {
     // The gateway that is running still holds its port, so probing before
@@ -1763,7 +1758,7 @@ const restartGateway = async (): Promise<void> => {
       return;
     }
 
-    pendingStart = launchGateway(port, upstream);
+    pendingStart = launchGateway(port, null);
     gateway = await pendingStart;
     pendingStart = null;
     pendingChild = null;
@@ -2160,12 +2155,8 @@ const needsDeploymentSignIn = async (): Promise<boolean> =>
  * Opens the console of a deployment, in this app's own window, on the
  * deployment's own address.
  *
- * No gateway of this machine's is started for it. The window is this app's, and
- * what is in it is the deployment's console, asked for on the address it is
- * served on — which is also where its data and its API are. A gateway on
- * loopback forwarding the two is a port this machine gave up and an API nobody
- * asked this app to run: the console is for controlling a backend, not for
- * being one.
+ * No gateway of this machine's is started for it. The device token is injected
+ * into requests to the remote origin by the Electron session.
  */
 const openDeploymentConsole = async ({
   authenticate = false,
@@ -2176,7 +2167,10 @@ const openDeploymentConsole = async ({
     return;
   }
 
-  lastProbe = await probeDeployment({ url: target.url });
+  lastProbe = await probeDeployment({
+    fetchImpl: net.fetch,
+    url: target.url,
+  });
 
   if (lastProbe.kind !== 'ready') {
     status = 'unreachable';
@@ -2227,9 +2221,8 @@ const openDeploymentConsole = async ({
  * alone. `port` is the port that window settled when it settled one, and is
  * saved along with the backend; without it, the port already on disk stands.
  *
- * Every switch goes through the bundled gateway, a deployment named or not: the
- * console is this app's own build, and the deployment only supplies the data
- * behind it.
+ * Local switches start the bundled gateway; remote switches open the deployment
+ * directly without starting anything on loopback.
  */
 const applyBackend = async (
   next: DesktopBackend,
@@ -2274,17 +2267,8 @@ const applyBackend = async (
   serverVersion = null;
   refreshMenus();
 
-  /*
-    A deployment is served on its own address, and this machine starts nothing
-    for it: the console in this window is the deployment's, and so is the data
-    and the API behind it. A gateway on loopback forwarding the two is a port
-    this machine gave up and an API nobody asked this app to run — the console
-    is for controlling a backend, not for being one.
-  */
   if (backend.mode === 'remote') {
-    // Stopped, including one still coming up: a start in flight is a child
-    // holding the port, and `stopGatewayAndWait` only knows about a gateway
-    // that has already answered.
+    // Stop a previous local backend before opening the remote deployment.
     await stopGatewayAndWait();
 
     if (pendingChild) {
@@ -2882,7 +2866,9 @@ const setPaused = async (next: boolean): Promise<void> => {
     return;
   }
 
-  await restartGateway();
+  if (backend.mode === 'local') {
+    await restartGateway();
+  }
 };
 
 /**
@@ -2977,7 +2963,7 @@ const signInToDeployment = async (quiet = false): Promise<void> => {
     was never going to sign anything in, and saying so is the whole point of
     asking.
   */
-  const probe = await probeDeployment({ url: issuedBy });
+  const probe = await probeDeployment({ fetchImpl: net.fetch, url: issuedBy });
 
   if (probe.kind !== 'ready') {
     say(
@@ -3177,7 +3163,7 @@ const signOutOfDeployment = async (): Promise<void> => {
     }
   }
 
-  await restartGateway();
+  await openDeploymentConsole();
 };
 
 /**
@@ -3203,7 +3189,11 @@ const askAboutUnreachable = async (): Promise<AskOutcome['kind']> => {
   });
 
   if (choice.response === 0) {
-    await restartGateway();
+    if (backend.mode === 'remote') {
+      await openDeploymentConsole();
+    } else {
+      await restartGateway();
+    }
 
     // Answered this time, and the console comes up: a deployment that was
     // merely cold is running now, and an app that says so only in the menu bar
@@ -3373,15 +3363,13 @@ const warmConsole = async (): Promise<void> => {
 };
 
 const startBackend = async (): Promise<void> => {
-  // A deployment is served on its own address, and this machine starts nothing
-  // for it; only this machine's own data needs a gateway of this machine's.
   if (backend.mode === 'remote') {
     await openDeploymentConsole();
 
     return;
   }
 
-  // This machine's own gateway serves the console; its data is this machine's.
+  // This machine's own gateway serves both the console and its data.
   await restartGateway();
 
   if (status === 'running') {
@@ -3434,6 +3422,7 @@ const bootstrap = async (): Promise<void> => {
     session.defaultSession.getUserAgent(),
     [app.getLocale(), 'en-US'].join(','),
   );
+  installRemoteAuthHeaders();
   // Made up here and nowhere else: the gateway gets it through the environment,
   // the window gets it as a cookie, and it dies with this run — a token written
   // down would be one a next run could be made to honour.
@@ -3675,7 +3664,11 @@ ipcMain.handle(
 ipcMain.handle('desktop:retry-backend', async () => {
   const window = backendWindow;
 
-  await restartGateway();
+  if (backend.mode === 'remote') {
+    await openDeploymentConsole();
+  } else {
+    await restartGateway();
+  }
 
   // Answered this time: the question goes away and the console comes up. The
   // window is on its way out, and `showMainWindow` asks whether there is one

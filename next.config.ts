@@ -1,7 +1,10 @@
 import createNextIntlPlugin from 'next-intl/plugin';
 import type { NextConfig } from 'next';
 
+const desktopDevelopment = process.env.CODEBUDDY_DESKTOP_DEV?.trim() === '1';
+
 const nextConfig: NextConfig = {
+  ...(desktopDevelopment ? { distDir: '.next-desktop' } : {}),
   output: 'standalone',
   outputFileTracingIncludes: {
     '/*': ['./lib/server/storage/migrations/**'],

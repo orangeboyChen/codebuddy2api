@@ -40,7 +40,12 @@ export const AdminPage = async ({
   });
   const cookieHeader = headerStore.get('cookie') ?? '';
   const request = new Request(`${protocol}://${host}/`, {
-    headers: cookieHeader ? { cookie: cookieHeader } : {},
+    headers: {
+      ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      ...(headerStore.get('authorization')
+        ? { authorization: headerStore.get('authorization') as string }
+        : {}),
+    },
   });
   // Whose password applies: a desktop install serving its own data has none,
   // but one showing a deployment's data is that deployment's console, and the

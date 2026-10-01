@@ -67,7 +67,12 @@ const LoginPage = async ({
   });
   const cookieHeader = headerStore.get('cookie') ?? '';
   const request = new Request(`${protocol}://${host}/login`, {
-    headers: cookieHeader ? { cookie: cookieHeader } : {},
+    headers: {
+      ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      ...(headerStore.get('authorization')
+        ? { authorization: headerStore.get('authorization') as string }
+        : {}),
+    },
   });
   // The password belongs to whichever console this is: the deployment's, when
   // this build is only rendering it.

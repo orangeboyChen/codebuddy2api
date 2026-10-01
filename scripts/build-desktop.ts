@@ -53,9 +53,14 @@ export const bunBinary = () => {
  * shim directly. On Windows that shim is a `.cmd`, which `execFile` cannot run
  * without a shell, and bun resolves the shim itself on every platform.
  */
-const runBin = (binary: string, args: string[]): void => {
+const runBin = (
+  binary: string,
+  args: string[],
+  env: Record<string, string> = {},
+): void => {
   execFileSync(bunBinary(), ['run', binary, '--', ...args], {
     cwd: root,
+    env: { ...process.env, ...env },
     stdio: 'inherit',
   });
 };
@@ -279,14 +284,18 @@ const packageDesktop = (forwarded: string[], devIcon: boolean) => {
       ]
     : [];
 
-  runBin('electron-builder', [
-    '--config',
-    builderConfig,
-    ...iconArguments,
-    '--publish',
-    'never',
-    ...forwarded,
-  ]);
+  runBin(
+    'electron-builder',
+    [
+      '--config',
+      builderConfig,
+      ...iconArguments,
+      '--publish',
+      'never',
+      ...forwarded,
+    ],
+    devIcon ? { CSC_IDENTITY_AUTO_DISCOVERY: 'false' } : undefined,
+  );
 };
 
 /**
