@@ -73,7 +73,7 @@ export type DeploymentProbe =
   | { kind: 'foreign' };
 
 export interface ProbeOptions {
-  fetchImpl?: typeof fetch;
+  fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
   timeoutMs?: number;
   url: string;
 }

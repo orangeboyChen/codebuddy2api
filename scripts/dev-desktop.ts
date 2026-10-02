@@ -174,9 +174,14 @@ const appIsStale = (): boolean => {
   return newest > packaged;
 };
 
-const runBin = (binary: string, args: string[]): void => {
+const runBin = (
+  binary: string,
+  args: string[],
+  env: Record<string, string> = {},
+): void => {
   const { status } = spawnSync(bunBinary(), ['run', binary, '--', ...args], {
     cwd: root,
+    env: { ...process.env, ...env },
     stdio: 'inherit',
   });
 
@@ -196,16 +201,20 @@ const buildDevApp = (): void => {
   ensureGatewayBuild();
   prepareDesktop(true);
 
-  runBin('electron-builder', [
-    '--config',
-    builderConfig,
-    '--dir',
-    `-c.directories.output=${devOutput}`,
-    '-c.asar=false',
-    `-c.mac.icon=${path.join(appBundleDir, 'icon-dev.png')}`,
-    '--publish',
-    'never',
-  ]);
+  runBin(
+    'electron-builder',
+    [
+      '--config',
+      builderConfig,
+      '--dir',
+      `-c.directories.output=${devOutput}`,
+      '-c.asar=false',
+      `-c.mac.icon=${path.join(appBundleDir, 'icon-dev.png')}`,
+      '--publish',
+      'never',
+    ],
+    { CSC_IDENTITY_AUTO_DISCOVERY: 'false' },
+  );
 };
 
 /**

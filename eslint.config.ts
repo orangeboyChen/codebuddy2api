@@ -10,6 +10,7 @@ import reactHooksPlugin from 'eslint-plugin-react-hooks';
 const eslintConfig = [
   globalIgnores([
     '.next/**',
+    '.next-desktop/**',
     'coverage/**',
     'docs/.vitepress/**',
     '**/node_modules/**',

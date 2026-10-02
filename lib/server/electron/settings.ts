@@ -22,8 +22,8 @@ export const DESKTOP_SETTINGS_FILENAME = 'desktop-settings.json';
  *
  * `local` is the gateway bundled into the app — started by the main process on
  * a loopback port, with its database inside `userData`. `remote` is a
- * deployment the user already runs: the console stays this app's own, and the
- * gateway forwards `/admin-api` and `/v1` there for the data.
+ * deployment the user already runs: the desktop window opens that deployment
+ * directly and does not start a local gateway.
  */
 export type DesktopBackend =
   { mode: 'local' } | { mode: 'remote'; url: string };
