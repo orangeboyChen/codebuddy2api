@@ -330,6 +330,42 @@ jobs:
           if [[ -z "$APPLE_API_KEY" ]]; then
             echo '::warning::The app is signed but was never notarized — APPLE_API_KEY, APPLE_API_KEY_ID or APPLE_API_ISSUER is missing'
           fi
+      # Notarization, of the dmg rather than of the app inside it.
+      #
+      # What electron-builder notarizes is the app bundle it has just signed —
+      # zipped, and handed to notarytool — so the ticket that comes back belongs
+      # to the app. The dmg built around that app afterwards has no ticket of its
+      # own, and `stapler` has nothing to staple to it. Submitting the dmg is
+      # what gets a ticket for the thing actually handed out, and what lets it be
+      # stapled: Gatekeeper then finds it on the disk, and a Mac with no network
+      # does not have to ask Apple whether an app Apple already passed is safe.
+      # (`mac.notarize` is off in electron/electron-builder.yml for this reason.)
+      - name: Notarize the dmg and staple its ticket
+        if: ${{ matrix.macos && env.APPLE_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(find build/desktop -name '*.dmg' -maxdepth 1 -print -quit)"
+          if [[ -z "$image" ]]; then
+            echo '::error::electron-builder left no dmg behind'
+            exit 1
+          fi
+          xcrun notarytool submit --wait \
+            --key "$APPLE_API_KEY" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            "$image"
+          # The ticket is on Apple's servers as soon as notarization answers,
+          # but not always by the moment after: a few tries before one is
+          # called a failure, rather than one try and a red release.
+          for attempt in 1 2 3 4 5; do
+            if xcrun stapler staple "$image"; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::$image carries no notarization ticket — check APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER"
+          exit 1
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error
