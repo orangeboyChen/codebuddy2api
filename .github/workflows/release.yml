@@ -366,7 +366,7 @@ jobs:
           done
           echo "::error::$image carries no notarization ticket — check APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER"
           exit 1
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           if-no-files-found: error
           name: desktop-${{ matrix.label }}
@@ -399,7 +399,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: build/desktop
