@@ -27,7 +27,7 @@ concurrency:
 
 env:
   BUN_CACHE_PATH: ~/.bun/install/cache
-  BUN_VERSION: 1.3.14
+  BUN_VERSION: 1.4.3
   CI: true
   NEXT_TELEMETRY_DISABLED: '1'
 

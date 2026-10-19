@@ -1,5 +1,9 @@
-# Pinned to the same Bun version as CI (.github/workflows/*.yml BUN_VERSION).
-FROM oven/bun:1.3.14-slim AS deps
+# Defaults to the same Bun version as CI (.github/workflows/*.yml BUN_VERSION).
+# Do not go below 1.4.3: Bun 1.3.14 crashes with a NAPI FATAL ERROR (SIGILL)
+# while loading better-sqlite3's prebuilt N-API binding, which takes down the
+# whole process on startup when CODEBUDDY_STORAGE_BACKEND is `sqlite`.
+ARG BUN_VERSION=1.4.3
+FROM oven/bun:${BUN_VERSION}-slim AS deps
 
 WORKDIR /app
 
@@ -14,7 +18,7 @@ COPY package.json bun.lock ./
 # the .next/standalone output.
 RUN bun install --frozen-lockfile
 
-FROM oven/bun:1.3.14-slim AS builder
+FROM oven/bun:${BUN_VERSION}-slim AS builder
 
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -23,7 +27,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN bun run build
 
-FROM oven/bun:1.3.14-slim AS runner
+FROM oven/bun:${BUN_VERSION}-slim AS runner
 
 WORKDIR /app
 ENV NODE_ENV=production \

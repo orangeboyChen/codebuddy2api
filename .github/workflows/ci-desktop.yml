@@ -31,7 +31,7 @@ concurrency:
 
 env:
   BUN_CACHE_PATH: ~/.bun/install/cache
-  BUN_VERSION: 1.3.14
+  BUN_VERSION: 1.4.3
   CI: true
   # `mac.identity` is unset on purpose: the release build signs with whatever
   # Developer ID certificate the keychain holds. On a runner whose keychain
