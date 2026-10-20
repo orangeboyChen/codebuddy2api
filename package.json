@@ -62,7 +62,7 @@
     "@electron/rebuild": "^4.2.0",
     "@eslint/compat": "^2.1.1",
     "@next/eslint-plugin-next": "^16.3.6",
-    "@playwright/test": "^1.64.0",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
@@ -74,7 +74,7 @@
     "@types/react-dom": "^19.3.0",
     "@typescript-eslint/eslint-plugin": "^8.71.2",
     "@typescript-eslint/parser": "^8.71.2",
-    "@vitest/coverage-v8": "^5.0.4",
+    "@vitest/coverage-v8": "^5.0.5",
     "drizzle-kit": "^0.31.11",
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3",
@@ -95,7 +95,7 @@
     "sharp": "^0.35.4",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.8.2",
-    "vitest": "^5.0.4"
+    "vitest": "^5.0.5"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
