@@ -37,6 +37,7 @@ export default defineConfig({
       CODEBUDDY_API_ENDPOINT: 'http://127.0.0.1:65535',
       CODEBUDDY_CREDENTIALS_DIR: path.join(e2eRoot, '.codebuddy_creds'),
       CODEBUDDY_DESKTOP: '1',
+      CODEBUDDY_DESKTOP_DEV: '1',
       // Its own directory, so a port saved here cannot touch a real install.
       CODEBUDDY_DESKTOP_USER_DATA_DIR: path.join(e2eRoot, 'desktop-user-data'),
       CODEBUDDY_STORAGE_FILE_DIR: path.join(e2eRoot, '.codebuddy_data'),
