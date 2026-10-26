@@ -399,7 +399,9 @@ export const findEligibleCredentialRecordByFilename = async (
   );
 };
 
-const getCredentialExpiry = (credential: CredentialData): number | null => {
+export const getCredentialExpiry = (
+  credential: CredentialData,
+): number | null => {
   if (
     typeof credential.created_at !== 'number' ||
     typeof credential.expires_in !== 'number'

@@ -1,12 +1,13 @@
 'use client';
 
 import { Block, Flexbox, Input, TextArea } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import { Table } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { atom } from 'jotai';
 import {
   Layers3,
+  BellRing,
   LoaderCircle,
   RefreshCw,
   Save,
@@ -67,7 +68,7 @@ export const createSettingsState = ({
 };
 
 export interface SettingsController {
-  onChange: (key: string, value: string) => void;
+  onChange: (key: string, value: string | boolean) => void;
   onSave: () => void;
   settings: SettingsState;
 }
@@ -104,6 +105,10 @@ const settingsSelectOptions: Record<
   // "yes" or "on" would be read as false — silently turning a security setting
   // the wrong way.
   CODEBUDDY_ADMIN_TRUST_PROXY: [
+    { label: 'true', value: 'true' },
+    { label: 'false', value: 'false' },
+  ],
+  CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED: [
     { label: 'true', value: 'true' },
     { label: 'false', value: 'false' },
   ],
@@ -183,6 +188,11 @@ const DESKTOP_HIDDEN_CONFIG_KEYS = new Set([
   'CODEBUDDY_ADMIN_PASSKEY_RP_ID',
 ]);
 
+const CUSTOM_CONFIG_KEYS = new Set([
+  'CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED',
+  'CODEBUDDY_BARK_TOKEN',
+]);
+
 /**
  * Maps a setting key to its helper text.
  *
@@ -251,6 +261,114 @@ const SettingField = ({
       )}
       {hint ? <p className="mt-2 text-secondary">{hint}</p> : null}
     </div>
+  );
+};
+
+const CredentialExpiryNotificationSettings = ({
+  onChange,
+  settings,
+  translations,
+}: {
+  onChange: (key: string, value: string | boolean) => void;
+  settings: SettingsState;
+  translations: (key: string) => string;
+}) => {
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<'success' | 'error' | null>(
+    null,
+  );
+  const token = String(settings.values.CODEBUDDY_BARK_TOKEN ?? '');
+  const enabled =
+    settings.values.CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED ===
+      true ||
+    settings.values.CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED ===
+      'true';
+
+  const testNotification = async () => {
+    setTesting(true);
+    setTestResult(null);
+
+    try {
+      const response = await fetch('/admin-api/notifications/bark/test', {
+        body: JSON.stringify({ token }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+      });
+      setTestResult(response.ok ? 'success' : 'error');
+    } catch {
+      setTestResult('error');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <Block direction="vertical" gap={16} padding={24} variant="outlined">
+      <Flexbox align="center" gap={8} horizontal>
+        <BellRing size={18} strokeWidth={2} />
+        <h3 className="section-title">
+          {translations('settingsPanel.credentialExpiryNotificationsTitle')}
+        </h3>
+      </Flexbox>
+      <p className="text-secondary">
+        {translations('settingsPanel.credentialExpiryNotificationsDescription')}
+      </p>
+      <Flexbox align="center" distribution="space-between" horizontal>
+        <span className="font-medium">
+          {translations('settingsPanel.credentialExpiryNotificationsEnabled')}
+        </span>
+        <Switch
+          checked={enabled}
+          onChange={(checked) =>
+            onChange(
+              'CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED',
+              checked,
+            )
+          }
+        />
+      </Flexbox>
+      <div>
+        <label
+          className="mb-2 block whitespace-normal break-words font-medium text-text-light dark:text-text-dark"
+          htmlFor="CODEBUDDY_BARK_TOKEN"
+        >
+          {translations('settingsPanel.barkToken')}
+        </label>
+        <Input
+          id="CODEBUDDY_BARK_TOKEN"
+          onChange={(event) =>
+            onChange('CODEBUDDY_BARK_TOKEN', event.target.value)
+          }
+          placeholder={translations('settingsPanel.barkTokenPlaceholder')}
+          type="password"
+          value={token}
+        />
+        <p className="mt-2 text-secondary">
+          <a href="https://bark.day.app/" rel="noreferrer" target="_blank">
+            {translations('settingsPanel.barkLink')}
+          </a>
+        </p>
+      </div>
+      <Flexbox align="center" gap={12} horizontal wrap="wrap">
+        <Button
+          disabled={testing}
+          loading={testing}
+          onClick={() => void testNotification()}
+        >
+          {translations('settingsPanel.testBark')}
+        </Button>
+        {testResult === 'success' ? (
+          <span className="text-secondary">
+            {translations('settingsPanel.testBarkSuccess')}
+          </span>
+        ) : null}
+        {testResult === 'error' ? (
+          <span className="text-secondary">
+            {translations('settingsPanel.testBarkFailed')}
+          </span>
+        ) : null}
+      </Flexbox>
+    </Block>
   );
 };
 
@@ -709,6 +827,7 @@ const Settings = ({
               // A backend's own settings are rendered by its picker, which
               // knows which backend they belong to.
               .filter(([settingKey]) => !BACKEND_CONFIG_KEYS.has(settingKey))
+              .filter(([settingKey]) => !CUSTOM_CONFIG_KEYS.has(settingKey))
               .filter(([settingKey]) =>
                 desktop ? !DESKTOP_HIDDEN_CONFIG_KEYS.has(settingKey) : true,
               )
@@ -763,6 +882,11 @@ const Settings = ({
           </Button>
         </Flexbox>
       </Block>
+      <CredentialExpiryNotificationSettings
+        onChange={onChange}
+        settings={settings}
+        translations={translations}
+      />
       <Desktop />
       <CredentialModels />
       <Block direction="vertical" gap={16} padding={24} variant="outlined">
