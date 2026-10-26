@@ -1006,7 +1006,12 @@ const writeConsolePreferences = async (cookies: Cookie[]): Promise<void> => {
 
   refreshMenus();
 
-  if (mainWindow && !mainWindow.isDestroyed() && consoleOrigin) {
+  if (
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    consoleOrigin &&
+    (backend.mode === 'remote' || gateway !== null)
+  ) {
     mainWindow.reload();
   }
 };

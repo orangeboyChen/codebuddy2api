@@ -5,10 +5,13 @@ export const register = async (): Promise<void> => {
     await import('@/lib/server/domain/credential-models');
   const { startAutoCheckinScheduler } =
     await import('@/lib/server/domain/auto-checkin-scheduler');
+  const { startCredentialExpiryNotificationScheduler } =
+    await import('@/lib/server/domain/credential-expiry-notifications');
 
   void refreshMissingCredentialModels();
 
   // Only in the server process: a build or an edge runtime must not start a
   // timer that would outlive the request it belongs to.
   startAutoCheckinScheduler();
+  startCredentialExpiryNotificationScheduler();
 };

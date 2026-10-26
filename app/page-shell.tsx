@@ -166,7 +166,7 @@ interface PollAuthResponse {
 
 interface SettingsResponse {
   labels?: Record<string, string>;
-  settings?: Record<string, string | number | null>;
+  settings?: Record<string, string | number | boolean | null>;
 }
 
 interface DebugResponse {
@@ -1414,7 +1414,7 @@ const AdminPageLayoutContent = ({
 
     const result = await requestJson<{
       message?: string;
-      settings?: Record<string, string | number | null>;
+      settings?: Record<string, string | number | boolean | null>;
     }>('/admin-api/settings', {
       body: JSON.stringify({
         settings: settings.values,
