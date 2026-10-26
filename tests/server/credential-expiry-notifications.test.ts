@@ -30,11 +30,16 @@ vi.stubGlobal('fetch', send);
 const {
   runCredentialExpiryNotificationTick,
   sendBarkNotification,
+  subscribeCredentialExpiryNotifications,
   startCredentialExpiryNotificationScheduler,
   stopCredentialExpiryNotificationScheduler,
 } = await import('@/lib/server/domain/credential-expiry-notifications');
 const BarkTestRoute =
   await import('@/app/admin-api/notifications/bark/test/route');
+const CredentialExpiryTestRoute =
+  await import('@/app/admin-api/notifications/credential-expiry/test/route');
+const CredentialExpiryStreamRoute =
+  await import('@/app/admin-api/notifications/credential-expiry/route');
 
 const cleanup = (): void => {
   fs.rmSync(tempRootDir, { force: true, recursive: true, maxRetries: 5 });
@@ -142,6 +147,37 @@ describe('credential expiry notifications', () => {
     ]);
   });
 
+  it('delivers web and desktop notifications through separate subscribers', async () => {
+    await updateSettings({
+      CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED: false,
+      CODEBUDDY_CREDENTIAL_EXPIRY_WEB_NOTIFICATIONS_ENABLED: true,
+      CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED: true,
+      CODEBUDDY_BARK_TOKEN: '',
+    });
+    await seed('separate-channels.json', 3 * DAY - 5);
+    const web = vi.fn();
+    const desktop = vi.fn();
+    const unsubscribeWeb = subscribeCredentialExpiryNotifications('web', web);
+    const unsubscribeDesktop = subscribeCredentialExpiryNotifications(
+      'desktop',
+      desktop,
+    );
+
+    try {
+      await expect(runCredentialExpiryNotificationTick(now)).resolves.toEqual([
+        'separate-channels.json:three_days',
+      ]);
+      expect(web).toHaveBeenCalledTimes(1);
+      expect(desktop).toHaveBeenCalledTimes(1);
+      await expect(runCredentialExpiryNotificationTick(now)).resolves.toEqual(
+        [],
+      );
+    } finally {
+      unsubscribeWeb();
+      unsubscribeDesktop();
+    }
+  });
+
   it('ignores malformed state and credentials without expiry data', async () => {
     await writeStorageJson('credentials', 'expiry_notifications.json', {
       invalid: { expiresAt: 'not-a-number', sent: {} },
@@ -243,6 +279,64 @@ describe('credential expiry notifications', () => {
       }),
     );
     expect(unauthorized.status).toBe(401);
+  });
+
+  it('serves channel-specific web and desktop test notifications', async () => {
+    const web = vi.fn();
+    const desktop = vi.fn();
+    const unsubscribeWeb = subscribeCredentialExpiryNotifications('web', web);
+    const unsubscribeDesktop = subscribeCredentialExpiryNotifications(
+      'desktop',
+      desktop,
+    );
+
+    try {
+      const webResponse = await CredentialExpiryTestRoute.POST(
+        new Request(
+          'http://localhost/admin-api/notifications/credential-expiry/test',
+          {
+            body: JSON.stringify({ channel: 'web' }),
+            headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+          },
+        ),
+      );
+      expect(webResponse.status).toBe(200);
+      expect(web).toHaveBeenCalledTimes(1);
+      expect(desktop).not.toHaveBeenCalled();
+
+      const missingChannel = await CredentialExpiryTestRoute.POST(
+        new Request(
+          'http://localhost/admin-api/notifications/credential-expiry/test',
+          {
+            body: JSON.stringify({}),
+            headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+          },
+        ),
+      );
+      expect(missingChannel.status).toBe(400);
+
+      const stream = await CredentialExpiryStreamRoute.GET(
+        new Request(
+          'http://localhost/admin-api/notifications/credential-expiry?channel=web',
+        ),
+      );
+      expect(stream.status).toBe(200);
+      const reader = stream.body?.getReader();
+      await expect(reader?.read()).resolves.toMatchObject({ done: false });
+      await reader?.cancel();
+
+      const invalidStream = await CredentialExpiryStreamRoute.GET(
+        new Request(
+          'http://localhost/admin-api/notifications/credential-expiry',
+        ),
+      );
+      expect(invalidStream.status).toBe(400);
+    } finally {
+      unsubscribeWeb();
+      unsubscribeDesktop();
+    }
   });
 
   it('starts only one scheduler and can be stopped', () => {

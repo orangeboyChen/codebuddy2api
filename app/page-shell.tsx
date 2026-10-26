@@ -199,6 +199,11 @@ interface JsonResult<T> {
   status: number;
 }
 
+interface CredentialExpiryNotificationEvent {
+  body?: string;
+  title?: string;
+}
+
 const requestJson = async <T,>(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -403,6 +408,61 @@ const AdminPageLayoutContent = ({
     },
     [],
   );
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('EventSource' in window)) {
+      return;
+    }
+
+    const desktopBridge = (
+      window as unknown as {
+        desktop?: {
+          notify?: (nextTitle: string, nextBody: string) => Promise<void>;
+        };
+      }
+    ).desktop;
+    const desktopApp = desktop || Boolean(desktopBridge?.notify);
+    const source = new EventSource(
+      `/admin-api/notifications/credential-expiry?channel=${desktopApp ? 'desktop' : 'web'}`,
+    );
+    const handleEvent = (event: Event): void => {
+      const messageEvent = event as MessageEvent<string>;
+      let payload: CredentialExpiryNotificationEvent;
+
+      try {
+        payload = JSON.parse(
+          messageEvent.data,
+        ) as CredentialExpiryNotificationEvent;
+      } catch {
+        return;
+      }
+
+      const body = payload.body?.trim();
+      const title = payload.title?.trim();
+
+      if (!body || !title) return;
+
+      if (desktopApp) {
+        if (desktopBridge?.notify) {
+          void desktopBridge.notify(title, body);
+        }
+      } else if (
+        'Notification' in window &&
+        Notification.permission === 'granted'
+      ) {
+        new Notification(title, { body });
+      } else {
+        showNotification('warning', body);
+      }
+    };
+
+    source.addEventListener('credential-expiry', handleEvent);
+
+    return () => {
+      source.removeEventListener('credential-expiry', handleEvent);
+      source.close();
+    };
+  }, [desktop, showNotification]);
 
   /*
     Nothing is dropped into the console. A file or an image dropped on the

@@ -15,7 +15,12 @@ type ExpiryNotificationKey =
 
 interface ExpiryNotificationState {
   expiresAt: number;
-  sent: Partial<Record<ExpiryNotificationKey, boolean>>;
+  sent: Partial<
+    Record<
+      ExpiryNotificationKey,
+      Partial<Record<'bark' | 'web' | 'desktop', boolean>>
+    >
+  >;
 }
 
 type ExpiryNotificationStates = Record<string, ExpiryNotificationState>;
@@ -28,6 +33,60 @@ const globalSchedulerState = globalThis as typeof globalThis & {
   __codebuddy2apiCredentialExpiryNotifications__?: {
     timer: ReturnType<typeof setInterval>;
   };
+  __codebuddy2apiCredentialExpirySubscribers__?: Set<CredentialExpiryNotificationSubscriber>;
+};
+
+export type CredentialExpiryNotificationChannel = 'desktop' | 'web';
+
+export interface CredentialExpiryNotificationEvent {
+  body: string;
+  credential: string;
+  expiresAt: number;
+  key: ExpiryNotificationKey;
+  title: string;
+}
+
+interface CredentialExpiryNotificationSubscriber {
+  channel: CredentialExpiryNotificationChannel;
+  send: (event: CredentialExpiryNotificationEvent) => void;
+}
+
+const notificationSubscribers =
+  globalSchedulerState.__codebuddy2apiCredentialExpirySubscribers__ ??
+  new Set<CredentialExpiryNotificationSubscriber>();
+globalSchedulerState.__codebuddy2apiCredentialExpirySubscribers__ =
+  notificationSubscribers;
+
+export const subscribeCredentialExpiryNotifications = (
+  channel: CredentialExpiryNotificationChannel,
+  send: (event: CredentialExpiryNotificationEvent) => void,
+): (() => void) => {
+  const subscriber = { channel, send };
+  notificationSubscribers.add(subscriber);
+  return () => notificationSubscribers.delete(subscriber);
+};
+
+export const publishCredentialExpiryNotification = (
+  channel: CredentialExpiryNotificationChannel,
+  event: CredentialExpiryNotificationEvent,
+): number => {
+  let delivered = 0;
+
+  notificationSubscribers.forEach((subscriber) => {
+    if (subscriber.channel !== channel) return;
+
+    try {
+      subscriber.send(event);
+      delivered += 1;
+    } catch (error) {
+      console.warn(
+        '[CodeBuddy2API] Credential expiry notification subscriber failed',
+        error,
+      );
+    }
+  });
+
+  return delivered;
 };
 
 let stateMutationQueue: Promise<void> = Promise.resolve();
@@ -56,7 +115,26 @@ const loadNotificationStates = async (): Promise<ExpiryNotificationStates> => {
       sent: Object.fromEntries(
         CREDENTIAL_EXPIRY_NOTIFICATION_THRESHOLDS.filter(({ key }) =>
           Boolean((sent as Record<string, unknown>)[key]),
-        ).map(({ key }) => [key, true]),
+        ).map(({ key }) => {
+          const value = (sent as Record<string, unknown>)[key];
+          return [
+            key,
+            typeof value === 'boolean'
+              ? { bark: value }
+              : Object.fromEntries(
+                  ['bark', 'web', 'desktop']
+                    .filter((channel) =>
+                      Boolean(
+                        value &&
+                        typeof value === 'object' &&
+                        !Array.isArray(value) &&
+                        (value as Record<string, unknown>)[channel],
+                      ),
+                    )
+                    .map((channel) => [channel, true]),
+                ),
+          ];
+        }),
       ),
     };
     return result;
@@ -135,8 +213,14 @@ export const runCredentialExpiryNotificationTick = async (
 ): Promise<string[]> => {
   const config = await getActiveConfig();
   const token = config.CODEBUDDY_BARK_TOKEN.trim();
+  const barkEnabled =
+    config.CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED && Boolean(token);
+  const webEnabled =
+    config.CODEBUDDY_CREDENTIAL_EXPIRY_WEB_NOTIFICATIONS_ENABLED;
+  const desktopEnabled =
+    config.CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED;
 
-  if (!config.CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED || !token) {
+  if (!barkEnabled && !webEnabled && !desktopEnabled) {
     return [];
   }
 
@@ -171,29 +255,84 @@ export const runCredentialExpiryNotificationTick = async (
               )
             : undefined;
 
-    if (!threshold || state.sent[threshold.key]) continue;
+    if (!threshold) continue;
+
+    const thresholdState = state.sent[threshold.key] ?? {};
+    const shouldSendBark = barkEnabled && !thresholdState.bark;
+    const shouldSendWeb = webEnabled && !thresholdState.web;
+    const shouldSendDesktop = desktopEnabled && !thresholdState.desktop;
+
+    if (!shouldSendBark && !shouldSendWeb && !shouldSendDesktop) continue;
 
     const name = credentialName(credential);
 
-    try {
-      await sendBarkNotification({
-        body: `凭据 ${name} ${threshold.label}。过期时间：${new Date(
-          expiresAt * 1000,
-        ).toLocaleString()}`,
-        title: 'CodeBuddy2API 凭据提醒',
-        token,
+    const body = `凭据 ${name} ${threshold.label}。过期时间：${new Date(
+      expiresAt * 1000,
+    ).toLocaleString()}`;
+    const title = 'CodeBuddy2API 凭据提醒';
+    let delivered = false;
+
+    if (shouldSendBark) {
+      try {
+        await sendBarkNotification({
+          body,
+          title,
+          token,
+        });
+        thresholdState.bark = true;
+        delivered = true;
+      } catch (error) {
+        console.warn(
+          `[CodeBuddy2API] Bark credential expiry notification failed for ${credential.filename}`,
+          error,
+        );
+      }
+    }
+
+    if (shouldSendWeb) {
+      const subscriberCount = publishCredentialExpiryNotification('web', {
+        body,
+        credential: name,
+        expiresAt,
+        key: threshold.key,
+        title,
       });
-      state.sent[threshold.key] = true;
+
+      if (subscriberCount > 0) {
+        thresholdState.web = true;
+        delivered = true;
+      }
+    }
+
+    if (shouldSendDesktop) {
+      const subscriberCount = publishCredentialExpiryNotification('desktop', {
+        body,
+        credential: name,
+        expiresAt,
+        key: threshold.key,
+        title,
+      });
+
+      if (subscriberCount > 0) {
+        thresholdState.desktop = true;
+        delivered = true;
+      }
+    }
+
+    if (delivered) {
+      state.sent[threshold.key] = thresholdState;
       states[credential.filename] = state;
-      await updateNotificationStates((saved) => {
-        saved[credential.filename] = state;
-      });
-      sentNotifications.push(`${credential.filename}:${threshold.key}`);
-    } catch (error) {
-      console.warn(
-        `[CodeBuddy2API] Bark credential expiry notification failed for ${credential.filename}`,
-        error,
-      );
+      try {
+        await updateNotificationStates((saved) => {
+          saved[credential.filename] = state;
+        });
+        sentNotifications.push(`${credential.filename}:${threshold.key}`);
+      } catch (error) {
+        console.warn(
+          `[CodeBuddy2API] Credential expiry notification state save failed for ${credential.filename}`,
+          error,
+        );
+      }
     }
   }
 
