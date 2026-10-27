@@ -24,4 +24,6 @@ contextBridge.exposeInMainWorld('desktop', {
   // and it is the page that knows how much room its own text took.
   setContentSize: (width: number, height: number): Promise<void> =>
     ipcRenderer.invoke('desktop:set-content-size', width, height),
+  notify: (title: string, body: string): Promise<void> =>
+    ipcRenderer.invoke('desktop:notify', title, body),
 });

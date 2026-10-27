@@ -15,7 +15,14 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 
 import {
   BACKEND_CONFIG_KEYS,
@@ -190,6 +197,8 @@ const DESKTOP_HIDDEN_CONFIG_KEYS = new Set([
 
 const CUSTOM_CONFIG_KEYS = new Set([
   'CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED',
+  'CODEBUDDY_CREDENTIAL_EXPIRY_WEB_NOTIFICATIONS_ENABLED',
+  'CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED',
   'CODEBUDDY_BARK_TOKEN',
 ]);
 
@@ -265,10 +274,12 @@ const SettingField = ({
 };
 
 const CredentialExpiryNotificationSettings = ({
+  desktop,
   onChange,
   settings,
   translations,
 }: {
+  desktop: boolean;
   onChange: (key: string, value: string | boolean) => void;
   settings: SettingsState;
   translations: (key: string) => string;
@@ -277,12 +288,27 @@ const CredentialExpiryNotificationSettings = ({
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(
     null,
   );
+  const [webTestResult, setWebTestResult] = useState<
+    'success' | 'error' | null
+  >(null);
+  const [webTesting, setWebTesting] = useState(false);
+  const [desktopTesting, setDesktopTesting] = useState(false);
   const token = String(settings.values.CODEBUDDY_BARK_TOKEN ?? '');
   const enabled =
     settings.values.CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED ===
       true ||
     settings.values.CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED ===
       'true';
+  const webEnabled =
+    settings.values.CODEBUDDY_CREDENTIAL_EXPIRY_WEB_NOTIFICATIONS_ENABLED ===
+      true ||
+    settings.values.CODEBUDDY_CREDENTIAL_EXPIRY_WEB_NOTIFICATIONS_ENABLED ===
+      'true';
+  const desktopEnabled =
+    settings.values
+      .CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED === true ||
+    settings.values
+      .CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED === 'true';
 
   const testNotification = async () => {
     setTesting(true);
@@ -299,6 +325,52 @@ const CredentialExpiryNotificationSettings = ({
       setTestResult('error');
     } finally {
       setTesting(false);
+    }
+  };
+
+  const testWebNotification = async () => {
+    setWebTesting(true);
+    setWebTestResult(null);
+
+    try {
+      if ('Notification' in window && Notification.permission !== 'granted') {
+        await Notification.requestPermission();
+      }
+
+      const response = await fetch(
+        '/admin-api/notifications/credential-expiry/test',
+        {
+          body: JSON.stringify({ channel: 'web' }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      setWebTestResult(response.ok ? 'success' : 'error');
+    } catch {
+      setWebTestResult('error');
+    } finally {
+      setWebTesting(false);
+    }
+  };
+
+  const testDesktopNotification = async () => {
+    setDesktopTesting(true);
+    setWebTestResult(null);
+
+    try {
+      const response = await fetch(
+        '/admin-api/notifications/credential-expiry/test',
+        {
+          body: JSON.stringify({ channel: 'desktop' }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      setWebTestResult(response.ok ? 'success' : 'error');
+    } catch {
+      setWebTestResult('error');
+    } finally {
+      setDesktopTesting(false);
     }
   };
 
@@ -327,6 +399,54 @@ const CredentialExpiryNotificationSettings = ({
           }
         />
       </Flexbox>
+      {desktop ? (
+        <>
+          <Flexbox align="center" distribution="space-between" horizontal>
+            <span className="font-medium">
+              {translations('settingsPanel.desktopNotificationsEnabled')}
+            </span>
+            <Switch
+              checked={desktopEnabled}
+              onChange={(checked) =>
+                onChange(
+                  'CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED',
+                  checked,
+                )
+              }
+            />
+          </Flexbox>
+          <p className="text-secondary">
+            {translations('settingsPanel.desktopNotificationsDescription')}
+          </p>
+        </>
+      ) : (
+        <>
+          <Flexbox align="center" distribution="space-between" horizontal>
+            <span className="font-medium">
+              {translations('settingsPanel.webNotificationsEnabled')}
+            </span>
+            <Switch
+              checked={webEnabled}
+              onChange={(checked) => {
+                if (
+                  checked &&
+                  'Notification' in window &&
+                  Notification.permission === 'default'
+                ) {
+                  void Notification.requestPermission();
+                }
+                onChange(
+                  'CODEBUDDY_CREDENTIAL_EXPIRY_WEB_NOTIFICATIONS_ENABLED',
+                  checked,
+                );
+              }}
+            />
+          </Flexbox>
+          <p className="text-secondary">
+            {translations('settingsPanel.webNotificationsDescription')}
+          </p>
+        </>
+      )}
       <div>
         <label
           className="mb-2 block whitespace-normal break-words font-medium text-text-light dark:text-text-dark"
@@ -365,6 +485,37 @@ const CredentialExpiryNotificationSettings = ({
         {testResult === 'error' ? (
           <span className="text-secondary">
             {translations('settingsPanel.testBarkFailed')}
+          </span>
+        ) : null}
+        <Button
+          disabled={desktop ? desktopTesting : webTesting}
+          loading={desktop ? desktopTesting : webTesting}
+          onClick={() =>
+            void (desktop ? testDesktopNotification() : testWebNotification())
+          }
+        >
+          {translations(
+            desktop
+              ? 'settingsPanel.testDesktopNotification'
+              : 'settingsPanel.testWebNotification',
+          )}
+        </Button>
+        {webTestResult === 'success' ? (
+          <span className="text-secondary">
+            {translations(
+              desktop
+                ? 'settingsPanel.testDesktopNotificationSuccess'
+                : 'settingsPanel.testWebNotificationSuccess',
+            )}
+          </span>
+        ) : null}
+        {webTestResult === 'error' ? (
+          <span className="text-secondary">
+            {translations(
+              desktop
+                ? 'settingsPanel.testDesktopNotificationFailed'
+                : 'settingsPanel.testWebNotificationFailed',
+            )}
           </span>
         ) : null}
       </Flexbox>
@@ -790,6 +941,19 @@ const Settings = ({
   const { onChange, onSave, settings } = useSettings();
   const translations = useTranslations('Admin');
   const [clearingUsage, setClearingUsage] = useState(false);
+  const desktopRuntime = useSyncExternalStore(
+    () => () => undefined,
+    () =>
+      Boolean(
+        (
+          window as unknown as {
+            desktop?: { notify?: unknown };
+          }
+        ).desktop?.notify,
+      ),
+    () => false,
+  );
+  const desktopApp = desktop || desktopRuntime;
 
   const clearUsageEvents = async () => {
     if (
@@ -883,6 +1047,7 @@ const Settings = ({
         </Flexbox>
       </Block>
       <CredentialExpiryNotificationSettings
+        desktop={desktopApp}
         onChange={onChange}
         settings={settings}
         translations={translations}

@@ -7,6 +7,7 @@ import {
   BrowserWindow,
   Menu,
   MenuItemConstructorOptions,
+  Notification,
   type NativeImage,
   Tray,
   app,
@@ -3706,6 +3707,21 @@ ipcMain.handle('desktop:retry-backend', async () => {
 ipcMain.handle('desktop:open-home-page', () => {
   openExternally(HOME_PAGE_URL);
 });
+
+ipcMain.handle(
+  'desktop:notify',
+  (event, title: unknown, body: unknown): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (event.sender.id !== mainWindow.webContents.id) return;
+    if (typeof title !== 'string' || typeof body !== 'string') return;
+
+    const normalizedTitle = title.trim();
+    const normalizedBody = body.trim();
+    if (!normalizedTitle || !normalizedBody) return;
+
+    new Notification({ body: normalizedBody, title: normalizedTitle }).show();
+  },
+);
 
 /** The deployment itself, in the system browser: the app's window is not one. */
 ipcMain.handle('desktop:open-in-browser', () => {
