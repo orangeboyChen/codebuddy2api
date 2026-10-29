@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  pull_request:
   # A push only ever builds Linux, so the macOS and Windows targets would
   # otherwise first run at release time. Dispatch this by hand to build another
   # one of them, from any branch: the installer comes back as an artifact of the
