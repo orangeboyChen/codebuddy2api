@@ -30,5 +30,12 @@ export const POST = async (request: Request): Promise<Response> => {
     title: 'CodeBuddy2API 凭据提醒测试',
   });
 
+  if (delivered === 0) {
+    return Response.json(
+      { error: `No ${channel} notification client is connected` },
+      { status: 503 },
+    );
+  }
+
   return Response.json({ delivered, message: 'Test notification sent.' });
 };

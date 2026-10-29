@@ -275,11 +275,13 @@ const SettingField = ({
 
 const CredentialExpiryNotificationSettings = ({
   desktop,
+  onSave,
   onChange,
   settings,
   translations,
 }: {
   desktop: boolean;
+  onSave: () => void;
   onChange: (key: string, value: string | boolean) => void;
   settings: SettingsState;
   translations: (key: string) => string;
@@ -293,6 +295,11 @@ const CredentialExpiryNotificationSettings = ({
   >(null);
   const [webTesting, setWebTesting] = useState(false);
   const [desktopTesting, setDesktopTesting] = useState(false);
+  const browserNotificationsSupported = useSyncExternalStore(
+    () => () => undefined,
+    () => 'Notification' in window,
+    () => false,
+  );
   const token = String(settings.values.CODEBUDDY_BARK_TOKEN ?? '');
   const enabled =
     settings.values.CODEBUDDY_CREDENTIAL_EXPIRY_NOTIFICATIONS_ENABLED ===
@@ -333,8 +340,17 @@ const CredentialExpiryNotificationSettings = ({
     setWebTestResult(null);
 
     try {
-      if ('Notification' in window && Notification.permission !== 'granted') {
-        await Notification.requestPermission();
+      if (!browserNotificationsSupported) {
+        setWebTestResult('error');
+        return;
+      }
+
+      if (Notification.permission !== 'granted') {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          setWebTestResult('error');
+          return;
+        }
       }
 
       const response = await fetch(
@@ -419,7 +435,7 @@ const CredentialExpiryNotificationSettings = ({
             {translations('settingsPanel.desktopNotificationsDescription')}
           </p>
         </>
-      ) : (
+      ) : browserNotificationsSupported ? (
         <>
           <Flexbox align="center" distribution="space-between" horizontal>
             <span className="font-medium">
@@ -446,7 +462,7 @@ const CredentialExpiryNotificationSettings = ({
             {translations('settingsPanel.webNotificationsDescription')}
           </p>
         </>
-      )}
+      ) : null}
       <div>
         <label
           className="mb-2 block whitespace-normal break-words font-medium text-text-light dark:text-text-dark"
@@ -455,6 +471,7 @@ const CredentialExpiryNotificationSettings = ({
           {translations('settingsPanel.barkToken')}
         </label>
         <Input
+          disabled={!enabled}
           id="CODEBUDDY_BARK_TOKEN"
           onChange={(event) =>
             onChange('CODEBUDDY_BARK_TOKEN', event.target.value)
@@ -469,55 +486,81 @@ const CredentialExpiryNotificationSettings = ({
           </a>
         </p>
       </div>
-      <Flexbox align="center" gap={12} horizontal wrap="wrap">
+      {enabled ? (
+        <>
+          <Flexbox align="center" gap={12} horizontal wrap="wrap">
+            <Button
+              disabled={testing}
+              loading={testing}
+              onClick={() => void testNotification()}
+            >
+              {translations('settingsPanel.testBark')}
+            </Button>
+            {testResult === 'success' ? (
+              <span className="text-secondary">
+                {translations('settingsPanel.testBarkSuccess')}
+              </span>
+            ) : null}
+            {testResult === 'error' ? (
+              <span className="text-secondary">
+                {translations('settingsPanel.testBarkFailed')}
+              </span>
+            ) : null}
+          </Flexbox>
+        </>
+      ) : null}
+      {desktop || !browserNotificationsSupported ? null : (
+        <Flexbox align="center" gap={12} horizontal wrap="wrap">
+          <Button
+            disabled={webTesting}
+            loading={webTesting}
+            onClick={() => void testWebNotification()}
+          >
+            {translations('settingsPanel.testWebNotification')}
+          </Button>
+          {webTestResult === 'success' ? (
+            <span className="text-secondary">
+              {translations('settingsPanel.testWebNotificationSuccess')}
+            </span>
+          ) : null}
+          {webTestResult === 'error' ? (
+            <span className="text-secondary">
+              {translations('settingsPanel.testWebNotificationFailed')}
+            </span>
+          ) : null}
+        </Flexbox>
+      )}
+      {desktop ? (
+        <Flexbox align="center" gap={12} horizontal wrap="wrap">
+          <Button
+            disabled={desktopTesting}
+            loading={desktopTesting}
+            onClick={() => void testDesktopNotification()}
+          >
+            {translations('settingsPanel.testDesktopNotification')}
+          </Button>
+          {webTestResult === 'success' ? (
+            <span className="text-secondary">
+              {translations('settingsPanel.testDesktopNotificationSuccess')}
+            </span>
+          ) : null}
+          {webTestResult === 'error' ? (
+            <span className="text-secondary">
+              {translations('settingsPanel.testDesktopNotificationFailed')}
+            </span>
+          ) : null}
+        </Flexbox>
+      ) : null}
+      <Flexbox horizontal>
         <Button
-          disabled={testing}
-          loading={testing}
-          onClick={() => void testNotification()}
+          disabled={settings.saving}
+          icon={Save}
+          loading={settings.saving}
+          onClick={onSave}
+          type="primary"
         >
-          {translations('settingsPanel.testBark')}
+          {translations('common.save')}
         </Button>
-        {testResult === 'success' ? (
-          <span className="text-secondary">
-            {translations('settingsPanel.testBarkSuccess')}
-          </span>
-        ) : null}
-        {testResult === 'error' ? (
-          <span className="text-secondary">
-            {translations('settingsPanel.testBarkFailed')}
-          </span>
-        ) : null}
-        <Button
-          disabled={desktop ? desktopTesting : webTesting}
-          loading={desktop ? desktopTesting : webTesting}
-          onClick={() =>
-            void (desktop ? testDesktopNotification() : testWebNotification())
-          }
-        >
-          {translations(
-            desktop
-              ? 'settingsPanel.testDesktopNotification'
-              : 'settingsPanel.testWebNotification',
-          )}
-        </Button>
-        {webTestResult === 'success' ? (
-          <span className="text-secondary">
-            {translations(
-              desktop
-                ? 'settingsPanel.testDesktopNotificationSuccess'
-                : 'settingsPanel.testWebNotificationSuccess',
-            )}
-          </span>
-        ) : null}
-        {webTestResult === 'error' ? (
-          <span className="text-secondary">
-            {translations(
-              desktop
-                ? 'settingsPanel.testDesktopNotificationFailed'
-                : 'settingsPanel.testWebNotificationFailed',
-            )}
-          </span>
-        ) : null}
       </Flexbox>
     </Block>
   );
@@ -1048,6 +1091,7 @@ const Settings = ({
       </Block>
       <CredentialExpiryNotificationSettings
         desktop={desktopApp}
+        onSave={onSave}
         onChange={onChange}
         settings={settings}
         translations={translations}

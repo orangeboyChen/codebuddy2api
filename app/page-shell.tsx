@@ -422,6 +422,11 @@ const AdminPageLayoutContent = ({
       }
     ).desktop;
     const desktopApp = desktop || Boolean(desktopBridge?.notify);
+
+    if (!desktopApp && !('Notification' in window)) {
+      return;
+    }
+
     const source = new EventSource(
       `/admin-api/notifications/credential-expiry?channel=${desktopApp ? 'desktop' : 'web'}`,
     );
@@ -451,8 +456,6 @@ const AdminPageLayoutContent = ({
         Notification.permission === 'granted'
       ) {
         new Notification(title, { body });
-      } else {
-        showNotification('warning', body);
       }
     };
 
