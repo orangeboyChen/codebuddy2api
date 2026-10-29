@@ -70,7 +70,9 @@ test.describe('Desktop settings', () => {
     // disabled entry in it is not a menu.
     await expect(page.locator('#desktopStorageBackend')).toHaveCount(0);
     await expect(page.getByText('Storage backend')).toHaveCount(0);
-    await expect(page.getByText('Desktop app')).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Desktop app' }),
+    ).toBeVisible();
   });
 
   test('leaves the appearance and the language to the menu bar item', async ({
