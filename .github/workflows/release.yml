@@ -5,13 +5,17 @@ on:
     inputs:
       version_bump:
         description: Version increment
-        required: true
+        required: false
         default: patch
         type: choice
         options:
           - major
           - minor
           - patch
+      release_version:
+        description: Build or rebuild this version from the selected ref
+        required: false
+        type: string
   push:
     branches: [main]
 
@@ -33,7 +37,7 @@ env:
 
 jobs:
   create-version-pr:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version == '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -81,7 +85,7 @@ jobs:
           gh pr create --base main --head "$BRANCH" --label release --title "chore: prepare release v${VERSION}" --body "Automated version bump for release v${VERSION}. Merge this PR to trigger the release workflow."
 
   detect-release:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_version != '') }}
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.detect.outputs.should_release }}
@@ -95,13 +99,26 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
-          release_pr="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[] | select(.base.ref == "main" and (.title | startswith("chore: prepare release v")) and (.head.ref | startswith("release/v"))) | .number' | head -n 1 || true)"
-          if [[ -z "$release_pr" ]]; then
-            echo 'should_release=false' >> "$GITHUB_OUTPUT"
-            exit 0
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            requested_version="$RELEASE_VERSION"
+            if [[ ! "$requested_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$requested_version" != "$version" ]]; then
+              echo "::error::Requested release version $requested_version does not match package.json version $version"
+              exit 1
+            fi
+            if git rev-parse --quiet --verify "refs/tags/v${requested_version}" >/dev/null; then
+              echo "::error::Tag v${requested_version} already exists; refusing to replace an existing release"
+              exit 1
+            fi
+          else
+            release_pr="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[] | select(.base.ref == "main" and (.title | startswith("chore: prepare release v")) and (.head.ref | startswith("release/v"))) | .number' | head -n 1 || true)"
+            if [[ -z "$release_pr" ]]; then
+              echo 'should_release=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           echo 'should_release=true' >> "$GITHUB_OUTPUT"
