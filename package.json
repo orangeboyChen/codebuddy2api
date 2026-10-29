@@ -76,7 +76,7 @@
     "@typescript-eslint/parser": "^8.72.0",
     "@vitest/coverage-v8": "^5.0.5",
     "drizzle-kit": "^0.31.11",
-    "electron": "^45.0.0",
+    "electron": "^44.10.0",
     "electron-builder": "^26.18.0",
     "eslint": "^10.13.0",
     "eslint-config-next": "^16.4.2",
