@@ -325,6 +325,21 @@ jobs:
           else
             bun scripts/build-desktop.ts ${{ matrix.targets }}
           fi
+      - name: Check gateway bundle resources
+        if: ${{ matrix.macos }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find build/desktop -name '*.app' -maxdepth 2 -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo '::error::electron-builder left no .app behind'
+            exit 1
+          fi
+          link="$(find "$app/Contents/Resources/gateway" -type l -print -quit)"
+          if [[ -n "$link" ]]; then
+            echo "::error::gateway contains a symlink that can invalidate macOS signing: $link"
+            exit 1
+          fi
       - name: Check that the app is signed
         if: ${{ env.MATCH_GIT_URL != '' }}
         shell: bash

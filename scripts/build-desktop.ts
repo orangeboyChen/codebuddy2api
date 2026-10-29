@@ -72,7 +72,11 @@ const requirePath = (target: string, hint: string) => {
 };
 
 const copyInto = (source: string, destination: string) => {
-  fs.cpSync(source, destination, { recursive: true });
+  // macOS code signing rejects resource symlinks whose destination is not
+  // represented as a bundle resource. The standalone Next.js output uses
+  // symlinks for a few traced packages, so materialize those packages while
+  // assembling the gateway instead of copying the links into the app bundle.
+  fs.cpSync(source, destination, { dereference: true, recursive: true });
 };
 
 /**

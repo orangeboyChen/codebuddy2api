@@ -138,6 +138,20 @@ jobs:
       - name: Build the macOS app
         run: bun scripts/build-desktop.ts --dev-icon --mac --arm64 --dir
 
+      - name: Check gateway bundle resources
+        run: |
+          set -euo pipefail
+          app="$(find build/desktop -name '*.app' -maxdepth 2 -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo '::error::electron-builder left no .app behind'
+            exit 1
+          fi
+          link="$(find "$app/Contents/Resources/gateway" -type l -print -quit)"
+          if [[ -n "$link" ]]; then
+            echo "::error::gateway contains a symlink that can invalidate macOS signing: $link"
+            exit 1
+          fi
+
       # Zipped with ditto rather than handed over as a directory: an app is a
       # bundle, and a bundle carries resource forks, symlinks and an executable
       # bit that an archive has to keep or the app will not open.
