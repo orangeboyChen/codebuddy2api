@@ -110,7 +110,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
       'Web/desktop credential expiry notifications',
     CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED:
       'Desktop credential expiry notifications',
-    CODEBUDDY_BARK_TOKEN: 'Bark device key',
+    CODEBUDDY_BARK_TOKEN: 'Bark key',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'Web search backend',
     CODEBUDDY_WEB_FETCH_BACKEND: 'Web fetch backend',
     CODEBUDDY_SEARXNG_URL: 'SearXNG instance address (with port)',
@@ -139,7 +139,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
       'Web/デスクトップの認証情報有効期限通知',
     CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED:
       'デスクトップの認証情報有効期限通知',
-    CODEBUDDY_BARK_TOKEN: 'Bark デバイスキー',
+    CODEBUDDY_BARK_TOKEN: 'Bark キー',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'Web 検索バックエンド',
     CODEBUDDY_WEB_FETCH_BACKEND: 'Web フェッチバックエンド',
     CODEBUDDY_SEARXNG_URL: 'SearXNG インスタンスのアドレス(ポートを含む)',
@@ -167,7 +167,7 @@ const SETTING_LABELS_BY_LOCALE: Record<
       'Web/桌面端凭据过期通知',
     CODEBUDDY_CREDENTIAL_EXPIRY_DESKTOP_NOTIFICATIONS_ENABLED:
       '桌面端凭据过期通知',
-    CODEBUDDY_BARK_TOKEN: 'Bark Token',
+    CODEBUDDY_BARK_TOKEN: 'Bark Key',
     CODEBUDDY_WEB_SEARCH_BACKEND: 'WebSearch 后端',
     CODEBUDDY_WEB_FETCH_BACKEND: 'WebFetch 后端',
     CODEBUDDY_SEARXNG_URL: 'SearXNG 实例地址(含端口)',

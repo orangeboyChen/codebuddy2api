@@ -1,6 +1,13 @@
 'use client';
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from 'react';
 import { createStore, Provider, useAtom } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
 import { useLocale, useTranslations } from 'next-intl';
@@ -65,6 +72,12 @@ import { AdminHeader } from '@/app/header';
 import { type LocalePreference } from '@/lib/i18n/routing';
 import { saveLocalePreference } from '@/lib/client/preferences';
 import { useThemeAppearance } from '@/lib/client/theme';
+import {
+  getWebNotificationPermission,
+  isWebNotificationSupported,
+  showWebNotification,
+  subscribeWebNotificationPermission,
+} from '@/lib/client/web-notifications';
 
 const tabs: Array<{
   icon: typeof LayoutDashboard;
@@ -408,6 +421,11 @@ const AdminPageLayoutContent = ({
     },
     [],
   );
+  const webNotificationPermission = useSyncExternalStore(
+    subscribeWebNotificationPermission,
+    getWebNotificationPermission,
+    () => 'denied',
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('EventSource' in window)) {
@@ -422,6 +440,14 @@ const AdminPageLayoutContent = ({
       }
     ).desktop;
     const desktopApp = desktop || Boolean(desktopBridge?.notify);
+
+    if (
+      !desktopApp &&
+      (!isWebNotificationSupported() || webNotificationPermission !== 'granted')
+    ) {
+      return;
+    }
+
     const source = new EventSource(
       `/admin-api/notifications/credential-expiry?channel=${desktopApp ? 'desktop' : 'web'}`,
     );
@@ -450,9 +476,7 @@ const AdminPageLayoutContent = ({
         'Notification' in window &&
         Notification.permission === 'granted'
       ) {
-        new Notification(title, { body });
-      } else {
-        showNotification('warning', body);
+        void showWebNotification(title, body);
       }
     };
 
@@ -462,7 +486,7 @@ const AdminPageLayoutContent = ({
       source.removeEventListener('credential-expiry', handleEvent);
       source.close();
     };
-  }, [desktop, showNotification]);
+  }, [desktop, showNotification, webNotificationPermission]);
 
   /*
     Nothing is dropped into the console. A file or an image dropped on the
