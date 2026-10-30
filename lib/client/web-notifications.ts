@@ -1,3 +1,45 @@
+export const WEB_NOTIFICATION_PERMISSION_CHANGE_EVENT =
+  'codebuddy2api-web-notification-permission-change';
+
+export const getWebNotificationPermission = (): NotificationPermission => {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return 'denied';
+  }
+
+  return Notification.permission;
+};
+
+export const notifyWebNotificationPermissionChanged = (): void => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(WEB_NOTIFICATION_PERMISSION_CHANGE_EVENT));
+  }
+};
+
+export const subscribeWebNotificationPermission = (
+  onChange: () => void,
+): (() => void) => {
+  if (typeof window === 'undefined') {
+    return () => undefined;
+  }
+
+  const handleChange = (): void => onChange();
+  window.addEventListener(
+    WEB_NOTIFICATION_PERMISSION_CHANGE_EVENT,
+    handleChange,
+  );
+  window.addEventListener('focus', handleChange);
+  document.addEventListener('visibilitychange', handleChange);
+
+  return () => {
+    window.removeEventListener(
+      WEB_NOTIFICATION_PERMISSION_CHANGE_EVENT,
+      handleChange,
+    );
+    window.removeEventListener('focus', handleChange);
+    document.removeEventListener('visibilitychange', handleChange);
+  };
+};
+
 export const isWebNotificationSupported = (): boolean => {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return false;

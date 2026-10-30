@@ -39,7 +39,10 @@ import {
 
 import Security from './security';
 import Desktop from './desktop';
-import { isWebNotificationSupported } from '@/lib/client/web-notifications';
+import {
+  isWebNotificationSupported,
+  notifyWebNotificationPermissionChanged,
+} from '@/lib/client/web-notifications';
 
 export type SettingsValue = string | number | boolean | null;
 
@@ -348,6 +351,7 @@ const CredentialExpiryNotificationSettings = ({
 
       if (Notification.permission !== 'granted') {
         const permission = await Notification.requestPermission();
+        notifyWebNotificationPermissionChanged();
         if (permission !== 'granted') {
           setWebTestResult('error');
           return;
@@ -450,7 +454,9 @@ const CredentialExpiryNotificationSettings = ({
                   'Notification' in window &&
                   Notification.permission === 'default'
                 ) {
-                  void Notification.requestPermission();
+                  void Notification.requestPermission().then(() => {
+                    notifyWebNotificationPermissionChanged();
+                  });
                 }
                 onChange(
                   'CODEBUDDY_CREDENTIAL_EXPIRY_WEB_NOTIFICATIONS_ENABLED',
