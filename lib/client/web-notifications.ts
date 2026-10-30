@@ -30,9 +30,9 @@ export const showWebNotification = async (
 
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.ready;
+      const registration = await navigator.serviceWorker.getRegistration('/');
 
-      if (typeof registration.showNotification === 'function') {
+      if (registration && typeof registration.showNotification === 'function') {
         await registration.showNotification(title, { body });
         return true;
       }

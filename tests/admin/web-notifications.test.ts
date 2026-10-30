@@ -40,7 +40,9 @@ describe('web notifications', () => {
       value: Registration,
     });
     setNotification({ permission: 'granted' });
-    setServiceWorker({ ready: Promise.resolve(registration) });
+    setServiceWorker({
+      getRegistration: vi.fn().mockResolvedValue(registration),
+    });
 
     expect(isWebNotificationSupported()).toBe(true);
     await expect(showWebNotification('Title', 'Body')).resolves.toBe(true);
