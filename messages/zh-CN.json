@@ -464,7 +464,7 @@
       "credentialExpiryNotificationsDescription": "凭据将在还有 3 天、还有 1 天和已过期时通知。Bark、Web 浏览器和桌面端通知可以分别配置，服务运行时才会检查。",
       "credentialExpiryNotificationsEnabled": "启用 Bark 凭据过期通知",
       "webNotificationsEnabled": "启用 Web 端凭据过期通知",
-      "webNotificationsDescription": "在相同的时间点通过浏览器通知提醒。出现权限提示时请允许通知。",
+      "webNotificationsDescription": "在相同的时间点通过浏览器或已安装的 PWA 通知提醒。出现权限提示时请允许通知。",
       "desktopNotificationsEnabled": "启用桌面端凭据过期通知",
       "desktopNotificationsDescription": "在相同的时间点通过桌面应用的系统通知提醒。",
       "barkToken": "Bark Key",

@@ -65,6 +65,7 @@ import { AdminHeader } from '@/app/header';
 import { type LocalePreference } from '@/lib/i18n/routing';
 import { saveLocalePreference } from '@/lib/client/preferences';
 import { useThemeAppearance } from '@/lib/client/theme';
+import { showWebNotification } from '@/lib/client/web-notifications';
 
 const tabs: Array<{
   icon: typeof LayoutDashboard;
@@ -455,7 +456,7 @@ const AdminPageLayoutContent = ({
         'Notification' in window &&
         Notification.permission === 'granted'
       ) {
-        new Notification(title, { body });
+        void showWebNotification(title, body);
       }
     };
 

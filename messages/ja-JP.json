@@ -464,7 +464,7 @@
       "credentialExpiryNotificationsDescription": "認証情報の有効期限が 3 日前、1 日前、または期限切れになったときに通知します。Bark、Web ブラウザ、デスクトップ通知は個別に設定できます。サービスの実行中に確認します。",
       "credentialExpiryNotificationsEnabled": "Bark の認証情報有効期限通知を有効にする",
       "webNotificationsEnabled": "Web の認証情報有効期限通知を有効にする",
-      "webNotificationsDescription": "同じタイミングでブラウザ通知を表示します。表示された権限を許可してください。",
+      "webNotificationsDescription": "同じタイミングでブラウザまたはインストール済み PWA の通知を表示します。表示された権限を許可してください。",
       "desktopNotificationsEnabled": "デスクトップの認証情報有効期限通知を有効にする",
       "desktopNotificationsDescription": "同じタイミングでデスクトップアプリのシステム通知を表示します。",
       "barkToken": "Bark キー",

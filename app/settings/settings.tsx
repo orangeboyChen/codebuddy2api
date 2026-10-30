@@ -39,6 +39,7 @@ import {
 
 import Security from './security';
 import Desktop from './desktop';
+import { isWebNotificationSupported } from '@/lib/client/web-notifications';
 
 export type SettingsValue = string | number | boolean | null;
 
@@ -297,7 +298,7 @@ const CredentialExpiryNotificationSettings = ({
   const [desktopTesting, setDesktopTesting] = useState(false);
   const browserNotificationsSupported = useSyncExternalStore(
     () => () => undefined,
-    () => 'Notification' in window,
+    isWebNotificationSupported,
     () => false,
   );
   const token = String(settings.values.CODEBUDDY_BARK_TOKEN ?? '');

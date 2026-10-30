@@ -464,7 +464,7 @@
       "credentialExpiryNotificationsDescription": "Notify when a credential has 3 days left, 1 day left, or has expired. Bark, web browser, and desktop notifications are configured separately.",
       "credentialExpiryNotificationsEnabled": "Enable Bark credential expiry notifications",
       "webNotificationsEnabled": "Enable web credential expiry notifications",
-      "webNotificationsDescription": "Show a browser notification at the same thresholds. Allow notifications when prompted.",
+      "webNotificationsDescription": "Show a browser or installed PWA notification at the same thresholds. Allow notifications when prompted.",
       "desktopNotificationsEnabled": "Enable desktop credential expiry notifications",
       "desktopNotificationsDescription": "Show a native system notification in the desktop app at the same thresholds.",
       "barkToken": "Bark key",
